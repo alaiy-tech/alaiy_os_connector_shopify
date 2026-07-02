@@ -53,9 +53,10 @@
    "label": "Client Secret"
   },
   {
-   "description": "Admin API access token (shpat_...). Use the Connect button below to obtain it via OAuth.",
+   "description": "Access token (auto-managed by Test Connection)",
    "fieldname": "sh_access_token",
    "fieldtype": "Password",
+   "hidden": 1,
    "label": "Access Token"
   },
   {
@@ -68,7 +69,7 @@
   {
    "fieldname": "sb_defaults",
    "fieldtype": "Section Break",
-   "label": "ERPNext Defaults"
+   "label": "Alaiy OS Defaults"
   },
   {
    "fieldname": "sh_company",
@@ -107,16 +108,16 @@
    "label": "Sync Settings"
   },
   {
-   "default": "open",
+   "default": "Any",
    "description": "Filter for which orders to pull from Shopify",
    "fieldname": "sh_order_status_filter",
    "fieldtype": "Select",
    "label": "Sync Orders With Status",
-   "options": "open\nany\nclosed\ncancelled"
+   "options": "Open\nAny\nClosed\nCancelled"
   },
   {
    "default": "Disabled",
-   "description": "How often to push ERPNext stock levels to Shopify",
+   "description": "How often to push Alaiy OS stock levels to Shopify",
    "fieldname": "sh_inventory_sync_interval",
    "fieldtype": "Select",
    "label": "Inventory Sync Interval",
