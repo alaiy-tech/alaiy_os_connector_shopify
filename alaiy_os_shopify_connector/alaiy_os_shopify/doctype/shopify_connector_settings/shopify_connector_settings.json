@@ -1,0 +1,137 @@
+{
+ "creation": "2026-07-02 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "is_enabled",
+  "sb_connection",
+  "sh_shop_url",
+  "sh_access_token",
+  "sh_api_version",
+  "sb_defaults",
+  "sh_company",
+  "sh_default_warehouse",
+  "sh_customer_group",
+  "sh_selling_price_list",
+  "sh_cost_center",
+  "sb_sync",
+  "sh_order_status_filter",
+  "sh_inventory_sync_interval"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "is_enabled",
+   "fieldtype": "Check",
+   "label": "Enable Shopify"
+  },
+  {
+   "fieldname": "sb_connection",
+   "fieldtype": "Section Break",
+   "label": "API Connection"
+  },
+  {
+   "description": "Your Shopify store domain, e.g. myshop.myshopify.com",
+   "fieldname": "sh_shop_url",
+   "fieldtype": "Data",
+   "label": "Shop URL"
+  },
+  {
+   "description": "Admin API access token from your Shopify app credentials",
+   "fieldname": "sh_access_token",
+   "fieldtype": "Password",
+   "label": "Access Token"
+  },
+  {
+   "default": "2024-01",
+   "description": "Shopify Admin API version (YYYY-MM)",
+   "fieldname": "sh_api_version",
+   "fieldtype": "Data",
+   "label": "API Version"
+  },
+  {
+   "fieldname": "sb_defaults",
+   "fieldtype": "Section Break",
+   "label": "ERPNext Defaults"
+  },
+  {
+   "fieldname": "sh_company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "description": "Warehouse for fulfilling Shopify orders",
+   "fieldname": "sh_default_warehouse",
+   "fieldtype": "Link",
+   "label": "Default Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "sh_customer_group",
+   "fieldtype": "Link",
+   "label": "Default Customer Group",
+   "options": "Customer Group"
+  },
+  {
+   "fieldname": "sh_selling_price_list",
+   "fieldtype": "Link",
+   "label": "Selling Price List",
+   "options": "Price List"
+  },
+  {
+   "fieldname": "sh_cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "sb_sync",
+   "fieldtype": "Section Break",
+   "label": "Sync Settings"
+  },
+  {
+   "default": "open",
+   "description": "Filter for which orders to pull from Shopify",
+   "fieldname": "sh_order_status_filter",
+   "fieldtype": "Select",
+   "label": "Sync Orders With Status",
+   "options": "open\nany\nclosed\ncancelled"
+  },
+  {
+   "default": "Disabled",
+   "description": "How often to push ERPNext stock levels to Shopify",
+   "fieldname": "sh_inventory_sync_interval",
+   "fieldtype": "Select",
+   "label": "Inventory Sync Interval",
+   "options": "Disabled\n5 min\n15 min\n30 min\n60 min"
+  }
+ ],
+ "is_single": 1,
+ "links": [],
+ "modified": "2026-07-02 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Alaiy OS Shopify",
+ "name": "Shopify Connector Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
