@@ -1,0 +1,2 @@
+include *.md
+recursive-include alaiy_os_shopify_connector *.json *.js *.css *.html *.png *.svg
