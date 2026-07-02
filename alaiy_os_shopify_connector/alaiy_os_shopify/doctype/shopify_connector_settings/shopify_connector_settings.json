@@ -8,6 +8,8 @@
   "is_enabled",
   "sb_connection",
   "sh_shop_url",
+  "sh_client_id",
+  "sh_client_secret",
   "sh_access_token",
   "sh_api_version",
   "sb_defaults",
@@ -39,7 +41,19 @@
    "label": "Shop URL"
   },
   {
-   "description": "Admin API access token from your Shopify app credentials",
+   "description": "Client ID from your Shopify custom app (Developer Dashboard)",
+   "fieldname": "sh_client_id",
+   "fieldtype": "Data",
+   "label": "Client ID"
+  },
+  {
+   "description": "Client Secret from your Shopify custom app",
+   "fieldname": "sh_client_secret",
+   "fieldtype": "Password",
+   "label": "Client Secret"
+  },
+  {
+   "description": "Admin API access token (shpat_...). Use the Connect button below to obtain it via OAuth.",
    "fieldname": "sh_access_token",
    "fieldtype": "Password",
    "label": "Access Token"
