@@ -8,7 +8,7 @@ connector_meta = {
     "connector_name": "Shopify",
     "connector_app": "alaiy_os_shopify_connector",
     "connector_type": "channel",
-    "description": "Shopify storefront — orders in, inventory out",
+    "description": "Shopify storefront",
     "icon": "shopping-bag",
     "icon_url": "",
     "settings_doctype": "Shopify Connector Settings",

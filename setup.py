@@ -7,7 +7,7 @@ setup(
     name="alaiy_os_shopify_connector",
     version="0.0.1",
     description="Shopify sales channel connector for AlaiyOS",
-    author="AlaiyOS",
+    author="Alaiy OS",
     author_email="dev@alaiy.com",
     packages=find_packages(),
     zip_safe=False,
