@@ -38,19 +38,22 @@
    "description": "Your Shopify store domain, e.g. myshop.myshopify.com",
    "fieldname": "sh_shop_url",
    "fieldtype": "Data",
-   "label": "Shop URL"
+   "label": "Shop URL",
+   "reqd": 1
   },
   {
    "description": "Client ID from your Shopify custom app (Developer Dashboard)",
    "fieldname": "sh_client_id",
    "fieldtype": "Data",
-   "label": "Client ID"
+   "label": "Client ID",
+   "reqd": 1
   },
   {
    "description": "Client Secret from your Shopify custom app",
    "fieldname": "sh_client_secret",
    "fieldtype": "Password",
-   "label": "Client Secret"
+   "label": "Client Secret",
+   "reqd": 1
   },
   {
    "description": "Access token (auto-managed by Test Connection)",
@@ -64,7 +67,8 @@
    "description": "Shopify Admin API version (YYYY-MM)",
    "fieldname": "sh_api_version",
    "fieldtype": "Data",
-   "label": "API Version"
+   "label": "API Version",
+   "reqd": 1
   },
   {
    "fieldname": "sb_defaults",
@@ -75,32 +79,37 @@
    "fieldname": "sh_company",
    "fieldtype": "Link",
    "label": "Company",
-   "options": "Company"
+   "options": "Company",
+   "reqd": 1
   },
   {
    "description": "Warehouse for fulfilling Shopify orders",
    "fieldname": "sh_default_warehouse",
    "fieldtype": "Link",
    "label": "Default Warehouse",
-   "options": "Warehouse"
+   "options": "Warehouse",
+   "reqd": 1
   },
   {
    "fieldname": "sh_customer_group",
    "fieldtype": "Link",
    "label": "Default Customer Group",
-   "options": "Customer Group"
+   "options": "Customer Group",
+   "reqd": 1
   },
   {
    "fieldname": "sh_selling_price_list",
    "fieldtype": "Link",
    "label": "Selling Price List",
-   "options": "Price List"
+   "options": "Price List",
+   "reqd": 1
   },
   {
    "fieldname": "sh_cost_center",
    "fieldtype": "Link",
    "label": "Cost Center",
-   "options": "Cost Center"
+   "options": "Cost Center",
+   "reqd": 1
   },
   {
    "fieldname": "sb_sync",
@@ -113,15 +122,17 @@
    "fieldname": "sh_order_status_filter",
    "fieldtype": "Select",
    "label": "Sync Orders With Status",
-   "options": "Open\nAny\nClosed\nCancelled"
+   "options": "Open\nAny\nClosed\nCancelled",
+   "reqd": 1
   },
   {
-   "default": "Disabled",
+   "default": "30 min",
    "description": "How often to push Alaiy OS stock levels to Shopify",
    "fieldname": "sh_inventory_sync_interval",
    "fieldtype": "Select",
    "label": "Inventory Sync Interval",
-   "options": "Disabled\n5 min\n15 min\n30 min\n60 min"
+   "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
+   "reqd": 1
   }
  ],
  "is_single": 1,

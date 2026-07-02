@@ -39,9 +39,20 @@ def sync_connector_registry():
 
 
 def _update_alaiy_os_sidebar():
+    """
+    Re-run alaiy_os_core's workspace/sidebar provisioning so this connector's
+    Logs link and Connectors entry (settings button + card) appear right
+    after it registers, instead of waiting for the next full bench migrate.
+    """
     try:
-        from alaiy_os_core.setup.install import create_or_update_workspace_sidebar
+        from alaiy_os_core.setup.install import (
+            create_or_update_workspace_sidebar,
+            create_or_update_os_settings_workspace,
+            create_or_update_os_settings_workspace_sidebar,
+        )
         create_or_update_workspace_sidebar()
+        create_or_update_os_settings_workspace()
+        create_or_update_os_settings_workspace_sidebar()
         frappe.db.commit()
     except Exception:
         frappe.log_error(
