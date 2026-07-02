@@ -1,9 +1,11 @@
 app_name = "alaiy_os_shopify_connector"
-app_title = "AlaiyOS Shopify Connector"
-app_publisher = "AlaiyOS"
+app_title = "Alaiy OS Shopify Connector"
+app_publisher = "Alaiy OS"
 app_description = "Shopify sales channel connector for AlaiyOS"
 app_email = "dev@alaiy.com"
 app_license = "MIT"
+
+required_apps = ["alaiy_os_core", "erpnext"]
 
 after_migrate = [
     "alaiy_os_shopify_connector.setup.install.sync_connector_registry"
