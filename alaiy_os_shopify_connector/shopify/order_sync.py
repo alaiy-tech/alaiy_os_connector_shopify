@@ -58,6 +58,8 @@ def run_orders_sync(trigger="manual"):
         frappe.db.commit()
         raise
 
+    return log.name
+
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
