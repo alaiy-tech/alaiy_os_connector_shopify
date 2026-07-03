@@ -32,8 +32,8 @@ def run_orders_sync(trigger="manual"):
             for order in page_data.get("orders", []):
                 processed += 1
                 try:
-                    _upsert_order(order)
-                    created += 1
+                    if _upsert_order(order):
+                        created += 1
                 except Exception as exc:
                     failed += 1
                     _append_log(log, f"ERROR order={order.get('name')}: {exc}")
@@ -64,11 +64,12 @@ def run_orders_sync(trigger="manual"):
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
 def _upsert_order(order):
+    """Returns True if a new Sales Order was created, False if skipped."""
     order_id = str(order.get("id", ""))
     if not order_id:
-        return
+        return False
     if frappe.db.exists("Sales Order", {"sh_shopify_order_id": order_id}):
-        return  # already processed
+        return False  # already processed
 
     settings = frappe.get_single("Shopify Connector Settings")
     customer_name = _get_or_create_customer(order.get("customer") or {}, settings)
@@ -90,7 +91,7 @@ def _upsert_order(order):
             title=f"Shopify order {order.get('name')}: no mappable items",
             message=str(order.get("line_items")),
         )
-        return
+        return False
 
     so = frappe.new_doc("Sales Order")
     so.customer = customer_name
@@ -110,6 +111,7 @@ def _upsert_order(order):
     so.insert()
     so.submit()
     frappe.db.commit()
+    return True
 
 
 def _cancel_order(order):
