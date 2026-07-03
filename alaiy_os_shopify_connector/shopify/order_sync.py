@@ -14,7 +14,7 @@ def handle_order_webhook(topic, payload):
 # ── Scheduled / manual pull ────────────────────────────────────────────────────
 
 def run_orders_sync(trigger="manual"):
-    log_name = _open_log("orders", trigger)
+    log = _open_log("orders", trigger)
     try:
         from alaiy_os_shopify_connector.shopify.client import ShopifyClient
         client = ShopifyClient()
@@ -34,17 +34,28 @@ def run_orders_sync(trigger="manual"):
                 try:
                     _upsert_order(order)
                     created += 1
-                except Exception:
+                except Exception as exc:
                     failed += 1
+                    _append_log(log, f"ERROR order={order.get('name')}: {exc}")
                     frappe.log_error(
                         title=f"Shopify: order {order.get('name')} failed",
                         message=frappe.get_traceback(),
                     )
 
-        _close_log(log_name, "success", processed=processed, created=created,
-                   failed=failed, pages_done=pages)
+        log.status = "success"
+        log.items_processed = processed
+        log.items_created = created
+        log.items_failed = failed
+        log.pages_done = pages
+        log.finished_at = now_datetime()
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
     except Exception:
-        _close_log(log_name, "failed", error=frappe.get_traceback())
+        log.status = "failed"
+        log.error_message = frappe.get_traceback()[:500]
+        log.finished_at = now_datetime()
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
         raise
 
 
@@ -168,18 +179,10 @@ def _open_log(sync_type, trigger):
     log.started_at = now_datetime()
     log.insert(ignore_permissions=True)
     frappe.db.commit()
-    return log.name
+    return log
 
 
-def _close_log(log_name, status, processed=0, created=0, failed=0,
-               pages_done=0, error=""):
-    frappe.db.set_value("Shopify Sync Log", log_name, {
-        "status": status,
-        "finished_at": now_datetime(),
-        "items_processed": processed,
-        "items_created": created,
-        "items_failed": failed,
-        "pages_done": pages_done,
-        "error_message": (error or "")[:500],
-    })
-    frappe.db.commit()
+def _append_log(log, message: str):
+    """Append a line to log.log_messages without saving."""
+    existing = log.log_messages or ""
+    log.log_messages = (existing + "\n" + message).strip()
