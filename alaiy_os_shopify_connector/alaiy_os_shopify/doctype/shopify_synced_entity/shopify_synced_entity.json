@@ -1,0 +1,91 @@
+{
+ "autoname": "hash",
+ "creation": "2026-07-06 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "entity_type",
+  "group_key",
+  "external_id",
+  "erpnext_doctype",
+  "erpnext_name",
+  "external_fingerprint",
+  "erpnext_fingerprint",
+  "last_synced_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "entity_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Entity Type",
+   "options": "product\nvariant\nprice\ninventory\norder\ncustomer",
+   "reqd": 1
+  },
+  {
+   "description": "Groups related rows together, e.g. all variants of the same Shopify product, or all documents (Sales Order/Invoice/Payment Entry) created from one Shopify order.",
+   "fieldname": "group_key",
+   "fieldtype": "Data",
+   "label": "Group Key",
+   "search_index": 1
+  },
+  {
+   "description": "Shopify's own ID for this entity (GID or numeric REST ID).",
+   "fieldname": "external_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Shopify ID",
+   "search_index": 1
+  },
+  {
+   "fieldname": "erpnext_doctype",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "ERPNext DocType"
+  },
+  {
+   "fieldname": "erpnext_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "ERPNext Document",
+   "search_index": 1
+  },
+  {
+   "description": "Fingerprint of the data as last seen coming FROM Shopify (webhook/API). Used to detect and skip echoes of our own prior write.",
+   "fieldname": "external_fingerprint",
+   "fieldtype": "Data",
+   "label": "Shopify-side Fingerprint"
+  },
+  {
+   "description": "Fingerprint of the data as last seen coming FROM ERPNext (doc event). Used to detect and skip echoes of our own prior write.",
+   "fieldname": "erpnext_fingerprint",
+   "fieldtype": "Data",
+   "label": "ERPNext-side Fingerprint"
+  },
+  {
+   "fieldname": "last_synced_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Last Synced At"
+  }
+ ],
+ "links": [],
+ "modified": "2026-07-06 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Alaiy OS Shopify",
+ "name": "Shopify Synced Entity",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
