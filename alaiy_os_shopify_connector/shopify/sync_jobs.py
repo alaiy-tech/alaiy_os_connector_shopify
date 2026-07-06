@@ -8,11 +8,17 @@ _INTERVAL_MINUTES = {
     "60 min": 60,
 }
 
+_TOKEN_REFRESH_INTERVAL_MINUTES = {
+    "6 hours": 6 * 60,
+    "12 hours": 12 * 60,
+    "24 hours": 24 * 60,
+}
+
 
 def check_and_enqueue():
     """
     Called every minute by the Frappe scheduler.
-    Checks whether the inventory push is due and enqueues it if so.
+    Checks whether the inventory push or a proactive token refresh is due.
     """
     if not frappe.db.exists("DocType", "Shopify Sync Log"):
         return
@@ -22,6 +28,35 @@ def check_and_enqueue():
         return
 
     _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
+    _maybe_refresh_token(settings)
+
+
+def _maybe_refresh_token(settings):
+    """
+    Proactively mint a fresh access token on the configured interval, so a
+    sync never has to hit (and recover from) an expired-token 401 first --
+    ShopifyClient's own retry-on-401 already guarantees correctness, this
+    just avoids the wasted failed request.
+    """
+    interval_minutes = _TOKEN_REFRESH_INTERVAL_MINUTES.get(settings.sh_token_refresh_interval or "Disabled")
+    if not interval_minutes:
+        return
+    if not settings.sh_client_id or not settings.sh_client_secret:
+        return
+
+    if settings.sh_token_refreshed_at:
+        due_at = add_to_date(settings.sh_token_refreshed_at, minutes=interval_minutes)
+        if now_datetime() < due_at:
+            return
+
+    from alaiy_os_shopify_connector.shopify.auth import refresh_and_store_access_token
+    try:
+        refresh_and_store_access_token()
+    except Exception:
+        frappe.log_error(
+            title="Shopify: scheduled token refresh failed",
+            message=frappe.get_traceback(),
+        )
 
 
 def _maybe_enqueue_inventory(interval_setting):

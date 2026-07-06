@@ -11,6 +11,8 @@
   "sh_client_id",
   "sh_client_secret",
   "sh_access_token",
+  "sh_token_refreshed_at",
+  "sh_token_expires_at",
   "sh_webhook_secret",
   "sh_api_version",
   "sb_defaults",
@@ -21,7 +23,8 @@
   "sh_cost_center",
   "sb_sync",
   "sh_order_status_filter",
-  "sh_inventory_sync_interval"
+  "sh_inventory_sync_interval",
+  "sh_token_refresh_interval"
  ],
  "fields": [
   {
@@ -62,6 +65,20 @@
    "fieldtype": "Password",
    "hidden": 1,
    "label": "Access Token"
+  },
+  {
+   "description": "When the current access token was last minted.",
+   "fieldname": "sh_token_refreshed_at",
+   "fieldtype": "Datetime",
+   "label": "Token Refreshed At",
+   "read_only": 1
+  },
+  {
+   "description": "When the current access token expires, per Shopify's own expires_in. Client credentials tokens are short-lived (observed ~24h) — the scheduled refresh below keeps this from ever being hit.",
+   "fieldname": "sh_token_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Token Expires At",
+   "read_only": 1
   },
   {
    "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions.",
@@ -139,6 +156,15 @@
    "fieldtype": "Select",
    "label": "Inventory Sync Interval",
    "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
+   "reqd": 1
+  },
+  {
+   "default": "12 hours",
+   "description": "How often to proactively mint a fresh access token, so a sync never has to hit an expired-token error first. Shopify's client_credentials tokens for this app were observed to last ~24h.",
+   "fieldname": "sh_token_refresh_interval",
+   "fieldtype": "Select",
+   "label": "Token Refresh Interval",
+   "options": "Disabled\n6 hours\n12 hours\n24 hours",
    "reqd": 1
   }
  ],
