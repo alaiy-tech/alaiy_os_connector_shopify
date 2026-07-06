@@ -151,7 +151,7 @@ def setup_custom_fields():
             "default": "0",
             "in_list_view": 1,
             "insert_after": "disabled",
-            "description": "Push this Item to Shopify as a product/variant. Variants inherit this flag from their template.",
+            "description": "Push this Item to Shopify as a product/variant. Variants inherit this flag from their template -- checking/unchecking it on a variant itself has no effect. Unchecking on a template archives the product on Shopify (kept, hidden from sales channels); re-checking unarchives and re-syncs it.",
         },
     ]
     sales_order_fields = [
@@ -190,6 +190,10 @@ def _ensure_custom_fields(doctype, fields):
     for f in fields:
         key = f"{doctype}-{f['fieldname']}"
         if frappe.db.exists("Custom Field", key):
+            # Keep the description in sync even for a field that already
+            # exists -- it's just documentation, safe to overwrite.
+            if f.get("description"):
+                frappe.db.set_value("Custom Field", key, "description", f["description"])
             continue
         cf = frappe.new_doc("Custom Field")
         cf.dt = doctype
