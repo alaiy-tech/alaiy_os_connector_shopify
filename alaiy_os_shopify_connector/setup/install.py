@@ -11,6 +11,10 @@ def sync_connector_registry():
     """
     _fix_settings_as_single()
     setup_custom_fields()
+    _backfill_singles_defaults("Shopify Connector Settings", [
+        "sh_token_refresh_interval",
+        "sh_push_description", "sh_push_vendor", "sh_push_product_type", "sh_push_images",
+    ])
 
     if not frappe.db.exists("DocType", "OS Connector Registry"):
         return
@@ -68,6 +72,25 @@ def _fix_settings_as_single():
     frappe.db.sql(
         "UPDATE `tabDocType` SET issingle=1 WHERE name='Shopify Connector Settings' AND issingle=0"
     )
+    frappe.db.commit()
+
+
+def _backfill_singles_defaults(doctype, fieldnames):
+    """
+    A field's `default` in its DocType/Custom Field JSON only applies when a
+    NEW document is created. For a Single doctype's one pre-existing row,
+    adding a field with a default later does not retroactively populate it --
+    it silently reads back empty forever unless the admin happens to open
+    and save the form. Backfill it here instead, once, idempotently.
+    """
+    meta = frappe.get_meta(doctype)
+    for fieldname in fieldnames:
+        if frappe.db.get_single_value(doctype, fieldname) not in (None, ""):
+            continue
+        field = meta.get_field(fieldname)
+        if not field or field.default in (None, ""):
+            continue
+        frappe.db.set_single_value(doctype, fieldname, field.default)
     frappe.db.commit()
 
 
