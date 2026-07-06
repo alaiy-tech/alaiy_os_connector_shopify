@@ -4,10 +4,13 @@ import frappe
 def sync_connector_registry():
     """
     Register or update the Shopify connector row in alaiy_os_core's OS Connector Registry.
-    Called from hooks.py -> after_migrate on every bench migrate.
-    Setup (custom fields, webhooks) only runs when is_enabled is first set via the form.
+    Called from hooks.py -> after_migrate on every bench migrate. Webhook
+    registration still only runs when is_enabled is first set via the form,
+    but custom fields are ensured on every migrate (idempotent) so a newly
+    added field lands on sites that already had the connector enabled.
     """
     _fix_settings_as_single()
+    setup_custom_fields()
 
     if not frappe.db.exists("DocType", "OS Connector Registry"):
         return
@@ -69,7 +72,7 @@ def _fix_settings_as_single():
 
 
 def setup_custom_fields():
-    """Add Shopify custom fields to ERPNext doctypes. Called on first enable."""
+    """Add Shopify custom fields to ERPNext doctypes. Idempotent -- safe to call on every migrate."""
     item_fields = [
         {
             "fieldname": "sh_shopify_product_id",
@@ -84,6 +87,15 @@ def setup_custom_fields():
             "fieldtype": "Data",
             "search_index": 1,
             "insert_after": "sh_shopify_product_id",
+        },
+        {
+            "fieldname": "sync_to_shopify",
+            "label": "Sync to Shopify",
+            "fieldtype": "Check",
+            "default": "0",
+            "in_list_view": 1,
+            "insert_after": "disabled",
+            "description": "Push this Item to Shopify as a product/variant. Variants inherit this flag from their template.",
         },
     ]
     sales_order_fields = [
@@ -131,5 +143,8 @@ def _ensure_custom_fields(doctype, fields):
         cf.insert_after = f.get("insert_after", "")
         cf.search_index = 1 if f.get("search_index") else 0
         cf.read_only = 1 if f.get("read_only") else 0
+        cf.in_list_view = 1 if f.get("in_list_view") else 0
+        cf.default = f.get("default")
+        cf.description = f.get("description", "")
         cf.module = "Alaiy OS Shopify"
         cf.insert(ignore_permissions=True)

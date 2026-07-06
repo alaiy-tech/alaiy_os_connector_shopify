@@ -27,3 +27,18 @@ scheduler_events = {
         ]
     }
 }
+
+doc_events = {
+    "Item": {
+        "after_insert": "alaiy_os_shopify_connector.shopify.product_sync.on_item_change",
+        "on_update": "alaiy_os_shopify_connector.shopify.product_sync.on_item_change",
+    },
+    "Item Price": {
+        "after_insert": "alaiy_os_shopify_connector.shopify.product_sync.on_item_price_change",
+        "on_update": "alaiy_os_shopify_connector.shopify.product_sync.on_item_price_change",
+    },
+}
+
+doctype_list_js = {
+    "Item": "public/js/item_list.js",
+}
