@@ -4,6 +4,7 @@ frappe.ui.form.on("Shopify Connector Settings", {
 		alaiy_os.connector_card.mount(frm, "shopify");
 		alaiy_os.connector_card.setup_password_reveal(frm, "sh_client_secret", "shopify");
 		alaiy_os.connector_card.setup_password_reveal(frm, "sh_access_token", "shopify");
+		alaiy_os.connector_card.setup_password_reveal(frm, "sh_webhook_secret", "shopify");
 
 		// Auto-fill Company with the default company if empty
 		if (!frm.doc.sh_company) {

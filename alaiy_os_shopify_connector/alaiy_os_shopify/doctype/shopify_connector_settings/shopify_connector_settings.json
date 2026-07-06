@@ -11,6 +11,7 @@
   "sh_client_id",
   "sh_client_secret",
   "sh_access_token",
+  "sh_webhook_secret",
   "sh_api_version",
   "sb_defaults",
   "sh_company",
@@ -61,6 +62,12 @@
    "fieldtype": "Password",
    "hidden": 1,
    "label": "Access Token"
+  },
+  {
+   "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions.",
+   "fieldname": "sh_webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret"
   },
   {
    "default": "2024-01",
