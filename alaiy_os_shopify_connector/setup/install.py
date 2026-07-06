@@ -82,10 +82,19 @@ def _backfill_singles_defaults(doctype, fieldnames):
     adding a field with a default later does not retroactively populate it --
     it silently reads back empty forever unless the admin happens to open
     and save the form. Backfill it here instead, once, idempotently.
+
+    Checks row EXISTENCE in tabSingles directly rather than via
+    get_single_value()/the ORM -- for a Check field, "never set" and
+    "explicitly set to 0" both read back as plain 0, indistinguishable by
+    value alone. Only an actual missing row means "never set".
     """
     meta = frappe.get_meta(doctype)
     for fieldname in fieldnames:
-        if frappe.db.get_single_value(doctype, fieldname) not in (None, ""):
+        already_set = frappe.db.sql(
+            "SELECT 1 FROM `tabSingles` WHERE doctype=%s AND field=%s LIMIT 1",
+            (doctype, fieldname),
+        )
+        if already_set:
             continue
         field = meta.get_field(fieldname)
         if not field or field.default in (None, ""):
