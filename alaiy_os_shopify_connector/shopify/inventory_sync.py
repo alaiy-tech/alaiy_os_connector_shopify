@@ -26,12 +26,12 @@ def run_inventory_push(trigger="manual", log_name=None):
 
         if not warehouse:
             _close_log(log, "failed", error="No default warehouse configured")
-            return
+            return log.name
 
         location_id = _get_primary_location_id(client)
         if not location_id:
             _close_log(log, "failed", error="No Shopify location found")
-            return
+            return log.name
 
         items = frappe.get_all(
             "Item",
@@ -73,6 +73,8 @@ def run_inventory_push(trigger="manual", log_name=None):
     except Exception:
         _close_log(log, "failed", error=frappe.get_traceback())
         raise
+
+    return log.name
 
 
 def _get_primary_location_id(client):
