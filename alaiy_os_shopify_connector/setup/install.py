@@ -1,3 +1,5 @@
+import json
+
 import frappe
 
 
@@ -15,6 +17,7 @@ def sync_connector_registry():
         "sh_token_refresh_interval",
         "sh_push_description", "sh_push_vendor", "sh_push_product_type", "sh_push_images",
     ])
+    _ensure_list_view_column("Item", "sync_to_shopify", "Sync to Shopify")
 
     if not frappe.db.exists("DocType", "OS Connector Registry"):
         return
@@ -100,6 +103,27 @@ def _backfill_singles_defaults(doctype, fieldnames):
         if not field or field.default in (None, ""):
             continue
         frappe.db.set_single_value(doctype, fieldname, field.default)
+    frappe.db.commit()
+
+
+def _ensure_list_view_column(doctype, fieldname, label):
+    """
+    A doctype's `List View Settings` row, once it exists (created the first
+    time anyone customizes columns), takes over from the "show every
+    in_list_view field automatically" default -- a newly added in_list_view
+    field then never appears until someone re-adds it by hand. Item already
+    has a customized column set on this site, so append our field to it
+    instead of relying on the automatic behavior.
+    """
+    if not frappe.db.exists("List View Settings", doctype):
+        return  # no customization yet -- in_list_view alone is enough
+    settings = frappe.get_doc("List View Settings", doctype)
+    fields = json.loads(settings.fields or "[]")
+    if any(f.get("fieldname") == fieldname for f in fields):
+        return
+    fields.append({"fieldname": fieldname, "label": label})
+    settings.fields = json.dumps(fields)
+    settings.save(ignore_permissions=True)
     frappe.db.commit()
 
 
