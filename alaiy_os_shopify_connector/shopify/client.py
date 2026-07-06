@@ -3,6 +3,8 @@ import urllib.parse
 import requests
 import frappe
 
+from alaiy_os_shopify_connector.shopify.auth import refresh_and_store_access_token
+
 
 class ShopifyClient:
     """Thin wrapper over the Shopify Admin REST API."""
@@ -28,23 +30,39 @@ class ShopifyClient:
             "Content-Type": "application/json",
         })
 
+    def _refresh_token(self):
+        """
+        Client-credentials tokens are short-lived, so any request can hit a
+        401 once the token expires. Mint a fresh one and update both the
+        stored setting and this client's own session header in place.
+        """
+        self.token = refresh_and_store_access_token()
+        self.session.headers.update({"X-Shopify-Access-Token": self.token})
+
+    def _request_with_refresh(self, method, url, **kwargs):
+        resp = self.session.request(method, url, **kwargs)
+        if resp.status_code == 401:
+            self._refresh_token()
+            resp = self.session.request(method, url, **kwargs)
+        return resp
+
     def get(self, endpoint, params=None):
-        resp = self.session.get(f"{self.base_url}/{endpoint}", params=params)
+        resp = self._request_with_refresh("GET", f"{self.base_url}/{endpoint}", params=params)
         resp.raise_for_status()
         return resp.json()
 
     def post(self, endpoint, data=None):
-        resp = self.session.post(f"{self.base_url}/{endpoint}", json=data)
+        resp = self._request_with_refresh("POST", f"{self.base_url}/{endpoint}", json=data)
         resp.raise_for_status()
         return resp.json()
 
     def put(self, endpoint, data=None):
-        resp = self.session.put(f"{self.base_url}/{endpoint}", json=data)
+        resp = self._request_with_refresh("PUT", f"{self.base_url}/{endpoint}", json=data)
         resp.raise_for_status()
         return resp.json()
 
     def delete(self, endpoint):
-        resp = self.session.delete(f"{self.base_url}/{endpoint}")
+        resp = self._request_with_refresh("DELETE", f"{self.base_url}/{endpoint}")
         resp.raise_for_status()
         return resp
 
@@ -57,7 +75,7 @@ class ShopifyClient:
         params.setdefault("limit", 250)
 
         while True:
-            resp = self.session.get(f"{self.base_url}/{endpoint}", params=params)
+            resp = self._request_with_refresh("GET", f"{self.base_url}/{endpoint}", params=params)
             resp.raise_for_status()
             yield resp.json()
 
