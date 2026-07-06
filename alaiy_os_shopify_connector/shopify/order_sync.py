@@ -1,6 +1,8 @@
 import frappe
 from frappe.utils import flt, now_datetime
 
+from alaiy_os_shopify_connector.shopify.sync_guard import has_active_sync, load_or_create_log
+
 
 # ── Webhook handler ────────────────────────────────────────────────────────────
 
@@ -13,8 +15,20 @@ def handle_order_webhook(topic, payload):
 
 # ── Scheduled / manual pull ────────────────────────────────────────────────────
 
-def run_orders_sync(trigger="manual"):
-    log = _open_log("orders", trigger)
+def run_orders_sync(trigger="manual", log_name=None):
+    log = load_or_create_log("orders", trigger, log_name)
+    if has_active_sync("orders", exclude_name=log.name):
+        log.status = "skipped"
+        log.finished_at = now_datetime()
+        log.error_message = "Skipped: another orders sync is already running."
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        return log.name
+
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
+
     try:
         from alaiy_os_shopify_connector.shopify.client import ShopifyClient
         client = ShopifyClient()
@@ -174,17 +188,6 @@ def _resolve_item_code(line_item):
 
 
 # ── Sync log helpers ───────────────────────────────────────────────────────────
-
-def _open_log(sync_type, trigger):
-    log = frappe.new_doc("Shopify Sync Log")
-    log.sync_type = sync_type
-    log.trigger = trigger
-    log.status = "running"
-    log.started_at = now_datetime()
-    log.insert(ignore_permissions=True)
-    frappe.db.commit()
-    return log
-
 
 def _append_log(log, message: str):
     """Append a line to log.log_messages without saving."""

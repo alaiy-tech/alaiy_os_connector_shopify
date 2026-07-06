@@ -39,7 +39,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "running\nsuccess\nfailed"
+   "options": "queued\nrunning\nsuccess\nfailed\nskipped"
   },
   {
    "fieldname": "started_at",

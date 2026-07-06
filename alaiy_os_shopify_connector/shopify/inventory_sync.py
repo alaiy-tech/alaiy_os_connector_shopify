@@ -1,13 +1,23 @@
 import frappe
 from frappe.utils import flt, now_datetime
 
+from alaiy_os_shopify_connector.shopify.sync_guard import has_active_sync, load_or_create_log
 
-def run_inventory_push(trigger="manual"):
+
+def run_inventory_push(trigger="manual", log_name=None):
     """
     Push current ERPNext bin quantities to Shopify inventory levels
     for all items that have a sh_shopify_variant_id set.
     """
-    log = _open_log("inventory", trigger)
+    log = load_or_create_log("inventory", trigger, log_name)
+    if has_active_sync("inventory", exclude_name=log.name):
+        _close_log(log, "skipped", error="Skipped: another inventory sync is already running.")
+        return log.name
+
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
+
     try:
         from alaiy_os_shopify_connector.shopify.client import ShopifyClient
         client = ShopifyClient()
@@ -76,17 +86,6 @@ def _get_primary_location_id(client):
 def _get_inventory_item_id(client, variant_id):
     resp = client.get(f"variants/{variant_id}.json", {"fields": "id,inventory_item_id"})
     return resp.get("variant", {}).get("inventory_item_id")
-
-
-def _open_log(sync_type, trigger):
-    log = frappe.new_doc("Shopify Sync Log")
-    log.sync_type = sync_type
-    log.trigger = trigger
-    log.status = "running"
-    log.started_at = now_datetime()
-    log.insert(ignore_permissions=True)
-    frappe.db.commit()
-    return log
 
 
 def _append_log(log, message: str):
