@@ -6,7 +6,7 @@ const SHOPIFY_SYNC_TYPE_COLORS = {
 
 const SHOPIFY_TRIGGER_COLORS = {
 	scheduled: "purple",
-	manual: "darkgrey",
+	manual: "orange",
 	webhook: "cyan",
 };
 
