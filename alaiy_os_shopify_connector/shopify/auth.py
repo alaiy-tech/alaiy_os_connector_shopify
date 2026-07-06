@@ -1,6 +1,20 @@
 import requests
 import frappe
 
+# Everything the connector calls today (orders, inventory, locations) plus
+# what the approved product/order-push roadmap needs next. Shopify's
+# client_credentials grant only returns a token scoped to what's requested
+# here -- it does NOT automatically inherit every scope enabled on the
+# custom app, so omitting one here means every call using it 403s even
+# though the app itself is configured with full access.
+REQUIRED_SCOPES = ",".join([
+    "read_products", "write_products",
+    "read_orders", "write_orders",
+    "read_inventory", "write_inventory",
+    "read_locations",
+    "read_customers", "write_customers",
+])
+
 
 def get_client_credentials_token(shop_url: str, client_id: str, client_secret: str) -> str:
     """
@@ -15,6 +29,7 @@ def get_client_credentials_token(shop_url: str, client_id: str, client_secret: s
             "grant_type": "client_credentials",
             "client_id": client_id,
             "client_secret": client_secret,
+            "scope": REQUIRED_SCOPES,
         },
         timeout=15,
     )
