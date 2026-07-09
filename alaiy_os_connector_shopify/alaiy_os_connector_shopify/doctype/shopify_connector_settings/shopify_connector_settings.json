@@ -1,234 +1,234 @@
 {
- "creation": "2026-07-02 00:00:00.000000",
- "docstatus": 0,
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "is_enabled",
-  "sb_connection",
-  "sh_shop_url",
-  "sh_client_id",
-  "sh_client_secret",
-  "sh_access_token",
-  "sh_token_refreshed_at",
-  "sh_token_expires_at",
-  "sh_webhook_secret",
-  "sh_api_version",
-  "sb_defaults",
-  "sh_company",
-  "sh_default_warehouse",
-  "sh_customer_group",
-  "sh_selling_price_list",
-  "sh_cost_center",
-  "sb_sync",
-  "sh_order_status_filter",
-  "sh_inventory_sync_interval",
-  "sh_token_refresh_interval",
-  "sb_product_push",
-  "sh_push_description",
-  "sh_push_vendor",
-  "sh_push_product_type",
-  "sh_push_images"
- ],
- "fields": [
-  {
-   "default": "0",
-   "fieldname": "is_enabled",
-   "fieldtype": "Check",
-   "label": "Enable Shopify"
-  },
-  {
-   "fieldname": "sb_connection",
-   "fieldtype": "Section Break",
-   "label": "API Connection"
-  },
-  {
-   "description": "Your Shopify store domain, e.g. myshop.myshopify.com",
-   "fieldname": "sh_shop_url",
-   "fieldtype": "Data",
-   "label": "Shop URL",
-   "reqd": 1
-  },
-  {
-   "description": "Client ID from your Shopify custom app (Developer Dashboard)",
-   "fieldname": "sh_client_id",
-   "fieldtype": "Data",
-   "label": "Client ID",
-   "reqd": 1
-  },
-  {
-   "description": "Client Secret from your Shopify custom app",
-   "fieldname": "sh_client_secret",
-   "fieldtype": "Password",
-   "label": "Client Secret",
-   "reqd": 1
-  },
-  {
-   "description": "Access token (auto-managed by Test Connection)",
-   "fieldname": "sh_access_token",
-   "fieldtype": "Password",
-   "hidden": 1,
-   "label": "Access Token"
-  },
-  {
-   "description": "When the current access token was last minted.",
-   "fieldname": "sh_token_refreshed_at",
-   "fieldtype": "Datetime",
-   "label": "Token Refreshed At",
-   "read_only": 1
-  },
-  {
-   "description": "When the current access token expires, per Shopify's own expires_in. Client credentials tokens are short-lived (observed ~24h) — the scheduled refresh below keeps this from ever being hit.",
-   "fieldname": "sh_token_expires_at",
-   "fieldtype": "Datetime",
-   "label": "Token Expires At",
-   "read_only": 1
-  },
-  {
-   "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions.",
-   "fieldname": "sh_webhook_secret",
-   "fieldtype": "Password",
-   "label": "Webhook Secret"
-  },
-  {
-   "default": "2024-01",
-   "description": "Shopify Admin API version (YYYY-MM)",
-   "fieldname": "sh_api_version",
-   "fieldtype": "Data",
-   "label": "API Version",
-   "reqd": 1
-  },
-  {
-   "fieldname": "sb_defaults",
-   "fieldtype": "Section Break",
-   "label": "Alaiy OS Defaults"
-  },
-  {
-   "fieldname": "sh_company",
-   "fieldtype": "Link",
-   "label": "Company",
-   "options": "Company",
-   "reqd": 1
-  },
-  {
-   "description": "Warehouse for fulfilling Shopify orders",
-   "fieldname": "sh_default_warehouse",
-   "fieldtype": "Link",
-   "label": "Default Warehouse",
-   "options": "Warehouse",
-   "reqd": 1
-  },
-  {
-   "fieldname": "sh_customer_group",
-   "fieldtype": "Link",
-   "label": "Default Customer Group",
-   "options": "Customer Group",
-   "reqd": 1
-  },
-  {
-   "fieldname": "sh_selling_price_list",
-   "fieldtype": "Link",
-   "label": "Selling Price List",
-   "options": "Price List",
-   "reqd": 1
-  },
-  {
-   "fieldname": "sh_cost_center",
-   "fieldtype": "Link",
-   "label": "Cost Center",
-   "options": "Cost Center",
-   "reqd": 1
-  },
-  {
-   "fieldname": "sb_sync",
-   "fieldtype": "Section Break",
-   "label": "Sync Settings"
-  },
-  {
-   "default": "Any",
-   "description": "Filter for which orders to pull from Shopify",
-   "fieldname": "sh_order_status_filter",
-   "fieldtype": "Select",
-   "label": "Sync Orders With Status",
-   "options": "Open\nAny\nClosed\nCancelled",
-   "reqd": 1
-  },
-  {
-   "default": "30 min",
-   "description": "How often to push Alaiy OS stock levels to Shopify",
-   "fieldname": "sh_inventory_sync_interval",
-   "fieldtype": "Select",
-   "label": "Inventory Sync Interval",
-   "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
-   "reqd": 1
-  },
-  {
-   "default": "12 hours",
-   "description": "How often to proactively mint a fresh access token, so a sync never has to hit an expired-token error first. Shopify's client_credentials tokens for this app were observed to last ~24h.",
-   "fieldname": "sh_token_refresh_interval",
-   "fieldtype": "Select",
-   "label": "Token Refresh Interval",
-   "options": "Disabled\n6 hours\n12 hours\n24 hours",
-   "reqd": 1
-  },
-  {
-   "fieldname": "sb_product_push",
-   "fieldtype": "Section Break",
-   "label": "Product Push Fields"
-  },
-  {
-   "default": "1",
-   "description": "Push Item.description as the Shopify product's body_html.",
-   "fieldname": "sh_push_description",
-   "fieldtype": "Check",
-   "label": "Push Description"
-  },
-  {
-   "default": "1",
-   "description": "Push Item.brand as the Shopify product's vendor.",
-   "fieldname": "sh_push_vendor",
-   "fieldtype": "Check",
-   "label": "Push Vendor (Brand)"
-  },
-  {
-   "default": "1",
-   "description": "Push Item.item_group as the Shopify product's product_type.",
-   "fieldname": "sh_push_product_type",
-   "fieldtype": "Check",
-   "label": "Push Product Type (Item Group)"
-  },
-  {
-   "default": "1",
-   "description": "Push Item.image (and slideshow images, if any) as the Shopify product's images.",
-   "fieldname": "sh_push_images",
-   "fieldtype": "Check",
-   "label": "Push Images"
-  }
- ],
- "is_single": 1,
- "links": [],
- "modified": "2026-07-02 00:00:00.000000",
- "modified_by": "Administrator",
- "module": "Alaiy OS Shopify",
- "name": "Shopify Connector Settings",
- "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": [],
- "track_changes": 0
+  "creation": "2026-07-02 00:00:00.000000",
+  "docstatus": 0,
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "is_enabled",
+    "sb_connection",
+    "sh_shop_url",
+    "sh_client_id",
+    "sh_client_secret",
+    "sh_access_token",
+    "sh_token_refreshed_at",
+    "sh_token_expires_at",
+    "sh_webhook_secret",
+    "sh_api_version",
+    "sb_defaults",
+    "sh_company",
+    "sh_default_warehouse",
+    "sh_customer_group",
+    "sh_selling_price_list",
+    "sh_cost_center",
+    "sb_sync",
+    "sh_order_status_filter",
+    "sh_inventory_sync_interval",
+    "sh_token_refresh_interval",
+    "sb_product_push",
+    "sh_push_description",
+    "sh_push_vendor",
+    "sh_push_product_type",
+    "sh_push_images"
+  ],
+  "fields": [
+    {
+      "default": "0",
+      "fieldname": "is_enabled",
+      "fieldtype": "Check",
+      "label": "Enable Shopify"
+    },
+    {
+      "fieldname": "sb_connection",
+      "fieldtype": "Section Break",
+      "label": "API Connection"
+    },
+    {
+      "description": "Your Shopify store domain, e.g. myshop.myshopify.com",
+      "fieldname": "sh_shop_url",
+      "fieldtype": "Data",
+      "label": "Shop URL",
+      "reqd": 1
+    },
+    {
+      "description": "Client ID from your Shopify custom app (Developer Dashboard)",
+      "fieldname": "sh_client_id",
+      "fieldtype": "Data",
+      "label": "Client ID",
+      "reqd": 1
+    },
+    {
+      "description": "Client Secret from your Shopify custom app",
+      "fieldname": "sh_client_secret",
+      "fieldtype": "Password",
+      "label": "Client Secret",
+      "reqd": 1
+    },
+    {
+      "description": "Access token (auto-managed by Test Connection)",
+      "fieldname": "sh_access_token",
+      "fieldtype": "Password",
+      "hidden": 1,
+      "label": "Access Token"
+    },
+    {
+      "description": "When the current access token was last minted.",
+      "fieldname": "sh_token_refreshed_at",
+      "fieldtype": "Datetime",
+      "label": "Token Refreshed At",
+      "read_only": 1
+    },
+    {
+      "description": "When the current access token expires, per Shopify's own expires_in. Client credentials tokens are short-lived (observed ~24h) — the scheduled refresh below keeps this from ever being hit.",
+      "fieldname": "sh_token_expires_at",
+      "fieldtype": "Datetime",
+      "label": "Token Expires At",
+      "read_only": 1
+    },
+    {
+      "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions.",
+      "fieldname": "sh_webhook_secret",
+      "fieldtype": "Password",
+      "label": "Webhook Secret"
+    },
+    {
+      "default": "2024-01",
+      "description": "Shopify Admin API version (YYYY-MM)",
+      "fieldname": "sh_api_version",
+      "fieldtype": "Data",
+      "label": "API Version",
+      "reqd": 1
+    },
+    {
+      "fieldname": "sb_defaults",
+      "fieldtype": "Section Break",
+      "label": "Alaiy OS Defaults"
+    },
+    {
+      "fieldname": "sh_company",
+      "fieldtype": "Link",
+      "label": "Company",
+      "options": "Company",
+      "reqd": 1
+    },
+    {
+      "description": "Warehouse for fulfilling Shopify orders",
+      "fieldname": "sh_default_warehouse",
+      "fieldtype": "Link",
+      "label": "Default Warehouse",
+      "options": "Warehouse",
+      "reqd": 1
+    },
+    {
+      "fieldname": "sh_customer_group",
+      "fieldtype": "Link",
+      "label": "Default Customer Group",
+      "options": "Customer Group",
+      "reqd": 1
+    },
+    {
+      "fieldname": "sh_selling_price_list",
+      "fieldtype": "Link",
+      "label": "Selling Price List",
+      "options": "Price List",
+      "reqd": 1
+    },
+    {
+      "fieldname": "sh_cost_center",
+      "fieldtype": "Link",
+      "label": "Cost Center",
+      "options": "Cost Center",
+      "reqd": 1
+    },
+    {
+      "fieldname": "sb_sync",
+      "fieldtype": "Section Break",
+      "label": "Sync Settings"
+    },
+    {
+      "default": "Any",
+      "description": "Filter for which orders to pull from Shopify",
+      "fieldname": "sh_order_status_filter",
+      "fieldtype": "Select",
+      "label": "Sync Orders With Status",
+      "options": "Open\nAny\nClosed\nCancelled",
+      "reqd": 1
+    },
+    {
+      "default": "30 min",
+      "description": "How often to push Alaiy OS stock levels to Shopify",
+      "fieldname": "sh_inventory_sync_interval",
+      "fieldtype": "Select",
+      "label": "Inventory Sync Interval",
+      "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
+      "reqd": 1
+    },
+    {
+      "default": "12 hours",
+      "description": "How often to proactively mint a fresh access token, so a sync never has to hit an expired-token error first. Shopify's client_credentials tokens for this app were observed to last ~24h.",
+      "fieldname": "sh_token_refresh_interval",
+      "fieldtype": "Select",
+      "label": "Token Refresh Interval",
+      "options": "Disabled\n6 hours\n12 hours\n24 hours",
+      "reqd": 1
+    },
+    {
+      "fieldname": "sb_product_push",
+      "fieldtype": "Section Break",
+      "label": "Product Push Fields"
+    },
+    {
+      "default": "1",
+      "description": "Push Item.description as the Shopify product's body_html.",
+      "fieldname": "sh_push_description",
+      "fieldtype": "Check",
+      "label": "Push Description"
+    },
+    {
+      "default": "1",
+      "description": "Push Item.brand as the Shopify product's vendor.",
+      "fieldname": "sh_push_vendor",
+      "fieldtype": "Check",
+      "label": "Push Vendor (Brand)"
+    },
+    {
+      "default": "1",
+      "description": "Push Item.item_group as the Shopify product's product_type.",
+      "fieldname": "sh_push_product_type",
+      "fieldtype": "Check",
+      "label": "Push Product Type (Item Group)"
+    },
+    {
+      "default": "1",
+      "description": "Push Item.image (and slideshow images, if any) as the Shopify product's images.",
+      "fieldname": "sh_push_images",
+      "fieldtype": "Check",
+      "label": "Push Images"
+    }
+  ],
+  "is_single": 1,
+  "links": [],
+  "modified": "2026-07-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Alaiy OS Connector Shopify",
+  "name": "Shopify Connector Settings",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "track_changes": 0
 }

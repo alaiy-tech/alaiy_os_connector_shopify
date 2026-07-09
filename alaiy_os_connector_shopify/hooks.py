@@ -1,5 +1,5 @@
 app_name = "alaiy_os_connector_shopify"
-app_title = "Alaiy OS Shopify Connector"
+app_title = "Alaiy OS Connector Shopify"
 app_publisher = "Alaiy OS"
 app_description = "Shopify sales channel connector for AlaiyOS"
 app_email = "dev@alaiy.com"

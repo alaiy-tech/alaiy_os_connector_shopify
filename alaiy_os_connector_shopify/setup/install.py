@@ -207,5 +207,5 @@ def _ensure_custom_fields(doctype, fields):
         cf.in_list_view = 1 if f.get("in_list_view") else 0
         cf.default = f.get("default")
         cf.description = f.get("description", "")
-        cf.module = "Alaiy OS Shopify"
+        cf.module = "Alaiy OS Connector Shopify"
         cf.insert(ignore_permissions=True)
