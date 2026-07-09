@@ -10,7 +10,7 @@ WEBHOOK_TOPICS = [
 
 def get_webhook_address():
     site_url = frappe.utils.get_url().rstrip("/")
-    return f"{site_url}/api/method/alaiy_os_shopify_connector.api.webhooks.handle_webhook"
+    return f"{site_url}/api/method/alaiy_os_connector_shopify.api.webhooks.handle_webhook"
 
 
 def register_webhooks(client):
@@ -24,7 +24,8 @@ def register_webhooks(client):
             })
             wh = resp.get("webhook", {})
             if wh.get("id"):
-                registered.append({"topic": topic, "webhook_id": str(wh["id"])})
+                registered.append(
+                    {"topic": topic, "webhook_id": str(wh["id"])})
         except Exception:
             frappe.log_error(
                 title=f"Shopify: failed to register webhook {topic}",
@@ -36,7 +37,7 @@ def register_webhooks(client):
 def unregister_webhooks():
     """Remove all webhooks pointing to this site's handle_webhook endpoint."""
     try:
-        from alaiy_os_shopify_connector.shopify.client import ShopifyClient
+        from alaiy_os_connector_shopify.shopify.client import ShopifyClient
         client = ShopifyClient()
         resp = client.get("webhooks.json")
         address = get_webhook_address()

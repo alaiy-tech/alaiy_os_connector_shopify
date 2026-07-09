@@ -1,7 +1,7 @@
 import requests
 import frappe
 
-from alaiy_os_shopify_connector.shopify.auth import refresh_and_store_access_token
+from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_token
 
 
 @frappe.whitelist()
@@ -24,7 +24,7 @@ def test_connection():
 
     # Step 2: Verify the token works
     try:
-        from alaiy_os_shopify_connector.shopify.client import ShopifyClient
+        from alaiy_os_connector_shopify.shopify.client import ShopifyClient
         client = ShopifyClient()
         resp = client.get("shop.json", {"fields": "id,name,email"})
         shop = resp.get("shop", {})

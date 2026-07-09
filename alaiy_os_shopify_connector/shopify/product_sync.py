@@ -26,9 +26,9 @@ own duplicate product.
 import frappe
 from frappe.utils import flt
 
-from alaiy_os_shopify_connector.shopify.client import ShopifyClient
-from alaiy_os_shopify_connector.shopify.sync_engine import fingerprint
-from alaiy_os_shopify_connector.shopify.sync_engine import entities
+from alaiy_os_connector_shopify.shopify.client import ShopifyClient
+from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
+from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
 LOCK_TIMEOUT_SECONDS = 30
 
@@ -45,7 +45,7 @@ def on_item_change(doc, method=None):
 
     if enabled:
         frappe.enqueue(
-            "alaiy_os_shopify_connector.shopify.product_sync.push_item",
+            "alaiy_os_connector_shopify.shopify.product_sync.push_item",
             queue="short",
             timeout=120,
             item_code=doc.name,
@@ -54,7 +54,7 @@ def on_item_change(doc, method=None):
         # Flag just turned off on the template itself (variants don't carry
         # their own archive state -- only the template/product does).
         frappe.enqueue(
-            "alaiy_os_shopify_connector.shopify.product_sync.archive_item",
+            "alaiy_os_connector_shopify.shopify.product_sync.archive_item",
             queue="short",
             timeout=60,
             item_code=doc.name,
@@ -71,7 +71,7 @@ def on_item_price_change(doc, method=None):
     if not _sync_enabled(item):
         return
     frappe.enqueue(
-        "alaiy_os_shopify_connector.shopify.product_sync.push_item",
+        "alaiy_os_connector_shopify.shopify.product_sync.push_item",
         queue="short",
         timeout=120,
         item_code=doc.item_code,
@@ -98,7 +98,8 @@ def _sync_enabled(item) -> bool:
 def _variant_price(item_code: str, settings) -> float:
     price_list = settings.sh_selling_price_list or "Standard Selling"
     rate = frappe.db.get_value(
-        "Item Price", {"item_code": item_code, "price_list": price_list}, "price_list_rate"
+        "Item Price", {"item_code": item_code,
+                       "price_list": price_list}, "price_list_rate"
     )
     return flt(rate or 0)
 
@@ -130,7 +131,8 @@ def _variant_canonical(variant, settings) -> dict:
 
 
 def _product_canonical(item, variants, settings) -> dict:
-    canonical = {"title": item.item_name, "variants": [_variant_canonical(v, settings) for v in variants]}
+    canonical = {"title": item.item_name, "variants": [
+        _variant_canonical(v, settings) for v in variants]}
     if settings.sh_push_description:
         canonical["description"] = item.description or ""
     if settings.sh_push_vendor:
@@ -145,7 +147,8 @@ def _product_canonical(item, variants, settings) -> dict:
 # ── Shopify payload builders ─────────────────────────────────────────────────
 
 def _variant_payload(variant, settings, option_names: list) -> dict:
-    attrs = {a.attribute: a.attribute_value for a in (variant.attributes or [])}
+    attrs = {a.attribute: a.attribute_value for a in (
+        variant.attributes or [])}
     payload = {
         "sku": variant.item_code,
         "price": f"{_variant_price(variant.item_code, settings):.2f}",
@@ -226,7 +229,8 @@ def _push_product_unlocked(item):
     settings = frappe.get_single("Shopify Connector Settings")
 
     if item.has_variants:
-        variant_names = frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
+        variant_names = frappe.get_all(
+            "Item", filters={"variant_of": item.name}, pluck="name")
         variants = [frappe.get_doc("Item", v) for v in variant_names]
     else:
         variants = [item]
@@ -242,7 +246,8 @@ def _push_product_unlocked(item):
     payload = _product_payload(item, variants, settings)
 
     if item.get("sh_shopify_product_id"):
-        resp = client.put(f"products/{item.sh_shopify_product_id}.json", {"product": payload})
+        resp = client.put(
+            f"products/{item.sh_shopify_product_id}.json", {"product": payload})
     else:
         resp = client.post("products.json", {"product": payload})
 
@@ -252,16 +257,19 @@ def _push_product_unlocked(item):
         return
 
     if item.sh_shopify_product_id != product_id:
-        frappe.db.set_value("Item", item.name, "sh_shopify_product_id", product_id)
+        frappe.db.set_value("Item", item.name,
+                            "sh_shopify_product_id", product_id)
 
     returned_variants = product.get("variants", [])
     for variant, returned in zip(variants, returned_variants):
         variant_id = str(returned.get("id", ""))
         if variant_id and variant.get("sh_shopify_variant_id") != variant_id:
-            frappe.db.set_value("Item", variant.name, "sh_shopify_variant_id", variant_id)
+            frappe.db.set_value("Item", variant.name,
+                                "sh_shopify_variant_id", variant_id)
 
     entities.save(
-        entity or entities.get_or_new("product", "Item", item.name, product_id),
+        entity or entities.get_or_new(
+            "product", "Item", item.name, product_id),
         external_id=product_id,
         erpnext_doctype="Item",
         erpnext_name=item.name,
@@ -290,6 +298,7 @@ def archive_item(item_code: str):
 
     try:
         client = ShopifyClient()
-        client.put(f"products/{item.sh_shopify_product_id}.json", {"product": {"status": "archived"}})
+        client.put(f"products/{item.sh_shopify_product_id}.json",
+                   {"product": {"status": "archived"}})
     finally:
         item.unlock()

@@ -14,12 +14,12 @@ class ShopifyConnectorSettings(Document):
         self._sync_registry_is_enabled()
 
     def _on_first_enable(self):
-        from alaiy_os_shopify_connector.setup.install import setup_custom_fields
+        from alaiy_os_connector_shopify.setup.install import setup_custom_fields
         setup_custom_fields()
 
         try:
-            from alaiy_os_shopify_connector.shopify.client import ShopifyClient
-            from alaiy_os_shopify_connector.shopify.webhooks import register_webhooks
+            from alaiy_os_connector_shopify.shopify.client import ShopifyClient
+            from alaiy_os_connector_shopify.shopify.webhooks import register_webhooks
             client = ShopifyClient()
             register_webhooks(client)
         except Exception:
@@ -30,7 +30,7 @@ class ShopifyConnectorSettings(Document):
 
     def _on_disable(self):
         try:
-            from alaiy_os_shopify_connector.shopify.webhooks import unregister_webhooks
+            from alaiy_os_connector_shopify.shopify.webhooks import unregister_webhooks
             unregister_webhooks()
         except Exception:
             frappe.log_error(

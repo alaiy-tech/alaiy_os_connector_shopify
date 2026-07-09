@@ -38,18 +38,20 @@ def _maybe_refresh_token(settings):
     ShopifyClient's own retry-on-401 already guarantees correctness, this
     just avoids the wasted failed request.
     """
-    interval_minutes = _TOKEN_REFRESH_INTERVAL_MINUTES.get(settings.sh_token_refresh_interval or "Disabled")
+    interval_minutes = _TOKEN_REFRESH_INTERVAL_MINUTES.get(
+        settings.sh_token_refresh_interval or "Disabled")
     if not interval_minutes:
         return
     if not settings.sh_client_id or not settings.sh_client_secret:
         return
 
     if settings.sh_token_refreshed_at:
-        due_at = add_to_date(settings.sh_token_refreshed_at, minutes=interval_minutes)
+        due_at = add_to_date(settings.sh_token_refreshed_at,
+                             minutes=interval_minutes)
         if now_datetime() < due_at:
             return
 
-    from alaiy_os_shopify_connector.shopify.auth import refresh_and_store_access_token
+    from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_token
     try:
         refresh_and_store_access_token()
     except Exception:
@@ -89,7 +91,7 @@ def _maybe_enqueue_inventory(interval_setting):
             return
 
     frappe.enqueue(
-        "alaiy_os_shopify_connector.shopify.inventory_sync.run_inventory_push",
+        "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_push",
         queue="long",
         timeout=600,
         trigger="scheduled",

@@ -1,7 +1,7 @@
 import frappe
 from frappe.utils import flt, now_datetime
 
-from alaiy_os_shopify_connector.shopify.sync_guard import has_active_sync, load_or_create_log
+from alaiy_os_connector_shopify.shopify.sync_guard import has_active_sync, load_or_create_log
 
 
 # ── Webhook handler ────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ def run_orders_sync(trigger="manual", log_name=None):
     frappe.db.commit()
 
     try:
-        from alaiy_os_shopify_connector.shopify.client import ShopifyClient
+        from alaiy_os_connector_shopify.shopify.client import ShopifyClient
         client = ShopifyClient()
         settings = frappe.get_single("Shopify Connector Settings")
 
@@ -86,7 +86,8 @@ def _upsert_order(order):
         return False  # already processed
 
     settings = frappe.get_single("Shopify Connector Settings")
-    customer_name = _get_or_create_customer(order.get("customer") or {}, settings)
+    customer_name = _get_or_create_customer(
+        order.get("customer") or {}, settings)
 
     line_items = []
     for li in order.get("line_items", []):
@@ -109,7 +110,8 @@ def _upsert_order(order):
 
     so = frappe.new_doc("Sales Order")
     so.customer = customer_name
-    so.company = settings.sh_company or frappe.defaults.get_global_default("company")
+    so.company = settings.sh_company or frappe.defaults.get_global_default(
+        "company")
     so.transaction_date = frappe.utils.today()
     so.delivery_date = frappe.utils.today()
     so.selling_price_list = settings.sh_selling_price_list or "Standard Selling"
@@ -130,7 +132,8 @@ def _upsert_order(order):
 
 def _cancel_order(order):
     order_id = str(order.get("id", ""))
-    so_name = frappe.db.get_value("Sales Order", {"sh_shopify_order_id": order_id}, "name")
+    so_name = frappe.db.get_value(
+        "Sales Order", {"sh_shopify_order_id": order_id}, "name")
     if so_name:
         so = frappe.get_doc("Sales Order", so_name)
         if so.docstatus == 1:
@@ -149,7 +152,8 @@ def _get_or_create_customer(customer_data, settings):
 
     first = customer_data.get("first_name", "")
     last = customer_data.get("last_name", "")
-    full_name = f"{first} {last}".strip() or customer_data.get("email", "") or f"Shopify {shopify_id}"
+    full_name = f"{first} {last}".strip() or customer_data.get(
+        "email", "") or f"Shopify {shopify_id}"
 
     if frappe.db.exists("Customer", full_name):
         return full_name

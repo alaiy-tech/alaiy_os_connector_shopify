@@ -4,7 +4,7 @@ with open("requirements.txt") as f:
     install_requires = f.read().strip().split("\n")
 
 setup(
-    name="alaiy_os_shopify_connector",
+    name="alaiy_os_connector_shopify",
     version="0.0.1",
     description="Shopify sales channel connector for AlaiyOS",
     author="Alaiy OS",

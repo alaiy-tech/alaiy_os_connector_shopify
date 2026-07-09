@@ -1,6 +1,6 @@
 import frappe
 
-from alaiy_os_shopify_connector.shopify.sync_guard import load_or_create_log
+from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
 
 
 @frappe.whitelist()
@@ -10,7 +10,7 @@ def trigger_orders_sync():
     # itself doesn't start running for a while.
     log = load_or_create_log("orders", "manual")
     frappe.enqueue(
-        "alaiy_os_shopify_connector.shopify.order_sync.run_orders_sync",
+        "alaiy_os_connector_shopify.shopify.order_sync.run_orders_sync",
         queue="long",
         timeout=600,
         trigger="manual",
@@ -23,7 +23,7 @@ def trigger_orders_sync():
 def trigger_inventory_push():
     log = load_or_create_log("inventory", "manual")
     frappe.enqueue(
-        "alaiy_os_shopify_connector.shopify.inventory_sync.run_inventory_push",
+        "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_push",
         queue="long",
         timeout=600,
         trigger="manual",

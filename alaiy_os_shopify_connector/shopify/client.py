@@ -3,7 +3,7 @@ import urllib.parse
 import requests
 import frappe
 
-from alaiy_os_shopify_connector.shopify.auth import refresh_and_store_access_token
+from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_token
 
 
 class ShopifyClient:
@@ -47,22 +47,26 @@ class ShopifyClient:
         return resp
 
     def get(self, endpoint, params=None):
-        resp = self._request_with_refresh("GET", f"{self.base_url}/{endpoint}", params=params)
+        resp = self._request_with_refresh(
+            "GET", f"{self.base_url}/{endpoint}", params=params)
         resp.raise_for_status()
         return resp.json()
 
     def post(self, endpoint, data=None):
-        resp = self._request_with_refresh("POST", f"{self.base_url}/{endpoint}", json=data)
+        resp = self._request_with_refresh(
+            "POST", f"{self.base_url}/{endpoint}", json=data)
         resp.raise_for_status()
         return resp.json()
 
     def put(self, endpoint, data=None):
-        resp = self._request_with_refresh("PUT", f"{self.base_url}/{endpoint}", json=data)
+        resp = self._request_with_refresh(
+            "PUT", f"{self.base_url}/{endpoint}", json=data)
         resp.raise_for_status()
         return resp.json()
 
     def delete(self, endpoint):
-        resp = self._request_with_refresh("DELETE", f"{self.base_url}/{endpoint}")
+        resp = self._request_with_refresh(
+            "DELETE", f"{self.base_url}/{endpoint}")
         resp.raise_for_status()
         return resp
 
@@ -75,7 +79,8 @@ class ShopifyClient:
         params.setdefault("limit", 250)
 
         while True:
-            resp = self._request_with_refresh("GET", f"{self.base_url}/{endpoint}", params=params)
+            resp = self._request_with_refresh(
+                "GET", f"{self.base_url}/{endpoint}", params=params)
             resp.raise_for_status()
             yield resp.json()
 
@@ -92,7 +97,8 @@ class ShopifyClient:
                 break
 
             parsed = urllib.parse.urlparse(next_url)
-            page_info_list = urllib.parse.parse_qs(parsed.query).get("page_info")
+            page_info_list = urllib.parse.parse_qs(
+                parsed.query).get("page_info")
             if not page_info_list:
                 break
             # cursor pagination: only page_info + limit allowed

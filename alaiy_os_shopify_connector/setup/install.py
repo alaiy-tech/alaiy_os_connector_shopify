@@ -22,7 +22,7 @@ def sync_connector_registry():
     if not frappe.db.exists("DocType", "OS Connector Registry"):
         return
 
-    from alaiy_os_shopify_connector.connector_meta import connector_meta
+    from alaiy_os_connector_shopify.connector_meta import connector_meta
 
     connector_id = connector_meta["connector_id"]
 
@@ -193,7 +193,8 @@ def _ensure_custom_fields(doctype, fields):
             # Keep the description in sync even for a field that already
             # exists -- it's just documentation, safe to overwrite.
             if f.get("description"):
-                frappe.db.set_value("Custom Field", key, "description", f["description"])
+                frappe.db.set_value("Custom Field", key,
+                                    "description", f["description"])
             continue
         cf = frappe.new_doc("Custom Field")
         cf.dt = doctype

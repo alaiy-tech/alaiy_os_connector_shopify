@@ -1,7 +1,7 @@
 import frappe
 from frappe.utils import flt, now_datetime
 
-from alaiy_os_shopify_connector.shopify.sync_guard import has_active_sync, load_or_create_log
+from alaiy_os_connector_shopify.shopify.sync_guard import has_active_sync, load_or_create_log
 
 
 def run_inventory_push(trigger="manual", log_name=None):
@@ -11,7 +11,8 @@ def run_inventory_push(trigger="manual", log_name=None):
     """
     log = load_or_create_log("inventory", trigger, log_name)
     if has_active_sync("inventory", exclude_name=log.name):
-        _close_log(log, "skipped", error="Skipped: another inventory sync is already running.")
+        _close_log(log, "skipped",
+                   error="Skipped: another inventory sync is already running.")
         return log.name
 
     log.status = "running"
@@ -19,7 +20,7 @@ def run_inventory_push(trigger="manual", log_name=None):
     frappe.db.commit()
 
     try:
-        from alaiy_os_shopify_connector.shopify.client import ShopifyClient
+        from alaiy_os_connector_shopify.shopify.client import ShopifyClient
         client = ShopifyClient()
         settings = frappe.get_single("Shopify Connector Settings")
         warehouse = settings.sh_default_warehouse
@@ -49,10 +50,12 @@ def run_inventory_push(trigger="manual", log_name=None):
                     "actual_qty",
                 ) or 0)
 
-                inventory_item_id = _get_inventory_item_id(client, item.sh_shopify_variant_id)
+                inventory_item_id = _get_inventory_item_id(
+                    client, item.sh_shopify_variant_id)
                 if not inventory_item_id:
                     failed += 1
-                    _append_log(log, f"ERROR item={item.name}: no Shopify inventory_item_id for variant {item.sh_shopify_variant_id}")
+                    _append_log(
+                        log, f"ERROR item={item.name}: no Shopify inventory_item_id for variant {item.sh_shopify_variant_id}")
                     continue
 
                 client.post("inventory_levels/set.json", {
@@ -69,7 +72,8 @@ def run_inventory_push(trigger="manual", log_name=None):
                     message=frappe.get_traceback(),
                 )
 
-        _close_log(log, "success", processed=processed, created=updated, failed=failed)
+        _close_log(log, "success", processed=processed,
+                   created=updated, failed=failed)
     except Exception:
         _close_log(log, "failed", error=frappe.get_traceback())
         raise
@@ -86,7 +90,8 @@ def _get_primary_location_id(client):
 
 
 def _get_inventory_item_id(client, variant_id):
-    resp = client.get(f"variants/{variant_id}.json", {"fields": "id,inventory_item_id"})
+    resp = client.get(f"variants/{variant_id}.json",
+                      {"fields": "id,inventory_item_id"})
     return resp.get("variant", {}).get("inventory_item_id")
 
 

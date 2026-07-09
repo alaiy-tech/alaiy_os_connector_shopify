@@ -25,7 +25,8 @@ def handle_webhook():
     # Validate HMAC if a webhook secret is configured
     webhook_secret = None
     try:
-        webhook_secret = settings.get_password("sh_webhook_secret", raise_exception=False)
+        webhook_secret = settings.get_password(
+            "sh_webhook_secret", raise_exception=False)
     except Exception:
         pass
 
@@ -53,10 +54,11 @@ def handle_webhook():
 
 
 def _dispatch(topic, payload):
-    order_topics = {"orders/create", "orders/updated", "orders/cancelled", "orders/fulfilled"}
+    order_topics = {"orders/create", "orders/updated",
+                    "orders/cancelled", "orders/fulfilled"}
     if topic in order_topics:
         frappe.enqueue(
-            "alaiy_os_shopify_connector.shopify.order_sync.handle_order_webhook",
+            "alaiy_os_connector_shopify.shopify.order_sync.handle_order_webhook",
             queue="short",
             timeout=300,
             topic=topic,
