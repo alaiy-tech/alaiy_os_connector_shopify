@@ -5,7 +5,7 @@ import frappe
 
 def sync_connector_registry():
     """
-    Register or update the Shopify connector row in alaiy_os_core's OS Connector Registry.
+    Register or update the Shopify connector row in alaiy_os's OS Connector Registry.
     Called from hooks.py -> after_migrate on every bench migrate. Webhook
     registration still only runs when is_enabled is first set via the form,
     but custom fields are ensured on every migrate (idempotent) so a newly
@@ -50,12 +50,12 @@ def sync_connector_registry():
 
 def _update_alaiy_os_sidebar():
     """
-    Re-run alaiy_os_core's workspace/sidebar provisioning so this connector's
+    Re-run alaiy_os's workspace/sidebar provisioning so this connector's
     Logs link and Connectors entry (settings button + card) appear right
     after it registers, instead of waiting for the next full bench migrate.
     """
     try:
-        from alaiy_os_core.setup.install import (
+        from alaiy_os.setup.install import (
             create_or_update_workspace_sidebar,
             create_or_update_os_settings_workspace,
             create_or_update_os_settings_workspace_sidebar,

@@ -1,6 +1,6 @@
 """
 Single source of truth for this connector's registration metadata.
-Consumed by setup/install.py → upserted into alaiy_os_core's OS Connector Registry.
+Consumed by setup/install.py → upserted into alaiy_os's OS Connector Registry.
 """
 
 connector_meta = {
