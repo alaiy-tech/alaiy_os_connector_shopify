@@ -14,6 +14,10 @@ REQUIRED_SCOPES = ",".join([
     "read_inventory", "write_inventory",
     "read_locations",
     "read_customers", "write_customers",
+    # productSet's `files` field (product images) overlaps with fileCreate's
+    # scope gating -- Shopify's own product-media guide pairs write_products
+    # with this for the same mutation.
+    "write_files",
 ])
 
 
@@ -22,7 +26,7 @@ def get_client_credentials_token(shop_url: str, client_id: str, client_secret: s
     Exchange the connector's Client ID/Secret for a fresh Shopify access
     token via the client_credentials grant. Shopify custom-app tokens minted
     this way are short-lived, so this is called both from Test Connection and
-    transparently by ShopifyClient whenever a request comes back 401.
+    transparently by ShopifyGraphQLClient whenever a request comes back 401.
 
     Returns {"access_token": str, "expires_in": int | None} -- expires_in is
     Shopify's own reported lifetime in seconds (observed ~86400 for this app).
