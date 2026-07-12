@@ -22,24 +22,25 @@ def handle_webhook():
         frappe.response.status_code = 200
         return {"ok": False, "reason": "connector disabled"}
 
-    # Validate HMAC if a webhook secret is configured
-    webhook_secret = None
-    try:
-        webhook_secret = settings.get_password(
-            "sh_webhook_secret", raise_exception=False)
-    except Exception:
-        pass
+    # Fail CLOSED: this endpoint is allow_guest -- an unset secret must
+    # reject every request, not silently accept everything unverified.
+    webhook_secret = settings.get_password(
+        "sh_webhook_secret", raise_exception=False)
+    if not webhook_secret:
+        frappe.log_error(
+            title="Shopify webhook rejected: no secret configured")
+        frappe.response.status_code = 401
+        return {"ok": False, "reason": "webhook secret not configured"}
 
-    if webhook_secret:
-        computed = hmac.new(
-            webhook_secret.encode("utf-8"),
-            raw_body,
-            hashlib.sha256,
-        ).digest()
-        expected = base64.b64encode(computed).decode("utf-8")
-        if not hmac.compare_digest(expected, hmac_header):
-            frappe.response.status_code = 401
-            return {"ok": False, "reason": "HMAC validation failed"}
+    computed = hmac.new(
+        webhook_secret.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).digest()
+    expected = base64.b64encode(computed).decode("utf-8")
+    if not hmac_header or not hmac.compare_digest(expected, hmac_header):
+        frappe.response.status_code = 401
+        return {"ok": False, "reason": "HMAC validation failed"}
 
     try:
         payload = json.loads(raw_body)
