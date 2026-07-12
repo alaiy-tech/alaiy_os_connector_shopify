@@ -15,10 +15,15 @@ _LOCATIONS_QUERY = """
 """
 
 _VARIANT_INVENTORY_QUERY = """
-query VariantInventoryItem($id: ID!) {
+query VariantInventoryItem($id: ID!, $locationId: ID!) {
   productVariant(id: $id) {
     inventoryItem {
       id
+      inventoryLevel(locationId: $locationId) {
+        quantities(names: ["available"]) {
+          quantity
+        }
+      }
     }
   }
 }
@@ -92,8 +97,8 @@ def run_inventory_push(trigger="manual", log_name=None):
                     "actual_qty",
                 ) or 0)
 
-                inventory_item_id = _get_inventory_item_id(
-                    client, item.sh_shopify_variant_id)
+                inventory_item_id, current_qty = _get_inventory_item_state(
+                    client, item.sh_shopify_variant_id, location_id)
                 if not inventory_item_id:
                     failed += 1
                     _append_log(
@@ -108,6 +113,13 @@ def run_inventory_push(trigger="manual", log_name=None):
                             "inventoryItemId": inventory_item_id,
                             "locationId": location_id,
                             "quantity": int(qty),
+                            # Mandatory as of API 2026-04 (replaced the
+                            # removed compareQuantity/ignoreCompareQuantity)
+                            # -- Shopify rejects a mismatch, so a genuine
+                            # race with a concurrent change fails loudly
+                            # here rather than silently overwriting it; the
+                            # next scheduled run picks it up again.
+                            "changeFromQuantity": int(current_qty),
                         }],
                     },
                 })
@@ -143,12 +155,22 @@ def _get_primary_location_id(client):
     return None
 
 
-def _get_inventory_item_id(client, variant_id):
+def _get_inventory_item_state(client, variant_id, location_id):
+    """Returns (inventory_item_id, current_available_quantity) -- the
+    latter is required as changeFromQuantity on the set mutation below."""
     variant_gid = f"gid://shopify/ProductVariant/{variant_id}"
-    data = client.execute(_VARIANT_INVENTORY_QUERY, {"id": variant_gid})
+    data = client.execute(_VARIANT_INVENTORY_QUERY, {
+        "id": variant_gid, "locationId": location_id,
+    })
     variant = data.get("productVariant") or {}
     inventory_item = variant.get("inventoryItem") or {}
-    return inventory_item.get("id")  # GID
+    inventory_item_id = inventory_item.get("id")
+    if not inventory_item_id:
+        return None, 0
+    level = inventory_item.get("inventoryLevel") or {}
+    quantities = level.get("quantities") or []
+    current_qty = quantities[0].get("quantity") if quantities else 0
+    return inventory_item_id, (current_qty or 0)
 
 
 def _append_log(log, message: str):
