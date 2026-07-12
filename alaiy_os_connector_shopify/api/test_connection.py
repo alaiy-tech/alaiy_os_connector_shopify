@@ -14,7 +14,7 @@ def test_connection():
         return {"success": False, "message": "Client ID and Client Secret must be saved before testing."}
 
     # Step 1: Authenticate via client_credentials grant (same helper
-    # ShopifyClient falls back to automatically once a token expires).
+    # ShopifyGraphQLClient falls back to automatically once a token expires).
     try:
         refresh_and_store_access_token()
     except requests.exceptions.Timeout:
@@ -24,10 +24,10 @@ def test_connection():
 
     # Step 2: Verify the token works
     try:
-        from alaiy_os_connector_shopify.shopify.client import ShopifyClient
-        client = ShopifyClient()
-        resp = client.get("shop.json", {"fields": "id,name,email"})
-        shop = resp.get("shop", {})
+        from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+        client = ShopifyGraphQLClient()
+        data = client.execute("{ shop { id name email } }")
+        shop = data.get("shop") or {}
         if shop.get("id"):
             return {"success": True, "message": f"Connected to {shop.get('name', 'Shopify')}"}
         return {"success": False, "message": "Unexpected response from Shopify API"}
