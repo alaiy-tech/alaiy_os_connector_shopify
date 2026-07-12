@@ -75,7 +75,10 @@ def run_inventory_push(trigger="manual", log_name=None):
 
         items = frappe.get_all(
             "Item",
-            filters={"sh_shopify_variant_id": ["not in", ["", None]]},
+            # NOT IN with a NULL in the list is a standard SQL trap: it
+            # matches nothing, ever ("x <> NULL" is unknown, not true) --
+            # "is set" is the safe way to say "non-empty".
+            filters=[["sh_shopify_variant_id", "is", "set"]],
             fields=["name", "sh_shopify_variant_id"],
         )
 
