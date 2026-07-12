@@ -3,6 +3,43 @@ from frappe.utils import flt, now_datetime
 
 from alaiy_os_connector_shopify.shopify.sync_guard import has_active_sync, load_or_create_log
 
+_LOCATIONS_QUERY = """
+{
+  locations(first: 50) {
+    nodes {
+      id
+      isActive
+    }
+  }
+}
+"""
+
+_VARIANT_INVENTORY_QUERY = """
+query VariantInventoryItem($id: ID!) {
+  productVariant(id: $id) {
+    inventoryItem {
+      id
+    }
+  }
+}
+"""
+
+
+def _inventory_set_mutation(idempotency_key: str) -> str:
+    # @idempotent's key isn't documented as accepting a GraphQL variable, so
+    # it's interpolated directly into the query text rather than passed
+    # through `variables`.
+    return f"""
+    mutation SetInventory($input: InventorySetQuantitiesInput!) {{
+      inventorySetQuantities(input: $input) @idempotent(key: "{idempotency_key}") {{
+        userErrors {{
+          field
+          message
+        }}
+      }}
+    }}
+    """
+
 
 def run_inventory_push(trigger="manual", log_name=None):
     """
@@ -20,8 +57,10 @@ def run_inventory_push(trigger="manual", log_name=None):
     frappe.db.commit()
 
     try:
-        from alaiy_os_connector_shopify.shopify.client import ShopifyClient
-        client = ShopifyClient()
+        from alaiy_os_connector_shopify.shopify.graphql_client import (
+            ShopifyGraphQLClient, new_idempotency_key,
+        )
+        client = ShopifyGraphQLClient()
         settings = frappe.get_single("Shopify Connector Settings")
         warehouse = settings.sh_default_warehouse
 
@@ -58,11 +97,21 @@ def run_inventory_push(trigger="manual", log_name=None):
                         log, f"ERROR item={item.name}: no Shopify inventory_item_id for variant {item.sh_shopify_variant_id}")
                     continue
 
-                client.post("inventory_levels/set.json", {
-                    "location_id": location_id,
-                    "inventory_item_id": inventory_item_id,
-                    "available": int(qty),
+                data = client.execute(_inventory_set_mutation(new_idempotency_key()), {
+                    "input": {
+                        "name": "available",
+                        "reason": "correction",
+                        "quantities": [{
+                            "inventoryItemId": inventory_item_id,
+                            "locationId": location_id,
+                            "quantity": int(qty),
+                        }],
+                    },
                 })
+                errors = (data.get("inventorySetQuantities")
+                          or {}).get("userErrors") or []
+                if errors:
+                    raise RuntimeError(f"Shopify userErrors: {errors}")
                 updated += 1
             except Exception as exc:
                 failed += 1
@@ -82,17 +131,21 @@ def run_inventory_push(trigger="manual", log_name=None):
 
 
 def _get_primary_location_id(client):
-    resp = client.get("locations.json", {"fields": "id,name,active"})
-    for loc in resp.get("locations", []):
-        if loc.get("active"):
-            return loc["id"]
+    """Same behavior as the old REST lookup: first location Shopify reports
+    as active, not necessarily the formal "primary" location."""
+    data = client.execute(_LOCATIONS_QUERY)
+    for loc in (data.get("locations") or {}).get("nodes", []):
+        if loc.get("isActive"):
+            return loc["id"]  # GID, used directly as locationId
     return None
 
 
 def _get_inventory_item_id(client, variant_id):
-    resp = client.get(f"variants/{variant_id}.json",
-                      {"fields": "id,inventory_item_id"})
-    return resp.get("variant", {}).get("inventory_item_id")
+    variant_gid = f"gid://shopify/ProductVariant/{variant_id}"
+    data = client.execute(_VARIANT_INVENTORY_QUERY, {"id": variant_gid})
+    variant = data.get("productVariant") or {}
+    inventory_item = variant.get("inventoryItem") or {}
+    return inventory_item.get("id")  # GID
 
 
 def _append_log(log, message: str):
