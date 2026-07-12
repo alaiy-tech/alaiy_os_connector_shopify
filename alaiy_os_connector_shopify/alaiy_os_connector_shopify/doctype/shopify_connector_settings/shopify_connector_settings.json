@@ -14,7 +14,6 @@
     "sh_token_refreshed_at",
     "sh_token_expires_at",
     "sh_webhook_secret",
-    "sh_api_version",
     "sb_defaults",
     "sh_company",
     "sh_default_warehouse",
@@ -86,17 +85,10 @@
       "read_only": 1
     },
     {
-      "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions.",
+      "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions. Required: webhooks are rejected outright if this isn't set, rather than silently accepted unverified.",
       "fieldname": "sh_webhook_secret",
       "fieldtype": "Password",
-      "label": "Webhook Secret"
-    },
-    {
-      "default": "2024-01",
-      "description": "Shopify Admin API version (YYYY-MM)",
-      "fieldname": "sh_api_version",
-      "fieldtype": "Data",
-      "label": "API Version",
+      "label": "Webhook Secret",
       "reqd": 1
     },
     {

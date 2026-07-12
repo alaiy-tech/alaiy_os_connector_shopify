@@ -18,6 +18,7 @@ def sync_connector_registry():
         "sh_push_description", "sh_push_vendor", "sh_push_product_type", "sh_push_images",
     ])
     _ensure_list_view_column("Item", "sync_to_shopify", "Sync to Shopify")
+    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_api_version")
 
     if not frappe.db.exists("DocType", "OS Connector Registry"):
         return
@@ -103,6 +104,22 @@ def _backfill_singles_defaults(doctype, fieldnames):
         if not field or field.default in (None, ""):
             continue
         frappe.db.set_single_value(doctype, fieldname, field.default)
+    frappe.db.commit()
+
+
+def _drop_orphaned_singles_value(doctype, fieldname):
+    """
+    Removing a field from a DocType's JSON doesn't clean up its old stored
+    value on a site that already had one -- it just becomes an orphaned,
+    invisible row in tabSingles. Delete it explicitly (e.g. sh_api_version,
+    removed in favor of a hardcoded SHOPIFY_API_VERSION constant -- it was
+    merchant-editable, which meant a stale/wrong value could silently break
+    every API call without any code change to point to).
+    """
+    frappe.db.sql(
+        "DELETE FROM `tabSingles` WHERE doctype=%s AND field=%s",
+        (doctype, fieldname),
+    )
     frappe.db.commit()
 
 

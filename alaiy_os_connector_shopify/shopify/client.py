@@ -5,6 +5,13 @@ import frappe
 
 from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_token
 
+# Not merchant-configurable: the API version this connector's code is
+# actually written against. A stale or merchant-edited version string here
+# has previously caused silent breakage against fields/endpoints that
+# changed shape between versions -- bump this deliberately, in code, when
+# the connector is verified against a newer version.
+SHOPIFY_API_VERSION = "2026-07"
+
 
 class ShopifyClient:
     """Thin wrapper over the Shopify Admin REST API."""
@@ -20,8 +27,7 @@ class ShopifyClient:
         if not shop_url.startswith("http"):
             shop_url = f"https://{shop_url}"
 
-        api_version = (settings.sh_api_version or "2024-01").strip()
-        self.base_url = f"{shop_url}/admin/api/{api_version}"
+        self.base_url = f"{shop_url}/admin/api/{SHOPIFY_API_VERSION}"
         self.token = settings.get_password("sh_access_token")
 
         self.session = requests.Session()
