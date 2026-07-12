@@ -35,8 +35,8 @@ def _maybe_refresh_token(settings):
     """
     Proactively mint a fresh access token on the configured interval, so a
     sync never has to hit (and recover from) an expired-token 401 first --
-    ShopifyClient's own retry-on-401 already guarantees correctness, this
-    just avoids the wasted failed request.
+    ShopifyGraphQLClient's own retry-on-401 already guarantees correctness,
+    this just avoids the wasted failed request.
     """
     interval_minutes = _TOKEN_REFRESH_INTERVAL_MINUTES.get(
         settings.sh_token_refresh_interval or "Disabled")
