@@ -8,9 +8,10 @@ on Shopify (kept, hidden from sales channels, order history intact), and
 re-checking it unarchives + pushes again.
 
 Always operates at the template level: even when only one variant changed,
-the whole current variant set is rebuilt and PUT to Shopify, since each
-variant payload carries its own Shopify variant `id` when it has one --
-Shopify updates existing variants and creates new ones from the same call.
+the whole current variant set is rebuilt and sent to Shopify via productSet,
+since each variant payload carries its own Shopify variant `id` when it has
+one -- Shopify updates existing variants and creates new ones from the same
+call.
 
 Every push acquires a document lock on the template first. ERPNext's own
 Item controller resaves every sibling variant whenever a template is saved
@@ -26,11 +27,33 @@ own duplicate product.
 import frappe
 from frappe.utils import flt
 
-from alaiy_os_connector_shopify.shopify.client import ShopifyClient
+from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
 LOCK_TIMEOUT_SECONDS = 30
+
+_PRODUCT_SET_MUTATION = """
+mutation PushProduct($input: ProductSetInput!, $identifier: ProductSetIdentifiers, $synchronous: Boolean!) {
+  productSet(input: $input, identifier: $identifier, synchronous: $synchronous) {
+    product {
+      id
+      legacyResourceId
+      variants(first: 100) {
+        nodes {
+          id
+          legacyResourceId
+          sku
+        }
+      }
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
 
 
 # ── Doc event entry points ──────────────────────────────────────────────────
@@ -144,25 +167,44 @@ def _product_canonical(item, variants, settings) -> dict:
     return canonical
 
 
-# ── Shopify payload builders ─────────────────────────────────────────────────
+# ── Shopify payload builders (productSet input shape) ───────────────────────
 
-def _variant_payload(variant, settings, option_names: list) -> dict:
-    attrs = {a.attribute: a.attribute_value for a in (
-        variant.attributes or [])}
+def _variant_set_payload(variant, settings, option_names: list) -> dict:
+    attrs = {a.attribute: a.attribute_value for a in (variant.attributes or [])}
     payload = {
         "sku": variant.item_code,
         "price": f"{_variant_price(variant.item_code, settings):.2f}",
+        "optionValues": [
+            {"optionName": name, "name": attrs.get(name) or "Default"}
+            for name in option_names
+        ],
     }
-    for idx, name in enumerate(option_names, start=1):
-        payload[f"option{idx}"] = attrs.get(name) or "Default"
     if variant.get("sh_shopify_variant_id"):
-        payload["id"] = int(variant.sh_shopify_variant_id)
+        payload["id"] = f"gid://shopify/ProductVariant/{variant.sh_shopify_variant_id}"
     return payload
 
 
-def _product_payload(item, variants: list, settings) -> dict:
+def _product_options_payload(option_names: list, variants: list) -> list:
+    """One entry per option, `values` deduplicated across all variants in
+    first-seen order -- e.g. Size: [Small, Large], not one row per variant."""
+    options = []
+    for name in option_names:
+        seen = []
+        for v in variants:
+            attrs = {a.attribute: a.attribute_value for a in (v.attributes or [])}
+            value = attrs.get(name) or "Default"
+            if value not in seen:
+                seen.append(value)
+        options.append({"name": name, "values": [{"name": v} for v in seen]})
+    return options
+
+
+def _product_set_input(item, variants: list, settings) -> dict:
     """Shared by templates (variants = real children) and simple items
-    (variants = [item] itself, standing in as its own only variant)."""
+    (variants = [item] itself, standing in as its own only variant). Always
+    the full desired state, never a partial patch -- used for both a normal
+    push and an archive (see archive_item), so it doesn't matter whether
+    productSet treats omitted fields as "leave alone" or "clear"."""
     option_names = []
     for v in variants:
         for a in (v.attributes or []):
@@ -175,20 +217,25 @@ def _product_payload(item, variants: list, settings) -> dict:
         "title": item.item_name,
         # Pushing implies "this should be live" -- unarchives on every push
         # rather than needing a separate un-archive step when re-enabled.
-        "status": "active",
-        "options": [{"name": name} for name in option_names],
-        "variants": [_variant_payload(v, settings, option_names) for v in variants],
+        # archive_item() overrides this back to ARCHIVED explicitly.
+        "status": "ACTIVE",
+        "productOptions": _product_options_payload(option_names, variants),
+        "variants": [
+            _variant_set_payload(v, settings, option_names) for v in variants
+        ],
     }
     if settings.sh_push_description:
-        payload["body_html"] = item.description or ""
+        payload["descriptionHtml"] = item.description or ""
     if settings.sh_push_vendor and item.brand:
         payload["vendor"] = item.brand
     if settings.sh_push_product_type and item.item_group:
-        payload["product_type"] = item.item_group
+        payload["productType"] = item.item_group
     if settings.sh_push_images:
         images = _item_images(item, settings)
         if images:
-            payload["images"] = [{"src": url} for url in images]
+            payload["files"] = [
+                {"originalSource": url, "contentType": "IMAGE"} for url in images
+            ]
     return payload
 
 
@@ -242,17 +289,29 @@ def _push_product_unlocked(item):
     if entity and entity.erpnext_fingerprint == fp:
         return  # unchanged since our own last push -- avoid spamming the API
 
-    client = ShopifyClient()
-    payload = _product_payload(item, variants, settings)
+    client = ShopifyGraphQLClient()
+    product_input = _product_set_input(item, variants, settings)
 
+    identifier = None
     if item.get("sh_shopify_product_id"):
-        resp = client.put(
-            f"products/{item.sh_shopify_product_id}.json", {"product": payload})
-    else:
-        resp = client.post("products.json", {"product": payload})
+        identifier = {
+            "id": f"gid://shopify/Product/{item.sh_shopify_product_id}"}
 
-    product = resp.get("product", {})
-    product_id = str(product.get("id", ""))
+    data = client.execute(_PRODUCT_SET_MUTATION, {
+        "input": product_input,
+        "identifier": identifier,
+        # Product/variant counts here are small (single to low tens) --
+        # synchronous keeps write-back a single round trip. Revisit if a
+        # template's variant count ever grows enough to risk timeouts.
+        "synchronous": True,
+    })
+    result = data.get("productSet") or {}
+    errors = result.get("userErrors") or []
+    if errors:
+        raise RuntimeError(f"Shopify productSet userErrors: {errors}")
+
+    product = result.get("product") or {}
+    product_id = product.get("legacyResourceId")
     if not product_id:
         return
 
@@ -260,9 +319,17 @@ def _push_product_unlocked(item):
         frappe.db.set_value("Item", item.name,
                             "sh_shopify_product_id", product_id)
 
-    returned_variants = product.get("variants", [])
-    for variant, returned in zip(variants, returned_variants):
-        variant_id = str(returned.get("id", ""))
+    # Match by SKU, not response order -- productSet's variants connection
+    # isn't documented to preserve submission order, and getting this wrong
+    # would silently write one variant's Shopify ID onto a different
+    # ERPNext item.
+    returned_by_sku = {
+        v.get("sku"): v.get("legacyResourceId")
+        for v in (product.get("variants") or {}).get("nodes", [])
+        if v.get("sku")
+    }
+    for variant in variants:
+        variant_id = returned_by_sku.get(variant.item_code)
         if variant_id and variant.get("sh_shopify_variant_id") != variant_id:
             frappe.db.set_value("Item", variant.name,
                                 "sh_shopify_variant_id", variant_id)
@@ -284,7 +351,9 @@ def archive_item(item_code: str):
     """Called when sync_to_shopify is unchecked on an item that's already
     linked -- archives the Shopify product (hidden from sales channels,
     order history intact) rather than deleting it or silently ignoring the
-    checkbox."""
+    checkbox. Resends the full product_set_input (not just {status}) since
+    it's unconfirmed whether productSet treats a missing field as "leave
+    alone" or "clear" -- sending the complete state is correct either way."""
     item = frappe.get_doc("Item", item_code)
     if item.variant_of or not item.get("sh_shopify_product_id"):
         return
@@ -297,8 +366,30 @@ def archive_item(item_code: str):
         return
 
     try:
-        client = ShopifyClient()
-        client.put(f"products/{item.sh_shopify_product_id}.json",
-                   {"product": {"status": "archived"}})
+        item = frappe.get_doc("Item", item.name)
+        settings = frappe.get_single("Shopify Connector Settings")
+
+        if item.has_variants:
+            variant_names = frappe.get_all(
+                "Item", filters={"variant_of": item.name}, pluck="name")
+            variants = [frappe.get_doc("Item", v) for v in variant_names]
+        else:
+            variants = [item]
+
+        product_input = _product_set_input(item, variants, settings)
+        product_input["status"] = "ARCHIVED"
+
+        client = ShopifyGraphQLClient()
+        data = client.execute(_PRODUCT_SET_MUTATION, {
+            "input": product_input,
+            "identifier": {"id": f"gid://shopify/Product/{item.sh_shopify_product_id}"},
+            "synchronous": True,
+        })
+        errors = (data.get("productSet") or {}).get("userErrors") or []
+        if errors:
+            frappe.log_error(
+                title=f"Shopify: archive failed for {item.name}",
+                message=str(errors),
+            )
     finally:
         item.unlock()
