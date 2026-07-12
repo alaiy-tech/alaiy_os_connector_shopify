@@ -3,6 +3,83 @@ from frappe.utils import flt, now_datetime
 
 from alaiy_os_connector_shopify.shopify.sync_guard import has_active_sync, load_or_create_log
 
+_ORDERS_QUERY = """
+query PullOrders($after: String, $queryString: String!) {
+  orders(first: 50, after: $after, query: $queryString, sortKey: CREATED_AT) {
+    edges {
+      node {
+        legacyResourceId
+        name
+        displayFinancialStatus
+        displayFulfillmentStatus
+        customer {
+          legacyResourceId
+          firstName
+          lastName
+          email
+        }
+        lineItems(first: 100) {
+          nodes {
+            sku
+            title
+            quantity
+            variant {
+              legacyResourceId
+            }
+            originalUnitPriceSet {
+              shopMoney {
+                amount
+              }
+            }
+          }
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
+
+
+def _order_node_to_rest_shape(node: dict) -> dict:
+    """
+    Reshape a GraphQL order node into the same REST-style dict that
+    _upsert_order/_cancel_order/_resolve_item_code already consume.
+    Webhook payloads are still REST-shaped JSON regardless of the GraphQL
+    mutation used to register the subscription (Shopify sends the classic
+    resource representation to webhook endpoints either way) -- keeping one
+    shared internal shape means the webhook and pull code paths below don't
+    need to diverge.
+    """
+    customer = node.get("customer") or {}
+    line_items = []
+    for li in (node.get("lineItems") or {}).get("nodes", []):
+        variant = li.get("variant") or {}
+        money = (li.get("originalUnitPriceSet") or {}).get("shopMoney") or {}
+        line_items.append({
+            "sku": li.get("sku"),
+            "title": li.get("title"),
+            "quantity": li.get("quantity"),
+            "variant_id": variant.get("legacyResourceId"),
+            "price": money.get("amount"),
+        })
+    return {
+        "id": node.get("legacyResourceId"),
+        "name": node.get("name"),
+        "customer": {
+            "id": customer.get("legacyResourceId"),
+            "first_name": customer.get("firstName"),
+            "last_name": customer.get("lastName"),
+            "email": customer.get("email"),
+        } if customer.get("legacyResourceId") else {},
+        "line_items": line_items,
+        "financial_status": (node.get("displayFinancialStatus") or "").lower(),
+        "fulfillment_status": (node.get("displayFulfillmentStatus") or "").lower(),
+    }
+
 
 # ── Webhook handler ────────────────────────────────────────────────────────────
 
@@ -30,20 +107,23 @@ def run_orders_sync(trigger="manual", log_name=None):
     frappe.db.commit()
 
     try:
-        from alaiy_os_connector_shopify.shopify.client import ShopifyClient
-        client = ShopifyClient()
+        from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+        client = ShopifyGraphQLClient()
         settings = frappe.get_single("Shopify Connector Settings")
 
-        params = {
-            "status": settings.sh_order_status_filter or "open",
-            "financial_status": "paid",
-            "fields": "id,name,customer,line_items,financial_status,fulfillment_status",
-        }
+        # NOTE: "status:<open|closed|cancelled>" mirrors the old REST
+        # `status` param's values 1:1 but wasn't independently verified
+        # against Shopify's order search-syntax docs -- if a live pull
+        # unexpectedly returns zero orders, check this filter string first.
+        status_filter = settings.sh_order_status_filter or "open"
+        query_string = f"financial_status:paid AND status:{status_filter}"
+        variables = {"after": None, "queryString": query_string}
 
         processed = created = failed = pages = 0
-        for page_data in client.get_paginated("orders.json", params):
+        for page_nodes in client.execute_paginated(_ORDERS_QUERY, variables, ["orders"]):
             pages += 1
-            for order in page_data.get("orders", []):
+            for node in page_nodes:
+                order = _order_node_to_rest_shape(node)
                 processed += 1
                 try:
                     if _upsert_order(order):
