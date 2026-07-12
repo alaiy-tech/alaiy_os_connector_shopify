@@ -18,10 +18,8 @@ class ShopifyConnectorSettings(Document):
         setup_custom_fields()
 
         try:
-            from alaiy_os_connector_shopify.shopify.client import ShopifyClient
             from alaiy_os_connector_shopify.shopify.webhooks import register_webhooks
-            client = ShopifyClient()
-            register_webhooks(client)
+            register_webhooks()
         except Exception:
             frappe.log_error(
                 title="Shopify: webhook registration failed on enable",
