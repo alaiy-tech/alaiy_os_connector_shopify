@@ -18,6 +18,8 @@ def sync_connector_registry():
         "sh_push_description", "sh_push_vendor", "sh_push_product_type", "sh_push_images",
     ])
     _ensure_list_view_column("Item", "sync_to_shopify", "Sync to Shopify")
+    _ensure_list_view_column("Sales Order", "sh_fulfillment_status", "Shopify Fulfillment Status")
+    _ensure_list_view_column("Sales Order", "sh_financial_status", "Shopify Financial Status")
     _drop_orphaned_singles_value("Shopify Connector Settings", "sh_api_version")
 
     if not frappe.db.exists("DocType", "OS Connector Registry"):
@@ -191,6 +193,7 @@ def setup_custom_fields():
             "label": "Shopify Financial Status",
             "fieldtype": "Data",
             "read_only": 1,
+            "in_list_view": 1,
             "insert_after": "sh_shopify_order_name",
         },
         {
@@ -198,6 +201,7 @@ def setup_custom_fields():
             "label": "Shopify Fulfillment Status",
             "fieldtype": "Data",
             "read_only": 1,
+            "in_list_view": 1,
             "insert_after": "sh_financial_status",
         },
     ]
@@ -210,10 +214,22 @@ def setup_custom_fields():
             "insert_after": "customer_name",
         },
     ]
+    delivery_note_fields = [
+        {
+            "fieldname": "sh_shopify_fulfillment_id",
+            "label": "Shopify Fulfillment ID",
+            "fieldtype": "Data",
+            "search_index": 1,
+            "read_only": 1,
+            "description": "Set when this Delivery Note was auto-created from a Shopify fulfillment event. Prevents the same fulfillment from ever creating a duplicate Delivery Note.",
+            "insert_after": "customer",
+        },
+    ]
 
     _ensure_custom_fields("Item", item_fields)
     _ensure_custom_fields("Sales Order", sales_order_fields)
     _ensure_custom_fields("Customer", customer_fields)
+    _ensure_custom_fields("Delivery Note", delivery_note_fields)
     frappe.db.commit()
 
 
