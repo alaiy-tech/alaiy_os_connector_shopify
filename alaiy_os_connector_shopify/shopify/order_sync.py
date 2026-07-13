@@ -1,7 +1,30 @@
+import contextlib
+
 import frappe
 from frappe.utils import flt, now_datetime
 
 from alaiy_os_connector_shopify.shopify.sync_guard import has_active_sync, load_or_create_log
+
+
+@contextlib.contextmanager
+def _as_administrator():
+    """
+    handle_webhook is allow_guest=True, so frappe.session.user is "Guest"
+    for the whole request AND the background job it enqueues (RQ workers
+    inherit the enqueuing request's user). make_delivery_note()'s internal
+    get_mapped_doc() checks create-permission on the mapped doc BEFORE we
+    ever get a chance to set ignore_permissions on it -- Guest fails that
+    check outright, unlike a plain doc.insert() where our own
+    flags.ignore_permissions actually takes effect. Elevate just for this
+    one call, then restore -- RQ workers reuse the same process across
+    multiple jobs, so leaving this elevated would leak into unrelated ones.
+    """
+    original_user = frappe.session.user
+    frappe.set_user("Administrator")
+    try:
+        yield
+    finally:
+        frappe.set_user(original_user)
 
 _ORDERS_COUNT_QUERY = """
 query { ordersCount { count } }
@@ -417,10 +440,11 @@ def _create_delivery_note_if_needed(so_name):
 
     try:
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
-        dn = make_delivery_note(so_name)
-        dn.flags.ignore_permissions = True
-        dn.insert()
-        dn.submit()
+        with _as_administrator():
+            dn = make_delivery_note(so_name)
+            dn.flags.ignore_permissions = True
+            dn.insert()
+            dn.submit()
         frappe.db.commit()
     except Exception:
         frappe.log_error(
@@ -478,26 +502,27 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
 
     try:
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
-        dn = make_delivery_note(so.name)
+        with _as_administrator():
+            dn = make_delivery_note(so.name)
 
-        # make_delivery_note maps the full remaining quantity per item by
-        # default -- trim each row down to only what THIS fulfillment
-        # event covers, and drop rows this fulfillment didn't touch at all.
-        kept_items = []
-        for dn_item in dn.items:
-            fulfilled_qty = qty_by_item.get(dn_item.item_code, 0)
-            if fulfilled_qty <= 0:
-                continue
-            dn_item.qty = min(dn_item.qty, fulfilled_qty)
-            kept_items.append(dn_item)
-        dn.items = kept_items
-        if not dn.items:
-            return
+            # make_delivery_note maps the full remaining quantity per item
+            # by default -- trim each row down to only what THIS
+            # fulfillment event covers, dropping rows it didn't touch.
+            kept_items = []
+            for dn_item in dn.items:
+                fulfilled_qty = qty_by_item.get(dn_item.item_code, 0)
+                if fulfilled_qty <= 0:
+                    continue
+                dn_item.qty = min(dn_item.qty, fulfilled_qty)
+                kept_items.append(dn_item)
+            dn.items = kept_items
+            if not dn.items:
+                return
 
-        dn.sh_shopify_fulfillment_id = fulfillment_id
-        dn.flags.ignore_permissions = True
-        dn.insert()
-        dn.submit()
+            dn.sh_shopify_fulfillment_id = fulfillment_id
+            dn.flags.ignore_permissions = True
+            dn.insert()
+            dn.submit()
         frappe.db.commit()
     except Exception:
         frappe.log_error(
