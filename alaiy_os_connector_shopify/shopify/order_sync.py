@@ -436,25 +436,31 @@ def _get_or_create_customer(customer_data, settings):
 def _resolve_default_territory(settings):
     """
     "All Territories" is ERPNext's usual seeded root, but nothing guarantees
-    it exists under that exact name on every site (renamed, or the demo
-    data was never loaded) -- confirmed live: a real site had zero Territory
-    named that, which failed every single Customer creation with "Could not
-    find Territory: All Territories" and silently killed the whole order
-    import. Prefer the configured setting, then that conventional name IF it
-    actually exists, then just fall back to whatever Territory happens to
-    exist so order import never hard-fails over this.
+    it exists under that exact name on every site (renamed, demo data never
+    loaded, or a from-scratch site with zero Territory rows at all --
+    confirmed live on a real site). Order import must never hard-fail over
+    a missing master record the merchant didn't know they needed, so this
+    self-heals: configured setting, then the conventional name if present,
+    then any existing Territory, then create a root one as a last resort.
     """
     if settings.sh_default_territory:
         return settings.sh_default_territory
     if frappe.db.exists("Territory", "All Territories"):
         return "All Territories"
     fallback = frappe.db.get_value("Territory", {}, "name")
-    if not fallback:
-        frappe.throw(
-            "No Territory exists on this site. Create at least one Territory, "
-            "or set 'Default Territory' on Shopify Connector Settings, before importing orders."
-        )
-    return fallback
+    if fallback:
+        return fallback
+    return _create_root_territory()
+
+
+def _create_root_territory():
+    territory = frappe.new_doc("Territory")
+    territory.territory_name = "All Territories"
+    territory.is_group = 1
+    territory.flags.ignore_permissions = True
+    territory.insert()
+    frappe.db.commit()
+    return territory.name
 
 
 def _resolve_item_code(line_item):
