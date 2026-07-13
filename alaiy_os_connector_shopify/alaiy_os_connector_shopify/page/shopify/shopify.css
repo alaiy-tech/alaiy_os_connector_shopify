@@ -14,10 +14,13 @@
 }
 
 .shopify-action-card {
+	display: flex;
+	flex-direction: column;
 	border: 1px solid var(--border-color);
 	border-radius: var(--border-radius-md, 8px);
 	padding: 16px;
 	background: var(--card-bg, var(--fg-color));
+	height: 100%;
 }
 
 .shopify-action-card-title {
@@ -28,13 +31,14 @@
 .shopify-action-card-desc {
 	font-size: 12px;
 	margin-bottom: 12px;
-	min-height: 32px;
+	flex-grow: 1;
 }
 
 .shopify-action-card-buttons {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 8px;
+	margin-top: auto;
 }
 
 .shopify-section-title {
