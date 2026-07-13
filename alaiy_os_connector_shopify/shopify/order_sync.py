@@ -111,11 +111,13 @@ def run_orders_sync(trigger="manual", log_name=None):
         client = ShopifyGraphQLClient()
         settings = frappe.get_single("Shopify Connector Settings")
 
-        # NOTE: "status:<open|closed|cancelled>" mirrors the old REST
+        # NOTE: "status:<open|closed|cancelled|any>" mirrors the old REST
         # `status` param's values 1:1 but wasn't independently verified
         # against Shopify's order search-syntax docs -- if a live pull
         # unexpectedly returns zero orders, check this filter string first.
-        status_filter = settings.sh_order_status_filter or "open"
+        # The Select field's options are capitalized labels (Open/Any/...)
+        # for display -- Shopify's search syntax expects lowercase tokens.
+        status_filter = (settings.sh_order_status_filter or "open").lower()
         query_string = f"financial_status:paid AND status:{status_filter}"
         variables = {"after": None, "queryString": query_string}
 
