@@ -444,6 +444,7 @@ def _create_delivery_note_if_needed(so_name):
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
         with _as_administrator():
             dn = make_delivery_note(so_name)
+            _force_valid_warehouse(dn)
             dn.flags.ignore_permissions = True
             dn.insert()
             dn.submit()
@@ -453,6 +454,27 @@ def _create_delivery_note_if_needed(so_name):
             title=f"Shopify: auto Delivery Note failed for {so_name}",
             message=frappe.get_traceback(),
         )
+
+
+def _force_valid_warehouse(dn):
+    """
+    make_delivery_note() copies each item's warehouse straight from the
+    Sales Order's own already-stored Item rows -- which is exactly the
+    problem for any order created before the Group Warehouse validation/
+    self-heal existed (confirmed live: several real orders had a Group
+    Warehouse permanently baked into their Item rows, since a submitted
+    Sales Order's items can never be edited/amended just to fix this).
+    Never trust that stored value for an actual stock transaction --
+    always re-resolve and force a real leaf warehouse here, at the one
+    point that actually matters (the document that moves stock), so this
+    class of stale data can never break delivery creation again, for any
+    order regardless of when it was created.
+    """
+    settings = frappe.get_single("Shopify Connector Settings")
+    warehouse = _resolve_default_warehouse(settings)
+    for item in dn.items:
+        item.warehouse = warehouse
+    dn.set_warehouse = warehouse
 
 
 def _sync_fulfillments(so_name, fulfillments):
@@ -506,6 +528,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
         with _as_administrator():
             dn = make_delivery_note(so.name)
+            _force_valid_warehouse(dn)
 
             # make_delivery_note maps the full remaining quantity per item
             # by default -- trim each row down to only what THIS
