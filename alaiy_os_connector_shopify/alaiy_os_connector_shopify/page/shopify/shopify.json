@@ -1,0 +1,10 @@
+{
+  "doctype": "Page",
+  "module": "Alaiy OS Connector Shopify",
+  "name": "shopify",
+  "page_name": "shopify",
+  "standard": "Yes",
+  "system_page": 0,
+  "title": "Shopify",
+  "roles": []
+}
