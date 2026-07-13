@@ -18,6 +18,7 @@
     "sh_company",
     "sh_default_warehouse",
     "sh_customer_group",
+    "sh_default_territory",
     "sh_selling_price_list",
     "sh_cost_center",
     "sb_sync",
@@ -117,6 +118,13 @@
       "label": "Default Customer Group",
       "options": "Customer Group",
       "reqd": 1
+    },
+    {
+      "description": "Territory assigned to Customers auto-created from Shopify orders. Falls back to any existing Territory if left blank -- there's no guarantee a site has one named 'All Territories'.",
+      "fieldname": "sh_default_territory",
+      "fieldtype": "Link",
+      "label": "Default Territory",
+      "options": "Territory"
     },
     {
       "fieldname": "sh_selling_price_list",

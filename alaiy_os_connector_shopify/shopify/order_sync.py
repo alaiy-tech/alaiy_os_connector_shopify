@@ -424,13 +424,37 @@ def _get_or_create_customer(customer_data, settings):
     c.customer_name = full_name
     c.customer_type = "Individual"
     c.customer_group = settings.sh_customer_group or "All Customer Groups"
-    c.territory = "All Territories"
+    c.territory = _resolve_default_territory(settings)
     if shopify_id:
         c.sh_shopify_customer_id = shopify_id
     c.flags.ignore_permissions = True
     c.insert()
     frappe.db.commit()
     return c.name
+
+
+def _resolve_default_territory(settings):
+    """
+    "All Territories" is ERPNext's usual seeded root, but nothing guarantees
+    it exists under that exact name on every site (renamed, or the demo
+    data was never loaded) -- confirmed live: a real site had zero Territory
+    named that, which failed every single Customer creation with "Could not
+    find Territory: All Territories" and silently killed the whole order
+    import. Prefer the configured setting, then that conventional name IF it
+    actually exists, then just fall back to whatever Territory happens to
+    exist so order import never hard-fails over this.
+    """
+    if settings.sh_default_territory:
+        return settings.sh_default_territory
+    if frappe.db.exists("Territory", "All Territories"):
+        return "All Territories"
+    fallback = frappe.db.get_value("Territory", {}, "name")
+    if not fallback:
+        frappe.throw(
+            "No Territory exists on this site. Create at least one Territory, "
+            "or set 'Default Territory' on Shopify Connector Settings, before importing orders."
+        )
+    return fallback
 
 
 def _resolve_item_code(line_item):
