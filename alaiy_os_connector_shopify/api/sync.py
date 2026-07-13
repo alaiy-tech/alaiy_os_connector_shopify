@@ -56,5 +56,5 @@ def get_sync_status(sync_type=None):
             "error_message",
         ],
         order_by="started_at desc",
-        limit=3,
+        limit=5,
     )

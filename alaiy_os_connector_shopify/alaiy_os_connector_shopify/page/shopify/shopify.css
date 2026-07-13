@@ -1,0 +1,54 @@
+.shopify-ops-page {
+	max-width: 900px;
+}
+
+.shopify-connector-status {
+	margin-bottom: 20px;
+}
+
+.shopify-action-groups {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+	gap: 12px;
+	margin-bottom: 28px;
+}
+
+.shopify-action-card {
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius-md, 8px);
+	padding: 16px;
+	background: var(--card-bg, var(--fg-color));
+}
+
+.shopify-action-card-title {
+	font-weight: 600;
+	margin-bottom: 4px;
+}
+
+.shopify-action-card-desc {
+	font-size: 12px;
+	margin-bottom: 12px;
+	min-height: 32px;
+}
+
+.shopify-action-card-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.shopify-section-title {
+	font-weight: 600;
+	font-size: 14px;
+	margin-bottom: 8px;
+}
+
+.shopify-activity-table {
+	margin-bottom: 0;
+}
+
+.shopify-activity-table th {
+	font-size: 11px;
+	text-transform: uppercase;
+	color: var(--text-muted);
+}
