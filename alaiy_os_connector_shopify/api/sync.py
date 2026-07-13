@@ -20,6 +20,12 @@ def trigger_orders_sync():
 
 
 @frappe.whitelist()
+def import_existing_orders():
+    from alaiy_os_connector_shopify.shopify.order_sync import import_existing_orders as _import
+    return _import()
+
+
+@frappe.whitelist()
 def trigger_inventory_push():
     log = load_or_create_log("inventory", "manual")
     frappe.enqueue(

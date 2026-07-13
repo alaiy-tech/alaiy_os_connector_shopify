@@ -186,6 +186,20 @@ def setup_custom_fields():
             "read_only": 1,
             "insert_after": "sh_shopify_order_id",
         },
+        {
+            "fieldname": "sh_financial_status",
+            "label": "Shopify Financial Status",
+            "fieldtype": "Data",
+            "read_only": 1,
+            "insert_after": "sh_shopify_order_name",
+        },
+        {
+            "fieldname": "sh_fulfillment_status",
+            "label": "Shopify Fulfillment Status",
+            "fieldtype": "Data",
+            "read_only": 1,
+            "insert_after": "sh_financial_status",
+        },
     ]
     customer_fields = [
         {

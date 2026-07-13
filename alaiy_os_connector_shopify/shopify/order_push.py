@@ -1,0 +1,132 @@
+"""
+ERPNext -> Shopify order push-back ("vice versa" half of order sync).
+
+Deliberately narrow in scope: Shopify's own orderUpdate mutation doesn't
+support line-item changes at all (that needs the separate, multi-step Order
+Edit session API, out of scope here per the same open question as the
+Shopify -> ERPNext direction in order_sync.py::_update_order) -- so this
+only pushes note/tags (status visibility) on update, and cancels the
+Shopify order on Sales Order cancellation. Both doc_events check
+doc.flags.from_shopify_sync first: a save/cancel that originated FROM a
+Shopify webhook/pull must never be echoed straight back to Shopify, or
+every webhook would trigger an infinite ping-pong between the two systems.
+"""
+
+import frappe
+
+_ORDER_UPDATE_MUTATION = """
+mutation PushOrderUpdate($input: OrderInput!) {
+  orderUpdate(input: $input) {
+    order {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_ORDER_CANCEL_MUTATION = """
+mutation PushOrderCancel($orderId: ID!, $reason: OrderCancelReason!, $refund: Boolean!, $restock: Boolean!, $notifyCustomer: Boolean!) {
+  orderCancel(orderId: $orderId, reason: $reason, refund: $refund, restock: $restock, notifyCustomer: $notifyCustomer) {
+    job {
+      id
+    }
+    orderCancelUserErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+
+def _to_gid(shopify_order_id: str) -> str:
+    return f"gid://shopify/Order/{shopify_order_id}"
+
+
+# ── Doc event entry points ───────────────────────────────────────────────────
+# Never call Shopify inline inside a save/cancel transaction -- enqueue and
+# return, same convention as product_sync.py.
+
+def on_sales_order_update(doc, method=None):
+    if doc.flags.from_shopify_sync:
+        return
+    if not doc.get("sh_shopify_order_id"):
+        return
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.order_push.push_order_update",
+        queue="short",
+        timeout=60,
+        order_id=doc.sh_shopify_order_id,
+        sales_order=doc.name,
+        status=doc.status,
+    )
+
+
+def on_sales_order_cancel(doc, method=None):
+    if doc.flags.from_shopify_sync:
+        return
+    if not doc.get("sh_shopify_order_id"):
+        return
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.order_push.push_order_cancel",
+        queue="short",
+        timeout=60,
+        order_id=doc.sh_shopify_order_id,
+        sales_order=doc.name,
+    )
+
+
+# ── Background job bodies ────────────────────────────────────────────────────
+
+def push_order_update(order_id: str, sales_order: str, status: str):
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    try:
+        client = ShopifyGraphQLClient()
+        data = client.execute(_ORDER_UPDATE_MUTATION, {
+            "input": {
+                "id": _to_gid(order_id),
+                "note": f"Alaiy OS: {sales_order} status = {status}",
+                "tags": [f"alaiy-os-status:{status}"],
+            },
+        })
+        errors = (data.get("orderUpdate") or {}).get("userErrors") or []
+        if errors:
+            frappe.log_error(
+                title=f"Shopify: order update push failed for {sales_order}",
+                message=str(errors),
+            )
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: order update push failed for {sales_order}",
+            message=frappe.get_traceback(),
+        )
+
+
+def push_order_cancel(order_id: str, sales_order: str):
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    try:
+        client = ShopifyGraphQLClient()
+        data = client.execute(_ORDER_CANCEL_MUTATION, {
+            "orderId": _to_gid(order_id),
+            "reason": "OTHER",
+            "refund": False,
+            "restock": False,
+            "notifyCustomer": False,
+        })
+        errors = (data.get("orderCancel") or {}).get("orderCancelUserErrors") or []
+        if errors:
+            frappe.log_error(
+                title=f"Shopify: order cancel push failed for {sales_order}",
+                message=str(errors),
+            )
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: order cancel push failed for {sales_order}",
+            message=frappe.get_traceback(),
+        )

@@ -5,6 +5,7 @@ WEBHOOK_TOPICS = [
     "orders/updated",
     "orders/cancelled",
     "orders/fulfilled",
+    "orders/delete",
 ]
 
 _CREATE_MUTATION = """

@@ -56,7 +56,7 @@ def handle_webhook():
 
 def _dispatch(topic, payload):
     order_topics = {"orders/create", "orders/updated",
-                    "orders/cancelled", "orders/fulfilled"}
+                    "orders/cancelled", "orders/fulfilled", "orders/delete"}
     if topic in order_topics:
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.order_sync.handle_order_webhook",
