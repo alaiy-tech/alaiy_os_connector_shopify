@@ -18,6 +18,20 @@ def handle_webhook():
     raw_body = request.data
 
     settings = frappe.get_single("Shopify Connector Settings")
+
+    # TEMPORARY diagnostic -- logs every single call unconditionally so we
+    # can see exactly which branch a real webhook hits, since the earlier
+    # failure/disabled branches don't all log and the response bytes alone
+    # weren't enough to tell branches apart. Remove once webhook delivery
+    # is confirmed working end-to-end.
+    frappe.log_error(
+        title="Shopify webhook received (diagnostic)",
+        message=(
+            f"topic={topic!r} is_enabled={settings.is_enabled!r} "
+            f"has_hmac_header={bool(hmac_header)} body_len={len(raw_body or b'')}"
+        ),
+    )
+
     if not settings.is_enabled:
         frappe.response.status_code = 200
         return {"ok": False, "reason": "connector disabled"}
@@ -39,12 +53,20 @@ def handle_webhook():
     ).digest()
     expected = base64.b64encode(computed).decode("utf-8")
     if not hmac_header or not hmac.compare_digest(expected, hmac_header):
+        frappe.log_error(
+            title="Shopify webhook rejected: HMAC mismatch (diagnostic)",
+            message=f"topic={topic!r}",
+        )
         frappe.response.status_code = 401
         return {"ok": False, "reason": "HMAC validation failed"}
 
     try:
         payload = json.loads(raw_body)
     except Exception:
+        frappe.log_error(
+            title="Shopify webhook rejected: invalid JSON (diagnostic)",
+            message=f"topic={topic!r} raw_body[:200]={raw_body[:200]!r}",
+        )
         frappe.response.status_code = 400
         return {"ok": False, "reason": "invalid JSON"}
 
