@@ -13,6 +13,11 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		single_column: true,
 	});
 
+	// single_column wraps content in Bootstrap's .container, which caps
+	// width and leaves a large dead zone on wide screens -- go full width
+	// instead, since this page's cards/table already manage their own layout.
+	$(wrapper).find(".container").removeClass("container").addClass("container-fluid");
+
 	$(page.body).append(`
 		<div class="shopify-ops-page">
 			<div class="shopify-connector-status"></div>
