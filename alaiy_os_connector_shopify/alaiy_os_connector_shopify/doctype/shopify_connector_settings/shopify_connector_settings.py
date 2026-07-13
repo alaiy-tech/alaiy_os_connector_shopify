@@ -12,6 +12,27 @@ class ShopifyConnectorSettings(Document):
         self.flags.shopify_just_enabled = bool(self.is_enabled and not old_enabled)
         self.flags.shopify_just_disabled = bool(not self.is_enabled and old_enabled)
         self._sync_registry_is_enabled()
+        self._validate_default_warehouse()
+
+    def _validate_default_warehouse(self):
+        """
+        Confirmed live: a real site had Default Warehouse set to the
+        auto-seeded root Group Warehouse ("All Warehouses - <Co Abbr>") --
+        it "looked like" a sensible default (top of the tree) but ERPNext
+        rejects any stock transaction against a Group Warehouse, so every
+        Delivery Note auto-created from a Shopify fulfillment failed. Catch
+        this at save time so it can never be configured wrong in the first
+        place, on any site.
+        """
+        if not self.sh_default_warehouse:
+            return
+        if frappe.db.get_value("Warehouse", self.sh_default_warehouse, "is_group"):
+            frappe.throw(
+                f"'{self.sh_default_warehouse}' is a Group Warehouse (an organizational "
+                "folder, not a real stock location) -- ERPNext doesn't allow stock "
+                "transactions against it. Pick a leaf warehouse instead, e.g. "
+                "'Stores - <Company Abbr>' or 'Finished Goods - <Company Abbr>'."
+            )
 
     def on_update(self):
         # Actually calling out to Shopify has to wait until after this

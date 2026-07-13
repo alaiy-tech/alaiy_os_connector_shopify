@@ -326,6 +326,7 @@ def _upsert_order(order):
     settings = frappe.get_single("Shopify Connector Settings")
     customer_name = _get_or_create_customer(
         order.get("customer") or {}, settings)
+    warehouse = _resolve_default_warehouse(settings)
 
     line_items = []
     for li in order.get("line_items", []):
@@ -336,6 +337,7 @@ def _upsert_order(order):
             "item_code": item_code,
             "qty": flt(li.get("quantity", 1)),
             "rate": flt(li.get("price", 0)),
+            "warehouse": warehouse,
             "delivery_date": frappe.utils.today(),
         })
 
@@ -353,7 +355,7 @@ def _upsert_order(order):
     so.transaction_date = frappe.utils.today()
     so.delivery_date = frappe.utils.today()
     so.selling_price_list = settings.sh_selling_price_list or "Standard Selling"
-    so.set_warehouse = settings.sh_default_warehouse
+    so.set_warehouse = warehouse
     if settings.sh_cost_center:
         so.cost_center = settings.sh_cost_center
     so.sh_shopify_order_id = order_id
@@ -604,6 +606,39 @@ def _create_root_territory():
     territory.insert()
     frappe.db.commit()
     return territory.name
+
+
+def _resolve_default_warehouse(settings):
+    """
+    Belt-and-suspenders alongside ShopifyConnectorSettings._validate_default_warehouse:
+    that check stops a NEW misconfiguration at save time, but doesn't retroactively
+    fix a site that set this before the validation existed (confirmed live --
+    a real site had it pointed at the auto-seeded root Group Warehouse, which
+    silently killed every auto-created Delivery Note with "Group node warehouse
+    is not allowed to select for transactions"). If the configured warehouse
+    turns out to be a Group, fall back to the first real leaf warehouse under
+    the connector's configured Company instead of hard-failing order import.
+    """
+    configured = settings.sh_default_warehouse
+    if configured and not frappe.db.get_value("Warehouse", configured, "is_group"):
+        return configured
+
+    if configured:
+        frappe.log_error(
+            title="Shopify: Default Warehouse is a Group Warehouse, falling back",
+            message=f"Configured: {configured}. Set a leaf warehouse in Shopify Connector Settings to silence this.",
+        )
+
+    fallback = frappe.db.get_value(
+        "Warehouse", {"is_group": 0, "company": settings.sh_company}, "name")
+    if not fallback:
+        fallback = frappe.db.get_value("Warehouse", {"is_group": 0}, "name")
+    if not fallback:
+        frappe.throw(
+            "No usable (non-Group) Warehouse exists for this company. "
+            "Create one, then set it as 'Default Warehouse' on Shopify Connector Settings."
+        )
+    return fallback
 
 
 def _resolve_item_code(line_item):
