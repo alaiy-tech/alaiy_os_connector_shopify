@@ -38,6 +38,7 @@ doc_events = {
         "on_update": "alaiy_os_connector_shopify.shopify.product_sync.on_item_price_change",
     },
     "Sales Order": {
+        "on_submit": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_submit",
         "on_update": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_update",
         "on_cancel": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_cancel",
     },

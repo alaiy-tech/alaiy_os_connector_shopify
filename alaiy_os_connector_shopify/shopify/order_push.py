@@ -42,6 +42,27 @@ mutation PushOrderCancel($orderId: ID!, $reason: OrderCancelReason!, $refund: Bo
 }
 """
 
+# NOTE: orderCreate's exact input shape (OrderCreateOrderInput) should be
+# double-checked against Shopify's live 2026-07 schema reference before
+# relying on this in production -- this wasn't verified against a live
+# introspection/sandbox call, only against the general shape Shopify's
+# GraphQL Admin API has documented for this mutation historically.
+_ORDER_CREATE_MUTATION = """
+mutation PushOrderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) {
+  orderCreate(order: $order, options: $options) {
+    order {
+      id
+      legacyResourceId
+      name
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
 
 def _to_gid(shopify_order_id: str) -> str:
     return f"gid://shopify/Order/{shopify_order_id}"
@@ -63,6 +84,31 @@ def on_sales_order_update(doc, method=None):
         order_id=doc.sh_shopify_order_id,
         sales_order=doc.name,
         status=doc.status,
+    )
+
+
+def on_sales_order_submit(doc, method=None):
+    """
+    The one 'vice versa' direction that was genuinely missing: a Sales
+    Order created directly in ERPNext (not from a Shopify pull/webhook)
+    never had anything pushing it to Shopify at all. Only fires for orders
+    with at least one Shopify-linked Item -- an order with zero Shopify
+    products has nothing meaningful to create over there.
+    """
+    if doc.flags.from_shopify_sync:
+        return
+    if doc.get("sh_shopify_order_id"):
+        return  # already a Shopify-origin order, nothing to push
+    if not any(
+        frappe.db.get_value("Item", item.item_code, "sh_shopify_variant_id")
+        for item in doc.items
+    ):
+        return
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.order_push.push_order_create",
+        queue="short",
+        timeout=120,
+        sales_order=doc.name,
     )
 
 
@@ -103,6 +149,81 @@ def push_order_update(order_id: str, sales_order: str, status: str):
     except Exception:
         frappe.log_error(
             title=f"Shopify: order update push failed for {sales_order}",
+            message=frappe.get_traceback(),
+        )
+
+
+def push_order_create(sales_order: str):
+    """
+    Builds an orderCreate mutation from a Sales Order's own items/customer.
+    Line items without a linked sh_shopify_variant_id are skipped (and
+    logged) rather than failing the whole push -- a partially-representable
+    order on Shopify is more useful than none at all, but skipped lines are
+    flagged loudly since Shopify's total won't match ERPNext's.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    so = frappe.get_doc("Sales Order", sales_order)
+
+    line_items = []
+    skipped = []
+    for item in so.items:
+        variant_id = frappe.db.get_value("Item", item.item_code, "sh_shopify_variant_id")
+        if not variant_id:
+            skipped.append(item.item_code)
+            continue
+        line_items.append({
+            "variantId": f"gid://shopify/ProductVariant/{variant_id}",
+            "quantity": int(item.qty),
+        })
+
+    if not line_items:
+        frappe.log_error(
+            title=f"Shopify: order create push skipped for {sales_order}",
+            message="No line item on this Sales Order has a linked Shopify variant.",
+        )
+        return
+
+    customer_email = frappe.db.get_value("Customer", so.customer, "email_id")
+
+    try:
+        client = ShopifyGraphQLClient()
+        order_input = {
+            "lineItems": line_items,
+            "financialStatus": "PENDING",
+        }
+        if customer_email:
+            order_input["email"] = customer_email
+
+        data = client.execute(_ORDER_CREATE_MUTATION, {
+            "order": order_input,
+            "options": {"sendReceipt": False, "sendFulfillmentReceipt": False},
+        })
+        result = data.get("orderCreate") or {}
+        errors = result.get("userErrors") or []
+        if errors:
+            frappe.log_error(
+                title=f"Shopify: order create push failed for {sales_order}",
+                message=str(errors),
+            )
+            return
+
+        order = result.get("order") or {}
+        if order.get("legacyResourceId"):
+            frappe.db.set_value("Sales Order", sales_order, {
+                "sh_shopify_order_id": order["legacyResourceId"],
+                "sh_shopify_order_name": order.get("name", ""),
+            })
+            frappe.db.commit()
+
+        if skipped:
+            frappe.log_error(
+                title=f"Shopify: order create push for {sales_order} skipped some items",
+                message=f"No Shopify variant linked for: {', '.join(skipped)}",
+            )
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: order create push failed for {sales_order}",
             message=frappe.get_traceback(),
         )
 
