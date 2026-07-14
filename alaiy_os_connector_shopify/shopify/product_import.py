@@ -13,6 +13,8 @@ Handles:
 - Edge cases: missing data, duplicate SKUs, image failures, etc.
 """
 
+from collections import Counter
+
 import frappe
 from frappe.utils import now_datetime, flt
 
@@ -115,16 +117,23 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
         variables = {"after": None}
 
         processed = created = skipped = failed = pages = 0
+        skip_reason_counts = Counter()
+        skip_examples = []  # capped list of "title: reason" strings for the log
 
         for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, variables, ["products"]):
             pages += 1
             for node in page_nodes:
                 processed += 1
                 try:
-                    if _import_product(node):
+                    was_created, reason = _import_product(node)
+                    if was_created:
                         created += 1
                     else:
                         skipped += 1
+                        skip_reason_counts[reason] += 1
+                        if len(skip_examples) < 30:
+                            product_name = node.get("title", "Unknown")
+                            skip_examples.append(f"{product_name}: {reason}")
                 except Exception as exc:
                     failed += 1
                     product_name = node.get("title", "Unknown")
@@ -146,6 +155,12 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
         if failed:
             summary += f"; {failed} failed"
         _append_log(log, summary)
+        if skip_reason_counts:
+            _append_log(log, "Skip reasons: " + ", ".join(
+                f"{reason} ({count})" for reason, count in skip_reason_counts.most_common()
+            ))
+        for line in skip_examples:
+            _append_log(log, f"SKIPPED {line}")
         log.save(ignore_permissions=True)
         frappe.db.commit()
 
@@ -208,21 +223,25 @@ def _wipe_unlinked_products():
     frappe.db.commit()
 
 
-def _import_product(node: dict) -> bool:
+def _import_product(node: dict) -> tuple:
     """
     Import a single Shopify product (template + variants) as ERPNext Item(s).
 
     Returns:
-        True if created, False if skipped (already exists)
+        (created: bool, reason: str) -- reason is always populated, even on
+        success, so the caller can log exactly what happened per product
+        instead of only a bare count. Skips previously vanished into a
+        single aggregate number with no way to tell "already imported"
+        (fine) apart from "SKU collision" (worth investigating).
     """
     product_id = str(node.get("legacyResourceId", ""))
     if not product_id:
-        return False
+        return False, "missing product_id"
 
     # Check if already imported (via Synced Entity)
     existing_entity = entities.get_by_external_id("product", product_id)
     if existing_entity:
-        return False  # Already imported
+        return False, "already imported"
 
     settings = frappe.get_single("Shopify Connector Settings")
     title = node.get("title", f"Product {product_id}").strip()
@@ -256,13 +275,13 @@ def _import_product(node: dict) -> bool:
             title=f"Shopify import: product {title} has no variants",
             message=f"Product ID: {product_id}"
         )
-        return False
+        return False, "product has zero variants"
 
 
 def _import_simple_product(
     product_id: str, title: str, description: str, vendor: str, item_group: str,
     variant: dict, images: list, settings
-) -> bool:
+) -> tuple:
     """
     Import a single-variant product as a simple Item (no variants table).
     """
@@ -272,7 +291,8 @@ def _import_simple_product(
 
     # Check if Item with this SKU already exists
     if frappe.db.exists("Item", sku):
-        return False  # SKU conflict; skip
+        existing_id = frappe.db.get_value("Item", sku, "sh_shopify_product_id")
+        return False, f"SKU '{sku}' already used by product_id={existing_id}"
 
     item_name = sku
 
@@ -332,13 +352,13 @@ def _import_simple_product(
         erpnext_fingerprint="",  # Empty for initial import
     )
 
-    return True
+    return True, "created"
 
 
 def _import_product_with_variants(
     product_id: str, title: str, description: str, vendor: str, item_group: str,
     variants: list, images: list, settings, option_names: list
-) -> bool:
+) -> tuple:
     """
     Import a multi-variant product as a template Item + variant Items.
     """
@@ -354,9 +374,11 @@ def _import_product_with_variants(
     ).strip("-")[:60]
     template_name = f"{slug}-{product_id}" if slug else f"sh-{product_id}"
 
-    # Check if template already exists
+    # Check if template already exists -- since template_name is now
+    # product_id-suffixed, this can only be true if the exact same
+    # product_id was seen twice in this run (e.g. a pagination overlap).
     if frappe.db.exists("Item", template_name):
-        return False  # Already imported this exact product; skip
+        return False, f"template '{template_name}' already exists (duplicate product_id in feed)"
 
     # ERPNext requires a has_variants=1 template to declare at least one
     # attribute (e.g. Size, Color), and every variant must carry a value
@@ -435,6 +457,11 @@ def _import_product_with_variants(
 
         # Check for SKU conflict
         if frappe.db.exists("Item", sku):
+            existing_id = frappe.db.get_value("Item", sku, "sh_shopify_product_id")
+            frappe.log_error(
+                title=f"Shopify import: variant SKU '{sku}' skipped (already used by product_id={existing_id})",
+                message=f"Product ID: {product_id}, template: {template_name}",
+            )
             continue  # Skip this variant if SKU exists elsewhere
 
         variant_name = sku
@@ -498,7 +525,7 @@ def _import_product_with_variants(
         erpnext_fingerprint="",
     )
 
-    return True
+    return True, "created"
 
 
 def _ensure_brand(name: str) -> str:
