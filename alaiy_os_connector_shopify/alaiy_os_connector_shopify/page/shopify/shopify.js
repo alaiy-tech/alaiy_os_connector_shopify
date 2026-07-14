@@ -54,6 +54,16 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 								</button>
 								<div id="products-log" class="shopify-sync-log"></div>
 							</div>
+
+							<!-- Products Export -->
+							<div class="shopify-sync-box">
+								<h6><i class="fa fa-upload"></i> Products</h6>
+								<p class="shopify-text-muted">Push local products to Shopify</p>
+								<button id="export-products-btn" class="shopify-btn shopify-btn-outline-primary">
+									Export Products to Shopify
+								</button>
+								<div id="products-export-log" class="shopify-sync-log"></div>
+							</div>
 						</div>
 					</div>
 				</div>
@@ -158,6 +168,32 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		});
 	}
 
+	function export_products() {
+		if (!confirm('Export all local (not-yet-linked) products to Shopify?')) return;
+
+		var btn = document.getElementById('export-products-btn');
+		var log_container = document.getElementById('products-export-log');
+		btn.disabled = true;
+
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.trigger_product_export',
+			callback: function(r) {
+				if (r.message && r.message.log_name) {
+					log_container.classList.add('shopify-active');
+					log_container.innerHTML = '<div class="shopify-log-status-running">Exporting...<span class="shopify-spinner"></span></div>';
+					frappe.msgprint('Product export started. Log: ' + r.message.log_name);
+					poll_import_progress(r.message.log_name, log_container, btn);
+					setTimeout(refresh_logs, 2000);
+				}
+				btn.disabled = false;
+			},
+			error: function() {
+				btn.disabled = false;
+				frappe.msgprint('Failed to start product export');
+			}
+		});
+	}
+
 	function poll_import_progress(log_name, log_container, btn) {
 		frappe.call({
 			method: 'frappe.client.get',
@@ -219,4 +255,5 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	document.getElementById('import-orders-btn').addEventListener('click', import_orders);
 	document.getElementById('sync-inventory-btn').addEventListener('click', sync_inventory);
 	document.getElementById('import-products-btn').addEventListener('click', import_products);
+	document.getElementById('export-products-btn').addEventListener('click', export_products);
 };

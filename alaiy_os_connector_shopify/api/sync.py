@@ -64,6 +64,31 @@ def trigger_product_import():
 
 
 @frappe.whitelist()
+def trigger_product_export():
+    """
+    Bulk push every local (not-yet-linked) product to Shopify in one go --
+    for manually-created ERPNext Items that predate any Shopify connection.
+    Enqueued as background job.
+    """
+    log = frappe.new_doc("Shopify Sync Log")
+    log.sync_type = "product_export"
+    log.trigger = "manual"
+    log.status = "queued"
+    log.started_at = frappe.utils.now_datetime()
+    log.insert(ignore_permissions=True)
+    frappe.db.commit()
+
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.product_sync.run_bulk_export_to_shopify",
+        queue="long",
+        timeout=1800,
+        trigger="manual",
+        log_name=log.name,
+    )
+    return {"queued": True, "log_name": log.name}
+
+
+@frappe.whitelist()
 def get_sync_status(sync_type=None):
     filters = {}
     if sync_type:

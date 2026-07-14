@@ -305,6 +305,99 @@ def push_item(item_code: str):
         _push_product(item)
 
 
+def run_bulk_export_to_shopify(trigger="manual", log_name=None):
+    """
+    One-off bulk push of every local (not-yet-linked) product to Shopify --
+    for manually-created ERPNext Items that predate any Shopify connection,
+    rather than requiring someone to open each one and tick the checkbox
+    individually. Opts each candidate Item into sync_to_shopify as it's
+    pushed (so future edits keep flowing outbound the normal way) and
+    reuses the exact same push_item path Item's own doc_events already use,
+    just called synchronously in a loop instead of one enqueue per save.
+
+    Scoped to templates and simple items only (skips variants -- pushing a
+    template already pushes its full current variant set in one call).
+    """
+    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync
+
+    log = load_or_create_log("product_export", trigger, log_name)
+
+    if has_active_sync("product_export", exclude_name=log.name):
+        log.status = "skipped"
+        log.finished_at = frappe.utils.now_datetime()
+        log.error_message = "Skipped: another product export is already running."
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        return log.name
+
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    try:
+        candidates = frappe.get_all(
+            "Item",
+            filters={
+                "sh_shopify_product_id": ["in", ["", None]],
+                "variant_of": ["in", ["", None]],
+                "disabled": 0,
+            },
+            pluck="name",
+        )
+
+        processed = created = failed = 0
+
+        for item_code in candidates:
+            processed += 1
+            try:
+                if not frappe.db.get_value("Item", item_code, "sync_to_shopify"):
+                    frappe.db.set_value("Item", item_code, "sync_to_shopify", 1)
+                push_item(item_code)
+                # A real Shopify id landing on this Item is the only
+                # reliable signal the push actually created something --
+                # push_item silently no-ops on an unchanged/already-synced
+                # item, so "no exception" alone doesn't mean "created".
+                if frappe.db.get_value("Item", item_code, "sh_shopify_product_id"):
+                    created += 1
+                else:
+                    failed += 1
+                    _append_export_log(log, f"ERROR item={item_code}: push completed but no Shopify ID was written back")
+            except Exception as exc:
+                failed += 1
+                _append_export_log(log, f"ERROR item={item_code}: {str(exc)[:200]}")
+                frappe.log_error(
+                    title=f"Shopify export: item {item_code} push failed",
+                    message=frappe.get_traceback(),
+                )
+
+        log.status = "success"
+        log.items_processed = processed
+        log.items_created = created
+        log.items_failed = failed
+        log.finished_at = frappe.utils.now_datetime()
+        summary = f"Exported {created} products to Shopify"
+        if failed:
+            summary += f"; {failed} failed"
+        _append_export_log(log, summary)
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    except Exception:
+        log.status = "failed"
+        log.error_message = frappe.get_traceback()[:500]
+        log.finished_at = frappe.utils.now_datetime()
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        raise
+
+    return log.name
+
+
+def _append_export_log(log, message: str):
+    existing = log.log_messages or ""
+    log.log_messages = (existing + "\n" + message).strip()
+
+
 def _push_product(item):
     """item is either a template (has_variants=1, pushes its real children)
     or a simple item (pushes itself as its own single variant)."""
