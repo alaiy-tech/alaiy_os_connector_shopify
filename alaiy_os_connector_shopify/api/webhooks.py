@@ -38,13 +38,22 @@ def handle_webhook():
 
     # Fail CLOSED: this endpoint is allow_guest -- an unset secret must
     # reject every request, not silently accept everything unverified.
+    #
+    # Webhooks here are registered via the GraphQL Admin API
+    # (webhookSubscriptionCreate, using this app's own access token) --
+    # Shopify signs those payloads with the app's Client Secret, NOT a
+    # separately configured "webhook secret" (that only applies to
+    # webhooks created through the legacy Settings > Notifications page,
+    # a different mechanism entirely). Confirmed live: real webhook
+    # deliveries were arriving correctly but failing HMAC validation
+    # 100% of the time because this was checking against sh_webhook_secret.
     webhook_secret = settings.get_password(
-        "sh_webhook_secret", raise_exception=False)
+        "sh_client_secret", raise_exception=False)
     if not webhook_secret:
         frappe.log_error(
-            title="Shopify webhook rejected: no secret configured")
+            title="Shopify webhook rejected: no client secret configured")
         frappe.response.status_code = 401
-        return {"ok": False, "reason": "webhook secret not configured"}
+        return {"ok": False, "reason": "client secret not configured"}
 
     computed = hmac.new(
         webhook_secret.encode("utf-8"),
