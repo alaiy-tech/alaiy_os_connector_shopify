@@ -379,7 +379,9 @@ def _upsert_order(order):
 
     # Draft orders from Shopify should stay as draft in ERPNext until customer completes checkout.
     # Real orders are submitted immediately and ready for fulfillment.
-    is_draft_order = order.get("source_name") == "shopify_draft_order"
+    # Draft orders have Order # like #D9, #D10; real orders are numeric like #1015
+    order_name = order.get("name", "")
+    is_draft_order = order_name.startswith("#D")
     if not is_draft_order:
         so.submit()
 
