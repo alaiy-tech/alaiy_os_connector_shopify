@@ -34,6 +34,10 @@ query PullProducts($after: String) {
         bodyHtml
         vendor
         productType
+        options {
+          name
+          values
+        }
         images(first: 10) {
           nodes {
             id
@@ -46,6 +50,10 @@ query PullProducts($after: String) {
             sku
             title
             price
+            selectedOptions {
+              name
+              value
+            }
           }
         }
       }
@@ -195,9 +203,12 @@ def _import_product(node: dict) -> bool:
 
     # Case 1: Product has multiple variants → template + variant items
     if len(variants) > 1:
+        option_names = [
+            opt.get("name") for opt in (node.get("options") or []) if opt.get("name")
+        ]
         return _import_product_with_variants(
             product_id, title, description, vendor, item_group,
-            variants, images, settings
+            variants, images, settings, option_names
         )
 
     # Case 2: Single variant → simple item (no variants table)
@@ -284,7 +295,7 @@ def _import_simple_product(
 
 def _import_product_with_variants(
     product_id: str, title: str, description: str, vendor: str, item_group: str,
-    variants: list, images: list, settings
+    variants: list, images: list, settings, option_names: list
 ) -> bool:
     """
     Import a multi-variant product as a template Item + variant Items.
@@ -294,6 +305,48 @@ def _import_product_with_variants(
     # Check if template already exists
     if frappe.db.exists("Item", template_name):
         return False  # Template conflict; skip
+
+    # ERPNext requires a has_variants=1 template to declare at least one
+    # attribute (e.g. Size, Color), and every variant must carry a value
+    # for each -- "Attribute table is mandatory" otherwise. Shopify's own
+    # `options` field is the source of truth for the names; fall back to
+    # the union of each variant's selectedOptions if that's ever empty,
+    # and to a single synthetic attribute keyed off variant title as a
+    # last resort so we never end up with zero attribute rows.
+    if not option_names:
+        seen = []
+        for v in variants:
+            for opt in (v.get("selectedOptions") or []):
+                name = opt.get("name")
+                if name and name not in seen:
+                    seen.append(name)
+        option_names = seen
+    if not option_names:
+        option_names = ["Title"]
+
+    def _resolved_values(variant: dict) -> dict:
+        """Same {option_name: value} resolution used both to pre-register
+        Item Attribute Values and to set each variant's own attribute row
+        -- must stay identical or a variant could get a value that was
+        never registered on the attribute, which ERPNext also rejects."""
+        selected = {
+            opt.get("name"): opt.get("value")
+            for opt in (variant.get("selectedOptions") or [])
+        }
+        resolved = {}
+        for name in option_names:
+            value = selected.get(name) or (variant.get("title") if name == "Title" else None)
+            resolved[name] = (value or "").strip() or "Default"
+        return resolved
+
+    values_by_option = {name: [] for name in option_names}
+    for v in variants:
+        for name, value in _resolved_values(v).items():
+            if value not in values_by_option[name]:
+                values_by_option[name].append(value)
+
+    for name in option_names:
+        _ensure_item_attribute(name, values_by_option[name])
 
     # Create template Item
     template = frappe.new_doc("Item")
@@ -308,6 +361,9 @@ def _import_product_with_variants(
     template.include_item_in_selling = 1
     template.include_item_in_buying = 1
 
+    for name in option_names:
+        template.append("attributes", {"attribute": name})
+
     # Link to Shopify
     template.sh_shopify_product_id = product_id
 
@@ -318,10 +374,6 @@ def _import_product_with_variants(
     template.flags.ignore_permissions = True
     template.insert()
     frappe.db.commit()
-
-    # Detect variant attributes (e.g., Size, Color)
-    # For now, use a simple heuristic: variant titles as fallback attributes
-    # In production, this should be enhanced to parse Shopify's options field
 
     # Create variant Items
     for idx, variant in enumerate(variants):
@@ -344,6 +396,9 @@ def _import_product_with_variants(
         variant_item.is_stock_item = 1
         variant_item.include_item_in_selling = 1
         variant_item.include_item_in_buying = 1
+
+        for name, value in _resolved_values(variant).items():
+            variant_item.append("attributes", {"attribute": name, "attribute_value": value})
 
         # Link to Shopify
         variant_item.sh_shopify_product_id = product_id
@@ -376,6 +431,55 @@ def _import_product_with_variants(
     )
 
     return True
+
+
+def _make_attribute_abbr(value: str, existing_abbrs: set) -> str:
+    """Item Attribute Value rows require a short, unique-per-attribute
+    `abbr` alongside the display value -- derive one from the value itself
+    and disambiguate on collision."""
+    base = "".join(ch for ch in value.upper() if ch.isalnum())[:5] or "VAL"
+    abbr = base
+    i = 1
+    while abbr in existing_abbrs:
+        i += 1
+        abbr = f"{base}{i}"
+    return abbr
+
+
+def _ensure_item_attribute(attribute_name: str, values: list):
+    """
+    Ensure an Item Attribute exists with this name, and that every value
+    in `values` is registered in its allowed Item Attribute Value list --
+    ERPNext rejects a variant whose attribute_value isn't pre-registered
+    on the attribute, separately from the template needing the attribute
+    declared at all.
+    """
+    if frappe.db.exists("Item Attribute", attribute_name):
+        doc = frappe.get_doc("Item Attribute", attribute_name)
+    else:
+        doc = frappe.new_doc("Item Attribute")
+        doc.attribute_name = attribute_name
+
+    existing_values = {row.attribute_value for row in (doc.item_attribute_values or [])}
+    existing_abbrs = {row.abbr for row in (doc.item_attribute_values or [])}
+    changed = False
+    for value in values:
+        if not value or value in existing_values:
+            continue
+        abbr = _make_attribute_abbr(value, existing_abbrs)
+        doc.append("item_attribute_values", {"attribute_value": value, "abbr": abbr})
+        existing_values.add(value)
+        existing_abbrs.add(abbr)
+        changed = True
+
+    if doc.is_new():
+        doc.flags.ignore_permissions = True
+        doc.insert()
+        frappe.db.commit()
+    elif changed:
+        doc.flags.ignore_permissions = True
+        doc.save()
+        frappe.db.commit()
 
 
 def _set_item_price(item_code: str, price: float, settings):

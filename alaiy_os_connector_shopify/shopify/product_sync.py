@@ -474,15 +474,39 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
     productType, variants.nodes, images.nodes) -- so webhook-triggered
     creates reuse the same, already-tested import logic instead of a second
     parallel implementation.
+
+    Also carries option data across: REST gives the product's option names
+    positionally (options: [{name, position}, ...]) and each variant only
+    the values (option1/option2/option3, same position order) -- these are
+    remapped into the same options/selectedOptions shape the GraphQL import
+    query uses, so a webhook-created product ends up with the same Size/
+    Color attributes a one-time import would give it, instead of silently
+    falling back to a synthetic "Title" attribute.
     """
     variants = product.get("variants") or []
     images = product.get("images") or []
+    options = product.get("options") or []
+    # Shopify positions are 1-indexed; option1/2/3 map to position 1/2/3.
+    option_names_by_position = {
+        opt.get("position"): opt.get("name") for opt in options if opt.get("name")
+    }
+
+    def _variant_selected_options(v: dict) -> list:
+        selected = []
+        for position in (1, 2, 3):
+            name = option_names_by_position.get(position)
+            value = v.get(f"option{position}")
+            if name and value:
+                selected.append({"name": name, "value": value})
+        return selected
+
     return {
         "legacyResourceId": str(product.get("id", "")),
         "title": product.get("title", ""),
         "bodyHtml": product.get("body_html", ""),
         "vendor": product.get("vendor", ""),
         "productType": product.get("product_type", ""),
+        "options": [{"name": opt.get("name")} for opt in options if opt.get("name")],
         "images": {
             "nodes": [{"src": img.get("src")} for img in images if img.get("src")]
         },
@@ -493,6 +517,7 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
                     "sku": v.get("sku"),
                     "title": v.get("title"),
                     "price": v.get("price"),
+                    "selectedOptions": _variant_selected_options(v),
                 }
                 for v in variants
             ]
@@ -623,6 +648,18 @@ def _handle_product_delete(product_id: str, product: dict):
     # Unlink: remove Shopify IDs but keep Item in ERPNext
     frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
     frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
+
+    # A template's variants each carry their own copy of sh_shopify_product_id
+    # (set at import time) -- leaving those in place after the template
+    # itself is unlinked means _wipe_unlinked_products() (which only deletes
+    # Items with NO Shopify id) would never clean them up, and a SKU Shopify
+    # later reuses for a genuinely new product would collide with this dead
+    # variant on the next import.
+    if item.has_variants:
+        variant_names = frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
+        for variant_name in variant_names:
+            frappe.db.set_value("Item", variant_name, "sh_shopify_product_id", None)
+            frappe.db.set_value("Item", variant_name, "sh_shopify_variant_id", None)
 
     entity.external_id = None
     entity.save(ignore_permissions=True)
