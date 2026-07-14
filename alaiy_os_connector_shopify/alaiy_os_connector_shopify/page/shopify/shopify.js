@@ -36,7 +36,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 								<h6><i class="fa fa-cart-plus"></i> Orders</h6>
 								<p class="shopify-text-muted">Pull orders from Shopify</p>
 								<button id="sync-orders-btn" class="shopify-btn shopify-btn-outline-primary">
-									Sync Orders
+									Import Orders from Shopify
 								</button>
 								<button id="import-orders-btn" class="shopify-btn shopify-btn-outline-secondary">
 									Import All (Historical)
@@ -58,12 +58,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 							<div class="shopify-sync-box">
 								<h6><i class="fa fa-cubes"></i> Products</h6>
 								<p class="shopify-text-muted">Import products from Shopify</p>
-								<button id="import-products-btn" class="shopify-btn shopify-btn-danger">
-									<i class="fa fa-warning"></i> Import All (Wipe & Replace)
+								<button id="import-products-btn" class="shopify-btn shopify-btn-outline-primary">
+									Import Products from Shopify
 								</button>
-								<div class="shopify-alert-warning shopify-alert-sm">
-									<small><i class="fa fa-exclamation-circle"></i> This will delete all local products and import fresh from Shopify</small>
-								</div>
 								<div id="products-log" class="shopify-sync-log"></div>
 							</div>
 						</div>
@@ -151,7 +148,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function import_products() {
-		if (!confirm('This will DELETE all local products and import ALL from Shopify. Continue?')) return;
+		if (!confirm('Import all products from Shopify?')) return;
 
 		var btn = document.getElementById('import-products-btn');
 		var log_container = document.getElementById('products-log');
