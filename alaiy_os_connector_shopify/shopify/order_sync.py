@@ -387,13 +387,10 @@ def _upsert_order(order):
 def _update_order(order):
     """
     Applies an orders/updated or orders/fulfilled webhook to an existing
-    Sales Order in place. Only touches status-tracking fields, never line
-    items -- a submitted Sales Order can't have its items changed without
-    ERPNext's amendment flow, and auto-amending on every status ping would
-    be far more disruptive than it's worth. If the order's line items
-    genuinely changed on Shopify, that needs a human to review and amend;
-    this at least keeps financial/fulfillment status current automatically.
-    Falls back to a full create if we've never seen this order (e.g.
+    Sales Order. Updates status-tracking fields always. If the order hasn't
+    shipped yet (no fulfillment_status indicating fulfilled/partially_fulfilled),
+    also reconciles line items (add/update/remove) to match Shopify's current
+    state. Falls back to a full create if we've never seen this order (e.g.
     Shopify redelivered orders/updated before orders/create ever arrived).
     """
     order_id = str(order.get("id", ""))
@@ -405,9 +402,11 @@ def _update_order(order):
     if not so_name:
         return _upsert_order(order)
 
-    updates = {}
     financial_status = order.get("financial_status") or ""
     fulfillment_status = order.get("fulfillment_status") or ""
+
+    # Always update status fields
+    updates = {}
     if financial_status:
         updates["sh_financial_status"] = financial_status
     if fulfillment_status:
@@ -418,8 +417,103 @@ def _update_order(order):
             frappe.db.set_value("Sales Order", so_name, field, value)
         frappe.db.commit()
 
+    # State guard: only sync line items if order hasn't shipped yet
+    if _can_modify_order_items(fulfillment_status):
+        _sync_order_line_items(so_name, order)
+
     _sync_fulfillments(so_name, order.get("fulfillments") or [])
     return False
+
+
+def _can_modify_order_items(fulfillment_status: str) -> bool:
+    """
+    State guard: return True if order hasn't shipped yet, so line items can be safely modified.
+    Once an order is fulfilled or partially_fulfilled, no modifications allowed.
+    """
+    return fulfillment_status.lower() not in ("fulfilled", "partially_fulfilled")
+
+
+def _sync_order_line_items(so_name: str, order: dict):
+    """
+    Reconciles line items between Shopify order and ERPNext Sales Order.
+    Adds new items, updates quantities on existing items, removes items that
+    were deleted in Shopify. Works on a submitted SO without needing amendment,
+    since we're modifying before any stock movement (no Delivery Notes yet).
+    """
+    try:
+        so = frappe.get_doc("Sales Order", so_name)
+        if so.docstatus != 1:
+            return  # Skip if not submitted
+
+        settings = frappe.get_single("Shopify Connector Settings")
+        warehouse = _resolve_default_warehouse(settings)
+
+        # Build current and new item maps (keyed by variant_id for comparison)
+        current_items = {item.get("sh_shopify_variant_id"): item for item in so.items if item.get("sh_shopify_variant_id")}
+        new_items_from_shopify = {}
+
+        # Parse Shopify's line items
+        for li in order.get("line_items", []):
+            item_code = _resolve_item_code(li)
+            if not item_code:
+                continue
+            variant_id = str(li.get("variant_id", ""))
+            if not variant_id:
+                continue
+
+            new_items_from_shopify[variant_id] = {
+                "item_code": item_code,
+                "qty": flt(li.get("quantity", 1)),
+                "rate": flt(li.get("price", 0)),
+                "warehouse": warehouse,
+            }
+
+        # Detect changes
+        added_variants = set(new_items_from_shopify.keys()) - set(current_items.keys())
+        removed_variants = set(current_items.keys()) - set(new_items_from_shopify.keys())
+        common_variants = set(current_items.keys()) & set(new_items_from_shopify.keys())
+
+        # Remove items that were deleted in Shopify
+        for variant_id in removed_variants:
+            so.items.remove(current_items[variant_id])
+
+        # Add new items from Shopify
+        for variant_id in added_variants:
+            new_item_data = new_items_from_shopify[variant_id]
+            so.append("items", {
+                "item_code": new_item_data["item_code"],
+                "qty": new_item_data["qty"],
+                "rate": new_item_data["rate"],
+                "warehouse": new_item_data["warehouse"],
+                "delivery_date": frappe.utils.today(),
+            })
+
+        # Update quantities on existing items
+        for variant_id in common_variants:
+            current_row = current_items[variant_id]
+            new_qty = new_items_from_shopify[variant_id]["qty"]
+            new_rate = new_items_from_shopify[variant_id]["rate"]
+
+            if current_row.qty != new_qty or current_row.rate != new_rate:
+                current_row.qty = new_qty
+                current_row.rate = new_rate
+
+        # Save if there were any changes
+        if added_variants or removed_variants or any(
+            current_items[v].qty != new_items_from_shopify[v]["qty"] or
+            current_items[v].rate != new_items_from_shopify[v]["rate"]
+            for v in common_variants
+        ):
+            so.flags.ignore_permissions = True
+            so.flags.from_shopify_sync = True
+            so.save()
+            frappe.db.commit()
+
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: failed to sync line items for {so_name}",
+            message=frappe.get_traceback(),
+        )
 
 
 def _create_delivery_note_if_needed(so_name):
