@@ -8,16 +8,10 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	$(page.body).html(`
 		<div class="shopify-page">
 			<div class="container shopify-container">
-				<!-- Connection Status Card -->
+				<!-- Connection Status Card (branded icon/name/status; populated below) -->
 				<div class="shopify-card">
-					<div class="shopify-card-header">
-						<h5>Connection Status</h5>
-					</div>
 					<div class="shopify-card-body">
-						<div id="connection-status" class="shopify-connection-status">
-							<p><strong>Store:</strong> <span id="store-name">Loading...</span></p>
-							<p><strong>Status:</strong> <span id="connection-test-status" class="shopify-badge shopify-badge-secondary">Testing...</span></p>
-						</div>
+						<div id="shopify-connector-status" class="shopify-connector-status"></div>
 						<button id="test-connection-btn" class="shopify-btn shopify-btn-primary">
 							<i class="fa fa-plug"></i> Test Connection
 						</button>
@@ -82,6 +76,20 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		</div>
 	`);
 
+	function render_connector_status() {
+		frappe.call({
+			method: "alaiy_os.api.connectors.get_all_connectors",
+			callback: function(r) {
+				var connector = (r.message || []).find(function(c) {
+					return c.connector_id === "shopify";
+				});
+				if (!connector) return;
+				document.getElementById('shopify-connector-status').innerHTML =
+					alaiy_os.connector_card._html(connector);
+			}
+		});
+	}
+
 	function test_connection() {
 		var btn = document.getElementById('test-connection-btn');
 		btn.disabled = true;
@@ -90,20 +98,12 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		frappe.call({
 			method: 'alaiy_os_connector_shopify.api.test_connection.test_connection',
 			callback: function(r) {
-				if (r.message) {
-					document.getElementById('connection-test-status').textContent = 'Connected';
-					document.getElementById('connection-test-status').className = 'shopify-badge shopify-badge-success';
-					document.getElementById('store-name').textContent = r.message.store || 'Connected';
-				} else {
-					document.getElementById('connection-test-status').textContent = 'Failed';
-					document.getElementById('connection-test-status').className = 'shopify-badge shopify-badge-danger';
-				}
+				render_connector_status();
 				btn.disabled = false;
 				btn.innerHTML = '<i class="fa fa-plug"></i> Test Connection';
 			},
 			error: function() {
-				document.getElementById('connection-test-status').textContent = 'Error';
-				document.getElementById('connection-test-status').className = 'shopify-badge shopify-badge-danger';
+				render_connector_status();
 				btn.disabled = false;
 				btn.innerHTML = '<i class="fa fa-plug"></i> Test Connection';
 			}
