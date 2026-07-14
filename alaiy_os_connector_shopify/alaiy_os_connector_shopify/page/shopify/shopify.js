@@ -1,176 +1,157 @@
-const SHOPIFY_STATUS_COLORS = {
-	queued: "grey",
-	running: "blue",
-	success: "green",
-	failed: "red",
-	skipped: "yellow",
-};
+frappe.ready(function() {
+	var page = cur_page;
 
-frappe.pages["shopify"].on_page_load = function (wrapper) {
-	const page = frappe.ui.make_app_page({
-		parent: wrapper,
-		title: "Shopify",
-		single_column: true,
-	});
+	function test_connection() {
+		var btn = document.getElementById('test-connection-btn');
+		btn.disabled = true;
+		btn.innerHTML = '<span class="shopify-spinner"></span> Testing...';
 
-	// single_column wraps content in Bootstrap's .container, which caps
-	// width and leaves a large dead zone on wide screens -- go full width
-	// instead, since this page's cards/table already manage their own layout.
-	$(wrapper).find(".container").removeClass("container").addClass("container-fluid");
-
-	$(page.body).append(`
-		<div class="shopify-ops-page">
-			<div class="shopify-connector-status"></div>
-			<div class="shopify-action-groups"></div>
-			<div class="shopify-recent-activity">
-				<div class="shopify-section-title">${__("Recent Activity")}</div>
-				<div class="shopify-activity-list">
-					<div class="text-muted">${__("Loading...")}</div>
-				</div>
-			</div>
-		</div>
-	`);
-
-	render_connector_status(page);
-	render_action_groups(page);
-	render_recent_activity(page);
-};
-
-function render_connector_status(page) {
-	frappe.call({
-		method: "alaiy_os.api.connectors.get_all_connectors",
-		callback(r) {
-			const connector = (r.message || []).find(
-				(c) => c.connector_id === "shopify",
-			);
-			if (!connector) return;
-			page.body
-				.find(".shopify-connector-status")
-				.html(alaiy_os.connector_card._html(connector));
-		},
-	});
-}
-
-function call_with_alert(method, { successMessage, successIndicator = "blue", args } = {}) {
-	return frappe.call({
-		method,
-		args,
-		callback(r) {
-			const res = r.message || {};
-			if (typeof res === "object" && (res.status || res.message)) {
-				const indicators = {
-					already_synced: "green",
-					queued: "blue",
-					already_running: "orange",
-				};
-				frappe.show_alert(
-					{
-						message: res.message || successMessage,
-						indicator: indicators[res.status] || successIndicator,
-					},
-					7,
-				);
-			} else {
-				frappe.show_alert({ message: successMessage, indicator: successIndicator }, 5);
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.test_connection.test_connection',
+			callback: function(r) {
+				if (r.message) {
+					document.getElementById('connection-test-status').textContent = 'Connected';
+					document.getElementById('connection-test-status').className = 'shopify-badge shopify-badge-success';
+					document.getElementById('store-name').textContent = r.message.store || 'Connected';
+				} else {
+					document.getElementById('connection-test-status').textContent = 'Failed';
+					document.getElementById('connection-test-status').className = 'shopify-badge shopify-badge-danger';
+				}
+				btn.disabled = false;
+				btn.innerHTML = '<i class="fa fa-plug"></i> Test Connection';
+			},
+			error: function() {
+				document.getElementById('connection-test-status').textContent = 'Error';
+				document.getElementById('connection-test-status').className = 'shopify-badge shopify-badge-danger';
+				btn.disabled = false;
+				btn.innerHTML = '<i class="fa fa-plug"></i> Test Connection';
 			}
-		},
-	});
-}
-
-function action_group(title, description, actions) {
-	const buttons = actions
-		.map(
-			(a) =>
-				`<button type="button" class="btn btn-default btn-sm shopify-action-btn" data-action="${a.key}">${a.label}</button>`,
-		)
-		.join("");
-	return `
-		<div class="shopify-action-card">
-			<div class="shopify-action-card-title">${title}</div>
-			<div class="shopify-action-card-desc text-muted">${description}</div>
-			<div class="shopify-action-card-buttons">${buttons}</div>
-		</div>
-	`;
-}
-
-function render_action_groups(page) {
-	const $groups = page.body.find(".shopify-action-groups");
-
-	$groups.html(`
-		${action_group(__("Connection"), __("Manage your Shopify connector configuration."), [
-			{ key: "open-settings", label: __("Open Settings") },
-		])}
-		${action_group(__("Inventory"), __("Push current stock levels to Shopify."), [
-			{ key: "sync-inventory", label: __("Sync Inventory to Shopify") },
-		])}
-		${action_group(
-			__("Orders"),
-			__("Import orders from Shopify. Webhooks sync new/updated orders automatically; use this to backfill historical orders."),
-			[
-				{ key: "import-orders", label: __("Import Existing Orders"), primary: true },
-			],
-		)}
-	`);
-
-	$groups.find('[data-action="open-settings"]').on("click", () => {
-		frappe.set_route("Form", "Shopify Connector Settings");
-	});
-
-	$groups.find('[data-action="sync-inventory"]').on("click", () => {
-		call_with_alert("alaiy_os_connector_shopify.api.sync.trigger_inventory_push", {
-			successMessage: __("Inventory push queued"),
 		});
-	});
+	}
 
-	$groups.find('[data-action="import-orders"]').on("click", (e) => {
-		const $btn = $(e.currentTarget).prop("disabled", true);
-		call_with_alert("alaiy_os_connector_shopify.api.sync.import_existing_orders", {
-			successMessage: __("Import started"),
-		}).then(() => {
-			$btn.prop("disabled", false);
-			setTimeout(() => render_recent_activity(page), 1500);
-		});
-	});
-}
-
-function render_recent_activity(page) {
-	const $list = page.body.find(".shopify-activity-list");
-	frappe.call({
-		method: "alaiy_os_connector_shopify.api.sync.get_sync_status",
-		callback(r) {
-			const rows = r.message || [];
-			if (!rows.length) {
-				$list.html(`<div class="text-muted">${__("No sync runs yet.")}</div>`);
-				return;
+	function sync_orders() {
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.trigger_orders_sync',
+			callback: function(r) {
+				if (r.message && r.message.log_name) {
+					frappe.msgprint('Orders sync queued. Log: ' + r.message.log_name);
+					setTimeout(refresh_logs, 1000);
+				}
 			}
-			$list.html(`
-				<table class="table table-condensed shopify-activity-table">
-					<thead>
-						<tr>
-							<th>${__("Type")}</th>
-							<th>${__("Trigger")}</th>
-							<th>${__("Status")}</th>
-							<th>${__("Processed")}</th>
-							<th>${__("Started")}</th>
-						</tr>
-					</thead>
-					<tbody>
-						${rows
-							.map(
-								(row) => `
-							<tr>
-								<td>${frappe.utils.escape_html(row.sync_type || "")}</td>
-								<td>${frappe.utils.escape_html(row.trigger || "")}</td>
-								<td><span class="indicator-pill ${SHOPIFY_STATUS_COLORS[row.status] || "darkgrey"}"><span>${frappe.utils.escape_html(row.status || "")}</span></span></td>
-								<td>${row.items_processed ?? 0} (${row.items_created ?? 0} ${__("new")})</td>
-								<td>${row.started_at ? frappe.datetime.comment_when(row.started_at) : ""}</td>
-							</tr>
-						`,
-							)
-							.join("")}
-					</tbody>
-				</table>
-			`);
-		},
-	});
-}
+		});
+	}
+
+	function import_orders() {
+		if (!confirm('Import all historical orders from Shopify?')) return;
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
+			callback: function(r) {
+				if (r.message) {
+					frappe.msgprint(r.message.message || 'Import queued');
+					setTimeout(refresh_logs, 1000);
+				}
+			}
+		});
+	}
+
+	function sync_inventory() {
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.trigger_inventory_push',
+			callback: function(r) {
+				if (r.message && r.message.log_name) {
+					frappe.msgprint('Inventory sync queued. Log: ' + r.message.log_name);
+					setTimeout(refresh_logs, 1000);
+				}
+			}
+		});
+	}
+
+	function import_products() {
+		if (!confirm('This will DELETE all local products and import ALL from Shopify. Continue?')) return;
+
+		var btn = document.getElementById('import-products-btn');
+		var log_container = document.getElementById('products-log');
+		btn.disabled = true;
+
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.trigger_product_import',
+			callback: function(r) {
+				if (r.message && r.message.log_name) {
+					log_container.classList.add('shopify-active');
+					log_container.innerHTML = '<div class="shopify-log-status-running">Importing...<span class="shopify-spinner"></span></div>';
+					frappe.msgprint('Product import started. Log: ' + r.message.log_name);
+					poll_import_progress(r.message.log_name, log_container, btn);
+					setTimeout(refresh_logs, 2000);
+				}
+				btn.disabled = false;
+			},
+			error: function() {
+				btn.disabled = false;
+				frappe.msgprint('Failed to start product import');
+			}
+		});
+	}
+
+	function poll_import_progress(log_name, log_container, btn) {
+		frappe.call({
+			method: 'frappe.client.get',
+			args: {doctype: 'Shopify Sync Log', name: log_name},
+			callback: function(r) {
+				if (r.message) {
+					var log = r.message;
+					var html = '<div class="shopify-log-status shopify-log-status-' + log.status + '">' + log.status.toUpperCase() + '</div>';
+					if (log.items_processed) html += '<div class="shopify-log-entry">Processed: ' + log.items_processed + '</div>';
+					if (log.items_created) html += '<div class="shopify-log-entry">Created: ' + log.items_created + '</div>';
+					if (log.items_failed) html += '<div class="shopify-log-entry">Failed: ' + log.items_failed + '</div>';
+					if (log.error_message) html += '<div class="shopify-log-entry shopify-alert-warning"><strong>Error:</strong> ' + log.error_message + '</div>';
+
+					log_container.innerHTML = html;
+
+					if (log.status === 'running' || log.status === 'queued') {
+						setTimeout(function() { poll_import_progress(log_name, log_container, btn); }, 2000);
+					} else {
+						btn.disabled = false;
+					}
+				}
+			}
+		});
+	}
+
+	function refresh_logs() {
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.get_sync_status',
+			callback: function(r) {
+				if (r.message) render_logs_table(r.message);
+			}
+		});
+	}
+
+	function render_logs_table(logs) {
+		var container = document.getElementById('sync-logs-container');
+		if (!logs || logs.length === 0) {
+			container.innerHTML = '<p class="shopify-text-muted">No sync logs yet.</p>';
+			return;
+		}
+
+		var html = '<table class="shopify-logs-table"><thead><tr><th>Type</th><th>Status</th><th>Trigger</th><th>Started</th><th>Progress</th></tr></thead><tbody>';
+		logs.forEach(function(log) {
+			var status_class = log.status === 'success' ? 'shopify-badge-success' : log.status === 'failed' ? 'shopify-badge-danger' : log.status === 'running' ? 'shopify-badge-info' : 'shopify-badge-secondary';
+			var started = log.started_at ? new Date(log.started_at).toLocaleString() : '-';
+			var progress = log.pages_total ? log.pages_done + '/' + log.pages_total + ' pages' : (log.items_created || 0) + ' created';
+			html += '<tr><td><strong>' + log.sync_type + '</strong></td><td><span class="shopify-badge ' + status_class + '">' + log.status + '</span></td><td>' + log.trigger + '</td><td>' + started + '</td><td>' + progress + '</td></tr>';
+		});
+		html += '</tbody></table>';
+		container.innerHTML = html;
+
+		var running = logs.some(function(l) { return l.status === 'running' || l.status === 'queued'; });
+		if (running) setTimeout(refresh_logs, 3000);
+	}
+
+	test_connection();
+	refresh_logs();
+	document.getElementById('test-connection-btn').addEventListener('click', test_connection);
+	document.getElementById('sync-orders-btn').addEventListener('click', sync_orders);
+	document.getElementById('import-orders-btn').addEventListener('click', import_orders);
+	document.getElementById('sync-inventory-btn').addEventListener('click', sync_inventory);
+	document.getElementById('import-products-btn').addEventListener('click', import_products);
+});

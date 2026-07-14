@@ -250,6 +250,13 @@ def _import_simple_product(
     item.sh_shopify_product_id = product_id
     item.sh_shopify_variant_id = variant.get("legacyResourceId")
 
+    # Without this flag, Item's after_insert hook (on_item_change) sees a
+    # freshly-linked item whose sync_to_shopify checkbox is still unchecked
+    # by default, and mistakes that for "flag was just turned off" --
+    # immediately re-archiving the product we just imported back on
+    # Shopify. Setting the flag makes on_item_change no-op for this insert,
+    # same as it does for inbound webhook updates.
+    item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     item.insert()
     frappe.db.commit()
@@ -306,6 +313,10 @@ def _import_product_with_variants(
     # Link to Shopify
     template.sh_shopify_product_id = product_id
 
+    # See matching comment in _import_simple_product: without this flag,
+    # the after_insert hook would immediately re-archive this template on
+    # Shopify because sync_to_shopify defaults unchecked on a fresh import.
+    template.flags.from_shopify_sync = True
     template.flags.ignore_permissions = True
     template.insert()
     frappe.db.commit()
@@ -340,6 +351,7 @@ def _import_product_with_variants(
         variant_item.sh_shopify_product_id = product_id
         variant_item.sh_shopify_variant_id = variant.get("legacyResourceId")
 
+        variant_item.flags.from_shopify_sync = True
         variant_item.flags.ignore_permissions = True
         variant_item.insert()
 

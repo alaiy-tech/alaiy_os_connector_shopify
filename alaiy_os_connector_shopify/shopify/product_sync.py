@@ -60,6 +60,12 @@ mutation PushProduct($input: ProductSetInput!, $identifier: ProductSetIdentifier
 # Never call Shopify inline inside a save transaction -- enqueue and return.
 
 def on_item_change(doc, method=None):
+    if doc.flags.from_shopify_sync:
+        # This save originated from an inbound webhook update (see
+        # _update_item_from_shopify) -- pushing it back to Shopify would
+        # create an infinite create/update ping-pong between the two sides.
+        return
+
     enabled = _sync_enabled(doc)
     template_name = doc.variant_of or doc.name
     has_shopify_id = bool(
@@ -436,7 +442,10 @@ def handle_product_webhook(topic: str, payload: dict):
     if not payload:
         return
 
-    product = payload.get("product") or {}
+    # Shopify's REST webhook body IS the resource itself (no wrapper key) --
+    # unlike our own GraphQL responses, which nest a product under a field
+    # name. payload.get("product") would always be None and silently no-op.
+    product = payload
     product_id = str(product.get("id", ""))
 
     if not product_id:
@@ -457,6 +466,40 @@ def handle_product_webhook(topic: str, payload: dict):
         )
 
 
+def _webhook_product_to_graphql_node(product: dict) -> dict:
+    """
+    Adapt a REST-shaped webhook product payload (id, body_html, product_type,
+    variants: [...], images: [...]) into the GraphQL node shape that
+    product_import._import_product() expects (legacyResourceId, bodyHtml,
+    productType, variants.nodes, images.nodes) -- so webhook-triggered
+    creates reuse the same, already-tested import logic instead of a second
+    parallel implementation.
+    """
+    variants = product.get("variants") or []
+    images = product.get("images") or []
+    return {
+        "legacyResourceId": str(product.get("id", "")),
+        "title": product.get("title", ""),
+        "bodyHtml": product.get("body_html", ""),
+        "vendor": product.get("vendor", ""),
+        "productType": product.get("product_type", ""),
+        "images": {
+            "nodes": [{"src": img.get("src")} for img in images if img.get("src")]
+        },
+        "variants": {
+            "nodes": [
+                {
+                    "legacyResourceId": str(v.get("id", "")),
+                    "sku": v.get("sku"),
+                    "title": v.get("title"),
+                    "price": v.get("price"),
+                }
+                for v in variants
+            ]
+        },
+    }
+
+
 def _handle_product_create(product_id: str, product: dict):
     """New product on Shopify - create ERPNext Item."""
     entity = entities.get_by_external_id("product", product_id)
@@ -465,9 +508,11 @@ def _handle_product_create(product_id: str, product: dict):
         # Already linked - treat as update
         return _handle_product_update(product_id, product)
 
-    # New product - import it
+    # New product - import it (reuses the one-time-import logic, translated
+    # from the webhook's REST shape into the GraphQL node shape it expects).
     from alaiy_os_connector_shopify.shopify.product_import import _import_product
-    _import_product(product)
+    node = _webhook_product_to_graphql_node(product)
+    _import_product(node)
     frappe.logger().info(f"Created Item from Shopify product {product_id}")
 
 
@@ -485,28 +530,33 @@ def _handle_product_update(product_id: str, product: dict):
     if not shopify_updated:
         return
 
-    # Shopify wins if newer than our last sync
+    # Shopify wins if newer than our last sync. Both sides must be parsed to
+    # actual datetimes before comparing -- Shopify's timestamp carries a UTC
+    # offset while entity.last_synced_at is a naive ERPNext-local datetime,
+    # so comparing raw strings (as before) could reject or accept updates
+    # based on formatting differences alone, not actual chronology.
     last_synced = entity.last_synced_at
-    if last_synced and shopify_updated < last_synced.isoformat():
+    if last_synced and frappe.utils.get_datetime(shopify_updated) < frappe.utils.get_datetime(last_synced):
         frappe.logger().debug(
             f"Product {product_id} older than local, skipping update"
         )
         return
 
-    # Update Item from Shopify
-    if product.get("title"):
-        item.item_name = product["title"]
-    if product.get("body_html"):
-        item.description = product["body_html"]
-    if product.get("vendor"):
-        item.brand = product["vendor"]
-    if product.get("product_type"):
-        item.item_group = product["product_type"]
+    _update_item_from_shopify(item, product)
 
-    item.flags.from_shopify_sync = True
-    item.flags.ignore_permissions = True
-    item.save()
-    frappe.db.commit()
+    # Recompute and store the fingerprint for the post-update state so the
+    # hourly outbound reconciliation (push_changed_items_only) doesn't see
+    # this inbound-driven change as "different from last push" and push it
+    # straight back to Shopify.
+    item = frappe.get_doc("Item", item.name)
+    settings = frappe.get_single("Shopify Connector Settings")
+    if item.has_variants:
+        variant_names = frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
+        variants = [frappe.get_doc("Item", v) for v in variant_names]
+    else:
+        variants = [item]
+    canonical = _product_canonical(item, variants, settings)
+    entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
 
     frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
 
@@ -515,7 +565,7 @@ def _update_item_from_shopify(item, product: dict):
     """
     Update ERPNext Item from Shopify product (inbound sync).
 
-    Fields updated: title, description, vendor, product_type, status, handle, tags, images, variants
+    Fields updated: title, description, vendor, product_type, status, images
 
     Fields NOT updated: pricing (separate inventory_sync), stock levels (separate feature), variant structure
     """
@@ -534,20 +584,6 @@ def _update_item_from_shopify(item, product: dict):
     # Status: active/draft/archived
     if product.get("status"):
         item.disabled = 1 if product["status"] in ("archived", "draft") else 0
-
-    # Store handle (slug) if custom field exists
-    if product.get("handle"):
-        try:
-            item.set("sh_shopify_handle", product["handle"])
-        except Exception:
-            pass
-
-    # Store tags if custom field exists
-    if product.get("tags"):
-        try:
-            item.set("sh_shopify_tags", product["tags"])
-        except Exception:
-            pass
 
     # Save item
     item.flags.from_shopify_sync = True
