@@ -97,18 +97,16 @@ function render_action_groups(page) {
 	const $groups = page.body.find(".shopify-action-groups");
 
 	$groups.html(`
-		${action_group(__("Connection"), __("Check credentials and connection health."), [
+		${action_group(__("Connection"), __("Manage your Shopify connector configuration."), [
 			{ key: "open-settings", label: __("Open Settings") },
-			{ key: "test-connection", label: __("Test Connection") },
 		])}
 		${action_group(__("Inventory"), __("Push current stock levels to Shopify."), [
 			{ key: "sync-inventory", label: __("Sync Inventory to Shopify") },
 		])}
 		${action_group(
 			__("Orders"),
-			__("Pull orders from Shopify. Import handles your full order history; Sync only pulls what matches your configured filter."),
+			__("Import orders from Shopify. Webhooks sync new/updated orders automatically; use this to backfill historical orders."),
 			[
-				{ key: "sync-orders", label: __("Sync Orders from Shopify") },
 				{ key: "import-orders", label: __("Import Existing Orders"), primary: true },
 			],
 		)}
@@ -118,36 +116,10 @@ function render_action_groups(page) {
 		frappe.set_route("Form", "Shopify Connector Settings");
 	});
 
-	$groups.find('[data-action="test-connection"]').on("click", (e) => {
-		const $btn = $(e.currentTarget).prop("disabled", true);
-		frappe.call({
-			method: "alaiy_os.api.connectors.test_connector",
-			args: { connector_id: "shopify" },
-			callback(r) {
-				const res = r.message || {};
-				frappe.show_alert(
-					{
-						message: res.message || (res.success ? __("Connected") : __("Connection failed")),
-						indicator: res.success ? "green" : "red",
-					},
-					res.success ? 5 : 7,
-				);
-				render_connector_status(page);
-			},
-			always: () => $btn.prop("disabled", false),
-		});
-	});
-
 	$groups.find('[data-action="sync-inventory"]').on("click", () => {
 		call_with_alert("alaiy_os_connector_shopify.api.sync.trigger_inventory_push", {
 			successMessage: __("Inventory push queued"),
 		});
-	});
-
-	$groups.find('[data-action="sync-orders"]').on("click", () => {
-		call_with_alert("alaiy_os_connector_shopify.api.sync.trigger_orders_sync", {
-			successMessage: __("Order sync queued"),
-		}).then(() => setTimeout(() => render_recent_activity(page), 1500));
 	});
 
 	$groups.find('[data-action="import-orders"]').on("click", (e) => {

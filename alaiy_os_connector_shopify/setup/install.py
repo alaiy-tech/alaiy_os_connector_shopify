@@ -18,6 +18,7 @@ def sync_connector_registry():
         "sh_push_description", "sh_push_vendor", "sh_push_product_type", "sh_push_images",
     ])
     _ensure_list_view_column("Item", "sync_to_shopify", "Sync to Shopify")
+    _ensure_list_view_column("Sales Order", "sh_shopify_order_name", "Shopify Order #")
     _ensure_list_view_column("Sales Order", "sh_fulfillment_status", "Shopify Fulfillment Status")
     _ensure_list_view_column("Sales Order", "sh_financial_status", "Shopify Financial Status")
     _drop_orphaned_singles_value("Shopify Connector Settings", "sh_api_version")
