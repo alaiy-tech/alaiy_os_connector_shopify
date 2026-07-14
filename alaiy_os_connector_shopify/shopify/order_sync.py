@@ -461,8 +461,9 @@ def _sync_order_line_items(so_name: str, order: dict):
     settings = frappe.get_single("Shopify Connector Settings")
     warehouse = _resolve_default_warehouse(settings)
 
-    # Build current and new item maps (keyed by variant_id for comparison)
-    current_items = {item.get("sh_shopify_variant_id"): item for item in so.items if item.get("sh_shopify_variant_id")}
+    # Build current item maps: by variant_id (new items) and by item_code (old items)
+    current_items_by_variant = {item.get("sh_shopify_variant_id"): item for item in so.items if item.get("sh_shopify_variant_id")}
+    current_items_by_code = {item.item_code: item for item in so.items if not item.get("sh_shopify_variant_id")}
     new_items_from_shopify = {}
 
     # Parse Shopify's line items
@@ -481,14 +482,27 @@ def _sync_order_line_items(so_name: str, order: dict):
             "warehouse": warehouse,
         }
 
-    # Detect changes
-    added_variants = set(new_items_from_shopify.keys()) - set(current_items.keys())
-    removed_variants = set(current_items.keys()) - set(new_items_from_shopify.keys())
-    common_variants = set(current_items.keys()) & set(new_items_from_shopify.keys())
+    # Detect changes: match by variant_id first, then by item_code (fallback for old items)
+    added_variants = set()
+    common_variants = set()
+    for variant_id, new_item_data in new_items_from_shopify.items():
+        if variant_id in current_items_by_variant:
+            common_variants.add(variant_id)
+        elif new_item_data["item_code"] in current_items_by_code:
+            # Fallback: old item without variant_id, match by item_code
+            # Promote it to variant-keyed for consistent removal/update logic
+            old_item = current_items_by_code.pop(new_item_data["item_code"])
+            current_items_by_variant[variant_id] = old_item
+            common_variants.add(variant_id)
+        else:
+            added_variants.add(variant_id)
+
+    # Items in current_items_by_code that weren't matched = removed from Shopify
+    removed_variants = set(current_items_by_variant.keys()) - set(new_items_from_shopify.keys())
 
     # Remove items that were deleted in Shopify
     for variant_id in removed_variants:
-        so.items.remove(current_items[variant_id])
+        so.items.remove(current_items_by_variant[variant_id])
 
     # Add new items from Shopify
     for variant_id in added_variants:
@@ -507,9 +521,9 @@ def _sync_order_line_items(so_name: str, order: dict):
             "delivery_date": frappe.utils.getdate(frappe.utils.today()),
         })
 
-    # Update quantities on existing items
+    # Update quantities on existing items and backfill variant_id if missing
     for variant_id in common_variants:
-        current_row = current_items[variant_id]
+        current_row = current_items_by_variant[variant_id]
         new_qty = new_items_from_shopify[variant_id]["qty"]
         new_rate = new_items_from_shopify[variant_id]["rate"]
 
@@ -517,10 +531,14 @@ def _sync_order_line_items(so_name: str, order: dict):
             current_row.qty = new_qty
             current_row.rate = new_rate
 
+        # Backfill variant_id for old items (created before variant_id field existed)
+        if not current_row.get("sh_shopify_variant_id"):
+            current_row.sh_shopify_variant_id = variant_id
+
     # Save if there were any changes
     if added_variants or removed_variants or any(
-        current_items[v].qty != new_items_from_shopify[v]["qty"] or
-        current_items[v].rate != new_items_from_shopify[v]["rate"]
+        current_items_by_variant[v].qty != new_items_from_shopify[v]["qty"] or
+        current_items_by_variant[v].rate != new_items_from_shopify[v]["rate"]
         for v in common_variants
     ):
         so.flags.ignore_permissions = True
