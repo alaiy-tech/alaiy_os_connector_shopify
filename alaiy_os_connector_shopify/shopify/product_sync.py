@@ -599,10 +599,13 @@ def handle_product_webhook(topic: str, payload: dict):
             _handle_product_create(product_id, product)
         elif topic == "products/update":
             _handle_product_update(product_id, product)
-    except Exception as exc:
+    except Exception:
+        # str(exc) alone was landing blank for some exception types,
+        # losing all diagnostic info -- full traceback always has
+        # something to go on.
         frappe.log_error(
             title=f"Shopify: product webhook {topic} failed",
-            message=f"Product ID: {product_id}\nError: {str(exc)}"
+            message=f"Product ID: {product_id}\n{frappe.get_traceback()}"
         )
 
 
