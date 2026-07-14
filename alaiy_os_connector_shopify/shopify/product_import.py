@@ -153,18 +153,41 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
 
 def _wipe_unlinked_products():
     """
-    Delete all Item records that DON'T have a sh_shopify_product_id.
-    These are local items from previous imports or manual creation.
-    Items with sh_shopify_product_id are from Shopify and will be updated.
+    Delete Item records that aren't a *completed* Shopify import:
+
+    - Items with no sh_shopify_product_id at all -- local/manual items,
+      or leftovers from an import that predates that field being set.
+    - Items with sh_shopify_product_id set but no matching Shopify Synced
+      Entity row -- partial leftovers from a run that inserted the
+      template/item and committed, then crashed before it could finish
+      (e.g. on a later variant, or before the final entities.save()).
+      A Synced Entity is only ever written at the very end of a
+      successful _import_product() call, so its absence means "this Item
+      exists in the database but the import that created it never
+      completed." Without this second pass, _import_product_with_variants
+      / _import_simple_product's "does this SKU/template already exist"
+      check permanently mistakes that leftover for an already-imported
+      product and skips it on every future run.
     """
-    # Find all items without shopify linkage
     unlinked = frappe.get_all(
         "Item",
         filters={"sh_shopify_product_id": ["is", "not set"]},
         pluck="name"
     )
 
-    for item_code in unlinked:
+    linked = frappe.get_all(
+        "Item",
+        filters={"sh_shopify_product_id": ["is", "set"]},
+        fields=["name", "sh_shopify_product_id"],
+    )
+    synced_product_ids = set(frappe.get_all(
+        "Shopify Synced Entity",
+        filters={"entity_type": "product"},
+        pluck="external_id",
+    ))
+    orphaned = [row.name for row in linked if row.sh_shopify_product_id not in synced_product_ids]
+
+    for item_code in unlinked + orphaned:
         try:
             frappe.delete_doc("Item", item_code, force=1, ignore_permissions=True)
         except Exception as exc:
