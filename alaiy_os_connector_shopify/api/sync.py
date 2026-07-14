@@ -39,11 +39,36 @@ def trigger_inventory_push():
 
 
 @frappe.whitelist()
+def trigger_product_import():
+    """
+    One-time import of all products from Shopify, wiping existing unlinked items.
+    Enqueued as background job.
+    """
+    log = frappe.new_doc("Shopify Sync Log")
+    log.sync_type = "products"
+    log.trigger = "manual"
+    log.status = "queued"
+    log.started_at = frappe.utils.now_datetime()
+    log.insert(ignore_permissions=True)
+    frappe.db.commit()
+
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.product_import.run_full_product_import",
+        queue="long",
+        timeout=1800,  # 30 minutes for large catalogs
+        trigger="manual",
+        log_name=log.name,
+        wipe_existing=True,
+    )
+    return {"queued": True, "log_name": log.name}
+
+
+@frappe.whitelist()
 def get_sync_status(sync_type=None):
     filters = {}
     if sync_type:
-        # "categories" maps to "orders", "items" maps to "inventory" in the UI labels
-        type_map = {"categories": "orders", "items": "inventory"}
+        # "categories" maps to "orders", "items" maps to "inventory", "products" maps to "products"
+        type_map = {"categories": "orders", "items": "inventory", "products": "products"}
         filters["sync_type"] = type_map.get(sync_type, sync_type)
     return frappe.get_all(
         "Shopify Sync Log",

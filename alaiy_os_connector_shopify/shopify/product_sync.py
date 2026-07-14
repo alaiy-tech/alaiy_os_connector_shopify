@@ -345,6 +345,256 @@ def _push_product_unlocked(item):
     frappe.db.commit()
 
 
+# ── Bidirectional Sync: Only push CHANGED items ──────────────────────────────
+
+def push_changed_items_only(item_code: str = None):
+    """
+    Push only items that have CHANGED since last sync (fingerprint detection).
+    Prevents unnecessary API calls when item hasn't actually changed.
+
+    Called by:
+      - on_item_change() doc_event (single item)
+      - Scheduled job every hour (all items)
+    """
+    if item_code:
+        # Single item from doc_event
+        item = frappe.get_doc("Item", item_code)
+        if not _sync_enabled(item):
+            return
+        template_name = item.variant_of or item.name
+        item = frappe.get_doc("Item", template_name)
+        if _has_changed_since_last_sync(item):
+            push_item(item_code)
+        else:
+            frappe.logger().debug(f"Item {item_code} unchanged, skipping push")
+    else:
+        # Hourly reconciliation - all items that have "sync_to_shopify" checked
+        pushed = 0
+        unchanged = 0
+        sync_items = frappe.get_all(
+            "Item",
+            filters={"sync_to_shopify": 1, "variant_of": ""},
+            pluck="name"
+        )
+        for code in sync_items:
+            item = frappe.get_doc("Item", code)
+            try:
+                if _has_changed_since_last_sync(item):
+                    push_item(code)
+                    pushed += 1
+                else:
+                    unchanged += 1
+            except Exception as exc:
+                frappe.log_error(
+                    title=f"Shopify: sync push failed for {code}",
+                    message=str(exc)
+                )
+        frappe.logger().info(f"Sync push: {pushed} changed, {unchanged} unchanged")
+
+
+def _has_changed_since_last_sync(item) -> bool:
+    """
+    Check if Item has changed since last push via fingerprint comparison.
+
+    Returns True if:
+      - Item has no Synced Entity (never pushed)
+      - Item fingerprint differs from stored fingerprint (actually changed)
+      - Item was just created
+    """
+    entity = entities.get_by_erpnext("product", "Item", item.name)
+
+    if not entity:
+        return True  # Never pushed - consider changed
+
+    if item.has_variants:
+        variant_names = frappe.get_all(
+            "Item", filters={"variant_of": item.name}, pluck="name")
+        variants = [frappe.get_doc("Item", v) for v in variant_names]
+    else:
+        variants = [item]
+
+    settings = frappe.get_single("Shopify Connector Settings")
+    canonical = _product_canonical(item, variants, settings)
+    current_fp = fingerprint.fingerprint(canonical)
+
+    if not entity.erpnext_fingerprint:
+        return True  # No stored fingerprint - consider changed
+
+    return entity.erpnext_fingerprint != current_fp
+
+
+# ── Inbound Sync: Handle Shopify product changes via webhooks ─────────────────
+
+def handle_product_webhook(topic: str, payload: dict):
+    """
+    Handle product events from Shopify webhooks.
+    Topics: products/create, products/update, products/delete
+
+    Only updates if Shopify version is newer (timestamp-based conflict resolution).
+    Shopify timestamp wins on conflicts (inbound takes precedence).
+    """
+    if not payload:
+        return
+
+    product = payload.get("product") or {}
+    product_id = str(product.get("id", ""))
+
+    if not product_id:
+        frappe.logger().warning("Product webhook: no product ID")
+        return
+
+    try:
+        if topic == "products/delete":
+            _handle_product_delete(product_id, product)
+        elif topic == "products/create":
+            _handle_product_create(product_id, product)
+        elif topic == "products/update":
+            _handle_product_update(product_id, product)
+    except Exception as exc:
+        frappe.log_error(
+            title=f"Shopify: product webhook {topic} failed",
+            message=f"Product ID: {product_id}\nError: {str(exc)}"
+        )
+
+
+def _handle_product_create(product_id: str, product: dict):
+    """New product on Shopify - create ERPNext Item."""
+    entity = entities.get_by_external_id("product", product_id)
+
+    if entity:
+        # Already linked - treat as update
+        return _handle_product_update(product_id, product)
+
+    # New product - import it
+    from alaiy_os_connector_shopify.shopify.product_import import _import_product
+    _import_product(product)
+    frappe.logger().info(f"Created Item from Shopify product {product_id}")
+
+
+def _handle_product_update(product_id: str, product: dict):
+    """Product updated on Shopify - update ERPNext Item if Shopify is newer."""
+    entity = entities.get_by_external_id("product", product_id)
+
+    if not entity:
+        return  # Product not linked to ERPNext
+
+    item = frappe.get_doc("Item", entity.erpnext_name)
+
+    # Get Shopify product timestamp
+    shopify_updated = product.get("updated_at")
+    if not shopify_updated:
+        return
+
+    # Shopify wins if newer than our last sync
+    last_synced = entity.last_synced_at
+    if last_synced and shopify_updated < last_synced.isoformat():
+        frappe.logger().debug(
+            f"Product {product_id} older than local, skipping update"
+        )
+        return
+
+    # Update Item from Shopify
+    if product.get("title"):
+        item.item_name = product["title"]
+    if product.get("body_html"):
+        item.description = product["body_html"]
+    if product.get("vendor"):
+        item.brand = product["vendor"]
+    if product.get("product_type"):
+        item.item_group = product["product_type"]
+
+    item.flags.from_shopify_sync = True
+    item.flags.ignore_permissions = True
+    item.save()
+    frappe.db.commit()
+
+    frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
+
+
+def _update_item_from_shopify(item, product: dict):
+    """
+    Update ERPNext Item from Shopify product (inbound sync).
+
+    Fields updated: title, description, vendor, product_type, status, handle, tags, images, variants
+
+    Fields NOT updated: pricing (separate inventory_sync), stock levels (separate feature), variant structure
+    """
+    settings = frappe.get_single("Shopify Connector Settings")
+
+    # Basic fields
+    if product.get("title"):
+        item.item_name = product["title"]
+    if product.get("body_html"):
+        item.description = product["body_html"]
+    if product.get("vendor"):
+        item.brand = product["vendor"]
+    if product.get("product_type"):
+        item.item_group = product["product_type"]
+
+    # Status: active/draft/archived
+    if product.get("status"):
+        item.disabled = 1 if product["status"] in ("archived", "draft") else 0
+
+    # Store handle (slug) if custom field exists
+    if product.get("handle"):
+        try:
+            item.set("sh_shopify_handle", product["handle"])
+        except Exception:
+            pass
+
+    # Store tags if custom field exists
+    if product.get("tags"):
+        try:
+            item.set("sh_shopify_tags", product["tags"])
+        except Exception:
+            pass
+
+    # Save item
+    item.flags.from_shopify_sync = True
+    item.flags.ignore_permissions = True
+    item.save()
+    frappe.db.commit()
+
+    # Update images
+    if settings.sh_push_images:
+        images = [img.get("src") for img in (product.get("images") or []) if img.get("src")]
+        if images:
+            from alaiy_os_connector_shopify.shopify.product_import import (
+                _set_item_image, _set_item_slideshow
+            )
+            _set_item_image(item.name, images[0])
+            if len(images) > 1:
+                _set_item_slideshow(item.name, images, settings)
+
+    # Log variant inventory data (for inventory_sync to use later)
+    variants = product.get("variants") or []
+    if variants:
+        frappe.logger().debug(
+            f"Product {item.name}: {len(variants)} variants with inventory_quantity, "
+            f"compare_at_price, and inventory_policy data available for inventory_sync"
+        )
+
+
+def _handle_product_delete(product_id: str, product: dict):
+    """Product deleted on Shopify - unlink ERPNext Item (preserve local data)."""
+    entity = entities.get_by_external_id("product", product_id)
+
+    if not entity:
+        return
+
+    item = frappe.get_doc("Item", entity.erpnext_name)
+
+    # Unlink: remove Shopify IDs but keep Item in ERPNext
+    frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
+    frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
+
+    entity.external_id = None
+    entity.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    frappe.logger().info(f"Unlinked Item {item.name} (product {product_id} deleted)")
+
+
 # ── Archive (disable) ────────────────────────────────────────────────────────
 
 def archive_item(item_code: str):

@@ -77,9 +77,7 @@ def handle_webhook():
 
 
 def _dispatch(topic, payload):
-    # Both real orders and draft orders (which become real orders when checked out)
-    # use the same sync logic. Draft orders are not test/temporary -- they're
-    # actual customer orders placed through the draft orders sales channel.
+    # Order webhooks (inbound order sync)
     order_topics = {
         "orders/create", "orders/updated",
         "orders/cancelled", "orders/fulfilled", "orders/delete",
@@ -88,6 +86,19 @@ def _dispatch(topic, payload):
     if topic in order_topics:
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.order_sync.handle_order_webhook",
+            queue="short",
+            timeout=300,
+            topic=topic,
+            payload=payload,
+        )
+
+    # Product webhooks (bidirectional product sync - inbound)
+    product_topics = {
+        "products/create", "products/update", "products/delete",
+    }
+    if topic in product_topics:
+        frappe.enqueue(
+            "alaiy_os_connector_shopify.shopify.product_sync.handle_product_webhook",
             queue="short",
             timeout=300,
             topic=topic,

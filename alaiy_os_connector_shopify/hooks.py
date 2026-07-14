@@ -25,7 +25,10 @@ scheduler_events = {
         "* * * * *": [
             "alaiy_os_connector_shopify.shopify.sync_jobs.check_and_enqueue"
         ]
-    }
+    },
+    "hourly": [
+        "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only"
+    ]
 }
 
 doc_events = {

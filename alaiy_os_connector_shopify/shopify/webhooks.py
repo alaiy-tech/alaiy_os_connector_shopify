@@ -1,11 +1,17 @@
 import frappe
 
 WEBHOOK_TOPICS = [
+    # Order webhooks (inbound order sync)
     "orders/create",
     "orders/updated",
     "orders/cancelled",
     "orders/fulfilled",
     "orders/delete",
+
+    # Product webhooks (bidirectional product sync - inbound)
+    "products/create",
+    "products/update",
+    "products/delete",
 ]
 
 _CREATE_MUTATION = """

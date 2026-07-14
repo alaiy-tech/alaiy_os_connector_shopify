@@ -15,9 +15,11 @@ connector_meta = {
     "test_method": "alaiy_os_connector_shopify.api.test_connection.test_connection",
     "sync_categories_method": "alaiy_os_connector_shopify.api.sync.trigger_orders_sync",
     "sync_items_method": "alaiy_os_connector_shopify.api.sync.trigger_inventory_push",
+    "sync_products_method": "alaiy_os_connector_shopify.api.sync.trigger_product_import",
     "sync_status_method": "alaiy_os_connector_shopify.api.sync.get_sync_status",
     "sync_categories_label": "Orders",
     "sync_items_label": "Inventory",
+    "sync_products_label": "Products",
     "is_enabled": 0,
     "connection_status": "untested",
 }

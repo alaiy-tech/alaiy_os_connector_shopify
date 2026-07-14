@@ -1,0 +1,585 @@
+<div class="shopify-page">
+    <div class="page-head">
+        <h1 class="page-title">
+            <i class="fa fa-shopping-bag"></i>
+            Shopify Connector
+        </h1>
+    </div>
+
+    <div class="container shopify-container">
+        <!-- Connection Status Card -->
+        <div class="card connection-card">
+            <div class="card-header">
+                <h5>Connection Status</h5>
+            </div>
+            <div class="card-body">
+                <div id="connection-status" class="connection-status">
+                    <p><strong>Store:</strong> <span id="store-name">Loading...</span></p>
+                    <p><strong>Status:</strong> <span id="connection-test-status" class="badge badge-secondary">Testing...</span></p>
+                </div>
+                <button id="test-connection-btn" class="btn btn-sm btn-primary">
+                    <i class="fa fa-plug"></i> Test Connection
+                </button>
+            </div>
+        </div>
+
+        <!-- Sync Actions -->
+        <div class="card actions-card">
+            <div class="card-header">
+                <h5>Synchronization</h5>
+            </div>
+            <div class="card-body">
+                <div class="sync-actions-grid">
+                    <!-- Orders Sync -->
+                    <div class="sync-action-box">
+                        <h6><i class="fa fa-cart-plus"></i> Orders</h6>
+                        <p class="text-muted">Pull orders from Shopify</p>
+                        <button id="sync-orders-btn" class="btn btn-sm btn-outline-primary">
+                            Sync Orders
+                        </button>
+                        <button id="import-orders-btn" class="btn btn-sm btn-outline-secondary">
+                            Import All (Historical)
+                        </button>
+                        <div id="orders-log" class="sync-log"></div>
+                    </div>
+
+                    <!-- Inventory Sync -->
+                    <div class="sync-action-box">
+                        <h6><i class="fa fa-box"></i> Inventory</h6>
+                        <p class="text-muted">Push inventory to Shopify</p>
+                        <button id="sync-inventory-btn" class="btn btn-sm btn-outline-primary">
+                            Sync Inventory
+                        </button>
+                        <div id="inventory-log" class="sync-log"></div>
+                    </div>
+
+                    <!-- Products Import -->
+                    <div class="sync-action-box">
+                        <h6><i class="fa fa-cubes"></i> Products</h6>
+                        <p class="text-muted">Import products from Shopify</p>
+                        <button id="import-products-btn" class="btn btn-sm btn-danger">
+                            <i class="fa fa-warning"></i> Import All (Wipe & Replace)
+                        </button>
+                        <div class="alert alert-warning alert-sm mt-2">
+                            <small><i class="fa fa-exclamation-circle"></i> This will delete all local products and import fresh from Shopify</small>
+                        </div>
+                        <div id="products-log" class="sync-log"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sync Logs -->
+        <div class="card logs-card">
+            <div class="card-header">
+                <h5>Sync Logs</h5>
+            </div>
+            <div class="card-body">
+                <div id="sync-logs-container" class="sync-logs-container">
+                    <p class="text-muted">Loading logs...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.shopify-page {
+    padding: 20px;
+    background-color: #f9f9f9;
+}
+
+.page-title {
+    color: #333;
+    margin-bottom: 30px;
+    border-bottom: 2px solid #007acc;
+    padding-bottom: 10px;
+}
+
+.shopify-container {
+    max-width: 1200px;
+}
+
+.card {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    background-color: white;
+}
+
+.card-header {
+    padding: 15px;
+    border-bottom: 1px solid #eee;
+    background-color: #f5f5f5;
+}
+
+.card-header h5 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+}
+
+.card-body {
+    padding: 20px;
+}
+
+.connection-status p {
+    margin: 8px 0;
+    font-size: 14px;
+}
+
+.connection-status .badge {
+    padding: 4px 8px;
+    border-radius: 3px;
+}
+
+.sync-actions-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 20px;
+}
+
+.sync-action-box {
+    border: 1px solid #e0e0e0;
+    padding: 15px;
+    border-radius: 4px;
+    background-color: #fafafa;
+}
+
+.sync-action-box h6 {
+    margin: 0 0 8px 0;
+    font-weight: 600;
+    color: #333;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.sync-action-box .text-muted {
+    color: #888;
+    font-size: 13px;
+    margin-bottom: 12px;
+}
+
+.sync-action-box .btn {
+    margin-right: 8px;
+    margin-bottom: 8px;
+}
+
+.btn {
+    padding: 6px 12px;
+    font-size: 13px;
+    border-radius: 3px;
+    border: 1px solid #999;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background-color: #007acc;
+    color: white;
+    border-color: #007acc;
+}
+
+.btn-primary:hover {
+    background-color: #005a9e;
+}
+
+.btn-outline-primary {
+    background-color: white;
+    color: #007acc;
+    border-color: #007acc;
+}
+
+.btn-outline-primary:hover {
+    background-color: #f0f7ff;
+}
+
+.btn-outline-secondary {
+    background-color: white;
+    color: #666;
+    border-color: #999;
+}
+
+.btn-outline-secondary:hover {
+    background-color: #f5f5f5;
+}
+
+.btn-danger {
+    background-color: #d9534f;
+    color: white;
+    border-color: #d9534f;
+}
+
+.btn-danger:hover {
+    background-color: #c9302c;
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.alert-warning {
+    background-color: #fcf8e3;
+    border-color: #faebcc;
+    color: #8a6d3b;
+    padding: 8px 12px;
+    border-radius: 3px;
+    border: 1px solid #faebcc;
+}
+
+.alert-warning.alert-sm {
+    font-size: 12px;
+    padding: 6px 10px;
+}
+
+.sync-log {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f5f5f5;
+    border-radius: 3px;
+    font-size: 12px;
+    min-height: 40px;
+    max-height: 150px;
+    overflow-y: auto;
+    border: 1px solid #e0e0e0;
+    display: none;
+}
+
+.sync-log.active {
+    display: block;
+}
+
+.sync-log .log-entry {
+    margin: 3px 0;
+    padding: 3px 0;
+    border-bottom: 1px solid #ddd;
+}
+
+.sync-log .log-entry:last-child {
+    border-bottom: none;
+}
+
+.sync-log .log-status {
+    font-weight: 600;
+    padding: 5px;
+    border-radius: 2px;
+    display: inline-block;
+    margin-bottom: 5px;
+}
+
+.log-status.success {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.log-status.running {
+    background-color: #d1ecf1;
+    color: #0c5460;
+}
+
+.log-status.failed {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+.log-status.queued {
+    background-color: #e2e3e5;
+    color: #383d41;
+}
+
+.sync-logs-container {
+    overflow-x: auto;
+}
+
+.sync-logs-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.sync-logs-table th {
+    background-color: #f5f5f5;
+    padding: 10px;
+    text-align: left;
+    border-bottom: 2px solid #ddd;
+    font-weight: 600;
+}
+
+.sync-logs-table td {
+    padding: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+.sync-logs-table tr:hover {
+    background-color: #f9f9f9;
+}
+
+.text-muted {
+    color: #888;
+}
+
+.badge {
+    padding: 3px 6px;
+    border-radius: 2px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.badge-success {
+    background-color: #28a745;
+    color: white;
+}
+
+.badge-danger {
+    background-color: #dc3545;
+    color: white;
+}
+
+.badge-warning {
+    background-color: #ffc107;
+    color: #333;
+}
+
+.badge-secondary {
+    background-color: #6c757d;
+    color: white;
+}
+
+.badge-info {
+    background-color: #17a2b8;
+    color: white;
+}
+
+.spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #007acc;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+</style>
+
+<script>
+frappe.ready(function() {
+    new ShopifyConnectorPage();
+});
+
+class ShopifyConnectorPage {
+    constructor() {
+        this.init();
+    }
+
+    init() {
+        this.test_connection();
+        this.refresh_logs();
+        this.setup_event_listeners();
+    }
+
+    setup_event_listeners() {
+        document.getElementById('test-connection-btn').addEventListener('click', () => this.test_connection());
+        document.getElementById('sync-orders-btn').addEventListener('click', () => this.sync_orders());
+        document.getElementById('import-orders-btn').addEventListener('click', () => this.import_orders());
+        document.getElementById('sync-inventory-btn').addEventListener('click', () => this.sync_inventory());
+        document.getElementById('import-products-btn').addEventListener('click', () => this.import_products());
+    }
+
+    test_connection() {
+        const btn = document.getElementById('test-connection-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Testing...';
+
+        frappe.call({
+            method: 'alaiy_os_connector_shopify.api.test_connection.test_connection',
+            callback: (r) => {
+                if (r.message) {
+                    document.getElementById('connection-test-status').textContent = 'Connected';
+                    document.getElementById('connection-test-status').className = 'badge badge-success';
+                    document.getElementById('store-name').textContent = r.message.store || 'Connected';
+                } else {
+                    document.getElementById('connection-test-status').textContent = 'Failed';
+                    document.getElementById('connection-test-status').className = 'badge badge-danger';
+                }
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa fa-plug"></i> Test Connection';
+            },
+            error: () => {
+                document.getElementById('connection-test-status').textContent = 'Error';
+                document.getElementById('connection-test-status').className = 'badge badge-danger';
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa fa-plug"></i> Test Connection';
+            }
+        });
+    }
+
+    sync_orders() {
+        frappe.call({
+            method: 'alaiy_os_connector_shopify.api.sync.trigger_orders_sync',
+            callback: (r) => {
+                if (r.message && r.message.log_name) {
+                    frappe.msgprint(`Orders sync queued. Log: ${r.message.log_name}`);
+                    setTimeout(() => this.refresh_logs(), 1000);
+                }
+            }
+        });
+    }
+
+    import_orders() {
+        if (!confirm('Import all historical orders from Shopify?')) return;
+
+        frappe.call({
+            method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
+            callback: (r) => {
+                if (r.message) {
+                    frappe.msgprint(r.message.message || 'Import queued');
+                    setTimeout(() => this.refresh_logs(), 1000);
+                }
+            }
+        });
+    }
+
+    sync_inventory() {
+        frappe.call({
+            method: 'alaiy_os_connector_shopify.api.sync.trigger_inventory_push',
+            callback: (r) => {
+                if (r.message && r.message.log_name) {
+                    frappe.msgprint(`Inventory sync queued. Log: ${r.message.log_name}`);
+                    setTimeout(() => this.refresh_logs(), 1000);
+                }
+            }
+        });
+    }
+
+    import_products() {
+        if (!confirm('⚠️  This will DELETE all local products and import ALL products from Shopify. Continue?')) {
+            return;
+        }
+
+        const btn = document.getElementById('import-products-btn');
+        const log_container = document.getElementById('products-log');
+        btn.disabled = true;
+
+        frappe.call({
+            method: 'alaiy_os_connector_shopify.api.sync.trigger_product_import',
+            callback: (r) => {
+                if (r.message && r.message.log_name) {
+                    log_container.classList.add('active');
+                    log_container.innerHTML = '<div class="log-status running">Importing... <span class="spinner"></span></div>';
+                    frappe.msgprint(`Product import started. Log: ${r.message.log_name}`);
+
+                    // Poll for progress
+                    this.poll_import_progress(r.message.log_name, log_container, btn);
+                    setTimeout(() => this.refresh_logs(), 2000);
+                }
+                btn.disabled = false;
+            },
+            error: () => {
+                btn.disabled = false;
+                frappe.msgprint('Failed to start product import');
+            }
+        });
+    }
+
+    poll_import_progress(log_name, log_container, btn) {
+        frappe.call({
+            method: 'frappe.client.get',
+            args: {
+                doctype: 'Shopify Sync Log',
+                name: log_name
+            },
+            callback: (r) => {
+                if (r.message) {
+                    const log = r.message;
+                    const status_class = `log-status ${log.status}`;
+                    let html = `<div class="${status_class}">${log.status.toUpperCase()}</div>`;
+
+                    if (log.items_processed) {
+                        html += `<div class="log-entry">Processed: ${log.items_processed}</div>`;
+                    }
+                    if (log.items_created) {
+                        html += `<div class="log-entry">Created: ${log.items_created}</div>`;
+                    }
+                    if (log.items_failed) {
+                        html += `<div class="log-entry">Failed: ${log.items_failed}</div>`;
+                    }
+                    if (log.error_message) {
+                        html += `<div class="log-entry alert alert-warning"><strong>Error:</strong> ${log.error_message}</div>`;
+                    }
+
+                    log_container.innerHTML = html;
+
+                    // Keep polling if still running
+                    if (log.status === 'running' || log.status === 'queued') {
+                        setTimeout(() => this.poll_import_progress(log_name, log_container, btn), 2000);
+                    } else {
+                        btn.disabled = false;
+                    }
+                }
+            }
+        });
+    }
+
+    refresh_logs() {
+        frappe.call({
+            method: 'alaiy_os_connector_shopify.api.sync.get_sync_status',
+            callback: (r) => {
+                if (r.message) {
+                    this.render_logs_table(r.message);
+                }
+            }
+        });
+    }
+
+    render_logs_table(logs) {
+        const container = document.getElementById('sync-logs-container');
+        if (!logs || logs.length === 0) {
+            container.innerHTML = '<p class="text-muted">No sync logs yet.</p>';
+            return;
+        }
+
+        let html = `<table class="sync-logs-table">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Trigger</th>
+                    <th>Started</th>
+                    <th>Progress</th>
+                </tr>
+            </thead>
+            <tbody>`;
+
+        logs.forEach(log => {
+            const status_badge = `<span class="badge badge-${log.status === 'success' ? 'success' : log.status === 'failed' ? 'danger' : log.status === 'running' ? 'info' : 'secondary'}">${log.status}</span>`;
+            const started = log.started_at ? new Date(log.started_at).toLocaleString() : '-';
+            const progress = log.pages_total ? `${log.pages_done}/${log.pages_total} pages` : `${log.items_created || 0} created`;
+
+            html += `<tr>
+                <td><strong>${log.sync_type}</strong></td>
+                <td>${status_badge}</td>
+                <td>${log.trigger}</td>
+                <td>${started}</td>
+                <td>${progress}</td>
+            </tr>`;
+        });
+
+        html += `</tbody></table>`;
+        container.innerHTML = html;
+
+        // Auto-refresh every 3 seconds if any are running
+        const running = logs.some(l => l.status === 'running' || l.status === 'queued');
+        if (running) {
+            setTimeout(() => this.refresh_logs(), 3000);
+        }
+    }
+}
+</script>
