@@ -1,5 +1,89 @@
-frappe.ready(function() {
-	var page = cur_page;
+frappe.pages["shopify"].on_page_load = function (wrapper) {
+	var page = frappe.ui.make_app_page({
+		parent: wrapper,
+		title: "Shopify",
+		single_column: true,
+	});
+
+	$(page.body).html(`
+		<div class="shopify-page">
+			<div class="container shopify-container">
+				<!-- Connection Status Card -->
+				<div class="shopify-card">
+					<div class="shopify-card-header">
+						<h5>Connection Status</h5>
+					</div>
+					<div class="shopify-card-body">
+						<div id="connection-status" class="shopify-connection-status">
+							<p><strong>Store:</strong> <span id="store-name">Loading...</span></p>
+							<p><strong>Status:</strong> <span id="connection-test-status" class="shopify-badge shopify-badge-secondary">Testing...</span></p>
+						</div>
+						<button id="test-connection-btn" class="shopify-btn shopify-btn-primary">
+							<i class="fa fa-plug"></i> Test Connection
+						</button>
+					</div>
+				</div>
+
+				<!-- Sync Actions -->
+				<div class="shopify-card">
+					<div class="shopify-card-header">
+						<h5>Synchronization</h5>
+					</div>
+					<div class="shopify-card-body">
+						<div class="shopify-sync-grid">
+							<!-- Orders Sync -->
+							<div class="shopify-sync-box">
+								<h6><i class="fa fa-cart-plus"></i> Orders</h6>
+								<p class="shopify-text-muted">Pull orders from Shopify</p>
+								<button id="sync-orders-btn" class="shopify-btn shopify-btn-outline-primary">
+									Sync Orders
+								</button>
+								<button id="import-orders-btn" class="shopify-btn shopify-btn-outline-secondary">
+									Import All (Historical)
+								</button>
+								<div id="orders-log" class="shopify-sync-log"></div>
+							</div>
+
+							<!-- Inventory Sync -->
+							<div class="shopify-sync-box">
+								<h6><i class="fa fa-box"></i> Inventory</h6>
+								<p class="shopify-text-muted">Push inventory to Shopify</p>
+								<button id="sync-inventory-btn" class="shopify-btn shopify-btn-outline-primary">
+									Sync Inventory
+								</button>
+								<div id="inventory-log" class="shopify-sync-log"></div>
+							</div>
+
+							<!-- Products Import -->
+							<div class="shopify-sync-box">
+								<h6><i class="fa fa-cubes"></i> Products</h6>
+								<p class="shopify-text-muted">Import products from Shopify</p>
+								<button id="import-products-btn" class="shopify-btn shopify-btn-danger">
+									<i class="fa fa-warning"></i> Import All (Wipe & Replace)
+								</button>
+								<div class="shopify-alert-warning shopify-alert-sm">
+									<small><i class="fa fa-exclamation-circle"></i> This will delete all local products and import fresh from Shopify</small>
+								</div>
+								<div id="products-log" class="shopify-sync-log"></div>
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<!-- Sync Logs -->
+				<div class="shopify-card">
+					<div class="shopify-card-header">
+						<h5>Sync Logs</h5>
+					</div>
+					<div class="shopify-card-body">
+						<div id="sync-logs-container" class="shopify-logs-container">
+							<p class="shopify-text-muted">Loading logs...</p>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	`);
 
 	function test_connection() {
 		var btn = document.getElementById('test-connection-btn');
@@ -154,4 +238,4 @@ frappe.ready(function() {
 	document.getElementById('import-orders-btn').addEventListener('click', import_orders);
 	document.getElementById('sync-inventory-btn').addEventListener('click', sync_inventory);
 	document.getElementById('import-products-btn').addEventListener('click', import_products);
-});
+};
