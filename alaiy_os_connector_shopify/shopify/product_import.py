@@ -46,8 +46,6 @@ query PullProducts($after: String) {
             sku
             title
             price
-            weight
-            weightUnit
           }
         }
       }
