@@ -121,13 +121,19 @@ def handle_order_webhook(topic, payload):
     updated/fulfilled variants apply in-place (or fall back to create).
     cancelled/delete variants cancel, never hard-delete per ERPNext's docstatus.
     """
-    if topic in ("orders/cancelled", "orders/delete", "draft_orders/delete"):
-        _cancel_order(payload)
-    elif topic in ("orders/create", "draft_orders/create"):
-        _upsert_order(payload)
-    else:
-        # orders/updated, orders/fulfilled, draft_orders/update
-        _update_order(payload)
+    try:
+        if topic in ("orders/cancelled", "orders/delete", "draft_orders/delete"):
+            _cancel_order(payload)
+        elif topic in ("orders/create", "draft_orders/create"):
+            _upsert_order(payload)
+        else:
+            # orders/updated, orders/fulfilled, draft_orders/update
+            _update_order(payload)
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: order webhook {topic} failed",
+            message=frappe.get_traceback(),
+        )
 
 
 # ── Scheduled / manual pull ────────────────────────────────────────────────────

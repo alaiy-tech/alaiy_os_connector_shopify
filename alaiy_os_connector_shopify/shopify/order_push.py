@@ -43,11 +43,6 @@ mutation PushOrderCancel($orderId: ID!, $reason: OrderCancelReason!, $refund: Bo
 }
 """
 
-# NOTE: orderCreate's exact input shape (OrderCreateOrderInput) should be
-# double-checked against Shopify's live 2026-07 schema reference before
-# relying on this in production -- this wasn't verified against a live
-# introspection/sandbox call, only against the general shape Shopify's
-# GraphQL Admin API has documented for this mutation historically.
 _ORDER_CREATE_MUTATION = """
 mutation PushOrderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) {
   orderCreate(order: $order, options: $options) {

@@ -214,10 +214,10 @@ def _wipe_unlinked_products():
     for item_code in unlinked + orphaned:
         try:
             frappe.delete_doc("Item", item_code, force=1, ignore_permissions=True)
-        except Exception as exc:
+        except Exception:
             frappe.log_error(
                 title=f"Shopify import: failed to delete unlinked item {item_code}",
-                message=str(exc)
+                message=frappe.get_traceback()
             )
 
     frappe.db.commit()
@@ -667,10 +667,10 @@ def _set_item_price(item_code: str, price: float, settings):
             ip.insert()
 
         frappe.db.commit()
-    except Exception as exc:
+    except Exception:
         frappe.log_error(
             title=f"Failed to set price for {item_code}",
-            message=str(exc)
+            message=frappe.get_traceback()
         )
 
 
@@ -755,10 +755,10 @@ def _set_item_image(item_code: str, image_url: str):
         file_url = download_file(image_url)
         frappe.db.set_value("Item", item_code, "image", file_url)
         frappe.db.commit()
-    except Exception as exc:
+    except Exception:
         frappe.log_error(
             title=f"Failed to download image for {item_code}",
-            message=f"URL: {image_url}\nError: {str(exc)}"
+            message=f"URL: {image_url}\n{frappe.get_traceback()}"
         )
 
 
@@ -801,10 +801,10 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
             frappe.db.set_value("Item", item_code, "slideshow", slideshow_name)
             frappe.db.commit()
 
-    except Exception as exc:
+    except Exception:
         frappe.log_error(
             title=f"Failed to create slideshow for {item_code}",
-            message=str(exc)
+            message=frappe.get_traceback()
         )
 
 

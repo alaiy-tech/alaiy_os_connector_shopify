@@ -173,7 +173,10 @@ def unregister_webhooks():
                             message=str(errors),
                         )
                 except Exception:
-                    pass
+                    frappe.log_error(
+                        title=f"Shopify: failed to delete webhook {wh.get('id')}",
+                        message=frappe.get_traceback(),
+                    )
     except Exception:
         frappe.log_error(
             title="Shopify: failed to unregister webhooks",

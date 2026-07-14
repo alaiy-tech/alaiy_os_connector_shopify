@@ -530,10 +530,10 @@ def push_changed_items_only(item_code: str = None):
                     pushed += 1
                 else:
                     unchanged += 1
-            except Exception as exc:
+            except Exception:
                 frappe.log_error(
                     title=f"Shopify: sync push failed for {code}",
-                    message=str(exc)
+                    message=frappe.get_traceback()
                 )
         frappe.logger().info(f"Sync push: {pushed} changed, {unchanged} unchanged")
 

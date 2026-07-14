@@ -30,20 +30,16 @@ query VariantInventoryItem($id: ID!, $locationId: ID!) {
 """
 
 
-def _inventory_set_mutation(idempotency_key: str) -> str:
-    # @idempotent's key isn't documented as accepting a GraphQL variable, so
-    # it's interpolated directly into the query text rather than passed
-    # through `variables`.
-    return f"""
-    mutation SetInventory($input: InventorySetQuantitiesInput!) {{
-      inventorySetQuantities(input: $input) @idempotent(key: "{idempotency_key}") {{
-        userErrors {{
-          field
-          message
-        }}
-      }}
-    }}
-    """
+_INVENTORY_SET_MUTATION = """
+mutation SetInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {
+  inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) {
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
 
 
 def run_inventory_push(trigger="manual", log_name=None):
@@ -105,7 +101,7 @@ def run_inventory_push(trigger="manual", log_name=None):
                         log, f"ERROR item={item.name}: no Shopify inventory_item_id for variant {item.sh_shopify_variant_id}")
                     continue
 
-                data = client.execute(_inventory_set_mutation(new_idempotency_key()), {
+                data = client.execute(_INVENTORY_SET_MUTATION, {
                     "input": {
                         "name": "available",
                         "reason": "correction",
@@ -113,15 +109,15 @@ def run_inventory_push(trigger="manual", log_name=None):
                             "inventoryItemId": inventory_item_id,
                             "locationId": location_id,
                             "quantity": int(qty),
-                            # Mandatory as of API 2026-04 (replaced the
-                            # removed compareQuantity/ignoreCompareQuantity)
-                            # -- Shopify rejects a mismatch, so a genuine
-                            # race with a concurrent change fails loudly
-                            # here rather than silently overwriting it; the
-                            # next scheduled run picks it up again.
+                            # changeFromQuantity is mandatory as of API
+                            # 2026-04 -- Shopify rejects a mismatch, so a
+                            # genuine race with a concurrent change fails
+                            # loudly here rather than silently overwriting
+                            # it; the next scheduled run picks it up again.
                             "changeFromQuantity": int(current_qty),
                         }],
                     },
+                    "idempotencyKey": new_idempotency_key(),
                 })
                 errors = (data.get("inventorySetQuantities")
                           or {}).get("userErrors") or []

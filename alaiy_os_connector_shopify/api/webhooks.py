@@ -19,19 +19,6 @@ def handle_webhook():
 
     settings = frappe.get_single("Shopify Connector Settings")
 
-    # TEMPORARY diagnostic -- logs every single call unconditionally so we
-    # can see exactly which branch a real webhook hits, since the earlier
-    # failure/disabled branches don't all log and the response bytes alone
-    # weren't enough to tell branches apart. Remove once webhook delivery
-    # is confirmed working end-to-end.
-    frappe.log_error(
-        title="Shopify webhook received (diagnostic)",
-        message=(
-            f"topic={topic!r} is_enabled={settings.is_enabled!r} "
-            f"has_hmac_header={bool(hmac_header)} body_len={len(raw_body or b'')}"
-        ),
-    )
-
     if not settings.is_enabled:
         frappe.response.status_code = 200
         return {"ok": False, "reason": "connector disabled"}

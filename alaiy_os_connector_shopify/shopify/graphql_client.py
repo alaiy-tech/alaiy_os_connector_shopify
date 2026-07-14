@@ -1,3 +1,4 @@
+import time
 import uuid
 
 import requests
@@ -38,7 +39,7 @@ class ShopifyGraphQLClient:
         self.token = refresh_and_store_access_token()
         self.session.headers.update({"X-Shopify-Access-Token": self.token})
 
-    def execute(self, query: str, variables: dict = None) -> dict:
+    def execute(self, query: str, variables: dict = None, _retried_throttle: bool = False) -> dict:
         """
         Run a GraphQL query/mutation. Returns the `data` object.
 
@@ -47,6 +48,11 @@ class ShopifyGraphQLClient:
         distinct from `userErrors` inside a mutation's own payload,  which
         callers must still check themselves. Raise on the top-level array
         here so a malformed query never silently reads back as `{}`.
+
+        A THROTTLED error (query-cost bucket exhausted) is retried once
+        after waiting long enough for the bucket to refill, using the
+        `throttleStatus` Shopify includes on the error itself -- rather
+        than failing the whole sync item for a transient rate limit.
         """
         payload = {"query": query, "variables": variables or {}}
         resp = self.session.post(self.endpoint, json=payload)
@@ -57,8 +63,32 @@ class ShopifyGraphQLClient:
 
         body = resp.json()
         if body.get("errors"):
+            if not _retried_throttle and self._is_throttled(body["errors"]):
+                time.sleep(self._throttle_wait_seconds(body["errors"]))
+                return self.execute(query, variables, _retried_throttle=True)
             raise RuntimeError(f"Shopify GraphQL error: {body['errors']}")
         return body.get("data") or {}
+
+    @staticmethod
+    def _is_throttled(errors: list) -> bool:
+        return any(
+            (err.get("extensions") or {}).get("code") == "THROTTLED"
+            for err in errors
+        )
+
+    @staticmethod
+    def _throttle_wait_seconds(errors: list, default: float = 2.0) -> float:
+        for err in errors:
+            throttle_status = ((err.get("extensions") or {}).get("cost") or {}).get("throttleStatus") or {}
+            available = throttle_status.get("currentlyAvailable")
+            restore_rate = throttle_status.get("restoreRate")
+            if available is not None and restore_rate:
+                # Cost of the next call isn't known ahead of time -- wait
+                # long enough to restore a modest buffer (50 points) rather
+                # than the whole bucket.
+                needed = max(0, 50 - available)
+                return needed / restore_rate if needed else default
+        return default
 
     def execute_paginated(self, query: str, variables: dict, connection_path: list):
         """
