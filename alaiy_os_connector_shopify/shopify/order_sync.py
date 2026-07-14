@@ -112,18 +112,21 @@ def _order_node_to_rest_shape(node: dict) -> dict:
 
 def handle_order_webhook(topic, payload):
     """
-    Routes by topic. orders/create is the only one that should ever insert a
-    new Sales Order from scratch -- updated/fulfilled apply in place (or fall
-    back to creating it, in case Shopify's delivery order put an update
-    before the create), and cancelled/delete both just cancel, never
-    hard-delete, per ERPNext's own docstatus model.
+    Routes by topic for both real orders (orders/*) and draft orders
+    (draft_orders/*), which both create/update/cancel Sales Orders.
+    Draft orders are customer-facing real orders placed through the draft
+    orders sales channel, not test/temporary objects.
+
+    orders/create and draft_orders/create insert new Sales Orders.
+    updated/fulfilled variants apply in-place (or fall back to create).
+    cancelled/delete variants cancel, never hard-delete per ERPNext's docstatus.
     """
-    if topic in ("orders/cancelled", "orders/delete"):
+    if topic in ("orders/cancelled", "orders/delete", "draft_orders/delete"):
         _cancel_order(payload)
-    elif topic == "orders/create":
+    elif topic in ("orders/create", "draft_orders/create"):
         _upsert_order(payload)
     else:
-        # orders/updated, orders/fulfilled
+        # orders/updated, orders/fulfilled, draft_orders/update
         _update_order(payload)
 
 
