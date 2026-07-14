@@ -442,81 +442,83 @@ def _sync_order_line_items(so_name: str, order: dict):
     Adds new items, updates quantities on existing items, removes items that
     were deleted in Shopify. Works on a submitted SO without needing amendment,
     since we're modifying before any stock movement (no Delivery Notes yet).
+
+    Errors bubble up so Shopify sees failure and retries (no silent failures).
     """
-    try:
-        so = frappe.get_doc("Sales Order", so_name)
-        if so.docstatus != 1:
-            return  # Skip if not submitted
+    so = frappe.get_doc("Sales Order", so_name)
+    if so.docstatus != 1:
+        return  # Skip if not submitted
 
-        settings = frappe.get_single("Shopify Connector Settings")
-        warehouse = _resolve_default_warehouse(settings)
+    settings = frappe.get_single("Shopify Connector Settings")
+    warehouse = _resolve_default_warehouse(settings)
 
-        # Build current and new item maps (keyed by variant_id for comparison)
-        current_items = {item.get("sh_shopify_variant_id"): item for item in so.items if item.get("sh_shopify_variant_id")}
-        new_items_from_shopify = {}
+    # Build current and new item maps (keyed by variant_id for comparison)
+    current_items = {item.get("sh_shopify_variant_id"): item for item in so.items if item.get("sh_shopify_variant_id")}
+    new_items_from_shopify = {}
 
-        # Parse Shopify's line items
-        for li in order.get("line_items", []):
-            item_code = _resolve_item_code(li)
-            if not item_code:
-                continue
-            variant_id = str(li.get("variant_id", ""))
-            if not variant_id:
-                continue
+    # Parse Shopify's line items
+    for li in order.get("line_items", []):
+        item_code = _resolve_item_code(li)
+        if not item_code:
+            continue
+        variant_id = str(li.get("variant_id", ""))
+        if not variant_id:
+            continue
 
-            new_items_from_shopify[variant_id] = {
-                "item_code": item_code,
-                "qty": flt(li.get("quantity", 1)),
-                "rate": flt(li.get("price", 0)),
-                "warehouse": warehouse,
-            }
+        new_items_from_shopify[variant_id] = {
+            "item_code": item_code,
+            "qty": flt(li.get("quantity", 1)),
+            "rate": flt(li.get("price", 0)),
+            "warehouse": warehouse,
+        }
 
-        # Detect changes
-        added_variants = set(new_items_from_shopify.keys()) - set(current_items.keys())
-        removed_variants = set(current_items.keys()) - set(new_items_from_shopify.keys())
-        common_variants = set(current_items.keys()) & set(new_items_from_shopify.keys())
+    # Detect changes
+    added_variants = set(new_items_from_shopify.keys()) - set(current_items.keys())
+    removed_variants = set(current_items.keys()) - set(new_items_from_shopify.keys())
+    common_variants = set(current_items.keys()) & set(new_items_from_shopify.keys())
 
-        # Remove items that were deleted in Shopify
-        for variant_id in removed_variants:
-            so.items.remove(current_items[variant_id])
+    # Remove items that were deleted in Shopify
+    for variant_id in removed_variants:
+        so.items.remove(current_items[variant_id])
 
-        # Add new items from Shopify
-        for variant_id in added_variants:
-            new_item_data = new_items_from_shopify[variant_id]
-            so.append("items", {
-                "item_code": new_item_data["item_code"],
-                "qty": new_item_data["qty"],
-                "rate": new_item_data["rate"],
-                "warehouse": new_item_data["warehouse"],
-                "delivery_date": frappe.utils.getdate(frappe.utils.today()),
-            })
+    # Add new items from Shopify
+    for variant_id in added_variants:
+        new_item_data = new_items_from_shopify[variant_id]
+        item_code = new_item_data["item_code"]
+        item_name = frappe.db.get_value("Item", item_code, "item_name") or item_code
+        uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Nos"
+        so.append("items", {
+            "item_code": item_code,
+            "item_name": item_name,
+            "uom": uom,
+            "conversion_factor": 1,
+            "qty": new_item_data["qty"],
+            "rate": new_item_data["rate"],
+            "warehouse": new_item_data["warehouse"],
+            "delivery_date": frappe.utils.getdate(frappe.utils.today()),
+        })
 
-        # Update quantities on existing items
-        for variant_id in common_variants:
-            current_row = current_items[variant_id]
-            new_qty = new_items_from_shopify[variant_id]["qty"]
-            new_rate = new_items_from_shopify[variant_id]["rate"]
+    # Update quantities on existing items
+    for variant_id in common_variants:
+        current_row = current_items[variant_id]
+        new_qty = new_items_from_shopify[variant_id]["qty"]
+        new_rate = new_items_from_shopify[variant_id]["rate"]
 
-            if current_row.qty != new_qty or current_row.rate != new_rate:
-                current_row.qty = new_qty
-                current_row.rate = new_rate
+        if current_row.qty != new_qty or current_row.rate != new_rate:
+            current_row.qty = new_qty
+            current_row.rate = new_rate
 
-        # Save if there were any changes
-        if added_variants or removed_variants or any(
-            current_items[v].qty != new_items_from_shopify[v]["qty"] or
-            current_items[v].rate != new_items_from_shopify[v]["rate"]
-            for v in common_variants
-        ):
-            so.flags.ignore_permissions = True
-            so.flags.from_shopify_sync = True
-            so.save()
-            frappe.db.commit()
+    # Save if there were any changes
+    if added_variants or removed_variants or any(
+        current_items[v].qty != new_items_from_shopify[v]["qty"] or
+        current_items[v].rate != new_items_from_shopify[v]["rate"]
+        for v in common_variants
+    ):
+        so.flags.ignore_permissions = True
+        so.flags.from_shopify_sync = True
+        so.save()
+        frappe.db.commit()
 
-    except Exception:
-        frappe.log_error(
-            title=f"Shopify: failed to sync line items for {so_name}",
-            message=frappe.get_traceback(),
-        )
 
 
 def _create_delivery_note_if_needed(so_name):
