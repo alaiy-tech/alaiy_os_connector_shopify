@@ -342,6 +342,7 @@ def _upsert_order(order):
             "rate": flt(li.get("price", 0)),
             "warehouse": warehouse,
             "delivery_date": frappe.utils.today(),
+            "sh_shopify_variant_id": str(li.get("variant_id", "")),
         })
 
     if not line_items:
