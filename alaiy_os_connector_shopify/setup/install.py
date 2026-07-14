@@ -206,6 +206,16 @@ def setup_custom_fields():
             "insert_after": "sh_financial_status",
         },
     ]
+    sales_order_item_fields = [
+        {
+            "fieldname": "sh_shopify_variant_id",
+            "label": "Shopify Variant ID",
+            "fieldtype": "Data",
+            "search_index": 1,
+            "insert_after": "item_code",
+            "description": "Shopify variant ID for this line item. Used to match items when syncing order modifications from Shopify.",
+        },
+    ]
     customer_fields = [
         {
             "fieldname": "sh_shopify_customer_id",
@@ -229,6 +239,7 @@ def setup_custom_fields():
 
     _ensure_custom_fields("Item", item_fields)
     _ensure_custom_fields("Sales Order", sales_order_fields)
+    _ensure_custom_fields("Sales Order Item", sales_order_item_fields)
     _ensure_custom_fields("Customer", customer_fields)
     _ensure_custom_fields("Delivery Note", delivery_note_fields)
     frappe.db.commit()
