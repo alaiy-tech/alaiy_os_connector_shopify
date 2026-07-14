@@ -248,8 +248,8 @@ def _import_simple_product(
     item.item_code = item_name
     item.item_name = variant.get("title", title).strip() or title
     item.description = description
-    item.item_group = item_group or "All Item Groups"
-    item.brand = vendor
+    item.item_group = _ensure_item_group(item_group)
+    item.brand = _ensure_brand(vendor)
     item.stock_uom = "Nos"  # Default; can be configured per variant
     item.is_stock_item = 1
     item.include_item_in_selling = 1
@@ -353,8 +353,8 @@ def _import_product_with_variants(
     template.item_code = template_name
     template.item_name = title
     template.description = description
-    template.item_group = item_group or "All Item Groups"
-    template.brand = vendor
+    template.item_group = _ensure_item_group(item_group)
+    template.brand = _ensure_brand(vendor)
     template.stock_uom = "Nos"
     template.has_variants = 1
     template.is_stock_item = 0  # Templates aren't stocked
@@ -391,6 +391,8 @@ def _import_product_with_variants(
         variant_item.item_code = variant_name
         variant_item.item_name = variant.get("title", f"{title} - {idx+1}").strip()
         variant_item.variant_of = template_name
+        variant_item.item_group = template.item_group
+        variant_item.brand = template.brand
         variant_item.description = description
         variant_item.stock_uom = "Nos"
         variant_item.is_stock_item = 1
@@ -431,6 +433,62 @@ def _import_product_with_variants(
     )
 
     return True
+
+
+def _ensure_brand(name: str) -> str:
+    """
+    Item.brand is also a mandatory-shaped Link field (to the Brand
+    doctype), not free text -- Shopify's vendor string fails the same way
+    productType does if no Brand of that exact name exists yet.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    if frappe.db.exists("Brand", name):
+        return name
+    try:
+        doc = frappe.new_doc("Brand")
+        doc.brand = name
+        doc.flags.ignore_permissions = True
+        doc.insert()
+        frappe.db.commit()
+        return name
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify import: failed to create Brand {name}",
+            message=frappe.get_traceback(),
+        )
+        return None
+
+
+def _ensure_item_group(name: str) -> str:
+    """
+    Item.item_group is a mandatory Link field, not free text -- inserting
+    Shopify's productType string directly (e.g. "Demo Item Group") fails
+    outright if no Item Group of that exact name exists yet. Creates one
+    under the root "All Item Groups" if needed, and falls back to that
+    root itself if the name is blank or the create fails for any reason.
+    """
+    name = (name or "").strip()
+    if not name:
+        return "All Item Groups"
+    if frappe.db.exists("Item Group", name):
+        return name
+    try:
+        doc = frappe.new_doc("Item Group")
+        doc.item_group_name = name
+        doc.parent_item_group = "All Item Groups"
+        doc.is_group = 0
+        doc.flags.ignore_permissions = True
+        doc.insert()
+        frappe.db.commit()
+        return name
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify import: failed to create Item Group {name}",
+            message=frappe.get_traceback(),
+        )
+        return "All Item Groups"
 
 
 def _make_attribute_abbr(value: str, existing_abbrs: set) -> str:
