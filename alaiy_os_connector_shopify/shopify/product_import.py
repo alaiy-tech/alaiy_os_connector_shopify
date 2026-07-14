@@ -267,9 +267,14 @@ def _import_simple_product(
 
     item_name = sku
 
+    # A single-variant product has no real options, so Shopify names its
+    # lone variant the literal placeholder "Default Title" -- using that
+    # (as a naive `variant.get("title") or title` would) replaces the
+    # actual product name with a meaningless generic string. There's
+    # nothing distinguishing to add here, so just use the product title.
     item = frappe.new_doc("Item")
     item.item_code = item_name
-    item.item_name = variant.get("title", title).strip() or title
+    item.item_name = title
     item.description = description
     item.item_group = _ensure_item_group(item_group)
     item.brand = _ensure_brand(vendor)
@@ -323,11 +328,21 @@ def _import_product_with_variants(
     """
     Import a multi-variant product as a template Item + variant Items.
     """
-    template_name = title.replace(" ", "-").lower()[:100]
+    # Suffixing with the Shopify product_id guarantees uniqueness -- using
+    # the title alone (as before) meant two genuinely different Shopify
+    # products that happen to share a title (very common in real
+    # catalogs -- duplicate names across colorways/collections) collided
+    # on the same item_code, so only the first ever got imported and
+    # every later one was skipped forever, mistaken for "already
+    # imported." item_name (set below) still carries the human title.
+    slug = "".join(
+        ch for ch in title.lower().replace(" ", "-") if ch.isalnum() or ch == "-"
+    ).strip("-")[:60]
+    template_name = f"{slug}-{product_id}" if slug else f"sh-{product_id}"
 
     # Check if template already exists
     if frappe.db.exists("Item", template_name):
-        return False  # Template conflict; skip
+        return False  # Already imported this exact product; skip
 
     # ERPNext requires a has_variants=1 template to declare at least one
     # attribute (e.g. Size, Color), and every variant must carry a value
@@ -410,9 +425,18 @@ def _import_product_with_variants(
 
         variant_name = sku
 
+        # Shopify's own variant "title" is just the bare option value(s)
+        # (e.g. "M", or "38") -- fine inside one product's own variant
+        # list on Shopify, but meaningless on its own in a flat ERPNext
+        # Item list next to hundreds of other variants. Build a name that
+        # carries the parent product title along with the actual
+        # attribute values instead of relying on Shopify's title field.
+        resolved = _resolved_values(variant)
+        variant_label = " / ".join(resolved.values()) if resolved else f"Variant {idx+1}"
+
         variant_item = frappe.new_doc("Item")
         variant_item.item_code = variant_name
-        variant_item.item_name = variant.get("title", f"{title} - {idx+1}").strip()
+        variant_item.item_name = f"{title} - {variant_label}"
         variant_item.variant_of = template_name
         variant_item.item_group = template.item_group
         variant_item.brand = template.brand
@@ -422,7 +446,7 @@ def _import_product_with_variants(
         variant_item.include_item_in_selling = 1
         variant_item.include_item_in_buying = 1
 
-        for name, value in _resolved_values(variant).items():
+        for name, value in resolved.items():
             variant_item.append("attributes", {"attribute": name, "attribute_value": value})
 
         # Link to Shopify
