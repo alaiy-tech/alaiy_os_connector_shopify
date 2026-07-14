@@ -580,10 +580,14 @@ def _get_or_create_customer(customer_data, settings):
         if existing:
             return existing
 
-    first = customer_data.get("first_name", "")
-    last = customer_data.get("last_name", "")
-    full_name = f"{first} {last}".strip() or customer_data.get(
-        "email", "") or f"Shopify {shopify_id}"
+    first = customer_data.get("first_name", "").strip()
+    last = customer_data.get("last_name", "").strip()
+    # Only use last_name if it exists and isn't the literal string "None"
+    # (some Shopify integrations send "None" instead of null/empty)
+    if first and last and last.lower() != "none":
+        full_name = f"{first} {last}"
+    else:
+        full_name = first or customer_data.get("email", "") or f"Shopify {shopify_id}"
 
     if frappe.db.exists("Customer", full_name):
         return full_name
