@@ -376,7 +376,13 @@ def _upsert_order(order):
     so.flags.from_shopify_sync = True
     so.flags.ignore_permissions = True
     so.insert()
-    so.submit()
+
+    # Draft orders from Shopify should stay as draft in ERPNext until customer completes checkout.
+    # Real orders are submitted immediately and ready for fulfillment.
+    is_draft_order = order.get("source_name") == "shopify_draft_order"
+    if not is_draft_order:
+        so.submit()
+
     frappe.db.commit()
 
     if order.get("fulfillments"):
