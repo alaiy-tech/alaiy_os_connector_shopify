@@ -35,6 +35,7 @@ doc_events = {
     "Item": {
         "after_insert": "alaiy_os_connector_shopify.shopify.product_sync.on_item_change",
         "on_update": "alaiy_os_connector_shopify.shopify.product_sync.on_item_change",
+        "on_trash": "alaiy_os_connector_shopify.shopify.product_sync.on_item_delete",
     },
     "Item Price": {
         "after_insert": "alaiy_os_connector_shopify.shopify.product_sync.on_item_price_change",

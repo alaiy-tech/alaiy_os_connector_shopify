@@ -90,6 +90,36 @@ def on_item_change(doc, method=None):
         )
 
 
+def on_item_delete(doc, method=None):
+    """
+    Deleting a variant in ERPNext should remove it from Shopify too,
+    rather than silently diverging. push_item always rebuilds the FULL
+    variant list from the template's current children before calling
+    productSet, which Shopify treats as the complete desired state -- so
+    simply re-pushing the template right after this variant is gone
+    naturally drops it from Shopify as well, with no separate delete
+    mutation needed.
+
+    Scoped to variant deletions only. Deleting the template itself (the
+    whole product) is a bigger, more destructive call -- not handled
+    here.
+    """
+    if not doc.variant_of:
+        return
+    if not doc.get("sh_shopify_variant_id"):
+        return  # Never synced to Shopify -- nothing to remove there
+    template_name = doc.variant_of
+    if not frappe.db.get_value("Item", template_name, "sync_to_shopify"):
+        return  # Outbound push disabled for this product -- leave Shopify alone
+
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.product_sync.push_item",
+        queue="short",
+        timeout=120,
+        item_code=template_name,
+    )
+
+
 def on_item_price_change(doc, method=None):
     settings = frappe.get_single("Shopify Connector Settings")
     if doc.price_list != (settings.sh_selling_price_list or "Standard Selling"):
