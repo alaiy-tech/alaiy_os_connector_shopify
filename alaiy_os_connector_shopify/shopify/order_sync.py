@@ -488,7 +488,7 @@ def _sync_order_line_items(so_name: str, order: dict):
                 "qty": new_item_data["qty"],
                 "rate": new_item_data["rate"],
                 "warehouse": new_item_data["warehouse"],
-                "delivery_date": frappe.utils.today(),
+                "delivery_date": frappe.utils.getdate(frappe.utils.today()),
             })
 
         # Update quantities on existing items
