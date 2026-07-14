@@ -50,6 +50,15 @@ query PullProducts($after: String) {
             sku
             title
             price
+            inventoryItem {
+              inventoryLevels(first: 1) {
+                nodes {
+                  quantities(names: ["available"]) {
+                    quantity
+                  }
+                }
+              }
+            }
             selectedOptions {
               name
               value
@@ -303,6 +312,11 @@ def _import_simple_product(
     if price > 0:
         _set_item_price(item_name, price, settings)
 
+    # Set opening stock from Shopify's current available quantity
+    qty = _variant_available_qty(variant)
+    if qty > 0:
+        _set_opening_stock(item_name, qty, settings)
+
     # Download and set images
     if images:
         _set_item_image(item_name, images[0])
@@ -461,6 +475,11 @@ def _import_product_with_variants(
         price = flt(variant.get("price") or 0)
         if price > 0:
             _set_item_price(variant_name, price, settings)
+
+        # Set opening stock from Shopify's current available quantity
+        qty = _variant_available_qty(variant)
+        if qty > 0:
+            _set_opening_stock(variant_name, qty, settings)
 
     frappe.db.commit()
 
@@ -625,6 +644,72 @@ def _set_item_price(item_code: str, price: float, settings):
         frappe.log_error(
             title=f"Failed to set price for {item_code}",
             message=str(exc)
+        )
+
+
+def _variant_available_qty(variant: dict) -> float:
+    """
+    Extract available quantity from the inventoryItem.inventoryLevels
+    shape requested in _PRODUCTS_QUERY. Takes the first location Shopify
+    returns -- fine for the common single-location shop this bulk import
+    is aimed at; a multi-location shop's true total is a sum across
+    inventory_sync.py's own inventory push, not this one-time import.
+    """
+    levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
+    if not levels:
+        return 0
+    quantities = levels[0].get("quantities") or []
+    return flt(quantities[0].get("quantity")) if quantities else 0
+
+
+def _set_opening_stock(item_code: str, qty: float, settings):
+    """
+    Record Shopify's current available quantity as this Item's opening
+    stock via a Material Receipt Stock Entry -- the standard ERPNext way
+    to set an initial stock balance (Bin.actual_qty is derived from the
+    stock ledger, not directly writable). Without this, every imported
+    item lands in ERPNext with zero stock regardless of what's actually
+    available on Shopify.
+    """
+    warehouse = settings.sh_default_warehouse
+    if not warehouse:
+        frappe.log_error(
+            title="Shopify import: no default warehouse configured",
+            message=f"Item {item_code} imported with qty {qty} but no opening stock entry could be made"
+        )
+        return
+    if not frappe.db.exists("Warehouse", warehouse):
+        frappe.log_error(
+            title=f"Shopify import: warehouse {warehouse} not found",
+            message=f"Item {item_code} will not have opening stock set"
+        )
+        return
+
+    company = frappe.db.get_value("Warehouse", warehouse, "company") or frappe.defaults.get_global_default("company")
+    if not company:
+        frappe.log_error(
+            title="Shopify import: no company resolved for opening stock",
+            message=f"Item {item_code} will not have opening stock set"
+        )
+        return
+
+    try:
+        se = frappe.new_doc("Stock Entry")
+        se.stock_entry_type = "Material Receipt"
+        se.company = company
+        se.append("items", {
+            "item_code": item_code,
+            "qty": qty,
+            "t_warehouse": warehouse,
+        })
+        se.flags.ignore_permissions = True
+        se.insert()
+        se.submit()
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(
+            title=f"Failed to set opening stock for {item_code}",
+            message=frappe.get_traceback()
         )
 
 

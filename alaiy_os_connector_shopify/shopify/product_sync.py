@@ -518,6 +518,17 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
                     "title": v.get("title"),
                     "price": v.get("price"),
                     "selectedOptions": _variant_selected_options(v),
+                    # Reshaped to match the GraphQL inventoryItem.inventoryLevels
+                    # shape product_import._variant_available_qty() reads, so a
+                    # webhook-created product gets its opening stock set the
+                    # same way a one-time import does.
+                    "inventoryItem": {
+                        "inventoryLevels": {
+                            "nodes": [
+                                {"quantities": [{"quantity": v.get("inventory_quantity")}]}
+                            ]
+                        } if v.get("inventory_quantity") is not None else {"nodes": []}
+                    },
                 }
                 for v in variants
             ]
