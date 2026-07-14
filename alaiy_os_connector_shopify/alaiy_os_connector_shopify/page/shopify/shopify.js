@@ -12,9 +12,6 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 				<div class="shopify-card">
 					<div class="shopify-card-body">
 						<div id="shopify-connector-status" class="shopify-connector-status"></div>
-						<button id="test-connection-btn" class="shopify-btn shopify-btn-primary">
-							<i class="fa fa-plug"></i> Test Connection
-						</button>
 					</div>
 				</div>
 
@@ -90,23 +87,11 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		});
 	}
 
-	function test_connection() {
-		var btn = document.getElementById('test-connection-btn');
-		btn.disabled = true;
-		btn.innerHTML = '<span class="shopify-spinner"></span> Testing...';
-
+	function check_connection() {
 		frappe.call({
 			method: 'alaiy_os_connector_shopify.api.test_connection.test_connection',
-			callback: function(r) {
-				render_connector_status();
-				btn.disabled = false;
-				btn.innerHTML = '<i class="fa fa-plug"></i> Test Connection';
-			},
-			error: function() {
-				render_connector_status();
-				btn.disabled = false;
-				btn.innerHTML = '<i class="fa fa-plug"></i> Test Connection';
-			}
+			callback: function() { render_connector_status(); },
+			error: function() { render_connector_status(); }
 		});
 	}
 
@@ -228,9 +213,8 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		if (running) setTimeout(refresh_logs, 3000);
 	}
 
-	test_connection();
+	check_connection();
 	refresh_logs();
-	document.getElementById('test-connection-btn').addEventListener('click', test_connection);
 	document.getElementById('sync-orders-btn').addEventListener('click', sync_orders);
 	document.getElementById('import-orders-btn').addEventListener('click', import_orders);
 	document.getElementById('sync-inventory-btn').addEventListener('click', sync_inventory);

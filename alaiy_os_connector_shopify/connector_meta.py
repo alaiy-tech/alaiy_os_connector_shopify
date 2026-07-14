@@ -10,7 +10,7 @@ connector_meta = {
     "connector_type": "channel",
     "description": "Shopify storefront",
     "icon": "shopping-bag",
-    "icon_url": "",
+    "icon_url": "/assets/alaiy_os_connector_shopify/images/shopify-icon.svg",
     "settings_doctype": "Shopify Connector Settings",
     "test_method": "alaiy_os_connector_shopify.api.test_connection.test_connection",
     "sync_categories_method": "alaiy_os_connector_shopify.api.sync.trigger_orders_sync",
