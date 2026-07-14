@@ -24,6 +24,8 @@ product ID yet" before any of them writes one back, and each creates its
 own duplicate product.
 """
 
+from zoneinfo import ZoneInfo
+
 import frappe
 from frappe.utils import flt
 
@@ -32,6 +34,21 @@ from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
 LOCK_TIMEOUT_SECONDS = 30
+
+
+def _to_utc_naive(dt):
+    """
+    Normalize a datetime to naive UTC so two datetimes from different
+    sources can be compared safely. Shopify's updated_at parses to a
+    timezone-AWARE datetime (it carries a UTC offset); Frappe's own
+    Datetime fields (e.g. Shopify Synced Entity.last_synced_at) are
+    always naive, implicitly in the site's system timezone. Comparing
+    aware to naive directly raises TypeError.
+    """
+    if dt.tzinfo is not None:
+        return dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+    system_tz = ZoneInfo(frappe.utils.get_system_timezone())
+    return dt.replace(tzinfo=system_tz).astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
 _PRODUCT_SET_MUTATION = """
 mutation PushProduct($input: ProductSetInput!, $identifier: ProductSetIdentifiers, $synchronous: Boolean!) {
@@ -596,13 +613,16 @@ def _handle_product_update(product_id: str, product: dict):
     if not shopify_updated:
         return
 
-    # Shopify wins if newer than our last sync. Both sides must be parsed to
-    # actual datetimes before comparing -- Shopify's timestamp carries a UTC
-    # offset while entity.last_synced_at is a naive ERPNext-local datetime,
-    # so comparing raw strings (as before) could reject or accept updates
-    # based on formatting differences alone, not actual chronology.
+    # Shopify wins if newer than our last sync. Both sides must be
+    # normalized to the same UTC-naive form before comparing -- Shopify's
+    # timestamp string carries a UTC offset (parses to a timezone-AWARE
+    # datetime) while entity.last_synced_at is a naive ERPNext-local
+    # datetime; comparing aware to naive directly raises TypeError, which
+    # was silently swallowed by this function's own caller and made every
+    # single real webhook update fail with no visible symptom beyond
+    # "the update just didn't happen."
     last_synced = entity.last_synced_at
-    if last_synced and frappe.utils.get_datetime(shopify_updated) < frappe.utils.get_datetime(last_synced):
+    if last_synced and _to_utc_naive(frappe.utils.get_datetime(shopify_updated)) < _to_utc_naive(frappe.utils.get_datetime(last_synced)):
         frappe.logger().debug(
             f"Product {product_id} older than local, skipping update"
         )
