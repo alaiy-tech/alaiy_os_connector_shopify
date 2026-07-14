@@ -95,6 +95,63 @@ def register_webhooks():
     return registered
 
 
+def ensure_webhooks_registered():
+    """
+    Fill in any webhook topic that isn't currently registered for this
+    site's address, without touching topics that already are.
+
+    register_webhooks() is normally only ever called once, automatically,
+    on the exact moment Shopify Connector Settings.is_enabled flips from
+    unchecked to checked. If that single attempt fails for any reason
+    (confirmed in production: the Shop URL field wasn't filled in yet at
+    that instant, so ShopifyGraphQLClient's __init__ raised immediately),
+    the failure is caught, logged to Error Log, and never retried --
+    inbound sync then silently never works, with no visible symptom
+    beyond "webhooks never fire," which is easy to mistake for an HMAC
+    or timestamp bug instead of "nothing was ever registered." This is
+    meant to be called periodically (see sync_jobs.py) as a cheap
+    self-healing check: one read-only list query, then create calls only
+    for whatever's actually missing.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    client = ShopifyGraphQLClient()
+    address = get_webhook_address()
+
+    existing_topics = set()
+    variables = {"after": None}
+    for page_nodes in client.execute_paginated(_LIST_QUERY, variables, ["webhookSubscriptions"]):
+        for wh in page_nodes:
+            if wh.get("callbackUrl") == address:
+                existing_topics.add(wh.get("topic"))
+
+    missing = [t for t in WEBHOOK_TOPICS if _topic_to_graphql_enum(t) not in existing_topics]
+    if not missing:
+        return []
+
+    registered = []
+    for topic in missing:
+        try:
+            data = client.execute(_CREATE_MUTATION, {
+                "topic": _topic_to_graphql_enum(topic),
+                "input": {"uri": address, "format": "JSON"},
+            })
+            result = data.get("webhookSubscriptionCreate") or {}
+            errors = result.get("userErrors") or []
+            if errors:
+                raise RuntimeError(f"userErrors: {errors}")
+            wh = result.get("webhookSubscription") or {}
+            if wh.get("id"):
+                registered.append({"topic": topic, "webhook_id": wh["id"]})
+        except Exception:
+            frappe.log_error(
+                title=f"Shopify: failed to re-register missing webhook {topic}",
+                message=frappe.get_traceback(),
+            )
+    if registered:
+        frappe.logger().info(f"Shopify: registered previously-missing webhooks: {registered}")
+    return registered
+
+
 def unregister_webhooks():
     """Remove all webhooks pointing to this site's handle_webhook endpoint."""
     try:

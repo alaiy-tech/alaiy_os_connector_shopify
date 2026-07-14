@@ -29,6 +29,29 @@ def check_and_enqueue():
 
     _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
     _maybe_refresh_token(settings)
+    _maybe_ensure_webhooks(settings)
+
+
+def _maybe_ensure_webhooks(settings):
+    """
+    Self-healing check for webhook registration, which otherwise only
+    ever runs once automatically (on Shopify Connector Settings.is_enabled
+    flipping on) with no retry if that single attempt fails -- confirmed
+    in production: it failed because the Shop URL field wasn't filled in
+    yet at that exact instant, and inbound sync then silently never
+    worked. One read-only list query per minute is cheap; the create
+    calls only fire for genuinely missing topics.
+    """
+    if not settings.sh_shop_url or not settings.sh_access_token:
+        return
+    from alaiy_os_connector_shopify.shopify.webhooks import ensure_webhooks_registered
+    try:
+        ensure_webhooks_registered()
+    except Exception:
+        frappe.log_error(
+            title="Shopify: webhook self-heal check failed",
+            message=frappe.get_traceback(),
+        )
 
 
 def _maybe_refresh_token(settings):
