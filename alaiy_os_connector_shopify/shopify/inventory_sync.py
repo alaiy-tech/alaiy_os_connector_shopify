@@ -1,7 +1,10 @@
 import frappe
 from frappe.utils import flt, now_datetime
 
-from alaiy_os_connector_shopify.shopify.sync_guard import has_active_sync, load_or_create_log
+from alaiy_os_connector_shopify.shopify.sync_guard import (
+    has_active_sync, load_or_create_log,
+    append_log as _append_log, close_log as _close_log,
+)
 
 _LOCATIONS_QUERY = """
 {
@@ -123,7 +126,7 @@ def run_inventory_push(trigger="manual", log_name=None):
             fields=["name", "sh_shopify_variant_id"],
         )
 
-        processed = updated = failed = 0
+        processed = updated = failed = unchanged = 0
         for item in items:
             processed += 1
             try:
@@ -139,6 +142,13 @@ def run_inventory_push(trigger="manual", log_name=None):
                     failed += 1
                     _append_log(
                         log, f"ERROR item={item.name}: no Shopify inventory_item_id for variant {item.sh_shopify_variant_id}")
+                    continue
+
+                # Already in sync -- setting to the same value is a Shopify
+                # no-op, so skip the write round-trip entirely. On steady-state
+                # runs this is most items, and halves the API calls/run.
+                if int(qty) == int(current_qty):
+                    unchanged += 1
                     continue
 
                 data = client.execute(_INVENTORY_SET_MUTATION, {
@@ -172,6 +182,8 @@ def run_inventory_push(trigger="manual", log_name=None):
                     message=frappe.get_traceback(),
                 )
 
+        _append_log(
+            log, f"{updated} pushed, {unchanged} already in sync, {failed} failed.")
         _close_log(log, "success", processed=processed,
                    created=updated, failed=failed)
     except Exception:
@@ -209,19 +221,3 @@ def _get_inventory_item_state(client, variant_id, location_id):
     return inventory_item_id, (current_qty or 0)
 
 
-def _append_log(log, message: str):
-    """Append a line to log.log_messages without saving."""
-    existing = log.log_messages or ""
-    log.log_messages = (existing + "\n" + message).strip()
-
-
-def _close_log(log, status, processed=0, created=0, failed=0, error=""):
-    log.status = status
-    log.finished_at = now_datetime()
-    log.items_processed = processed
-    log.items_created = created
-    log.items_failed = failed
-    if error:
-        log.error_message = (error or "")[:500]
-    log.save(ignore_permissions=True)
-    frappe.db.commit()

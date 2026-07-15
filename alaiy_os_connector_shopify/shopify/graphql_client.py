@@ -8,6 +8,12 @@ from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_tok
 
 SHOPIFY_API_VERSION = "2026-07"
 
+# (connect, read) seconds. Without this a stalled Shopify response blocks the
+# worker until the RQ job-level death penalty (e.g. 600s) kills the WHOLE
+# sync mid-loop; with it a hung call raises requests.Timeout, which callers'
+# per-item try/except turns into a single skipped item instead.
+REQUEST_TIMEOUT = (10, 60)
+
 
 class ShopifyGraphQLClient:
     """Thin wrapper over the Shopify Admin GraphQL API."""
@@ -55,10 +61,10 @@ class ShopifyGraphQLClient:
         than failing the whole sync item for a transient rate limit.
         """
         payload = {"query": query, "variables": variables or {}}
-        resp = self.session.post(self.endpoint, json=payload)
+        resp = self.session.post(self.endpoint, json=payload, timeout=REQUEST_TIMEOUT)
         if resp.status_code == 401:
             self._refresh_token()
-            resp = self.session.post(self.endpoint, json=payload)
+            resp = self.session.post(self.endpoint, json=payload, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
 
         body = resp.json()
