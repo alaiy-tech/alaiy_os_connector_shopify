@@ -720,6 +720,14 @@ def _set_opening_stock(item_code: str, qty: float, settings):
         )
         return
 
+    cost_center = _ensure_cost_center(company)
+    if not cost_center:
+        frappe.log_error(
+            title=f"Shopify import: no usable Cost Center for company {company}",
+            message=f"Item {item_code} will not have opening stock set"
+        )
+        return
+
     try:
         se = frappe.new_doc("Stock Entry")
         se.stock_entry_type = "Material Receipt"
@@ -728,6 +736,7 @@ def _set_opening_stock(item_code: str, qty: float, settings):
             "item_code": item_code,
             "qty": qty,
             "t_warehouse": warehouse,
+            "cost_center": cost_center,
         })
         se.flags.ignore_permissions = True
         se.insert()
@@ -738,6 +747,63 @@ def _set_opening_stock(item_code: str, qty: float, settings):
             title=f"Failed to set opening stock for {item_code}",
             message=frappe.get_traceback()
         )
+
+
+def _ensure_cost_center(company: str) -> str:
+    """
+    Return a usable leaf Cost Center for this company, self-healing broken
+    setups instead of requiring manual console fixes on every client site.
+
+    Confirmed live: a real site's root Cost Center had its own
+    parent_cost_center dangling (pointing at "<company>", a plain string
+    that isn't itself a Cost Center -- the real root is always named
+    "<company> - <abbr>"), which corrupted its lft/rgt to 0/0 and made
+    every attempt to create a child fail with "Item cannot be added to
+    its own descendants". A root's parent must be blank, not a dangling
+    reference, for the nested-set tree to be valid -- clear it and
+    rebuild before trying to create anything.
+    """
+    company_default = frappe.db.get_value("Company", company, "cost_center")
+    if company_default and not frappe.db.get_value("Cost Center", company_default, "is_group"):
+        return company_default
+
+    existing_leaf = frappe.db.get_value(
+        "Cost Center", {"company": company, "is_group": 0}, "name"
+    )
+    if existing_leaf:
+        frappe.db.set_value("Company", company, "cost_center", existing_leaf)
+        return existing_leaf
+
+    abbr = frappe.db.get_value("Company", company, "abbr")
+    root = f"{company} - {abbr}" if abbr else None
+    if not root or not frappe.db.exists("Cost Center", root):
+        return None
+
+    parent = frappe.db.get_value("Cost Center", root, "parent_cost_center")
+    if parent and parent != root and not frappe.db.exists("Cost Center", parent):
+        frappe.db.set_value("Cost Center", root, "parent_cost_center", "")
+
+    root_lft = frappe.db.get_value("Cost Center", root, "lft")
+    if not root_lft:
+        from frappe.utils.nestedset import rebuild_tree
+        rebuild_tree("Cost Center")
+
+    try:
+        cc = frappe.new_doc("Cost Center")
+        cc.cost_center_name = "Main"
+        cc.parent_cost_center = root
+        cc.company = company
+        cc.is_group = 0
+        cc.insert(ignore_permissions=True)
+        frappe.db.set_value("Company", company, "cost_center", cc.name)
+        frappe.db.commit()
+        return cc.name
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify import: failed to auto-create Cost Center for {company}",
+            message=frappe.get_traceback(),
+        )
+        return None
 
 
 def _set_item_image(item_code: str, image_url: str):
