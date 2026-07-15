@@ -114,12 +114,8 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
     """
     log = load_or_create_log("products", trigger, log_name)
 
-    # Concurrency check. Also checks products_reconcile -- both hammer the
-    # same Item rows, and running at once risks exactly the MySQL "Lock
-    # wait timeout exceeded" seen live once the reconciliation job (added
-    # this session) started running on its own schedule alongside a
-    # manual full import.
-    if has_active_sync("products", exclude_name=log.name) or has_active_sync("products_reconcile"):
+    # Concurrency check
+    if has_active_sync("products", exclude_name=log.name):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another products sync is already running."
@@ -905,6 +901,22 @@ def _set_opening_stock(item_code: str, qty: float, settings):
             message=f"Item {item_code} will not have opening stock set"
         )
         return
+    if frappe.db.get_value("Warehouse", warehouse, "is_group"):
+        # Same class of bug order_sync._resolve_default_warehouse already
+        # self-heals for orders -- confirmed live on a second client site
+        # that this opening-stock path never got the same fallback, so a
+        # Group Warehouse configured as default blocked every single
+        # opening stock entry with "Group node warehouse is not allowed."
+        leaf = frappe.db.get_value("Warehouse", {"is_group": 0, "company": frappe.db.get_value("Warehouse", warehouse, "company")}, "name")
+        if not leaf:
+            leaf = frappe.db.get_value("Warehouse", {"is_group": 0}, "name")
+        if not leaf:
+            frappe.log_error(
+                title="Shopify import: Default Warehouse is a Group Warehouse, no leaf fallback found",
+                message=f"Item {item_code} will not have opening stock set"
+            )
+            return
+        warehouse = leaf
 
     company = frappe.db.get_value("Warehouse", warehouse, "company") or frappe.defaults.get_global_default("company")
     if not company:
@@ -1075,6 +1087,15 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
     Create a Website Slideshow from multiple images and link to Item.
     """
     if len(image_urls) < 2:
+        return
+
+    # "slideshow" is a core Item field on some ERPNext builds but not
+    # others -- confirmed live on a second client site: "Unknown column
+    # 'slideshow' in 'SET'" crashed every multi-image import outright.
+    # Registering our own custom field with the same name risks colliding
+    # with the real core field on sites where it DOES exist, so just skip
+    # gracefully wherever the column itself is genuinely absent.
+    if not frappe.get_meta("Item").has_field("slideshow"):
         return
 
     try:
