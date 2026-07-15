@@ -342,9 +342,12 @@ def _upsert_order(order):
         item_code = _resolve_item_code(li)
         if not item_code:
             continue
+        qty = _line_item_qty(li)
+        if qty <= 0:
+            continue
         line_items.append({
             "item_code": item_code,
-            "qty": flt(li.get("quantity", 1)),
+            "qty": qty,
             "rate": flt(li.get("price", 0)),
             "warehouse": warehouse,
             "delivery_date": frappe.utils.today(),
@@ -443,6 +446,24 @@ def _update_order(order):
     return False
 
 
+def _line_item_qty(li: dict) -> float:
+    """
+    Shopify webhook line items carry BOTH "quantity" (the order's original,
+    pre-edit quantity) and "current_quantity" (the true post-edit quantity --
+    0 if the line was removed via Order Editing). "quantity" never changes
+    once the order is placed, even after an edit removes the line entirely --
+    confirmed live: an edited order still showed "quantity": 1 on a line the
+    merchant had just deleted, only "current_quantity": 0 revealed the
+    removal. Reading "quantity" alone meant edits that removed items were
+    silently invisible to line-item reconciliation. current_quantity is only
+    present on webhook payloads (not the GraphQL pull query), so fall back
+    to "quantity" when it's absent.
+    """
+    if "current_quantity" in li:
+        return flt(li.get("current_quantity", 0))
+    return flt(li.get("quantity", 1))
+
+
 def _can_modify_order_items(fulfillment_status: str) -> bool:
     """
     State guard: return True if order hasn't shipped yet, so line items can be safely modified.
@@ -481,9 +502,13 @@ def _sync_order_line_items(so_name: str, order: dict):
         if not variant_id:
             continue
 
+        qty = _line_item_qty(li)
+        if qty <= 0:
+            continue  # removed via Order Editing -- handled below via removed_variants
+
         new_items_from_shopify[variant_id] = {
             "item_code": item_code,
-            "qty": flt(li.get("quantity", 1)),
+            "qty": qty,
             "rate": flt(li.get("price", 0)),
             "warehouse": warehouse,
         }

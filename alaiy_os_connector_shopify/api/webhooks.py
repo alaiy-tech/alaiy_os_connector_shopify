@@ -23,32 +23,37 @@ def handle_webhook():
         frappe.response.status_code = 200
         return {"ok": False, "reason": "connector disabled"}
 
-    # Fail CLOSED: this endpoint is allow_guest -- an unset secret must
-    # reject every request, not silently accept everything unverified.
+    # Fail CLOSED: this endpoint is allow_guest -- at least one secret must
+    # be configured, or every request is rejected, never silently accepted.
     #
-    # Webhooks here are registered via the GraphQL Admin API
-    # (webhookSubscriptionCreate, using this app's own access token) --
-    # Shopify signs those payloads with the app's Client Secret, NOT a
-    # separately configured "webhook secret" (that only applies to
-    # webhooks created through the legacy Settings > Notifications page,
-    # a different mechanism entirely). Confirmed live: real webhook
-    # deliveries were arriving correctly but failing HMAC validation
-    # 100% of the time because this was checking against sh_webhook_secret.
-    webhook_secret = settings.get_password(
-        "sh_client_secret", raise_exception=False)
-    if not webhook_secret:
+    # Two independent delivery mechanisms hit this same endpoint, each
+    # signed with its own secret: webhooks registered via the GraphQL
+    # Admin API (webhookSubscriptionCreate) are signed with the app's
+    # Client Secret, while webhooks configured on the legacy
+    # Settings > Notifications page are signed with a separate secret
+    # shown on that page. Confirmed live: "Order edit" (orders/edited)
+    # is only ever delivered via the Notifications-page mechanism --
+    # Shopify has no GraphQL-subscribable topic for order-edit diffs --
+    # so both secrets must be accepted, not just one.
+    candidate_secrets = [
+        settings.get_password("sh_client_secret", raise_exception=False),
+        settings.get_password("sh_webhook_secret", raise_exception=False),
+    ]
+    candidate_secrets = [s for s in candidate_secrets if s]
+    if not candidate_secrets:
         frappe.log_error(
-            title="Shopify webhook rejected: no client secret configured")
+            title="Shopify webhook rejected: no secret configured")
         frappe.response.status_code = 401
-        return {"ok": False, "reason": "client secret not configured"}
+        return {"ok": False, "reason": "no secret configured"}
 
-    computed = hmac.new(
-        webhook_secret.encode("utf-8"),
-        raw_body,
-        hashlib.sha256,
-    ).digest()
-    expected = base64.b64encode(computed).decode("utf-8")
-    if not hmac_header or not hmac.compare_digest(expected, hmac_header):
+    valid = False
+    for secret in candidate_secrets:
+        computed = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).digest()
+        expected = base64.b64encode(computed).decode("utf-8")
+        if hmac_header and hmac.compare_digest(expected, hmac_header):
+            valid = True
+            break
+    if not valid:
         frappe.log_error(
             title="Shopify webhook rejected: HMAC mismatch (diagnostic)",
             message=f"topic={topic!r}",
@@ -75,7 +80,7 @@ def handle_webhook():
 def _dispatch(topic, payload):
     # Order webhooks (inbound order sync)
     order_topics = {
-        "orders/create", "orders/updated",
+        "orders/create", "orders/updated", "orders/edited",
         "orders/cancelled", "orders/fulfilled", "orders/delete",
         "draft_orders/create", "draft_orders/update", "draft_orders/delete",
     }

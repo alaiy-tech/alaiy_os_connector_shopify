@@ -8,6 +8,8 @@ WEBHOOK_TOPICS = [
     "orders/fulfilled",
     "orders/delete",
 
+    "orders/edited",
+
     # Product webhooks (bidirectional product sync - inbound)
     "products/create",
     "products/update",

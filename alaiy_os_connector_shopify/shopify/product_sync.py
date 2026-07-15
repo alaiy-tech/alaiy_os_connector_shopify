@@ -770,10 +770,18 @@ def _update_item_from_shopify(item, product: dict):
     if product.get("status"):
         item.disabled = 1 if product["status"] in ("archived", "draft") else 0
 
-    # Save item
+    # Save item. item.flags.ignore_permissions only covers this save --
+    # ERPNext's Item.on_update() cascades into update_variants(), which
+    # fetches fresh sibling variant Item docs and calls variant.save() on
+    # each of THOSE, none of which inherit our flag. This webhook runs as
+    # Guest (allow_guest=True endpoint), so that cascaded save hits a real
+    # frappe.PermissionError -- confirmed live. Same fix order_sync.py
+    # already uses for its own Guest-context saves: elevate for the call.
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
-    item.save()
+    from alaiy_os_connector_shopify.shopify.order_sync import _as_administrator
+    with _as_administrator():
+        item.save()
     frappe.db.commit()
 
     # Update images
