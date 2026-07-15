@@ -180,6 +180,15 @@ def _variant_price(item_code: str, settings) -> float:
     return flt(rate or 0)
 
 
+def _variant_compare_at_price(item_code: str) -> float:
+    from alaiy_os_connector_shopify.shopify.product_import import _COMPARE_AT_PRICE_LIST
+    rate = frappe.db.get_value(
+        "Item Price", {"item_code": item_code,
+                       "price_list": _COMPARE_AT_PRICE_LIST}, "price_list_rate"
+    )
+    return flt(rate or 0)
+
+
 def _item_images(item, settings) -> list:
     if not settings.sh_push_images:
         return []
@@ -199,6 +208,7 @@ def _variant_canonical(variant, settings) -> dict:
         "sku": variant.item_code,
         "title": variant.item_name,
         "price": _variant_price(variant.item_code, settings),
+        "compare_at_price": _variant_compare_at_price(variant.item_code),
         "attributes": [
             {"attribute": a.attribute, "value": a.attribute_value}
             for a in (variant.attributes or [])
@@ -218,6 +228,9 @@ def _product_canonical(item, variants, settings) -> dict:
         canonical["product_type"] = item.item_group or ""
     if settings.sh_push_images:
         canonical["images"] = _item_images(item, settings)
+    canonical["tags"] = item.get("sh_shopify_tags") or ""
+    canonical["seo_title"] = item.get("sh_seo_title") or ""
+    canonical["seo_description"] = item.get("sh_seo_description") or ""
     return canonical
 
 
@@ -237,6 +250,9 @@ def _variant_set_payload(variant, settings, option_names: list) -> dict:
         payload["id"] = f"gid://shopify/ProductVariant/{variant.sh_shopify_variant_id}"
     if variant.get("barcodes"):
         payload["barcode"] = variant.barcodes[0].barcode
+    compare_at = _variant_compare_at_price(variant.item_code)
+    if compare_at > 0:
+        payload["compareAtPrice"] = f"{compare_at:.2f}"
     return payload
 
 
@@ -292,6 +308,15 @@ def _product_set_input(item, variants: list, settings) -> dict:
             payload["files"] = [
                 {"originalSource": url, "contentType": "IMAGE"} for url in images
             ]
+    if item.get("sh_shopify_tags"):
+        payload["tags"] = [t.strip() for t in item.sh_shopify_tags.split(",") if t.strip()]
+    seo = {}
+    if item.get("sh_seo_title"):
+        seo["title"] = item.sh_seo_title
+    if item.get("sh_seo_description"):
+        seo["description"] = item.sh_seo_description
+    if seo:
+        payload["seo"] = seo
     return payload
 
 
@@ -646,12 +671,21 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
                 selected.append({"name": name, "value": value})
         return selected
 
+    # Shopify's REST tags field is already a single comma-separated string
+    # (unlike GraphQL's [String!]! list) -- pass it through as a one-item
+    # list so _apply_product_meta's isinstance(tags, list) branch joins it
+    # right back into the same string, keeping one code path for both.
+    tags_raw = product.get("tags")
+    category = product.get("category") or {}
+
     return {
         "legacyResourceId": str(product.get("id", "")),
         "title": product.get("title", ""),
         "bodyHtml": product.get("body_html", ""),
         "vendor": product.get("vendor", ""),
         "productType": product.get("product_type", ""),
+        "tags": [tags_raw] if tags_raw else [],
+        "category": {"name": category.get("name") or category.get("full_name")} if category.get("name") or category.get("full_name") else None,
         "options": [{"name": opt.get("name")} for opt in options if opt.get("name")],
         "images": {
             "nodes": [{"src": img.get("src")} for img in images if img.get("src")]
@@ -663,6 +697,7 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
                     "sku": v.get("sku"),
                     "title": v.get("title"),
                     "price": v.get("price"),
+                    "compareAtPrice": v.get("compare_at_price"),
                     "selectedOptions": _variant_selected_options(v),
                     # Reshaped to match the GraphQL inventoryItem.inventoryLevels
                     # shape product_import._variant_available_qty() reads, so a
@@ -750,9 +785,12 @@ def _update_item_from_shopify(item, product: dict):
     """
     Update ERPNext Item from Shopify product (inbound sync).
 
-    Fields updated: title, description, vendor, product_type, status, images
+    Fields updated: title, description, vendor, product_type, status, images,
+    tags, category (read-only, see _apply_product_meta), variant price + compare-at price
 
-    Fields NOT updated: pricing (separate inventory_sync), stock levels (separate feature), variant structure
+    Fields NOT updated: stock levels (separate feature), variant structure,
+    SEO title/description (Shopify's REST webhook payload doesn't carry
+    the seo object -- only the GraphQL-based one-time import/pull does)
     """
     settings = frappe.get_single("Shopify Connector Settings")
 
@@ -765,6 +803,14 @@ def _update_item_from_shopify(item, product: dict):
         item.brand = product["vendor"]
     if product.get("product_type"):
         item.item_group = product["product_type"]
+
+    from alaiy_os_connector_shopify.shopify.product_import import _apply_product_meta
+    tags = product.get("tags")
+    category = product.get("category") or {}
+    _apply_product_meta(item, {
+        "tags": [tags] if tags else [],
+        "category": {"name": category.get("name") or category.get("full_name")} if category.get("name") or category.get("full_name") else None,
+    })
 
     # Status: active/draft/archived
     if product.get("status"):
@@ -794,6 +840,25 @@ def _update_item_from_shopify(item, product: dict):
             _set_item_image(item.name, images[0])
             if len(images) > 1:
                 _set_item_slideshow(item.name, images, settings)
+
+    # Update price + compare-at price per variant. Was previously never
+    # touched on inbound update at all (see this function's old docstring) --
+    # the webhook payload already carries both per variant, same as a
+    # one-time import, so there's no reason a price edit made on Shopify
+    # shouldn't flow back the same way title/description/tags do.
+    from alaiy_os_connector_shopify.shopify.product_import import (
+        _set_item_price, _set_item_compare_at_price,
+    )
+    for variant in (product.get("variants") or []):
+        sku = (variant.get("sku") or "").strip()
+        if not sku or not frappe.db.exists("Item", sku):
+            continue
+        price = flt(variant.get("price") or 0)
+        if price > 0:
+            _set_item_price(sku, price, settings)
+        compare_at_price = flt(variant.get("compare_at_price") or variant.get("compareAtPrice") or 0)
+        if compare_at_price > 0:
+            _set_item_compare_at_price(sku, compare_at_price, settings)
 
     # Log variant inventory data (for inventory_sync to use later)
     variants = product.get("variants") or []

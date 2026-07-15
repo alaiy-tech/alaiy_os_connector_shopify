@@ -36,6 +36,14 @@ query PullProducts($after: String) {
         bodyHtml
         vendor
         productType
+        tags
+        category {
+          name
+        }
+        seo {
+          title
+          description
+        }
         options {
           name
           values
@@ -52,6 +60,7 @@ query PullProducts($after: String) {
             sku
             title
             price
+            compareAtPrice
             inventoryItem {
               inventoryLevels(first: 1) {
                 nodes {
@@ -259,14 +268,14 @@ def _import_product(node: dict) -> tuple:
         ]
         return _import_product_with_variants(
             product_id, title, description, vendor, item_group,
-            variants, images, settings, option_names
+            variants, images, settings, option_names, node
         )
 
     # Case 2: Single variant → simple item (no variants table)
     elif len(variants) == 1:
         return _import_simple_product(
             product_id, title, description, vendor, item_group,
-            variants[0], images, settings
+            variants[0], images, settings, node
         )
 
     else:
@@ -280,7 +289,7 @@ def _import_product(node: dict) -> tuple:
 
 def _import_simple_product(
     product_id: str, title: str, description: str, vendor: str, item_group: str,
-    variant: dict, images: list, settings
+    variant: dict, images: list, settings, product_meta: dict = None
 ) -> tuple:
     """
     Import a single-variant product as a simple Item (no variants table).
@@ -320,6 +329,9 @@ def _import_simple_product(
     if default_warehouse_row:
         item.append("item_defaults", default_warehouse_row)
 
+    if product_meta:
+        _apply_product_meta(item, product_meta)
+
     # Without this flag, Item's after_insert hook (on_item_change) sees a
     # freshly-linked item whose sync_to_shopify checkbox is still unchecked
     # by default, and mistakes that for "flag was just turned off" --
@@ -335,6 +347,9 @@ def _import_simple_product(
     price = flt(variant.get("price") or 0)
     if price > 0:
         _set_item_price(item_name, price, settings)
+    compare_at_price = flt(variant.get("compareAtPrice") or 0)
+    if compare_at_price > 0:
+        _set_item_compare_at_price(item_name, compare_at_price, settings)
 
     # Set opening stock from Shopify's current available quantity
     qty = _variant_available_qty(variant)
@@ -361,7 +376,7 @@ def _import_simple_product(
 
 def _import_product_with_variants(
     product_id: str, title: str, description: str, vendor: str, item_group: str,
-    variants: list, images: list, settings, option_names: list
+    variants: list, images: list, settings, option_names: list, product_meta: dict = None
 ) -> tuple:
     """
     Import a multi-variant product as a template Item + variant Items.
@@ -445,6 +460,9 @@ def _import_product_with_variants(
     # Link to Shopify
     template.sh_shopify_product_id = product_id
 
+    if product_meta:
+        _apply_product_meta(template, product_meta)
+
     # See matching comment in _import_simple_product: without this flag,
     # the after_insert hook would immediately re-archive this template on
     # Shopify because sync_to_shopify defaults unchecked on a fresh import.
@@ -510,6 +528,9 @@ def _import_product_with_variants(
         price = flt(variant.get("price") or 0)
         if price > 0:
             _set_item_price(variant_name, price, settings)
+        compare_at_price = flt(variant.get("compareAtPrice") or 0)
+        if compare_at_price > 0:
+            _set_item_compare_at_price(variant_name, compare_at_price, settings)
 
         # Set opening stock from Shopify's current available quantity
         qty = _variant_available_qty(variant)
@@ -682,6 +703,47 @@ def _set_item_price(item_code: str, price: float, settings):
         )
 
 
+_COMPARE_AT_PRICE_LIST = "Shopify Compare At"
+
+
+def _set_item_compare_at_price(item_code: str, price: float, settings):
+    """
+    Compare-at price has no dedicated field on ERPNext's Item -- reusing
+    the existing Item Price / Price List mechanism (same pattern as
+    _set_item_price) in a second, auto-created price list keeps this a
+    plain ERPNext concept instead of a bespoke Currency field that every
+    other price-list-aware report/screen wouldn't know about.
+    """
+    if not frappe.db.exists("Price List", _COMPARE_AT_PRICE_LIST):
+        pl = frappe.new_doc("Price List")
+        pl.price_list_name = _COMPARE_AT_PRICE_LIST
+        pl.currency = frappe.db.get_value("Price List", settings.sh_selling_price_list or "Standard Selling", "currency") or "INR"
+        pl.selling = 1
+        pl.flags.ignore_permissions = True
+        pl.insert()
+        frappe.db.commit()
+
+    try:
+        item_price = frappe.get_value(
+            "Item Price", {"item_code": item_code, "price_list": _COMPARE_AT_PRICE_LIST}, "name"
+        )
+        if item_price:
+            frappe.db.set_value("Item Price", item_price, "price_list_rate", price)
+        else:
+            ip = frappe.new_doc("Item Price")
+            ip.item_code = item_code
+            ip.price_list = _COMPARE_AT_PRICE_LIST
+            ip.price_list_rate = price
+            ip.flags.ignore_permissions = True
+            ip.insert()
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(
+            title=f"Failed to set compare-at price for {item_code}",
+            message=frappe.get_traceback()
+        )
+
+
 def _variant_available_qty(variant: dict) -> float:
     """
     Extract available quantity from the inventoryItem.inventoryLevels
@@ -695,6 +757,27 @@ def _variant_available_qty(variant: dict) -> float:
         return 0
     quantities = levels[0].get("quantities") or []
     return flt(quantities[0].get("quantity")) if quantities else 0
+
+
+def _apply_product_meta(item, node: dict):
+    """
+    Sets the product-level fields that have no dedicated Shopify GraphQL
+    argument beyond what's already on the product node: tags, category
+    (Shopify's Standard Product Taxonomy, read-only here -- pushing one
+    back requires resolving a taxonomy ID, not just matching a name
+    string), and SEO title/description.
+    """
+    tags = node.get("tags")
+    if tags:
+        item.sh_shopify_tags = ", ".join(tags) if isinstance(tags, list) else tags
+    category = node.get("category")
+    if category and category.get("name"):
+        item.sh_shopify_category = category["name"]
+    seo = node.get("seo") or {}
+    if seo.get("title"):
+        item.sh_seo_title = seo["title"]
+    if seo.get("description"):
+        item.sh_seo_description = seo["description"]
 
 
 def _default_warehouse_row(settings) -> dict:

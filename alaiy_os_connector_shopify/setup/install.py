@@ -173,6 +173,33 @@ def setup_custom_fields():
             "insert_after": "disabled",
             "description": "Push this Item to Shopify as a product/variant. Variants inherit this flag from their template -- checking/unchecking it on a variant itself has no effect. Unchecking on a template archives the product on Shopify (kept, hidden from sales channels); re-checking unarchives and re-syncs it.",
         },
+        {
+            "fieldname": "sh_shopify_tags",
+            "label": "Shopify Tags",
+            "fieldtype": "Small Text",
+            "insert_after": "sync_to_shopify",
+            "description": "Comma-separated tags, synced both directions with Shopify's product tags field.",
+        },
+        {
+            "fieldname": "sh_shopify_category",
+            "label": "Shopify Category",
+            "fieldtype": "Data",
+            "read_only": 1,
+            "insert_after": "sh_shopify_tags",
+            "description": "Shopify's Standard Product Taxonomy category name. Inbound only -- pushing a category requires resolving it against Shopify's taxonomy ID tree, not just matching a name string.",
+        },
+        {
+            "fieldname": "sh_seo_title",
+            "label": "Shopify SEO Title",
+            "fieldtype": "Data",
+            "insert_after": "sh_shopify_category",
+        },
+        {
+            "fieldname": "sh_seo_description",
+            "label": "Shopify SEO Description",
+            "fieldtype": "Small Text",
+            "insert_after": "sh_seo_title",
+        },
     ]
     sales_order_fields = [
         {
