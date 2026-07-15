@@ -308,7 +308,58 @@ def _product_options_payload(option_names: list, variants: list) -> list:
     return options
 
 
-def _product_set_input(item, variants: list, settings) -> dict:
+_TAXONOMY_SEARCH_QUERY = """
+query SearchTaxonomy($search: String!) {
+  taxonomy {
+    categories(search: $search, first: 5) {
+      edges {
+        node {
+          id
+          name
+        }
+      }
+    }
+  }
+}
+"""
+
+# Per-process cache -- the taxonomy tree doesn't change mid-run, and this
+# search can otherwise fire on every single push of every item sharing the
+# same category string.
+_category_id_cache = {}
+
+
+def _resolve_category_id(client, category_name: str):
+    """
+    Shopify's Category field takes a taxonomy ID, not a plain name --
+    resolves our stored category name against Shopify's Standard Product
+    Taxonomy search. Picks an exact case-insensitive name match if one
+    comes back; otherwise the first (most relevant) search result.
+    Returns None (silently, logged) if nothing matches -- an unresolvable
+    category must never block the rest of the product push.
+    """
+    if category_name in _category_id_cache:
+        return _category_id_cache[category_name]
+
+    result = None
+    try:
+        data = client.execute(_TAXONOMY_SEARCH_QUERY, {"search": category_name})
+        edges = ((data.get("taxonomy") or {}).get("categories") or {}).get("edges") or []
+        nodes = [e["node"] for e in edges if e.get("node")]
+        exact = next((n for n in nodes if n.get("name", "").lower() == category_name.lower()), None)
+        chosen = exact or (nodes[0] if nodes else None)
+        result = chosen.get("id") if chosen else None
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: failed to resolve category '{category_name}'",
+            message=frappe.get_traceback(),
+        )
+
+    _category_id_cache[category_name] = result
+    return result
+
+
+def _product_set_input(item, variants: list, settings, client=None) -> dict:
     """Shared by templates (variants = real children) and simple items
     (variants = [item] itself, standing in as its own only variant). Always
     the full desired state, never a partial patch -- used for both a normal
@@ -347,6 +398,10 @@ def _product_set_input(item, variants: list, settings) -> dict:
             ]
     if item.get("sh_shopify_tags"):
         payload["tags"] = [t.strip() for t in item.sh_shopify_tags.split(",") if t.strip()]
+    if item.get("sh_shopify_category") and client:
+        category_id = _resolve_category_id(client, item.sh_shopify_category)
+        if category_id:
+            payload["category"] = category_id
     seo = {}
     if item.get("sh_seo_title"):
         seo["title"] = item.sh_seo_title
@@ -501,7 +556,7 @@ def _push_product_unlocked(item):
         return  # unchanged since our own last push -- avoid spamming the API
 
     client = ShopifyGraphQLClient()
-    product_input = _product_set_input(item, variants, settings)
+    product_input = _product_set_input(item, variants, settings, client)
 
     identifier = None
     if item.get("sh_shopify_product_id"):
@@ -983,10 +1038,10 @@ def archive_item(item_code: str):
         else:
             variants = [item]
 
-        product_input = _product_set_input(item, variants, settings)
+        client = ShopifyGraphQLClient()
+        product_input = _product_set_input(item, variants, settings, client)
         product_input["status"] = "ARCHIVED"
 
-        client = ShopifyGraphQLClient()
         data = client.execute(_PRODUCT_SET_MUTATION, {
             "input": product_input,
             "identifier": {"id": f"gid://shopify/Product/{item.sh_shopify_product_id}"},

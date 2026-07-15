@@ -184,9 +184,8 @@ def setup_custom_fields():
             "fieldname": "sh_shopify_category",
             "label": "Shopify Category",
             "fieldtype": "Data",
-            "read_only": 1,
             "insert_after": "sh_shopify_tags",
-            "description": "Shopify's Standard Product Taxonomy category name. Inbound only -- pushing a category requires resolving it against Shopify's taxonomy ID tree, not just matching a name string.",
+            "description": "Shopify's Standard Product Taxonomy category name. Synced both directions -- outbound resolves this name against Shopify's taxonomy search, so it must match an existing taxonomy category name exactly (case-insensitive) to take effect.",
         },
         {
             "fieldname": "sh_seo_title",
@@ -289,11 +288,16 @@ def _ensure_custom_fields(doctype, fields):
     for f in fields:
         key = f"{doctype}-{f['fieldname']}"
         if frappe.db.exists("Custom Field", key):
-            # Keep the description in sync even for a field that already
-            # exists -- it's just documentation, safe to overwrite.
+            # Keep description and read_only in sync even for a field that
+            # already exists -- e.g. sh_shopify_category started read-only
+            # (inbound-only) and later became editable once outbound
+            # taxonomy-search push was added; a field created under the
+            # old definition would otherwise stay stuck read-only forever.
             if f.get("description"):
                 frappe.db.set_value("Custom Field", key,
                                     "description", f["description"])
+            frappe.db.set_value("Custom Field", key,
+                                "read_only", 1 if f.get("read_only") else 0)
             continue
         cf = frappe.new_doc("Custom Field")
         cf.dt = doctype
