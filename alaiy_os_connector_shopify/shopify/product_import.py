@@ -130,8 +130,8 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
     try:
         # Wipe phase
         if wipe_existing:
-            _wipe_unlinked_products()
-            _append_log(log, "Wiped unlinked products from previous imports.")
+            _wipe_all_items()
+            _append_log(log, "Wiped all Items for a fresh import.")
 
         # Import phase
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
@@ -197,51 +197,32 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
     return log.name
 
 
-def _wipe_unlinked_products():
+def _wipe_all_items():
     """
-    Delete Item records that aren't a *completed* Shopify import:
+    Full destructive wipe of every Item -- ALL of them, including local/
+    manual ones, not just Shopify-linked leftovers -- per explicit
+    decision to always start a "Import Products from Shopify" click from
+    zero rather than reconcile incrementally. Deliberately scoped to Items
+    and their direct child tables only: Sales Orders, Delivery Notes,
+    Stock Entries, Stock Ledger Entries, and GL Entries are never touched
+    here -- those are real transactional/financial records, and this
+    function has no business deciding they should disappear. A Stock
+    Entry referencing a since-deleted item_code is left as a harmless
+    dangling reference rather than destroyed; the fresh import recreates
+    the Item under the same item_code (SKU) and its own new opening-stock
+    Stock Entry.
 
-    - Items with no sh_shopify_product_id at all -- local/manual items,
-      or leftovers from an import that predates that field being set.
-    - Items with sh_shopify_product_id set but no matching Shopify Synced
-      Entity row -- partial leftovers from a run that inserted the
-      template/item and committed, then crashed before it could finish
-      (e.g. on a later variant, or before the final entities.save()).
-      A Synced Entity is only ever written at the very end of a
-      successful _import_product() call, so its absence means "this Item
-      exists in the database but the import that created it never
-      completed." Without this second pass, _import_product_with_variants
-      / _import_simple_product's "does this SKU/template already exist"
-      check permanently mistakes that leftover for an already-imported
-      product and skips it on every future run.
+    Raw SQL throughout: going through frappe.delete_doc one Item at a time
+    triggers on_item_delete, which enqueues a re-push-to-Shopify job per
+    variant -- confirmed live to flood the job queue past its cap on a
+    large catalog. Raw DELETE bypasses that entirely.
     """
-    unlinked = frappe.get_all(
-        "Item",
-        filters={"sh_shopify_product_id": ["is", "not set"]},
-        pluck="name"
-    )
-
-    linked = frappe.get_all(
-        "Item",
-        filters={"sh_shopify_product_id": ["is", "set"]},
-        fields=["name", "sh_shopify_product_id"],
-    )
-    synced_product_ids = set(frappe.get_all(
-        "Shopify Synced Entity",
-        filters={"entity_type": "product"},
-        pluck="external_id",
-    ))
-    orphaned = [row.name for row in linked if row.sh_shopify_product_id not in synced_product_ids]
-
-    for item_code in unlinked + orphaned:
-        try:
-            frappe.delete_doc("Item", item_code, force=1, ignore_permissions=True)
-        except Exception:
-            frappe.log_error(
-                title=f"Shopify import: failed to delete unlinked item {item_code}",
-                message=frappe.get_traceback()
-            )
-
+    frappe.db.sql("DELETE FROM `tabItem Price`")
+    frappe.db.sql("DELETE FROM `tabShopify Synced Entity` WHERE entity_type = 'product'")
+    frappe.db.sql("DELETE FROM `tabItem Default`")
+    frappe.db.sql("DELETE FROM `tabItem Variant Attribute`")
+    frappe.db.sql("DELETE FROM `tabItem Barcode`")
+    frappe.db.sql("DELETE FROM `tabItem`")
     frappe.db.commit()
 
 
