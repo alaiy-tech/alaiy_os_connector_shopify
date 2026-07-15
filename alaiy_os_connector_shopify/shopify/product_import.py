@@ -18,7 +18,9 @@ from collections import Counter
 import frappe
 from frappe.utils import now_datetime, flt
 
-from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync
+from alaiy_os_connector_shopify.shopify.sync_guard import (
+    load_or_create_log, has_active_sync, append_log as _append_log,
+)
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
 
@@ -677,45 +679,67 @@ def _ensure_item_attribute(attribute_name: str, values: list):
         frappe.db.commit()
 
 
-def _set_item_price(item_code: str, price: float, settings):
+def _upsert_item_price(item_code: str, price_list: str, rate: float, buying: bool = False):
     """
-    Set the item's selling price in the configured price list.
+    Get-or-create the Item Price row for (item_code, price_list) and set its
+    rate. Shared by the selling / compare-at / cost setters, which differ
+    only in which list they target and whether they pre-create it.
     """
-    price_list = settings.sh_selling_price_list or "Standard Selling"
+    try:
+        filters = {"item_code": item_code, "price_list": price_list}
+        if buying:
+            filters["buying"] = 1
+        item_price = frappe.get_value("Item Price", filters, "name")
+        if item_price:
+            frappe.db.set_value("Item Price", item_price, "price_list_rate", rate)
+        else:
+            ip = frappe.new_doc("Item Price")
+            ip.item_code = item_code
+            ip.price_list = price_list
+            ip.price_list_rate = rate
+            if buying:
+                ip.buying = 1
+                ip.selling = 0
+            ip.flags.ignore_permissions = True
+            ip.insert()
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(
+            title=f"Failed to set price ({price_list}) for {item_code}",
+            message=frappe.get_traceback(),
+        )
 
-    # Ensure price list exists
+
+def _ensure_price_list(name: str, settings, buying: bool = False):
+    """Auto-create one of our synthetic price lists, inheriting the currency
+    of the configured selling list."""
+    if frappe.db.exists("Price List", name):
+        return
+    pl = frappe.new_doc("Price List")
+    pl.price_list_name = name
+    pl.currency = frappe.db.get_value(
+        "Price List", settings.sh_selling_price_list or "Standard Selling", "currency") or "INR"
+    if buying:
+        pl.buying = 1
+    else:
+        pl.selling = 1
+    pl.flags.ignore_permissions = True
+    pl.insert()
+    frappe.db.commit()
+
+
+def _set_item_price(item_code: str, price: float, settings):
+    """Set the item's selling price in the configured price list."""
+    price_list = settings.sh_selling_price_list or "Standard Selling"
+    # The configured selling list is a real, admin-managed list -- unlike our
+    # synthetic compare-at/cost lists, we don't auto-create it.
     if not frappe.db.exists("Price List", price_list):
         frappe.log_error(
             title=f"Price list {price_list} not found",
             message=f"Item {item_code} will not have pricing set"
         )
         return
-
-    try:
-        item_price = frappe.get_value(
-            "Item Price",
-            {"item_code": item_code, "price_list": price_list},
-            "name"
-        )
-
-        if item_price:
-            # Update existing
-            frappe.db.set_value("Item Price", item_price, "price_list_rate", price)
-        else:
-            # Create new
-            ip = frappe.new_doc("Item Price")
-            ip.item_code = item_code
-            ip.price_list = price_list
-            ip.price_list_rate = price
-            ip.flags.ignore_permissions = True
-            ip.insert()
-
-        frappe.db.commit()
-    except Exception:
-        frappe.log_error(
-            title=f"Failed to set price for {item_code}",
-            message=frappe.get_traceback()
-        )
+    _upsert_item_price(item_code, price_list, price)
 
 
 _COMPARE_AT_PRICE_LIST = "Shopify Compare At"
@@ -729,34 +753,8 @@ def _set_item_compare_at_price(item_code: str, price: float, settings):
     plain ERPNext concept instead of a bespoke Currency field that every
     other price-list-aware report/screen wouldn't know about.
     """
-    if not frappe.db.exists("Price List", _COMPARE_AT_PRICE_LIST):
-        pl = frappe.new_doc("Price List")
-        pl.price_list_name = _COMPARE_AT_PRICE_LIST
-        pl.currency = frappe.db.get_value("Price List", settings.sh_selling_price_list or "Standard Selling", "currency") or "INR"
-        pl.selling = 1
-        pl.flags.ignore_permissions = True
-        pl.insert()
-        frappe.db.commit()
-
-    try:
-        item_price = frappe.get_value(
-            "Item Price", {"item_code": item_code, "price_list": _COMPARE_AT_PRICE_LIST}, "name"
-        )
-        if item_price:
-            frappe.db.set_value("Item Price", item_price, "price_list_rate", price)
-        else:
-            ip = frappe.new_doc("Item Price")
-            ip.item_code = item_code
-            ip.price_list = _COMPARE_AT_PRICE_LIST
-            ip.price_list_rate = price
-            ip.flags.ignore_permissions = True
-            ip.insert()
-        frappe.db.commit()
-    except Exception:
-        frappe.log_error(
-            title=f"Failed to set compare-at price for {item_code}",
-            message=frappe.get_traceback()
-        )
+    _ensure_price_list(_COMPARE_AT_PRICE_LIST, settings)
+    _upsert_item_price(item_code, _COMPARE_AT_PRICE_LIST, price)
 
 
 _COST_PRICE_LIST = "Shopify Cost"
@@ -792,36 +790,8 @@ def _set_item_cost(item_code: str, cost: float, settings):
     Buying price list keeps this a plain ERPNext concept (usable in
     standard costing reports) instead of a bespoke Currency field.
     """
-    if not frappe.db.exists("Price List", _COST_PRICE_LIST):
-        pl = frappe.new_doc("Price List")
-        pl.price_list_name = _COST_PRICE_LIST
-        pl.currency = frappe.db.get_value("Price List", settings.sh_selling_price_list or "Standard Selling", "currency") or "INR"
-        pl.buying = 1
-        pl.flags.ignore_permissions = True
-        pl.insert()
-        frappe.db.commit()
-
-    try:
-        item_price = frappe.get_value(
-            "Item Price", {"item_code": item_code, "price_list": _COST_PRICE_LIST, "buying": 1}, "name"
-        )
-        if item_price:
-            frappe.db.set_value("Item Price", item_price, "price_list_rate", cost)
-        else:
-            ip = frappe.new_doc("Item Price")
-            ip.item_code = item_code
-            ip.price_list = _COST_PRICE_LIST
-            ip.buying = 1
-            ip.selling = 0
-            ip.price_list_rate = cost
-            ip.flags.ignore_permissions = True
-            ip.insert()
-        frappe.db.commit()
-    except Exception:
-        frappe.log_error(
-            title=f"Failed to set cost for {item_code}",
-            message=frappe.get_traceback()
-        )
+    _ensure_price_list(_COST_PRICE_LIST, settings, buying=True)
+    _upsert_item_price(item_code, _COST_PRICE_LIST, cost, buying=True)
 
 
 def _apply_variant_physical(doc, variant: dict):
@@ -1059,29 +1029,35 @@ def _ensure_cost_center(company: str) -> str:
         return None
 
 
+def _download_to_file(url: str, doctype: str, name: str) -> str:
+    """
+    Fetch an image URL and attach it as a File on (doctype, name); return the
+    stored file_url. Raises on network/HTTP failure -- callers decide whether
+    to skip or log.
+
+    Fetches the bytes via requests (already a hard dependency, used the same
+    way in graphql_client.py) and saves through save_file, a stable public
+    Frappe API -- frappe.integrations.utils.download_file was removed/renamed
+    in this Frappe version (confirmed live: ImportError on every image, so
+    image sync was silently 100% broken), and internal module paths can move
+    again.
+    """
+    import requests
+    from frappe.utils.file_manager import save_file
+
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    filename = url.split("?")[0].rsplit("/", 1)[-1] or f"{name}.jpg"
+    return save_file(filename, resp.content, doctype, name, is_private=0).file_url
+
+
 def _set_item_image(item_code: str, image_url: str):
-    """
-    Download image from URL and set as Item's main image.
-    """
+    """Download image from URL and set as Item's main image."""
     if not image_url:
         return
-
     try:
-        # frappe.integrations.utils.download_file was removed/renamed in
-        # this Frappe version (confirmed live: ImportError on every single
-        # image, meaning image sync was silently 100% broken) -- fetching
-        # the bytes ourselves via requests (already a hard dependency,
-        # used the same way in graphql_client.py) and saving through
-        # save_file, a stable, long-standing public Frappe API, avoids
-        # depending on internal module paths that can move again.
-        import requests
-        from frappe.utils.file_manager import save_file
-
-        resp = requests.get(image_url, timeout=30)
-        resp.raise_for_status()
-        filename = image_url.split("?")[0].rsplit("/", 1)[-1] or f"{item_code}.jpg"
-        file_doc = save_file(filename, resp.content, "Item", item_code, is_private=0)
-        frappe.db.set_value("Item", item_code, "image", file_doc.file_url)
+        file_url = _download_to_file(image_url, "Item", item_code)
+        frappe.db.set_value("Item", item_code, "image", file_url)
         frappe.db.commit()
     except Exception:
         frappe.log_error(
@@ -1107,25 +1083,15 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
         slideshow = frappe.new_doc("Website Slideshow")
         slideshow.name = slideshow_name
 
-        import requests
-        from frappe.utils.file_manager import save_file
-
         for image_url in image_urls[1:]:  # First image is already set as main
-            file_url = None
             try:
-                resp = requests.get(image_url, timeout=30)
-                resp.raise_for_status()
-                filename = image_url.split("?")[0].rsplit("/", 1)[-1] or f"{slideshow_name}.jpg"
-                file_doc = save_file(filename, resp.content, "Website Slideshow", slideshow_name, is_private=0)
-                file_url = file_doc.file_url
+                file_url = _download_to_file(image_url, "Website Slideshow", slideshow_name)
             except Exception:
                 continue  # Skip failed images
-
-            if file_url:
-                slideshow.append("slideshow_items", {
-                    "image": file_url,
-                    "image_url": image_url,
-                })
+            slideshow.append("slideshow_items", {
+                "image": file_url,
+                "image_url": image_url,
+            })
 
         if slideshow.slideshow_items:
             slideshow.flags.ignore_permissions = True
@@ -1142,9 +1108,3 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
         )
 
 
-def _append_log(log, message: str):
-    """
-    Append a line to sync log without saving.
-    """
-    existing = log.log_messages or ""
-    log.log_messages = (existing + "\n" + message).strip()

@@ -29,6 +29,8 @@ from zoneinfo import ZoneInfo
 import frappe
 from frappe.utils import flt
 
+from alaiy_os_connector_shopify.shopify.sync_guard import append_log as _append_export_log
+
 from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
@@ -171,30 +173,25 @@ def _sync_enabled(item) -> bool:
 
 # ── Canonical form + fingerprint ─────────────────────────────────────────────
 
+def _price_rate(item_code: str, price_list: str, buying: bool = False) -> float:
+    filters = {"item_code": item_code, "price_list": price_list}
+    if buying:
+        filters["buying"] = 1
+    return flt(frappe.db.get_value("Item Price", filters, "price_list_rate") or 0)
+
+
 def _variant_price(item_code: str, settings) -> float:
-    price_list = settings.sh_selling_price_list or "Standard Selling"
-    rate = frappe.db.get_value(
-        "Item Price", {"item_code": item_code,
-                       "price_list": price_list}, "price_list_rate"
-    )
-    return flt(rate or 0)
+    return _price_rate(item_code, settings.sh_selling_price_list or "Standard Selling")
 
 
 def _variant_compare_at_price(item_code: str) -> float:
     from alaiy_os_connector_shopify.shopify.product_import import _COMPARE_AT_PRICE_LIST
-    rate = frappe.db.get_value(
-        "Item Price", {"item_code": item_code,
-                       "price_list": _COMPARE_AT_PRICE_LIST}, "price_list_rate"
-    )
-    return flt(rate or 0)
+    return _price_rate(item_code, _COMPARE_AT_PRICE_LIST)
 
 
 def _variant_cost(item_code: str) -> float:
     from alaiy_os_connector_shopify.shopify.product_import import _COST_PRICE_LIST
-    rate = frappe.db.get_value(
-        "Item Price", {"item_code": item_code, "price_list": _COST_PRICE_LIST, "buying": 1}, "price_list_rate"
-    )
-    return flt(rate or 0)
+    return _price_rate(item_code, _COST_PRICE_LIST, buying=True)
 
 
 def _variant_inventory_item_payload(variant) -> dict:
@@ -513,9 +510,12 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
     return log.name
 
 
-def _append_export_log(log, message: str):
-    existing = log.log_messages or ""
-    log.log_messages = (existing + "\n" + message).strip()
+def _variants_of(item):
+    """Real variant docs for a template, or [item] itself for a simple item."""
+    if not item.has_variants:
+        return [item]
+    names = frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
+    return [frappe.get_doc("Item", v) for v in names]
 
 
 def _push_product(item):
@@ -541,12 +541,7 @@ def _push_product_unlocked(item):
     item = frappe.get_doc("Item", item.name)
     settings = frappe.get_single("Shopify Connector Settings")
 
-    if item.has_variants:
-        variant_names = frappe.get_all(
-            "Item", filters={"variant_of": item.name}, pluck="name")
-        variants = [frappe.get_doc("Item", v) for v in variant_names]
-    else:
-        variants = [item]
+    variants = _variants_of(item)
 
     canonical = _product_canonical(item, variants, settings)
     fp = fingerprint.fingerprint(canonical)
@@ -613,80 +608,31 @@ def _push_product_unlocked(item):
 
 # ── Bidirectional Sync: Only push CHANGED items ──────────────────────────────
 
-def push_changed_items_only(item_code: str = None):
+def push_changed_items_only():
     """
-    Push only items that have CHANGED since last sync (fingerprint detection).
-    Prevents unnecessary API calls when item hasn't actually changed.
+    Hourly reconciliation: push every template flagged sync_to_shopify.
 
-    Called by:
-      - on_item_change() doc_event (single item)
-      - Scheduled job every hour (all items)
+    Each push fingerprint-guards itself (see _push_product_unlocked), so an
+    unchanged item early-returns before any Shopify API call -- no separate
+    pre-check needed here. Called by the scheduled job in hooks.py.
     """
-    if item_code:
-        # Single item from doc_event
-        item = frappe.get_doc("Item", item_code)
-        if not _sync_enabled(item):
-            return
-        template_name = item.variant_of or item.name
-        item = frappe.get_doc("Item", template_name)
-        if _has_changed_since_last_sync(item):
-            push_item(item_code)
-        else:
-            frappe.logger().debug(f"Item {item_code} unchanged, skipping push")
-    else:
-        # Hourly reconciliation - all items that have "sync_to_shopify" checked
-        pushed = 0
-        unchanged = 0
-        sync_items = frappe.get_all(
-            "Item",
-            filters={"sync_to_shopify": 1, "variant_of": ""},
-            pluck="name"
-        )
-        for code in sync_items:
-            item = frappe.get_doc("Item", code)
-            try:
-                if _has_changed_since_last_sync(item):
-                    push_item(code)
-                    pushed += 1
-                else:
-                    unchanged += 1
-            except Exception:
-                frappe.log_error(
-                    title=f"Shopify: sync push failed for {code}",
-                    message=frappe.get_traceback()
-                )
-        frappe.logger().info(f"Sync push: {pushed} changed, {unchanged} unchanged")
-
-
-def _has_changed_since_last_sync(item) -> bool:
-    """
-    Check if Item has changed since last push via fingerprint comparison.
-
-    Returns True if:
-      - Item has no Synced Entity (never pushed)
-      - Item fingerprint differs from stored fingerprint (actually changed)
-      - Item was just created
-    """
-    entity = entities.get_by_erpnext("product", "Item", item.name)
-
-    if not entity:
-        return True  # Never pushed - consider changed
-
-    if item.has_variants:
-        variant_names = frappe.get_all(
-            "Item", filters={"variant_of": item.name}, pluck="name")
-        variants = [frappe.get_doc("Item", v) for v in variant_names]
-    else:
-        variants = [item]
-
-    settings = frappe.get_single("Shopify Connector Settings")
-    canonical = _product_canonical(item, variants, settings)
-    current_fp = fingerprint.fingerprint(canonical)
-
-    if not entity.erpnext_fingerprint:
-        return True  # No stored fingerprint - consider changed
-
-    return entity.erpnext_fingerprint != current_fp
+    sync_items = frappe.get_all(
+        "Item",
+        filters={"sync_to_shopify": 1, "variant_of": ""},
+        pluck="name",
+    )
+    pushed = failed = 0
+    for code in sync_items:
+        try:
+            push_item(code)
+            pushed += 1
+        except Exception:
+            failed += 1
+            frappe.log_error(
+                title=f"Shopify: sync push failed for {code}",
+                message=frappe.get_traceback(),
+            )
+    frappe.logger().info(f"Sync push reconciliation: {pushed} processed, {failed} failed")
 
 
 # ── Inbound Sync: Handle Shopify product changes via webhooks ─────────────────
@@ -862,11 +808,7 @@ def _handle_product_update(product_id: str, product: dict):
     # straight back to Shopify.
     item = frappe.get_doc("Item", item.name)
     settings = frappe.get_single("Shopify Connector Settings")
-    if item.has_variants:
-        variant_names = frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
-        variants = [frappe.get_doc("Item", v) for v in variant_names]
-    else:
-        variants = [item]
+    variants = _variants_of(item)
     canonical = _product_canonical(item, variants, settings)
     entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
 
@@ -1031,12 +973,7 @@ def archive_item(item_code: str):
         item = frappe.get_doc("Item", item.name)
         settings = frappe.get_single("Shopify Connector Settings")
 
-        if item.has_variants:
-            variant_names = frappe.get_all(
-                "Item", filters={"variant_of": item.name}, pluck="name")
-            variants = [frappe.get_doc("Item", v) for v in variant_names]
-        else:
-            variants = [item]
+        variants = _variants_of(item)
 
         client = ShopifyGraphQLClient()
         product_input = _product_set_input(item, variants, settings, client)

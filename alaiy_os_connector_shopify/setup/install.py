@@ -276,39 +276,22 @@ def setup_custom_fields():
         },
     ]
 
-    _ensure_custom_fields("Item", item_fields)
-    _ensure_custom_fields("Sales Order", sales_order_fields)
-    _ensure_custom_fields("Sales Order Item", sales_order_item_fields)
-    _ensure_custom_fields("Customer", customer_fields)
-    _ensure_custom_fields("Delivery Note", delivery_note_fields)
+    custom_fields = {
+        "Item": item_fields,
+        "Sales Order": sales_order_fields,
+        "Sales Order Item": sales_order_item_fields,
+        "Customer": customer_fields,
+        "Delivery Note": delivery_note_fields,
+    }
+    # Stamp each field with this app's module so they export under our
+    # fixtures, matching how they were created before.
+    for fields in custom_fields.values():
+        for f in fields:
+            f.setdefault("module", "Alaiy OS Connector Shopify")
+
+    # update=True re-syncs properties (description, read_only, ...) on
+    # already-existing fields, which is what the old hand-rolled upsert did
+    # -- e.g. sh_shopify_category started read-only and later became editable.
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+    create_custom_fields(custom_fields, update=True)
     frappe.db.commit()
-
-
-def _ensure_custom_fields(doctype, fields):
-    for f in fields:
-        key = f"{doctype}-{f['fieldname']}"
-        if frappe.db.exists("Custom Field", key):
-            # Keep description and read_only in sync even for a field that
-            # already exists -- e.g. sh_shopify_category started read-only
-            # (inbound-only) and later became editable once outbound
-            # taxonomy-search push was added; a field created under the
-            # old definition would otherwise stay stuck read-only forever.
-            if f.get("description"):
-                frappe.db.set_value("Custom Field", key,
-                                    "description", f["description"])
-            frappe.db.set_value("Custom Field", key,
-                                "read_only", 1 if f.get("read_only") else 0)
-            continue
-        cf = frappe.new_doc("Custom Field")
-        cf.dt = doctype
-        cf.fieldname = f["fieldname"]
-        cf.label = f["label"]
-        cf.fieldtype = f["fieldtype"]
-        cf.insert_after = f.get("insert_after", "")
-        cf.search_index = 1 if f.get("search_index") else 0
-        cf.read_only = 1 if f.get("read_only") else 0
-        cf.in_list_view = 1 if f.get("in_list_view") else 0
-        cf.default = f.get("default")
-        cf.description = f.get("description", "")
-        cf.module = "Alaiy OS Connector Shopify"
-        cf.insert(ignore_permissions=True)

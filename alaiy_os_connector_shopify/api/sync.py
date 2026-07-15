@@ -3,20 +3,26 @@ import frappe
 from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
 
 
-@frappe.whitelist()
-def trigger_orders_sync():
-    # Created here (not inside the job) so it's visible as "queued" in the
-    # log immediately, even if the shared long queue is busy and the job
-    # itself doesn't start running for a while.
-    log = load_or_create_log("orders", "manual")
+def _enqueue_sync(sync_type, method, timeout=600, **kwargs):
+    # Log row created here (not inside the job) so it's visible as "queued"
+    # immediately, even if the shared long queue is busy and the job itself
+    # doesn't start running for a while.
+    log = load_or_create_log(sync_type, "manual")
     frappe.enqueue(
-        "alaiy_os_connector_shopify.shopify.order_sync.run_orders_sync",
+        method,
         queue="long",
-        timeout=600,
+        timeout=timeout,
         trigger="manual",
         log_name=log.name,
+        **kwargs,
     )
     return {"queued": True, "log_name": log.name}
+
+
+@frappe.whitelist()
+def trigger_orders_sync():
+    return _enqueue_sync(
+        "orders", "alaiy_os_connector_shopify.shopify.order_sync.run_orders_sync")
 
 
 @frappe.whitelist()
@@ -27,15 +33,8 @@ def import_existing_orders():
 
 @frappe.whitelist()
 def trigger_inventory_push():
-    log = load_or_create_log("inventory", "manual")
-    frappe.enqueue(
-        "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_push",
-        queue="long",
-        timeout=600,
-        trigger="manual",
-        log_name=log.name,
-    )
-    return {"queued": True, "log_name": log.name}
+    return _enqueue_sync(
+        "inventory", "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_push")
 
 
 @frappe.whitelist()
@@ -44,23 +43,12 @@ def trigger_product_import():
     One-time import of all products from Shopify, wiping existing unlinked items.
     Enqueued as background job.
     """
-    log = frappe.new_doc("Shopify Sync Log")
-    log.sync_type = "products"
-    log.trigger = "manual"
-    log.status = "queued"
-    log.started_at = frappe.utils.now_datetime()
-    log.insert(ignore_permissions=True)
-    frappe.db.commit()
-
-    frappe.enqueue(
+    return _enqueue_sync(
+        "products",
         "alaiy_os_connector_shopify.shopify.product_import.run_full_product_import",
-        queue="long",
         timeout=1800,  # 30 minutes for large catalogs
-        trigger="manual",
-        log_name=log.name,
         wipe_existing=True,
     )
-    return {"queued": True, "log_name": log.name}
 
 
 @frappe.whitelist()
@@ -70,22 +58,11 @@ def trigger_product_export():
     for manually-created ERPNext Items that predate any Shopify connection.
     Enqueued as background job.
     """
-    log = frappe.new_doc("Shopify Sync Log")
-    log.sync_type = "product_export"
-    log.trigger = "manual"
-    log.status = "queued"
-    log.started_at = frappe.utils.now_datetime()
-    log.insert(ignore_permissions=True)
-    frappe.db.commit()
-
-    frappe.enqueue(
+    return _enqueue_sync(
+        "product_export",
         "alaiy_os_connector_shopify.shopify.product_sync.run_bulk_export_to_shopify",
-        queue="long",
         timeout=1800,
-        trigger="manual",
-        log_name=log.name,
     )
-    return {"queued": True, "log_name": log.name}
 
 
 @frappe.whitelist()

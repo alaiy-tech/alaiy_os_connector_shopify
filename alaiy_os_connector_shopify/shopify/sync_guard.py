@@ -50,3 +50,21 @@ def load_or_create_log(sync_type: str, trigger: str, log_name: str = None):
     log.insert(ignore_permissions=True)
     frappe.db.commit()
     return log
+
+
+def append_log(log, message: str):
+    """Append a line to log.log_messages without saving."""
+    existing = log.log_messages or ""
+    log.log_messages = (existing + "\n" + message).strip()
+
+
+def close_log(log, status, processed=0, created=0, failed=0, error=""):
+    log.status = status
+    log.finished_at = now_datetime()
+    log.items_processed = processed
+    log.items_created = created
+    log.items_failed = failed
+    if error:
+        log.error_message = (error or "")[:500]
+    log.save(ignore_permissions=True)
+    frappe.db.commit()

@@ -3,7 +3,9 @@ import contextlib
 import frappe
 from frappe.utils import flt, now_datetime
 
-from alaiy_os_connector_shopify.shopify.sync_guard import has_active_sync, load_or_create_log
+from alaiy_os_connector_shopify.shopify.sync_guard import (
+    has_active_sync, load_or_create_log, append_log as _append_log,
+)
 
 
 @contextlib.contextmanager
@@ -140,6 +142,26 @@ def handle_order_webhook(topic, payload):
 
 def run_orders_sync(trigger="manual", log_name=None):
     log = load_or_create_log("orders", trigger, log_name)
+    settings = frappe.get_single("Shopify Connector Settings")
+    # NOTE: "status:<open|closed|cancelled|any>" mirrors the old REST
+    # `status` param's values 1:1 but wasn't independently verified
+    # against Shopify's order search-syntax docs -- if a live pull
+    # unexpectedly returns zero orders, check this filter string first.
+    # The Select field's options are capitalized labels (Open/Any/...)
+    # for display -- Shopify's search syntax expects lowercase tokens.
+    status_filter = (settings.sh_order_status_filter or "open").lower()
+    query_string = f"financial_status:paid AND status:{status_filter}"
+    return _run_orders_pull(log, query_string)
+
+
+def _run_orders_pull(log, query_string, skip_existing=False):
+    """
+    Shared pull loop for both the routine sync (run_orders_sync, filtered)
+    and the full historical import (run_full_import, status:any). Owns the
+    running/skipped/success/failed log transitions. skip_existing does a
+    cheap exists-check before upsert -- only the historical import needs it,
+    and only it emits the "imported N / already existed" summary line.
+    """
     if has_active_sync("orders", exclude_name=log.name):
         log.status = "skipped"
         log.finished_at = now_datetime()
@@ -155,24 +177,19 @@ def run_orders_sync(trigger="manual", log_name=None):
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
         client = ShopifyGraphQLClient()
-        settings = frappe.get_single("Shopify Connector Settings")
-
-        # NOTE: "status:<open|closed|cancelled|any>" mirrors the old REST
-        # `status` param's values 1:1 but wasn't independently verified
-        # against Shopify's order search-syntax docs -- if a live pull
-        # unexpectedly returns zero orders, check this filter string first.
-        # The Select field's options are capitalized labels (Open/Any/...)
-        # for display -- Shopify's search syntax expects lowercase tokens.
-        status_filter = (settings.sh_order_status_filter or "open").lower()
-        query_string = f"financial_status:paid AND status:{status_filter}"
         variables = {"after": None, "queryString": query_string}
 
-        processed = created = failed = pages = 0
+        processed = created = failed = skipped_existing = pages = 0
         for page_nodes in client.execute_paginated(_ORDERS_QUERY, variables, ["orders"]):
             pages += 1
             for node in page_nodes:
                 order = _order_node_to_rest_shape(node)
                 processed += 1
+                if skip_existing:
+                    order_id = str(order.get("id", ""))
+                    if order_id and frappe.db.exists("Sales Order", {"sh_shopify_order_id": order_id}):
+                        skipped_existing += 1
+                        continue
                 try:
                     if _upsert_order(order):
                         created += 1
@@ -190,6 +207,12 @@ def run_orders_sync(trigger="manual", log_name=None):
         log.items_failed = failed
         log.pages_done = pages
         log.finished_at = now_datetime()
+        if skip_existing:
+            if processed and created == 0 and failed == 0:
+                _append_log(log, "All orders are already synced from Shopify.")
+            else:
+                _append_log(
+                    log, f"Imported {created} new order(s); {skipped_existing} already existed.")
         log.save(ignore_permissions=True)
         frappe.db.commit()
     except Exception:
@@ -260,66 +283,7 @@ def run_full_import(log_name=None):
     re-running it after a partial run only creates what's still missing.
     """
     log = load_or_create_log("orders", "manual", log_name)
-    if has_active_sync("orders", exclude_name=log.name):
-        log.status = "skipped"
-        log.finished_at = now_datetime()
-        log.error_message = "Skipped: another orders sync is already running."
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
-        return log.name
-
-    log.status = "running"
-    log.save(ignore_permissions=True)
-    frappe.db.commit()
-
-    try:
-        from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient()
-        variables = {"after": None, "queryString": "status:any"}
-
-        processed = created = failed = skipped_existing = pages = 0
-        for page_nodes in client.execute_paginated(_ORDERS_QUERY, variables, ["orders"]):
-            pages += 1
-            for node in page_nodes:
-                order = _order_node_to_rest_shape(node)
-                processed += 1
-                order_id = str(order.get("id", ""))
-                if order_id and frappe.db.exists("Sales Order", {"sh_shopify_order_id": order_id}):
-                    skipped_existing += 1
-                    continue
-                try:
-                    if _upsert_order(order):
-                        created += 1
-                except Exception as exc:
-                    failed += 1
-                    _append_log(log, f"ERROR order={order.get('name')}: {exc}")
-                    frappe.log_error(
-                        title=f"Shopify: order {order.get('name')} failed",
-                        message=frappe.get_traceback(),
-                    )
-
-        log.status = "success"
-        log.items_processed = processed
-        log.items_created = created
-        log.items_failed = failed
-        log.pages_done = pages
-        log.finished_at = now_datetime()
-        if processed and created == 0 and failed == 0:
-            _append_log(log, "All orders are already synced from Shopify.")
-        else:
-            _append_log(
-                log, f"Imported {created} new order(s); {skipped_existing} already existed.")
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
-    except Exception:
-        log.status = "failed"
-        log.error_message = frappe.get_traceback()[:500]
-        log.finished_at = now_datetime()
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
-        raise
-
-    return log.name
+    return _run_orders_pull(log, "status:any", skip_existing=True)
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -896,7 +860,3 @@ def _resolve_item_code(line_item):
 
 # ── Sync log helpers ───────────────────────────────────────────────────────────
 
-def _append_log(log, message: str):
-    """Append a line to log.log_messages without saving."""
-    existing = log.log_messages or ""
-    log.log_messages = (existing + "\n" + message).strip()
