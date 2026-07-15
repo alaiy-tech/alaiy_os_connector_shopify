@@ -28,6 +28,7 @@ def check_and_enqueue():
         return
 
     _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
+    _maybe_reconcile_products()
     _maybe_refresh_token(settings)
     _maybe_ensure_webhooks(settings)
 
@@ -82,6 +83,47 @@ def _maybe_refresh_token(settings):
             title="Shopify: scheduled token refresh failed",
             message=frappe.get_traceback(),
         )
+
+
+_PRODUCTS_RECONCILE_INTERVAL_MINUTES = 60
+_PRODUCTS_RECONCILE_WINDOW_MINUTES = 90  # > interval, so a slightly-late run never misses a gap
+
+
+def _maybe_reconcile_products():
+    """
+    Products have no periodic safety net at all otherwise -- unlike
+    inventory, a silently-failed product webhook just stays wrong forever
+    with nothing to catch it. Fixed hourly interval, not user-configurable
+    (unlike inventory's), since this is a cheap recent-window check, not a
+    tunable full-catalog cost the merchant needs to control.
+    """
+    now = now_datetime()
+
+    running = frappe.db.get_value(
+        "Shopify Sync Log",
+        {"sync_type": "products_reconcile", "status": "running"},
+        "started_at",
+        order_by="started_at desc",
+    )
+    if running and (now - running).total_seconds() < 1800:
+        return
+
+    last_success = frappe.db.get_value(
+        "Shopify Sync Log",
+        {"sync_type": "products_reconcile", "status": "success"},
+        "started_at",
+        order_by="started_at desc",
+    )
+    if last_success and now < add_to_date(last_success, minutes=_PRODUCTS_RECONCILE_INTERVAL_MINUTES):
+        return
+
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.product_reconcile.run_recent_reconciliation",
+        queue="long",
+        timeout=300,
+        trigger="scheduled",
+        window_minutes=_PRODUCTS_RECONCILE_WINDOW_MINUTES,
+    )
 
 
 def _maybe_enqueue_inventory(interval_setting):

@@ -44,15 +44,16 @@
 
 .shopify-sync-grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-	gap: 20px;
+	grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
 .shopify-sync-box {
-	border: 1px solid #e0e0e0;
-	padding: 15px;
-	border-radius: 4px;
-	background-color: #fafafa;
+	padding: 15px 20px;
+	border-left: 1px solid #eee;
+}
+
+.shopify-sync-box:first-child {
+	border-left: none;
 }
 
 .shopify-sync-box h6 {
