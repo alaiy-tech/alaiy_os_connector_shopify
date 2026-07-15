@@ -46,7 +46,11 @@ def trigger_product_import():
     return _enqueue_sync(
         "products",
         "alaiy_os_connector_shopify.shopify.product_import.run_full_product_import",
-        timeout=1800,  # 30 minutes for large catalogs
+        # Was 1800s (30min) -- provably not enough anymore: each item now
+        # also downloads an image, sets tags/SEO/cost/weight, and (for
+        # Category) makes an extra taxonomy-search API call, confirmed live
+        # to blow the old ceiling partway through a ~3000-item catalog.
+        timeout=14400,  # 4 hours
         wipe_existing=True,
     )
 

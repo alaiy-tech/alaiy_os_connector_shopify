@@ -853,6 +853,23 @@ def _update_item_from_shopify(item, product: dict):
     if product.get("status"):
         item.disabled = 1 if product["status"] in ("archived", "draft") else 0
 
+    # Self-heal a duplicated UOM row in the conversion factor table --
+    # confirmed live: ERPNext's own Item.validate() appends a default UOM
+    # row if it doesn't see one yet, and two near-simultaneous saves of the
+    # same freshly-created template (e.g. import creating it, then an
+    # immediate products/update webhook for the same product) can each
+    # independently decide "no row yet" and both append one, leaving a
+    # genuine duplicate that then blocks every future save with
+    # "Unit of Measure ... entered more than once" forever until cleared.
+    seen_uoms = set()
+    deduped = []
+    for row in item.uoms:
+        if row.uom in seen_uoms:
+            continue
+        seen_uoms.add(row.uom)
+        deduped.append(row)
+    item.uoms = deduped
+
     # Save item. item.flags.ignore_permissions only covers this save --
     # ERPNext's Item.on_update() cascades into update_variants(), which
     # fetches fresh sibling variant Item docs and calls variant.save() on
