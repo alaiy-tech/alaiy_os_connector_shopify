@@ -199,30 +199,55 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
 
 def _wipe_all_items():
     """
-    Full destructive wipe of every Item -- ALL of them, including local/
-    manual ones, not just Shopify-linked leftovers -- per explicit
-    decision to always start a "Import Products from Shopify" click from
-    zero rather than reconcile incrementally. Deliberately scoped to Items
-    and their direct child tables only: Sales Orders, Delivery Notes,
-    Stock Entries, Stock Ledger Entries, and GL Entries are never touched
-    here -- those are real transactional/financial records, and this
-    function has no business deciding they should disappear. A Stock
-    Entry referencing a since-deleted item_code is left as a harmless
-    dangling reference rather than destroyed; the fresh import recreates
-    the Item under the same item_code (SKU) and its own new opening-stock
-    Stock Entry.
+    Full destructive wipe of every previously-imported Shopify Item (any
+    Item with sh_shopify_product_id set) before a fresh import -- but
+    NOT genuinely local/manual items, which are left untouched. Per
+    explicit decision: re-importing should always start Shopify-linked
+    data from zero, without disturbing anything created directly in
+    ERPNext.
+
+    Deliberately scoped to Items and their direct child tables only:
+    Sales Orders, Delivery Notes, Stock Entries, Stock Ledger Entries, and
+    GL Entries are never touched here -- those are real transactional/
+    financial records, and this function has no business deciding they
+    should disappear. A Stock Entry referencing a since-deleted item_code
+    is left as a harmless dangling reference rather than destroyed; the
+    fresh import recreates the Item under the same item_code (SKU) and
+    its own new opening-stock Stock Entry.
 
     Raw SQL throughout: going through frappe.delete_doc one Item at a time
     triggers on_item_delete, which enqueues a re-push-to-Shopify job per
     variant -- confirmed live to flood the job queue past its cap on a
     large catalog. Raw DELETE bypasses that entirely.
     """
-    frappe.db.sql("DELETE FROM `tabItem Price`")
+    shopify_item = "(SELECT name FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != '')"
+
+    # Opening-stock Stock Entries are ones _set_opening_stock itself
+    # creates (Material Receipt, exactly one Shopify item per entry) --
+    # only those get cleared, matched by that exact shape (single line
+    # item), never a manually-created multi-item Material Receipt that
+    # just happens to include one of these items among others.
+    own_stock_entries = """
+        SELECT sed.parent FROM `tabStock Entry Detail` sed
+        JOIN `tabStock Entry` se ON se.name = sed.parent
+        WHERE se.stock_entry_type = 'Material Receipt'
+          AND sed.item_code IN {shopify_item}
+        GROUP BY sed.parent
+        HAVING COUNT(*) = 1
+    """.format(shopify_item=shopify_item)
+
+    frappe.db.sql(f"DELETE FROM `tabGL Entry` WHERE voucher_type = 'Stock Entry' AND voucher_no IN ({own_stock_entries})")
+    frappe.db.sql(f"DELETE FROM `tabStock Ledger Entry` WHERE voucher_type = 'Stock Entry' AND voucher_no IN ({own_stock_entries})")
+    frappe.db.sql(f"DELETE FROM `tabStock Entry Detail` WHERE parent IN ({own_stock_entries})")
+    frappe.db.sql(f"DELETE FROM `tabStock Entry` WHERE name IN ({own_stock_entries})")
+    frappe.db.sql(f"UPDATE `tabBin` SET actual_qty = 0, projected_qty = 0, reserved_qty = 0 WHERE item_code IN {shopify_item}")
+
+    frappe.db.sql(f"DELETE FROM `tabItem Price` WHERE item_code IN {shopify_item}")
     frappe.db.sql("DELETE FROM `tabShopify Synced Entity` WHERE entity_type = 'product'")
-    frappe.db.sql("DELETE FROM `tabItem Default`")
-    frappe.db.sql("DELETE FROM `tabItem Variant Attribute`")
-    frappe.db.sql("DELETE FROM `tabItem Barcode`")
-    frappe.db.sql("DELETE FROM `tabItem`")
+    frappe.db.sql(f"DELETE FROM `tabItem Default` WHERE parent IN {shopify_item}")
+    frappe.db.sql(f"DELETE FROM `tabItem Variant Attribute` WHERE parent IN {shopify_item}")
+    frappe.db.sql(f"DELETE FROM `tabItem Barcode` WHERE parent IN {shopify_item}")
+    frappe.db.sql("DELETE FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''")
     frappe.db.commit()
 
 
