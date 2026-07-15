@@ -728,6 +728,20 @@ def _set_opening_stock(item_code: str, qty: float, settings):
         )
         return
 
+    # Confirmed live: a real site had zero "Stock Entry Type" master
+    # records at all (Material Receipt/Issue/etc.), which is standard
+    # ERPNext seed data -- every Stock Entry insert failed with
+    # "Could not find Stock Entry Type: Material Receipt" regardless of
+    # warehouse/cost center being correct. Self-heal the one type we
+    # actually need rather than requiring console setup per client.
+    if not frappe.db.exists("Stock Entry Type", "Material Receipt"):
+        frappe.get_doc({
+            "doctype": "Stock Entry Type",
+            "name": "Material Receipt",
+            "purpose": "Material Receipt",
+        }).insert(ignore_permissions=True)
+        frappe.db.commit()
+
     try:
         se = frappe.new_doc("Stock Entry")
         se.stock_entry_type = "Material Receipt"
