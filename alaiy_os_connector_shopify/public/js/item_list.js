@@ -13,18 +13,17 @@ frappe.listview_settings["Item"].formatters.sync_to_shopify = function (value, d
 	const hasShopifyId = doc.sh_shopify_product_id || doc.sh_shopify_variant_id;
 	let label, color;
 	if (value && hasShopifyId) {
-		label = __("Active on Shopify");
+		label = __("On Shopify");
 		color = "green";
 	} else if (value) {
-		label = __("Pending push");
+		label = __("Uploading to Shopify");
 		color = "orange";
 	} else if (hasShopifyId) {
 		// Imported from Shopify (still linked), but the opt-in outbound
-		// push checkbox is off -- distinct from a genuinely local item
-		// that has never touched Shopify at all. Without this branch,
-		// every freshly-imported item (checkbox unchecked by design)
-		// showed the same "Not on Shopify" label as a real local item.
-		label = __("Imported (push off)");
+		// checkbox is off -- edits made here won't be sent back until
+		// it's turned on. Distinct from a genuinely local item that has
+		// never touched Shopify at all (the else branch below).
+		label = __("From Shopify (changes stay here only)");
 		color = "blue";
 	} else {
 		label = __("Not on Shopify");
