@@ -189,6 +189,35 @@ def _variant_compare_at_price(item_code: str) -> float:
     return flt(rate or 0)
 
 
+def _variant_cost(item_code: str) -> float:
+    from alaiy_os_connector_shopify.shopify.product_import import _COST_PRICE_LIST
+    rate = frappe.db.get_value(
+        "Item Price", {"item_code": item_code, "price_list": _COST_PRICE_LIST, "buying": 1}, "price_list_rate"
+    )
+    return flt(rate or 0)
+
+
+def _variant_inventory_item_payload(variant) -> dict:
+    """inventoryItem sub-input for ProductVariantSetInput -- cost, weight,
+    country of origin, and HS code all live here, not flat on the variant."""
+    from alaiy_os_connector_shopify.shopify.product_import import _UOM_TO_WEIGHT_UNIT
+    payload = {}
+    cost = _variant_cost(variant.item_code)
+    if cost > 0:
+        payload["cost"] = f"{cost:.2f}"
+    if variant.get("weight_per_unit") and variant.get("weight_uom"):
+        weight_unit = _UOM_TO_WEIGHT_UNIT.get(variant.weight_uom)
+        if weight_unit:
+            payload["measurement"] = {
+                "weight": {"value": flt(variant.weight_per_unit), "unit": weight_unit}
+            }
+    if variant.get("sh_country_of_origin"):
+        payload["countryCodeOfOrigin"] = variant.sh_country_of_origin
+    if variant.get("sh_harmonized_system_code"):
+        payload["harmonizedSystemCode"] = variant.sh_harmonized_system_code
+    return payload
+
+
 def _item_images(item, settings) -> list:
     if not settings.sh_push_images:
         return []
@@ -209,6 +238,11 @@ def _variant_canonical(variant, settings) -> dict:
         "title": variant.item_name,
         "price": _variant_price(variant.item_code, settings),
         "compare_at_price": _variant_compare_at_price(variant.item_code),
+        "cost": _variant_cost(variant.item_code),
+        "weight_per_unit": flt(variant.get("weight_per_unit") or 0),
+        "weight_uom": variant.get("weight_uom") or "",
+        "country_of_origin": variant.get("sh_country_of_origin") or "",
+        "harmonized_system_code": variant.get("sh_harmonized_system_code") or "",
         "attributes": [
             {"attribute": a.attribute, "value": a.attribute_value}
             for a in (variant.attributes or [])
@@ -253,6 +287,9 @@ def _variant_set_payload(variant, settings, option_names: list) -> dict:
     compare_at = _variant_compare_at_price(variant.item_code)
     if compare_at > 0:
         payload["compareAtPrice"] = f"{compare_at:.2f}"
+    inventory_item = _variant_inventory_item_payload(variant)
+    if inventory_item:
+        payload["inventoryItem"] = inventory_item
     return payload
 
 
@@ -786,11 +823,14 @@ def _update_item_from_shopify(item, product: dict):
     Update ERPNext Item from Shopify product (inbound sync).
 
     Fields updated: title, description, vendor, product_type, status, images,
-    tags, category (read-only, see _apply_product_meta), variant price + compare-at price
+    tags, category (read-only, see _apply_product_meta), variant price,
+    compare-at price, weight
 
-    Fields NOT updated: stock levels (separate feature), variant structure,
-    SEO title/description (Shopify's REST webhook payload doesn't carry
-    the seo object -- only the GraphQL-based one-time import/pull does)
+    Fields NOT updated live via webhook (import/pull only): SEO title/
+    description, unit cost, country of origin, harmonized system code --
+    Shopify's REST webhook payload doesn't carry these the same way the
+    GraphQL-based one-time import/pull does. Also NOT updated: stock
+    levels (separate feature), variant structure (add/remove variants).
     """
     settings = frappe.get_single("Shopify Connector Settings")
 
@@ -847,7 +887,7 @@ def _update_item_from_shopify(item, product: dict):
     # one-time import, so there's no reason a price edit made on Shopify
     # shouldn't flow back the same way title/description/tags do.
     from alaiy_os_connector_shopify.shopify.product_import import (
-        _set_item_price, _set_item_compare_at_price,
+        _set_item_price, _set_item_compare_at_price, _ensure_uom, _REST_WEIGHT_UNIT_TO_UOM,
     )
     for variant in (product.get("variants") or []):
         sku = (variant.get("sku") or "").strip()
@@ -859,6 +899,17 @@ def _update_item_from_shopify(item, product: dict):
         compare_at_price = flt(variant.get("compare_at_price") or variant.get("compareAtPrice") or 0)
         if compare_at_price > 0:
             _set_item_compare_at_price(sku, compare_at_price, settings)
+
+        # Weight: REST payload's flat weight/weight_unit -- cost, country
+        # of origin, and HS code aren't reliably present here, so those
+        # stay import-only (see this function's docstring).
+        weight_value = flt(variant.get("weight") or 0)
+        weight_unit = _REST_WEIGHT_UNIT_TO_UOM.get((variant.get("weight_unit") or "").lower())
+        if weight_value > 0 and weight_unit:
+            frappe.db.set_value("Item", sku, {
+                "weight_per_unit": weight_value,
+                "weight_uom": _ensure_uom(weight_unit),
+            })
 
     # Log variant inventory data (for inventory_sync to use later)
     variants = product.get("variants") or []

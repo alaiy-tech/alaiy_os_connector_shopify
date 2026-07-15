@@ -200,6 +200,19 @@ def setup_custom_fields():
             "fieldtype": "Small Text",
             "insert_after": "sh_seo_title",
         },
+        {
+            "fieldname": "sh_country_of_origin",
+            "label": "Shopify Country of Origin",
+            "fieldtype": "Data",
+            "insert_after": "sh_seo_description",
+            "description": "ISO 3166-1 alpha-2 country code, synced both directions with Shopify's inventoryItem.countryCodeOfOrigin.",
+        },
+        {
+            "fieldname": "sh_harmonized_system_code",
+            "label": "Shopify Harmonized System Code",
+            "fieldtype": "Data",
+            "insert_after": "sh_country_of_origin",
+        },
     ]
     sales_order_fields = [
         {

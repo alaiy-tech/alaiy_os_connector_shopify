@@ -62,6 +62,17 @@ query PullProducts($after: String) {
             price
             compareAtPrice
             inventoryItem {
+              unitCost {
+                amount
+              }
+              measurement {
+                weight {
+                  value
+                  unit
+                }
+              }
+              countryCodeOfOrigin
+              harmonizedSystemCode
               inventoryLevels(first: 1) {
                 nodes {
                   quantities(names: ["available"]) {
@@ -331,6 +342,7 @@ def _import_simple_product(
 
     if product_meta:
         _apply_product_meta(item, product_meta)
+    _apply_variant_physical(item, variant)
 
     # Without this flag, Item's after_insert hook (on_item_change) sees a
     # freshly-linked item whose sync_to_shopify checkbox is still unchecked
@@ -350,6 +362,7 @@ def _import_simple_product(
     compare_at_price = flt(variant.get("compareAtPrice") or 0)
     if compare_at_price > 0:
         _set_item_compare_at_price(item_name, compare_at_price, settings)
+    _set_item_variant_cost(item_name, variant, settings)
 
     # Set opening stock from Shopify's current available quantity
     qty = _variant_available_qty(variant)
@@ -515,6 +528,7 @@ def _import_product_with_variants(
         # Link to Shopify
         variant_item.sh_shopify_product_id = product_id
         variant_item.sh_shopify_variant_id = variant.get("legacyResourceId")
+        _apply_variant_physical(variant_item, variant)
 
         default_warehouse_row = _default_warehouse_row(settings)
         if default_warehouse_row:
@@ -531,6 +545,7 @@ def _import_product_with_variants(
         compare_at_price = flt(variant.get("compareAtPrice") or 0)
         if compare_at_price > 0:
             _set_item_compare_at_price(variant_name, compare_at_price, settings)
+        _set_item_variant_cost(variant_name, variant, settings)
 
         # Set opening stock from Shopify's current available quantity
         qty = _variant_available_qty(variant)
@@ -742,6 +757,101 @@ def _set_item_compare_at_price(item_code: str, price: float, settings):
             title=f"Failed to set compare-at price for {item_code}",
             message=frappe.get_traceback()
         )
+
+
+_COST_PRICE_LIST = "Shopify Cost"
+
+# Shopify's GraphQL WeightUnit enum <-> a plain ERPNext UOM name. ERPNext's
+# weight_uom is a Link to UOM with no fixed seeded names, so these are
+# auto-created (see _ensure_uom) rather than assumed to already exist.
+_WEIGHT_UNIT_TO_UOM = {
+    "GRAMS": "Gram", "KILOGRAMS": "Kg", "OUNCES": "Ounce", "POUNDS": "Pound",
+}
+_UOM_TO_WEIGHT_UNIT = {v: k for k, v in _WEIGHT_UNIT_TO_UOM.items()}
+
+# Shopify's REST webhook payload uses a different, lowercase-abbreviation
+# weight_unit string ("g"/"kg"/"oz"/"lb") than the GraphQL WeightUnit enum
+# used everywhere else -- keeping this mapping separate rather than trying
+# to normalize both into one dict avoids silently mixing up the two APIs'
+# conventions.
+_REST_WEIGHT_UNIT_TO_UOM = {
+    "g": "Gram", "kg": "Kg", "oz": "Ounce", "lb": "Pound",
+}
+
+
+def _ensure_uom(name: str) -> str:
+    if not frappe.db.exists("UOM", name):
+        frappe.get_doc({"doctype": "UOM", "uom_name": name}).insert(ignore_permissions=True)
+    return name
+
+
+def _set_item_cost(item_code: str, cost: float, settings):
+    """
+    Shopify's per-variant unit cost has no dedicated ERPNext Item field --
+    same reasoning as _set_item_compare_at_price: a second, auto-created
+    Buying price list keeps this a plain ERPNext concept (usable in
+    standard costing reports) instead of a bespoke Currency field.
+    """
+    if not frappe.db.exists("Price List", _COST_PRICE_LIST):
+        pl = frappe.new_doc("Price List")
+        pl.price_list_name = _COST_PRICE_LIST
+        pl.currency = frappe.db.get_value("Price List", settings.sh_selling_price_list or "Standard Selling", "currency") or "INR"
+        pl.buying = 1
+        pl.flags.ignore_permissions = True
+        pl.insert()
+        frappe.db.commit()
+
+    try:
+        item_price = frappe.get_value(
+            "Item Price", {"item_code": item_code, "price_list": _COST_PRICE_LIST, "buying": 1}, "name"
+        )
+        if item_price:
+            frappe.db.set_value("Item Price", item_price, "price_list_rate", cost)
+        else:
+            ip = frappe.new_doc("Item Price")
+            ip.item_code = item_code
+            ip.price_list = _COST_PRICE_LIST
+            ip.buying = 1
+            ip.selling = 0
+            ip.price_list_rate = cost
+            ip.flags.ignore_permissions = True
+            ip.insert()
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(
+            title=f"Failed to set cost for {item_code}",
+            message=frappe.get_traceback()
+        )
+
+
+def _apply_variant_physical(doc, variant: dict):
+    """
+    Weight, country of origin, and harmonized system code all live under
+    Shopify's inventoryItem, not the variant itself. Sets plain Item
+    fields -- call BEFORE insert. Unit cost is handled separately by
+    _set_item_variant_cost since it requires the Item to already exist
+    (Item Price validates item_code) -- call that one AFTER insert.
+    Only settable here at import/pull time (GraphQL) -- the REST webhook
+    payload used for live inbound updates doesn't reliably carry
+    unitCost/country/HS code the same way, so those three stay
+    import-only for now (see _update_item_from_shopify's docstring).
+    """
+    inv = variant.get("inventoryItem") or {}
+    weight = (inv.get("measurement") or {}).get("weight")
+    if weight and weight.get("value"):
+        doc.weight_per_unit = flt(weight["value"])
+        doc.weight_uom = _ensure_uom(_WEIGHT_UNIT_TO_UOM.get(weight.get("unit"), "Kg"))
+
+    if inv.get("countryCodeOfOrigin"):
+        doc.sh_country_of_origin = inv["countryCodeOfOrigin"]
+    if inv.get("harmonizedSystemCode"):
+        doc.sh_harmonized_system_code = inv["harmonizedSystemCode"]
+
+
+def _set_item_variant_cost(item_code: str, variant: dict, settings):
+    cost = flt(((variant.get("inventoryItem") or {}).get("unitCost") or {}).get("amount") or 0)
+    if cost > 0:
+        _set_item_cost(item_code, cost, settings)
 
 
 def _variant_available_qty(variant: dict) -> float:
