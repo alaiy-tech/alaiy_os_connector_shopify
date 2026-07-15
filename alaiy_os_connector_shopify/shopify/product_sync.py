@@ -203,6 +203,7 @@ def _variant_canonical(variant, settings) -> dict:
             {"attribute": a.attribute, "value": a.attribute_value}
             for a in (variant.attributes or [])
         ],
+        "barcode": variant.barcodes[0].barcode if variant.get("barcodes") else "",
     }
 
 
@@ -234,6 +235,8 @@ def _variant_set_payload(variant, settings, option_names: list) -> dict:
     }
     if variant.get("sh_shopify_variant_id"):
         payload["id"] = f"gid://shopify/ProductVariant/{variant.sh_shopify_variant_id}"
+    if variant.get("barcodes"):
+        payload["barcode"] = variant.barcodes[0].barcode
     return payload
 
 
