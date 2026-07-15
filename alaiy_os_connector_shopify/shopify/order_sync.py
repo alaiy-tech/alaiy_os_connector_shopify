@@ -329,7 +329,7 @@ def _upsert_order(order):
     order_id = str(order.get("id", ""))
     if not order_id:
         return False
-    if frappe.db.exists("Sales Order", {"sh_shopify_order_id": order_id}):
+    if get_active_sales_order(order_id):
         return False  # already processed
 
     settings = frappe.get_single("Shopify Connector Settings")
@@ -418,8 +418,7 @@ def _update_order(order):
     if not order_id:
         return False
 
-    so_name = frappe.db.get_value(
-        "Sales Order", {"sh_shopify_order_id": order_id}, "name")
+    so_name = get_active_sales_order(order_id)
     if not so_name:
         return _upsert_order(order)
 
@@ -472,25 +471,31 @@ def _can_modify_order_items(fulfillment_status: str) -> bool:
     return fulfillment_status.lower() not in ("fulfilled", "partially_fulfilled")
 
 
-def _sync_order_line_items(so_name: str, order: dict):
+def get_active_sales_order(order_id: str):
     """
-    Reconciles line items between Shopify order and ERPNext Sales Order.
-    Adds new items, updates quantities on existing items, removes items that
-    were deleted in Shopify. Works on a submitted SO without needing amendment,
-    since we're modifying before any stock movement (no Delivery Notes yet).
-
-    Errors bubble up so Shopify sees failure and retries (no silent failures).
+    Look up the Sales Order for a Shopify order ID, preferring the latest
+    non-cancelled document. Once _sync_order_line_items starts amending
+    (cancel + recreate) a submitted order, the cancelled original and its
+    amended replacement both carry the same sh_shopify_order_id -- a plain
+    frappe.db.get_value with no docstatus/order_by picks whichever the DB
+    happens to return first, which can silently resurrect the cancelled one.
     """
-    so = frappe.get_doc("Sales Order", so_name)
-    if so.docstatus != 1:
-        return  # Skip if not submitted
+    return frappe.db.get_value(
+        "Sales Order",
+        {"sh_shopify_order_id": order_id, "docstatus": ["!=", 2]},
+        "name",
+        order_by="creation desc",
+    )
 
-    settings = frappe.get_single("Shopify Connector Settings")
-    warehouse = _resolve_default_warehouse(settings)
 
-    # Build current item maps: by variant_id (new items) and by item_code (old items)
-    current_items_by_variant = {item.get("sh_shopify_variant_id"): item for item in so.items if item.get("sh_shopify_variant_id")}
-    current_items_by_code = {item.item_code: item for item in so.items if not item.get("sh_shopify_variant_id")}
+def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
+    """
+    Reconciles doc.items (a Sales Order's child table) against Shopify's
+    current line items. Returns True if anything actually changed, so the
+    caller can decide whether a save/amend is even needed.
+    """
+    current_items_by_variant = {item.get("sh_shopify_variant_id"): item for item in doc.items if item.get("sh_shopify_variant_id")}
+    current_items_by_code = {item.item_code: item for item in doc.items if not item.get("sh_shopify_variant_id")}
     new_items_from_shopify = {}
 
     # Parse Shopify's line items
@@ -531,9 +536,11 @@ def _sync_order_line_items(so_name: str, order: dict):
     # Items in current_items_by_code that weren't matched = removed from Shopify
     removed_variants = set(current_items_by_variant.keys()) - set(new_items_from_shopify.keys())
 
+    changed = bool(added_variants or removed_variants)
+
     # Remove items that were deleted in Shopify
     for variant_id in removed_variants:
-        so.items.remove(current_items_by_variant[variant_id])
+        doc.items.remove(current_items_by_variant[variant_id])
 
     # Add new items from Shopify
     for variant_id in added_variants:
@@ -541,7 +548,7 @@ def _sync_order_line_items(so_name: str, order: dict):
         item_code = new_item_data["item_code"]
         item_name = frappe.db.get_value("Item", item_code, "item_name") or item_code
         uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Nos"
-        so.append("items", {
+        doc.append("items", {
             "item_code": item_code,
             "item_name": item_name,
             "uom": uom,
@@ -561,10 +568,64 @@ def _sync_order_line_items(so_name: str, order: dict):
         if current_row.qty != new_qty or current_row.rate != new_rate:
             current_row.qty = new_qty
             current_row.rate = new_rate
+            changed = True
 
         # Backfill variant_id for old items (created before variant_id field existed)
         if not current_row.get("sh_shopify_variant_id"):
             current_row.sh_shopify_variant_id = variant_id
+
+    return changed
+
+
+def _sync_order_line_items(so_name: str, order: dict):
+    """
+    Reconciles line items between Shopify order and ERPNext Sales Order.
+
+    A submitted Sales Order can't have its Items table structurally changed
+    in place -- ERPNext enforces this (UpdateAfterSubmitError), confirmed
+    live: removing a line via Shopify's Order Editing hit this the moment
+    a real submitted order was edited. The correct handling for "a
+    submitted document needs to change" is ERPNext's own amend mechanism
+    (cancel, then create a new revision carrying amended_from) rather than
+    silently dropping the change or bypassing the doctype's own guard.
+    A still-Draft order (not yet auto-submitted -- see _upsert_order's
+    draft-order handling) can just be edited and saved directly.
+    """
+    so = frappe.get_doc("Sales Order", so_name)
+    if so.docstatus not in (0, 1):
+        return
+
+    settings = frappe.get_single("Shopify Connector Settings")
+    warehouse = _resolve_default_warehouse(settings)
+
+    if so.docstatus == 0:
+        if _apply_line_item_diff(so, order, warehouse):
+            so.flags.ignore_permissions = True
+            so.flags.from_shopify_sync = True
+            so.save()
+            frappe.db.commit()
+        return
+
+    # docstatus == 1: dry-run the diff on a throwaway copy first -- cancel +
+    # amend is a real, visible action (new doc name, original marked
+    # Cancelled), not worth doing unless something actually changed.
+    probe = frappe.copy_doc(so)
+    if not _apply_line_item_diff(probe, order, warehouse):
+        return
+
+    so.flags.ignore_permissions = True
+    so.flags.from_shopify_sync = True
+    so.cancel()
+    frappe.db.commit()
+
+    amended = frappe.copy_doc(so)
+    amended.amended_from = so.name
+    _apply_line_item_diff(amended, order, warehouse)
+    amended.flags.ignore_permissions = True
+    amended.flags.from_shopify_sync = True
+    amended.insert()
+    amended.submit()
+    frappe.db.commit()
 
     # Save if there were any changes
     if added_variants or removed_variants or any(
@@ -715,8 +776,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
 
 def _cancel_order(order):
     order_id = str(order.get("id", ""))
-    so_name = frappe.db.get_value(
-        "Sales Order", {"sh_shopify_order_id": order_id}, "name")
+    so_name = get_active_sales_order(order_id)
     if so_name:
         so = frappe.get_doc("Sales Order", so_name)
         if so.docstatus == 1:
