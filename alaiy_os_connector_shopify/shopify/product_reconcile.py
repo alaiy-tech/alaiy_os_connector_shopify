@@ -103,8 +103,10 @@ def run_recent_reconciliation(trigger="scheduled", window_minutes=90, log_name=N
     import path a manual import already uses.
     """
     log = load_or_create_log("products_reconcile", trigger, log_name)
-    if has_active_sync("products_reconcile", exclude_name=log.name):
-        _close_log(log, "skipped", error="Skipped: another reconciliation is already running.")
+    # Also checks "products" -- both hammer the same Item rows, and running
+    # at once risks MySQL "Lock wait timeout exceeded" (confirmed live).
+    if has_active_sync("products_reconcile", exclude_name=log.name) or has_active_sync("products"):
+        _close_log(log, "skipped", error="Skipped: a products sync is already running.")
         return log.name
 
     log.status = "running"

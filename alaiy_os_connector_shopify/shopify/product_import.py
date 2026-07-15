@@ -114,8 +114,12 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
     """
     log = load_or_create_log("products", trigger, log_name)
 
-    # Concurrency check
-    if has_active_sync("products", exclude_name=log.name):
+    # Concurrency check. Also checks products_reconcile -- both hammer the
+    # same Item rows, and running at once risks exactly the MySQL "Lock
+    # wait timeout exceeded" seen live once the reconciliation job (added
+    # this session) started running on its own schedule alongside a
+    # manual full import.
+    if has_active_sync("products", exclude_name=log.name) or has_active_sync("products_reconcile"):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another products sync is already running."
@@ -1081,7 +1085,12 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
             return  # Don't overwrite
 
         slideshow = frappe.new_doc("Website Slideshow")
-        slideshow.name = slideshow_name
+        # Website Slideshow autonames via "field:slideshow_name" -- setting
+        # doc.name directly (the old code here) never satisfies that; only
+        # setting the real slideshow_name field does. This was dormant the
+        # entire time image download was broken (fixed earlier this
+        # session) since insert() was never actually reached before now.
+        slideshow.slideshow_name = slideshow_name
 
         for image_url in image_urls[1:]:  # First image is already set as main
             try:
