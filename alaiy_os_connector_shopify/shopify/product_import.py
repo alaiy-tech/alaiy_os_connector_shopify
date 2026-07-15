@@ -742,6 +742,20 @@ def _set_opening_stock(item_code: str, qty: float, settings):
         }).insert(ignore_permissions=True)
         frappe.db.commit()
 
+    # Same class of missing-company-default: ERPNext requires a Stock
+    # Adjustment Account (or a per-entry Difference Account) for any
+    # Material Receipt. Confirmed live: company had the account itself
+    # but never had it set as the default. Pick any existing "Stock
+    # Adjustment" account for this company rather than requiring
+    # someone to configure it by hand on every client site.
+    if not frappe.db.get_value("Company", company, "stock_adjustment_account"):
+        fallback_account = frappe.db.get_value(
+            "Account", {"company": company, "account_name": ["like", "%Stock Adjustment%"]}, "name"
+        )
+        if fallback_account:
+            frappe.db.set_value("Company", company, "stock_adjustment_account", fallback_account)
+            frappe.db.commit()
+
     try:
         se = frappe.new_doc("Stock Entry")
         se.stock_entry_type = "Material Receipt"
@@ -751,6 +765,11 @@ def _set_opening_stock(item_code: str, qty: float, settings):
             "qty": qty,
             "t_warehouse": warehouse,
             "cost_center": cost_center,
+            # Shopify's price is a selling price, not a cost basis -- we
+            # have no real valuation rate to give this opening stock, and
+            # ERPNext otherwise blocks submit with "Valuation Rate Missing"
+            # on an item's very first stock-in.
+            "allow_zero_valuation_rate": 1,
         })
         se.flags.ignore_permissions = True
         se.insert()
