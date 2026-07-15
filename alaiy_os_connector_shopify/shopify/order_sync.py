@@ -735,9 +735,15 @@ def _cancel_order(order):
         if so.docstatus == 1:
             # See _upsert_order's note on from_shopify_sync -- this cancel
             # came FROM Shopify, so the on_cancel push-back hook must not
-            # try to cancel the same order on Shopify again.
+            # try to cancel the same order on Shopify again. This webhook
+            # runs as Guest (allow_guest=True endpoint) -- confirmed live,
+            # so.cancel() hit a real PermissionError without this flag,
+            # same class of bug already fixed on every other webhook-driven
+            # save in this file.
             so.flags.from_shopify_sync = True
-            so.cancel()
+            so.flags.ignore_permissions = True
+            with _as_administrator():
+                so.cancel()
             frappe.db.commit()
 
 
