@@ -627,17 +627,6 @@ def _sync_order_line_items(so_name: str, order: dict):
     amended.submit()
     frappe.db.commit()
 
-    # Save if there were any changes
-    if added_variants or removed_variants or any(
-        current_items_by_variant[v].qty != new_items_from_shopify[v]["qty"] or
-        current_items_by_variant[v].rate != new_items_from_shopify[v]["rate"]
-        for v in common_variants
-    ):
-        so.flags.ignore_permissions = True
-        so.flags.from_shopify_sync = True
-        so.save()
-        frappe.db.commit()
-
 
 
 def _create_delivery_note_if_needed(so_name):

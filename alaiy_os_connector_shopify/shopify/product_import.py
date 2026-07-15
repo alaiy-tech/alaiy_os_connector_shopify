@@ -874,12 +874,21 @@ def _set_item_image(item_code: str, image_url: str):
         return
 
     try:
-        from frappe.integrations.utils import download_file
-        from frappe.utils import get_url
+        # frappe.integrations.utils.download_file was removed/renamed in
+        # this Frappe version (confirmed live: ImportError on every single
+        # image, meaning image sync was silently 100% broken) -- fetching
+        # the bytes ourselves via requests (already a hard dependency,
+        # used the same way in graphql_client.py) and saving through
+        # save_file, a stable, long-standing public Frappe API, avoids
+        # depending on internal module paths that can move again.
+        import requests
+        from frappe.utils.file_manager import save_file
 
-        # Download and attach image
-        file_url = download_file(image_url)
-        frappe.db.set_value("Item", item_code, "image", file_url)
+        resp = requests.get(image_url, timeout=30)
+        resp.raise_for_status()
+        filename = image_url.split("?")[0].rsplit("/", 1)[-1] or f"{item_code}.jpg"
+        file_doc = save_file(filename, resp.content, "Item", item_code, is_private=0)
+        frappe.db.set_value("Item", item_code, "image", file_doc.file_url)
         frappe.db.commit()
     except Exception:
         frappe.log_error(
@@ -905,11 +914,17 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
         slideshow = frappe.new_doc("Website Slideshow")
         slideshow.name = slideshow_name
 
+        import requests
+        from frappe.utils.file_manager import save_file
+
         for image_url in image_urls[1:]:  # First image is already set as main
             file_url = None
             try:
-                from frappe.integrations.utils import download_file
-                file_url = download_file(image_url)
+                resp = requests.get(image_url, timeout=30)
+                resp.raise_for_status()
+                filename = image_url.split("?")[0].rsplit("/", 1)[-1] or f"{slideshow_name}.jpg"
+                file_doc = save_file(filename, resp.content, "Website Slideshow", slideshow_name, is_private=0)
+                file_url = file_doc.file_url
             except Exception:
                 continue  # Skip failed images
 
