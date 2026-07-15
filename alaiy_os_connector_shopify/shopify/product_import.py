@@ -316,6 +316,10 @@ def _import_simple_product(
     item.sh_shopify_product_id = product_id
     item.sh_shopify_variant_id = variant.get("legacyResourceId")
 
+    default_warehouse_row = _default_warehouse_row(settings)
+    if default_warehouse_row:
+        item.append("item_defaults", default_warehouse_row)
+
     # Without this flag, Item's after_insert hook (on_item_change) sees a
     # freshly-linked item whose sync_to_shopify checkbox is still unchecked
     # by default, and mistakes that for "flag was just turned off" --
@@ -493,6 +497,10 @@ def _import_product_with_variants(
         # Link to Shopify
         variant_item.sh_shopify_product_id = product_id
         variant_item.sh_shopify_variant_id = variant.get("legacyResourceId")
+
+        default_warehouse_row = _default_warehouse_row(settings)
+        if default_warehouse_row:
+            variant_item.append("item_defaults", default_warehouse_row)
 
         variant_item.flags.from_shopify_sync = True
         variant_item.flags.ignore_permissions = True
@@ -687,6 +695,25 @@ def _variant_available_qty(variant: dict) -> float:
         return 0
     quantities = levels[0].get("quantities") or []
     return flt(quantities[0].get("quantity")) if quantities else 0
+
+
+def _default_warehouse_row(settings) -> dict:
+    """
+    Item Defaults row (company + default_warehouse) to append on every
+    stocked Item at creation time. Without this, ERPNext has no warehouse
+    to suggest when an Item is picked on any document created directly in
+    the desk UI (not through our own webhook/import code, which always
+    resolves a warehouse itself) -- confirmed live: manually creating a
+    Sales Order for an imported item hit "Source warehouse required",
+    forcing the warehouse to be typed in by hand every single time.
+    """
+    warehouse = settings.sh_default_warehouse
+    if not warehouse or not frappe.db.exists("Warehouse", warehouse):
+        return None
+    company = frappe.db.get_value("Warehouse", warehouse, "company") or frappe.defaults.get_global_default("company")
+    if not company:
+        return None
+    return {"company": company, "default_warehouse": warehouse}
 
 
 def _set_opening_stock(item_code: str, qty: float, settings):

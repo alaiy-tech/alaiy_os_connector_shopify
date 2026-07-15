@@ -42,6 +42,44 @@ mutation SetInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: Str
 """
 
 
+def _backfill_missing_default_warehouse(warehouse):
+    """
+    One-time-per-item heal for stock items imported before Item Defaults
+    were set at import time (see product_import._default_warehouse_row) --
+    without it, ERPNext has no warehouse to suggest on any document
+    created directly in the desk UI, forcing it to be typed in by hand
+    every time. Runs on every scheduled inventory push (already the one
+    place that iterates every Shopify-linked stock item); capped per run
+    so a large backlog heals over several runs instead of one slow one.
+    """
+    company = frappe.db.get_value("Warehouse", warehouse, "company")
+    if not company:
+        return
+    missing = frappe.db.sql("""
+        SELECT i.name FROM `tabItem` i
+        WHERE i.sh_shopify_variant_id IS NOT NULL AND i.sh_shopify_variant_id != ''
+          AND i.is_stock_item = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM `tabItem Default` d
+            WHERE d.parent = i.name AND d.company = %s AND d.default_warehouse = %s
+          )
+        LIMIT 200
+    """, (company, warehouse), as_dict=True)
+    for row in missing:
+        try:
+            item = frappe.get_doc("Item", row.name)
+            item.append("item_defaults", {"company": company, "default_warehouse": warehouse})
+            item.flags.ignore_permissions = True
+            item.save()
+        except Exception:
+            frappe.log_error(
+                title=f"Shopify: failed to backfill default warehouse for {row.name}",
+                message=frappe.get_traceback(),
+            )
+    if missing:
+        frappe.db.commit()
+
+
 def run_inventory_push(trigger="manual", log_name=None):
     """
     Push current ERPNext bin quantities to Shopify inventory levels
@@ -73,6 +111,8 @@ def run_inventory_push(trigger="manual", log_name=None):
         if not location_id:
             _close_log(log, "failed", error="No Shopify location found")
             return log.name
+
+        _backfill_missing_default_warehouse(warehouse)
 
         items = frappe.get_all(
             "Item",
