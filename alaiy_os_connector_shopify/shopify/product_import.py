@@ -321,6 +321,58 @@ def _import_product(node: dict) -> tuple:
         return False, "product has zero variants"
 
 
+def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None):
+    """
+    Populate price/stock/cost/weight (and, for a genuinely standalone
+    item, tags/category/SEO/images) on an Item that was auto-linked to
+    Shopify rather than freshly created. Auto-linking only ever wrote the
+    Shopify IDs, so without this an auto-linked item showed as "synced"
+    with none of Shopify's actual content ever pulled in.
+    """
+    item = frappe.get_doc("Item", item_code)
+    _apply_variant_physical(item, variant)
+    if product_meta:
+        _apply_product_meta(item, product_meta)
+    item.flags.from_shopify_sync = True
+    item.flags.ignore_permissions = True
+    item.save()
+    frappe.db.commit()
+
+    price = flt(variant.get("price") or 0)
+    if price > 0:
+        _set_item_price(item_code, price, settings)
+    compare_at_price = flt(variant.get("compareAtPrice") or 0)
+    if compare_at_price > 0:
+        _set_item_compare_at_price(item_code, compare_at_price, settings)
+    _set_item_variant_cost(item_code, variant, settings)
+
+    qty = _variant_available_qty(variant)
+    if qty > 0:
+        _set_opening_stock(item_code, qty, settings)
+
+    if images:
+        _set_item_image(item_code, images[0])
+        if len(images) > 1:
+            _set_item_slideshow(item_code, images, settings)
+
+
+def _apply_existing_template_content(template_name: str, product_meta: dict, images: list, settings):
+    """Same idea as _apply_existing_variant_content but for the template
+    side of an auto-link -- tags/category/SEO/images describe the
+    product as a whole, so they land on the template, not the variant."""
+    template = frappe.get_doc("Item", template_name)
+    _apply_product_meta(template, product_meta)
+    template.flags.from_shopify_sync = True
+    template.flags.ignore_permissions = True
+    template.save()
+    frappe.db.commit()
+
+    if images:
+        _set_item_image(template_name, images[0])
+        if len(images) > 1:
+            _set_item_slideshow(template_name, images, settings)
+
+
 def _import_simple_product(
     product_id: str, title: str, description: str, vendor: str, item_group: str,
     variant: dict, images: list, settings, product_meta: dict = None
@@ -336,25 +388,41 @@ def _import_simple_product(
     if frappe.db.exists("Item", sku):
         existing_id = frappe.db.get_value("Item", sku, "sh_shopify_product_id")
         if not existing_id:
-            # Auto-link the existing item
+            # Auto-link the existing item -- e.g. one already created by
+            # another connector (Cloudstore) importing the same product
+            # by SKU before Shopify ever linked it.
             variant_of = frappe.db.get_value("Item", sku, "variant_of")
             from alaiy_os_connector_shopify.shopify.sync_engine import entities
-            
-            # If it's part of a template structure:
+
+            # If it's part of a template structure, the product-level meta
+            # (tags/category/SEO/images) describes the PRODUCT, so it
+            # belongs on the template, not this leaf variant.
             if variant_of:
                 frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
+                if product_meta:
+                    _apply_existing_template_content(variant_of, product_meta, images, settings)
                 entity = entities.get_or_new("product", "Item", variant_of, product_id)
                 entities.save(entity, external_id=product_id, erpnext_name=variant_of)
-            
+
             # Link the item itself
             frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
-            
+
+            # Auto-linking only ever wrote the Shopify IDs -- without this,
+            # an auto-linked item showed "synced" with none of Shopify's
+            # actual price/stock/weight (and, for a genuinely standalone
+            # item, tags/category/SEO/images) ever pulled in.
+            _apply_existing_variant_content(
+                sku, variant, settings,
+                product_meta=None if variant_of else product_meta,
+                images=None if variant_of else images,
+            )
+
             # Save Synced Entity mapping for the simple item if no parent template
             if not variant_of:
                 entity = entities.get_or_new("product", "Item", sku, product_id)
                 entities.save(entity, external_id=product_id, erpnext_name=sku)
-                
+
             frappe.db.commit()
             return True, f"Auto-linked existing SKU '{sku}' (and template if present) to Shopify product '{product_id}'"
         else:
@@ -501,36 +569,71 @@ def _import_product_with_variants(
     for name in option_names:
         _ensure_item_attribute(name, values_by_option[name])
 
-    # Create template Item
-    template = frappe.new_doc("Item")
-    template.item_code = template_name
-    template.item_name = title
-    template.description = description
-    template.item_group = _ensure_item_group(item_group)
-    template.sh_shopify_product_type = item_group
-    template.brand = _ensure_brand(vendor)
-    template.stock_uom = "Nos"
-    template.has_variants = 1
-    template.is_stock_item = 0  # Templates aren't stocked
-    template.include_item_in_selling = 1
-    template.include_item_in_buying = 1
+    # Some variant SKUs may already exist under a template created by
+    # another connector (e.g. Cloudstore) before Shopify ever linked
+    # them. Reuse that template instead of blindly creating a second,
+    # empty one -- otherwise the new Shopify template steals the
+    # sh_shopify_product_id while the real content stays orphaned on the
+    # original template no one links to anymore.
+    reused_template_name = None
+    for v in variants:
+        v_sku = (v.get("sku") or "").strip()
+        if not v_sku or not frappe.db.exists("Item", v_sku):
+            continue
+        if frappe.db.get_value("Item", v_sku, "sh_shopify_product_id"):
+            continue  # already linked elsewhere -- not a reuse candidate
+        existing_parent = frappe.db.get_value("Item", v_sku, "variant_of")
+        if not existing_parent:
+            continue
+        if reused_template_name and reused_template_name != existing_parent:
+            frappe.log_error(
+                title=f"Shopify import: variants of product {product_id} map to multiple existing templates",
+                message=f"Found both '{reused_template_name}' and '{existing_parent}' -- keeping '{reused_template_name}'.",
+            )
+            continue
+        reused_template_name = existing_parent
 
-    for name in option_names:
-        template.append("attributes", {"attribute": name})
+    if reused_template_name:
+        template_name = reused_template_name
+        template = frappe.get_doc("Item", template_name)
+        if not template.sh_shopify_product_id:
+            frappe.db.set_value("Item", template_name, "sh_shopify_product_id", product_id)
+        if product_meta:
+            _apply_existing_template_content(template_name, product_meta, images, settings)
+        from alaiy_os_connector_shopify.shopify.sync_engine import entities as _entities
+        entity = _entities.get_or_new("product", "Item", template_name, product_id)
+        _entities.save(entity, external_id=product_id, erpnext_name=template_name)
+    else:
+        # Create template Item
+        template = frappe.new_doc("Item")
+        template.item_code = template_name
+        template.item_name = title
+        template.description = description
+        template.item_group = _ensure_item_group(item_group)
+        template.sh_shopify_product_type = item_group
+        template.brand = _ensure_brand(vendor)
+        template.stock_uom = "Nos"
+        template.has_variants = 1
+        template.is_stock_item = 0  # Templates aren't stocked
+        template.include_item_in_selling = 1
+        template.include_item_in_buying = 1
 
-    # Link to Shopify
-    template.sh_shopify_product_id = product_id
+        for name in option_names:
+            template.append("attributes", {"attribute": name})
 
-    if product_meta:
-        _apply_product_meta(template, product_meta)
+        # Link to Shopify
+        template.sh_shopify_product_id = product_id
 
-    # See matching comment in _import_simple_product: without this flag,
-    # the after_insert hook would immediately re-archive this template on
-    # Shopify because sync_to_shopify defaults unchecked on a fresh import.
-    template.flags.from_shopify_sync = True
-    template.flags.ignore_permissions = True
-    template.insert()
-    frappe.db.commit()
+        if product_meta:
+            _apply_product_meta(template, product_meta)
+
+        # See matching comment in _import_simple_product: without this flag,
+        # the after_insert hook would immediately re-archive this template on
+        # Shopify because sync_to_shopify defaults unchecked on a fresh import.
+        template.flags.from_shopify_sync = True
+        template.flags.ignore_permissions = True
+        template.insert()
+        frappe.db.commit()
 
     # Create variant Items
     for idx, variant in enumerate(variants):
@@ -547,10 +650,15 @@ def _import_product_with_variants(
                 frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
                 frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
                 frappe.db.set_value("Item", sku, "variant_of", variant_of)
-                
+
                 # Also link its parent template to Shopify
                 frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
-                
+
+                # Auto-linking only ever wrote the Shopify IDs -- pull in
+                # this variant's own price/stock/weight the same as a
+                # freshly-created variant would get.
+                _apply_existing_variant_content(sku, variant, settings)
+
                 # Create Synced Entity pairing for the template/product
                 from alaiy_os_connector_shopify.shopify.sync_engine import entities
                 entity = entities.get_or_new("product", "Item", variant_of, product_id)
@@ -621,8 +729,10 @@ def _import_product_with_variants(
 
     frappe.db.commit()
 
-    # Set images on template
-    if images:
+    # Set images on template -- skipped when reusing an existing template,
+    # since _apply_existing_template_content already handled images (and,
+    # for a reused template, product_meta) above.
+    if images and not reused_template_name:
         _set_item_image(template_name, images[0])
         if len(images) > 1:
             _set_item_slideshow(template_name, images, settings)
