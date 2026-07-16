@@ -834,6 +834,44 @@ def _push_product_unlocked(item):
     })
     result = data.get("productSet") or {}
     errors = result.get("userErrors") or []
+
+    if errors:
+        # Self-heal: check if error is due to variant IDs that do not exist on Shopify anymore
+        import re
+        invalid_variant_ids = []
+        for err in errors:
+            msg = err.get("message") or ""
+            match = re.search(r"Following variant ids do not exist:\s*\[([\d,\s]+)\]", msg)
+            if match:
+                invalid_ids = [x.strip() for x in match.group(1).split(",") if x.strip()]
+                invalid_variant_ids.extend(invalid_ids)
+
+        if invalid_variant_ids:
+            frappe.logger().warning(
+                f"Shopify push: found stale variant IDs {invalid_variant_ids} in ERPNext database. "
+                "Clearing them and retrying sync..."
+            )
+            for v_id in invalid_variant_ids:
+                frappe.db.sql("""
+                    UPDATE `tabItem`
+                    SET sh_shopify_variant_id = NULL
+                    WHERE sh_shopify_variant_id = %s
+                """, v_id)
+            frappe.db.commit()
+
+            # Re-fetch item, rebuild variants list and payload, then retry the sync
+            item = frappe.get_doc("Item", item.name)
+            variants = _variants_of(item)
+            product_input = _product_set_input(item, variants, settings, client)
+
+            data = client.execute(_PRODUCT_SET_MUTATION, {
+                "input": product_input,
+                "identifier": identifier,
+                "synchronous": True,
+            })
+            result = data.get("productSet") or {}
+            errors = result.get("userErrors") or []
+
     if errors:
         raise RuntimeError(f"Shopify productSet userErrors: {errors}")
 
