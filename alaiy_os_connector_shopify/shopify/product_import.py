@@ -73,6 +73,8 @@ query PullProducts($after: String) {
                   unit
                 }
               }
+              countryCodeOfOrigin
+              harmonizedSystemCode
               inventoryLevels(first: 1) {
                 nodes {
                   quantities(names: ["available"]) {
@@ -332,7 +334,6 @@ def _import_simple_product(
     item.item_name = title
     item.description = description
     item.item_group = _ensure_item_group(item_group)
-    item.sh_shopify_product_type = item_group
     item.brand = _ensure_brand(vendor)
     item.stock_uom = "Nos"  # Default; can be configured per variant
     item.is_stock_item = 1
@@ -467,7 +468,6 @@ def _import_product_with_variants(
     template.item_name = title
     template.description = description
     template.item_group = _ensure_item_group(item_group)
-    template.sh_shopify_product_type = item_group
     template.brand = _ensure_brand(vendor)
     template.stock_uom = "Nos"
     template.has_variants = 1
@@ -802,17 +802,26 @@ def _set_item_cost(item_code: str, cost: float, settings):
 
 def _apply_variant_physical(doc, variant: dict):
     """
-    Weight lives under Shopify's inventoryItem, not the variant itself.
-    Sets plain Item fields -- call BEFORE insert. Unit cost is handled
-    separately by _set_item_variant_cost since it requires the Item to
-    already exist (Item Price validates item_code) -- call that one AFTER
-    insert.
+    Weight, country of origin, and harmonized system code all live under
+    Shopify's inventoryItem, not the variant itself. Sets plain Item
+    fields -- call BEFORE insert. Unit cost is handled separately by
+    _set_item_variant_cost since it requires the Item to already exist
+    (Item Price validates item_code) -- call that one AFTER insert.
+    Only settable here at import/pull time (GraphQL) -- the REST webhook
+    payload used for live inbound updates doesn't reliably carry
+    unitCost/country/HS code the same way, so those three stay
+    import-only for now (see _update_item_from_shopify's docstring).
     """
     inv = variant.get("inventoryItem") or {}
     weight = (inv.get("measurement") or {}).get("weight")
     if weight and weight.get("value"):
         doc.weight_per_unit = flt(weight["value"])
         doc.weight_uom = _ensure_uom(_WEIGHT_UNIT_TO_UOM.get(weight.get("unit"), "Kg"))
+
+    if inv.get("countryCodeOfOrigin"):
+        doc.sh_country_of_origin = inv["countryCodeOfOrigin"]
+    if inv.get("harmonizedSystemCode"):
+        doc.sh_harmonized_system_code = inv["harmonizedSystemCode"]
 
 
 def _set_item_variant_cost(item_code: str, variant: dict, settings):
