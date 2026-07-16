@@ -5,6 +5,10 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		single_column: true,
 	});
 
+	page.set_secondary_action("Settings", function() {
+		frappe.set_route("Form", "Shopify Connector Settings");
+	}, "settings");
+
 	$(page.body).html(`
 		<div class="shopify-page">
 			<div class="container shopify-container">
