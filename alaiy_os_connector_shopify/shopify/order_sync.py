@@ -237,28 +237,34 @@ def get_shopify_orders_count() -> int:
     return int((data.get("ordersCount") or {}).get("count") or 0)
 
 
-def import_existing_orders():
+def import_existing_orders(date_from=None, date_to=None):
     """
-    Entry point for the "Import Existing Orders" button. Fast pre-check
-    against Shopify's own order count vs. how many we've already linked --
-    if they match, there is nothing to import and we say so immediately
-    instead of enqueuing a no-op pull. Otherwise queues the full historical
-    pull (every status, not just the configured filter) in the background,
-    since a first-time import of a real store's history can be thousands of
-    orders and must never run inline on the request that clicked the button.
+    Entry point for the "Import Orders from Shopify" button. With no date
+    range, it's the full-historical import: a fast pre-check against
+    Shopify's own order count vs. how many we've already linked skips
+    enqueuing a no-op pull when they already match. A date range instead
+    scopes the pull to orders created in that window, so the shortcut
+    doesn't apply -- Shopify's total count isn't windowed the same way.
+    Either way this queues in the background, since a first-time import of
+    a real store's history can be thousands of orders and must never run
+    inline on the request that clicked the button.
     """
     if has_active_sync("orders"):
         return {"status": "already_running", "message": "An orders sync is already in progress."}
 
-    shopify_total = get_shopify_orders_count()
-    already_synced = frappe.db.count(
-        "Sales Order", {"sh_shopify_order_id": ["is", "set"]})
+    if not date_from and not date_to:
+        shopify_total = get_shopify_orders_count()
+        already_synced = frappe.db.count(
+            "Sales Order", {"sh_shopify_order_id": ["is", "set"]})
 
-    if shopify_total and already_synced >= shopify_total:
-        return {
-            "status": "already_synced",
-            "message": "All orders are already synced from Shopify.",
-        }
+        if shopify_total and already_synced >= shopify_total:
+            return {
+                "status": "already_synced",
+                "message": "All orders are already synced from Shopify.",
+            }
+        remaining_message = f"Importing {max(shopify_total - already_synced, 0)} remaining order(s) from Shopify."
+    else:
+        remaining_message = "Importing orders from Shopify for the selected date range."
 
     log = load_or_create_log("orders", "manual")
     frappe.enqueue(
@@ -266,14 +272,16 @@ def import_existing_orders():
         queue="long",
         timeout=3600,
         log_name=log.name,
+        date_from=date_from,
+        date_to=date_to,
     )
     return {
         "status": "queued",
-        "message": f"Importing {max(shopify_total - already_synced, 0)} remaining order(s) from Shopify.",
+        "message": remaining_message,
     }
 
 
-def run_full_import(log_name=None):
+def run_full_import(log_name=None, date_from=None, date_to=None):
     """
     Pulls every order regardless of status/financial_status (unlike
     run_orders_sync, which respects the configured filter for routine
@@ -281,9 +289,17 @@ def run_full_import(log_name=None):
     historical" action. Still fully idempotent via the same
     sh_shopify_order_id exists-check _upsert_order already does, so
     re-running it after a partial run only creates what's still missing.
+
+    date_from/date_to (YYYY-MM-DD) optionally scope the pull to orders
+    created in that window instead of the full history.
     """
     log = load_or_create_log("orders", "manual", log_name)
-    return _run_orders_pull(log, "status:any", skip_existing=True)
+    query_string = "status:any"
+    if date_from:
+        query_string += f" AND created_at:>='{date_from}'"
+    if date_to:
+        query_string += f" AND created_at:<='{date_to}'"
+    return _run_orders_pull(log, query_string, skip_existing=True)
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

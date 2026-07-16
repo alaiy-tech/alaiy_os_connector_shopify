@@ -26,9 +26,9 @@ def trigger_orders_sync():
 
 
 @frappe.whitelist()
-def import_existing_orders():
+def import_existing_orders(date_from=None, date_to=None):
     from alaiy_os_connector_shopify.shopify.order_sync import import_existing_orders as _import
-    return _import()
+    return _import(date_from=date_from, date_to=date_to)
 
 
 @frappe.whitelist()

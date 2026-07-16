@@ -26,11 +26,8 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 							<div class="shopify-sync-box">
 								<h6><i class="fa fa-cart-plus"></i> Orders</h6>
 								<p class="shopify-text-muted">Pull orders from Shopify</p>
-								<button id="sync-orders-btn" class="shopify-btn shopify-btn-outline-primary">
+								<button id="import-orders-btn" class="shopify-btn shopify-btn-outline-primary">
 									Import Orders from Shopify
-								</button>
-								<button id="import-orders-btn" class="shopify-btn shopify-btn-outline-secondary">
-									Import All (Historical)
 								</button>
 								<div id="orders-log" class="shopify-sync-log"></div>
 							</div>
@@ -105,29 +102,41 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		});
 	}
 
-	function sync_orders() {
-		frappe.call({
-			method: 'alaiy_os_connector_shopify.api.sync.trigger_orders_sync',
-			callback: function(r) {
-				if (r.message && r.message.log_name) {
-					frappe.msgprint('Orders sync queued. Log: ' + r.message.log_name);
-					setTimeout(refresh_logs, 1000);
-				}
-			}
-		});
-	}
-
 	function import_orders() {
-		if (!confirm('Import all historical orders from Shopify?')) return;
-		frappe.call({
-			method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
-			callback: function(r) {
-				if (r.message) {
-					frappe.msgprint(r.message.message || 'Import queued');
-					setTimeout(refresh_logs, 1000);
-				}
+		var dialog = new frappe.ui.Dialog({
+			title: 'Import Orders from Shopify',
+			fields: [
+				{
+					fieldname: 'mode', fieldtype: 'Select', label: 'Import',
+					options: 'All orders\nDate range', default: 'All orders', reqd: 1,
+				},
+				{
+					fieldname: 'date_from', fieldtype: 'Date', label: 'From',
+					depends_on: "eval:doc.mode=='Date range'", mandatory_depends_on: "eval:doc.mode=='Date range'",
+				},
+				{
+					fieldname: 'date_to', fieldtype: 'Date', label: 'To',
+					depends_on: "eval:doc.mode=='Date range'", mandatory_depends_on: "eval:doc.mode=='Date range'",
+				},
+			],
+			primary_action_label: 'Import',
+			primary_action: function(values) {
+				dialog.hide();
+				frappe.call({
+					method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
+					args: values.mode === 'Date range'
+						? {date_from: values.date_from, date_to: values.date_to}
+						: {},
+					callback: function(r) {
+						if (r.message) {
+							frappe.msgprint(r.message.message || 'Import queued');
+							setTimeout(refresh_logs, 1000);
+						}
+					}
+				});
 			}
 		});
+		dialog.show();
 	}
 
 	function sync_inventory() {
@@ -251,7 +260,6 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 
 	check_connection();
 	refresh_logs();
-	document.getElementById('sync-orders-btn').addEventListener('click', sync_orders);
 	document.getElementById('import-orders-btn').addEventListener('click', import_orders);
 	document.getElementById('sync-inventory-btn').addEventListener('click', sync_inventory);
 	document.getElementById('import-products-btn').addEventListener('click', import_products);
