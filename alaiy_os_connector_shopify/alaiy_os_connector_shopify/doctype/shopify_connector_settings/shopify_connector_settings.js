@@ -18,20 +18,6 @@ frappe.ui.form.on("Shopify Connector Settings", {
       "shopify",
     );
 
-    // Without this filter, Tax Account's Link field shows every Account
-    // (Assets, Debtors, Bank, ...) with no way to tell which are actually
-    // tax ledgers -- narrow it to Tax-type leaf accounts under the
-    // selected company, same as ERPNext's own tax templates do.
-    frm.set_query("sh_tax_account", function () {
-      return {
-        filters: {
-          account_type: "Tax",
-          is_group: 0,
-          company: frm.doc.sh_company,
-        },
-      };
-    });
-
     // Auto-fill Company with the default company if empty
     if (!frm.doc.sh_company) {
       frappe.db
