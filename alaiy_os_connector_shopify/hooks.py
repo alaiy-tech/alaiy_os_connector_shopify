@@ -36,6 +36,7 @@ scheduler_events = {
 
 doc_events = {
     "Item": {
+        "validate": "alaiy_os_connector_shopify.shopify.product_sync.validate_item_uoms",
         "after_insert": "alaiy_os_connector_shopify.shopify.product_sync.on_item_change",
         "on_update": "alaiy_os_connector_shopify.shopify.product_sync.on_item_change",
         "on_trash": "alaiy_os_connector_shopify.shopify.product_sync.on_item_delete",
