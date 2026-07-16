@@ -54,4 +54,5 @@ doc_events = {
 
 doctype_list_js = {
     "Item": "public/js/item_list.js",
+    "Sales Order": "public/js/sales_order_list.js",
 }
