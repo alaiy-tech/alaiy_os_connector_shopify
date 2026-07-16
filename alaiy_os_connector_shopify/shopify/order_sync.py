@@ -305,10 +305,35 @@ def run_full_import(log_name=None, date_from=None, date_to=None):
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
 def _upsert_order(order):
-    """Returns True if a new Sales Order was created, False if skipped."""
+    """
+    Serializes _upsert_order_unlocked per Shopify order_id. Shopify can
+    fire orders/create and orders/updated (via _update_order's
+    not-found-yet fallback) for the same brand-new order within
+    milliseconds of each other, and the scheduled GraphQL pull can also
+    pick it up in the same window -- with no lock, two of these can both
+    pass the "does this order already exist?" check before either
+    commits its insert, creating duplicate Sales Orders for one Shopify
+    order (observed live: 2 duplicate paid orders, same sh_shopify_order_id,
+    ~seconds apart).
+    """
     order_id = str(order.get("id", ""))
     if not order_id:
         return False
+    lock = frappe.cache().lock(f"shopify_order_upsert_{order_id}", timeout=60)
+    if not lock.acquire(blocking=True, blocking_timeout=30):
+        frappe.log_error(
+            title=f"Shopify order {order_id}: upsert lock timed out",
+            message="Another process held this order's upsert lock for 30s+ -- skipped to avoid a duplicate.",
+        )
+        return False
+    try:
+        return _upsert_order_unlocked(order, order_id)
+    finally:
+        lock.release()
+
+
+def _upsert_order_unlocked(order, order_id):
+    """Returns True if a new Sales Order was created, False if skipped."""
     if get_active_sales_order(order_id):
         return False  # already processed
 
