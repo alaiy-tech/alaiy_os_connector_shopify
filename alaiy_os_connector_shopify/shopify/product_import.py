@@ -882,10 +882,15 @@ def _apply_product_meta(item, node: dict):
             new_cat.insert(ignore_permissions=True)
             item.sh_shopify_category = new_cat.name
     seo = node.get("seo") or {}
-    if seo.get("title"):
-        item.sh_seo_title = seo["title"]
-    if seo.get("description"):
-        item.sh_seo_description = seo["description"]
+    item.sh_seo_title = seo.get("title") or node.get("title") or item.item_name or ""
+    
+    desc_val = seo.get("description")
+    if not desc_val:
+        desc_val = node.get("bodyHtml") or item.description or ""
+        if desc_val and "<" in desc_val:
+            from frappe.utils.html_utils import strip_html_tags
+            desc_val = strip_html_tags(desc_val)
+    item.sh_seo_description = desc_val
 
 
 def _default_warehouse_row(settings) -> dict:
