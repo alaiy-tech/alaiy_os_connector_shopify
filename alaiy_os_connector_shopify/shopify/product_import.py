@@ -877,7 +877,7 @@ def ensure_shopify_category(full_name: str) -> str:
             doc.name = path_name
             if parent:
                 doc.parent_shopify_category = parent
-            doc.insert(ignore_permissions=True)
+            doc.insert(ignore_permissions=True, set_name=path_name)
             parent = doc.name
         else:
             parent = path_name
