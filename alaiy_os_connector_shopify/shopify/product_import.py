@@ -41,6 +41,7 @@ query PullProducts($after: String) {
         tags
         category {
           name
+          fullName
         }
         seo {
           title
@@ -855,35 +856,45 @@ def _variant_available_qty(variant: dict) -> float:
     return flt(quantities[0].get("quantity")) if quantities else 0
 
 
+def ensure_shopify_category(full_name: str) -> str:
+    """
+    Ensure the nested parent-child Shopify Category tree exists for a full name path
+    (e.g., 'Apparel & Accessories > Clothing > Activewear > Sweatshirts').
+    Returns the leaf node document name.
+    """
+    parts = [p.strip() for p in full_name.split(">") if p.strip()]
+    if not parts:
+        return None
+
+    parent = None
+    for i, part in enumerate(parts):
+        # Unique node name is the path itself to prevent collision (e.g. Sweatshirts)
+        path_name = " > ".join(parts[:i+1])
+        
+        if not frappe.db.exists("Shopify Category", path_name):
+            doc = frappe.new_doc("Shopify Category")
+            doc.shopify_category_name = part
+            doc.name = path_name
+            if parent:
+                doc.parent_shopify_category = parent
+            doc.insert(ignore_permissions=True)
+            parent = doc.name
+        else:
+            parent = path_name
+            
+    return parent
+
+
 def _apply_product_meta(item, node: dict):
-    """
-    Sets the product-level fields that have no dedicated Shopify GraphQL
-    argument beyond what's already on the product node: tags, category
-    (Shopify's Standard Product Taxonomy, read-only here -- pushing one
-    back requires resolving a taxonomy ID, not just matching a name
-    string), and SEO title/description.
-    """
+    """Apply product meta to Item -- tags, category, and SEO fields."""
     tags = node.get("tags")
     if tags:
         item.sh_shopify_tags = ", ".join(tags) if isinstance(tags, list) else tags
     category = node.get("category")
-    if category and category.get("name"):
-        # sh_shopify_category is now a Link to Shopify Category doctype
-        # Find or create the category document
-        cat_name = category["name"]
-        existing_cat = frappe.db.get_value(
-            "Shopify Category",
-            {"shopify_category_name": cat_name},
-            "name"
-        )
-        if existing_cat:
-            item.sh_shopify_category = existing_cat
-        else:
-            # Create new category if it doesn't exist
-            new_cat = frappe.new_doc("Shopify Category")
-            new_cat.shopify_category_name = cat_name
-            new_cat.insert(ignore_permissions=True)
-            item.sh_shopify_category = new_cat.name
+    if category:
+        cat_name = category.get("fullName") or category.get("name")
+        if cat_name:
+            item.sh_shopify_category = ensure_shopify_category(cat_name)
     seo = node.get("seo") or {}
     item.sh_seo_title = seo.get("title") or node.get("title") or item.item_name or ""
     
