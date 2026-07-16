@@ -1,11 +1,14 @@
 """
 ERPNext -> Shopify product/variant push (Phase 2).
 
-Gated by Item.sync_to_shopify (opt-in) -- variants inherit their template's
-flag. Unlike the reference connector, an already-linked item does NOT keep
-syncing forever regardless of the flag: unchecking it archives the product
-on Shopify (kept, hidden from sales channels, order history intact), and
-re-checking it unarchives + pushes again.
+Gated by Item.sync_to_shopify (opt-in). The TEMPLATE's checkbox is the
+master switch for the whole product (checking it auto-checks all variants;
+unchecking or disabling the Item archives the product on Shopify -- kept,
+hidden from sales channels, order history intact -- and re-checking
+unarchives + pushes again). Each VARIANT's own checkbox is a per-variant
+include flag: unchecking one drops just that variant from the next
+productSet push, which removes it on Shopify; new variants added under a
+syncing template are auto-checked on insert.
 
 Always operates at the template level: even when only one variant changed,
 the whole current variant set is rebuilt and sent to Shopify via productSet,
@@ -85,22 +88,70 @@ def on_item_change(doc, method=None):
         # create an infinite create/update ping-pong between the two sides.
         return
 
-    enabled = _sync_enabled(doc)
     template_name = doc.variant_of or doc.name
+    template_enabled = bool(
+        frappe.db.get_value("Item", template_name, "sync_to_shopify")
+    ) and not frappe.db.get_value("Item", template_name, "disabled")
     has_shopify_id = bool(
         frappe.db.get_value("Item", template_name, "sh_shopify_product_id")
     )
 
-    if enabled:
+    if doc.variant_of:
+        # A brand-new variant added under an already-syncing product must
+        # flow to Shopify without someone remembering to tick its own
+        # checkbox -- otherwise _variants_of's filter would silently leave
+        # it out of every future push (this exact regression, confirmed by
+        # walking the flow: "add variant in ERPNext -> appears on Shopify"
+        # worked before the per-variant filter existed).
+        if method == "after_insert" and template_enabled and not doc.sync_to_shopify:
+            doc.sync_to_shopify = 1
+            frappe.db.set_value("Item", doc.name, "sync_to_shopify", 1)
+
+        # The template is the master switch: a variant's own checkbox only
+        # controls whether THAT variant is included the next time the
+        # template pushes (see _variants_of's own sync_to_shopify filter),
+        # never whether the product as a whole is syncing. So re-push
+        # whenever the template is enabled, regardless of which way this
+        # variant's own flag just moved -- unchecking it here is exactly
+        # what should make the rebuilt variant set drop it from Shopify.
+        if template_enabled:
+            frappe.enqueue(
+                "alaiy_os_connector_shopify.shopify.product_sync.push_item",
+                queue="short",
+                timeout=120,
+                item_code=template_name,
+            )
+        return
+
+    # doc is the template itself
+    if template_enabled:
+        # The template's own checkbox just turned on (not just re-saved
+        # while already on) -- auto-check every variant that isn't already
+        # explicitly on, so a fresh product syncs all its variants by
+        # default instead of requiring each one ticked by hand. Only
+        # fires on the actual on-transition so it never re-checks a
+        # variant someone deliberately unchecked afterward.
+        if doc.has_value_changed("sync_to_shopify") or doc.has_value_changed("disabled"):
+            variant_names = frappe.get_all(
+                "Item",
+                filters={"variant_of": doc.name, "sync_to_shopify": 0},
+                pluck="name",
+            )
+            for variant_name in variant_names:
+                frappe.db.set_value("Item", variant_name, "sync_to_shopify", 1)
+            if variant_names:
+                frappe.db.commit()
+
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.product_sync.push_item",
             queue="short",
             timeout=120,
             item_code=doc.name,
         )
-    elif has_shopify_id and not doc.variant_of:
-        # Flag just turned off on the template itself (variants don't carry
-        # their own archive state -- only the template/product does).
+    elif has_shopify_id:
+        # Either sync_to_shopify turned off, or the item itself got
+        # disabled -- both mean "this product should not be live on
+        # Shopify anymore."
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.product_sync.archive_item",
             queue="short",
@@ -160,15 +211,19 @@ def on_item_price_change(doc, method=None):
 
 def _sync_enabled(item) -> bool:
     """
-    Whether this item's checkbox (or its template's, for a variant) is
-    currently ON. Deliberately does NOT stay true forever just because it
-    already has a Shopify ID -- unchecking is meant to archive it, not be
-    ignored. See on_item_change for what happens when this is False but the
-    item was previously linked.
+    Whether this product as a whole should be live on Shopify: the
+    template's own sync_to_shopify checkbox AND not disabled. Deliberately
+    does NOT stay true forever just because it already has a Shopify ID --
+    unchecking (or disabling) is meant to archive it, not be ignored. A
+    variant's own checkbox never factors in here -- it only controls
+    whether that one variant is included in the rebuilt set once the
+    template itself is enabled (see _variants_of, on_item_change).
     """
     if item.get("variant_of"):
-        return bool(frappe.db.get_value("Item", item.variant_of, "sync_to_shopify"))
-    return bool(item.get("sync_to_shopify"))
+        template_name = item.variant_of
+        return bool(frappe.db.get_value("Item", template_name, "sync_to_shopify")) \
+            and not frappe.db.get_value("Item", template_name, "disabled")
+    return bool(item.get("sync_to_shopify")) and not item.get("disabled")
 
 
 # ── Canonical form + fingerprint ─────────────────────────────────────────────
@@ -195,8 +250,8 @@ def _variant_cost(item_code: str) -> float:
 
 
 def _variant_inventory_item_payload(variant) -> dict:
-    """inventoryItem sub-input for ProductVariantSetInput -- cost, weight,
-    country of origin, and HS code all live here, not flat on the variant."""
+    """inventoryItem sub-input for ProductVariantSetInput -- cost and
+    weight live here, not flat on the variant."""
     from alaiy_os_connector_shopify.shopify.product_import import _UOM_TO_WEIGHT_UNIT
     payload = {}
     cost = _variant_cost(variant.item_code)
@@ -208,11 +263,21 @@ def _variant_inventory_item_payload(variant) -> dict:
             payload["measurement"] = {
                 "weight": {"value": flt(variant.weight_per_unit), "unit": weight_unit}
             }
-    if variant.get("sh_country_of_origin"):
-        payload["countryCodeOfOrigin"] = variant.sh_country_of_origin
-    if variant.get("sh_harmonized_system_code"):
-        payload["harmonizedSystemCode"] = variant.sh_harmonized_system_code
     return payload
+
+
+def _absolute_file_url(url: str) -> str:
+    """
+    ERPNext's own file fields (Item.image, Website Slideshow's image rows)
+    store root-relative paths like "/files/xyz.jpg" -- fine for our own
+    UI, but Shopify's productSet rejected every single one live with
+    "File URL is invalid" since originalSource needs a real, publicly
+    reachable absolute URL, not a path relative to nothing as far as
+    Shopify's servers are concerned.
+    """
+    if url.startswith("/"):
+        return frappe.utils.get_url(url)
+    return url
 
 
 def _item_images(item, settings) -> list:
@@ -226,7 +291,7 @@ def _item_images(item, settings) -> list:
         for row in slideshow.slideshow_items:
             if row.image and row.image not in urls:
                 urls.append(row.image)
-    return urls
+    return [_absolute_file_url(u) for u in urls]
 
 
 def _variant_canonical(variant, settings) -> dict:
@@ -238,14 +303,32 @@ def _variant_canonical(variant, settings) -> dict:
         "cost": _variant_cost(variant.item_code),
         "weight_per_unit": flt(variant.get("weight_per_unit") or 0),
         "weight_uom": variant.get("weight_uom") or "",
-        "country_of_origin": variant.get("sh_country_of_origin") or "",
-        "harmonized_system_code": variant.get("sh_harmonized_system_code") or "",
         "attributes": [
             {"attribute": a.attribute, "value": a.attribute_value}
             for a in (variant.attributes or [])
         ],
         "barcode": variant.barcodes[0].barcode if variant.get("barcodes") else "",
     }
+
+
+def _seo_values(item) -> dict:
+    """
+    Shopify's own admin shows the product title/description as the SEO
+    title/description whenever no explicit override is set -- mirror that
+    default instead of pushing nothing when our fields are blank. The
+    description default is Item.description, which is HTML (imported from
+    body_html) -- an SEO meta description must be plain text, and Shopify
+    caps it at 320 chars in its own admin.
+
+    Shared by _product_set_input (what gets pushed) and _product_canonical
+    (what gets fingerprinted) -- if these two ever computed defaults
+    differently, every push would see a phantom "change" and re-push
+    forever, or worse, never notice a real one.
+    """
+    title = (item.get("sh_seo_title") or item.item_name or "").strip()
+    description = item.get("sh_seo_description") or frappe.utils.strip_html_tags(item.description or "")
+    description = (description or "").strip()[:320]
+    return {"title": title, "description": description}
 
 
 def _product_canonical(item, variants, settings) -> dict:
@@ -256,12 +339,13 @@ def _product_canonical(item, variants, settings) -> dict:
     if settings.sh_push_vendor:
         canonical["vendor"] = item.brand or ""
     if settings.sh_push_product_type:
-        canonical["product_type"] = item.item_group or ""
+        canonical["product_type"] = item.get("sh_shopify_product_type") or ""
     if settings.sh_push_images:
         canonical["images"] = _item_images(item, settings)
     canonical["tags"] = item.get("sh_shopify_tags") or ""
-    canonical["seo_title"] = item.get("sh_seo_title") or ""
-    canonical["seo_description"] = item.get("sh_seo_description") or ""
+    seo = _seo_values(item)
+    canonical["seo_title"] = seo["title"]
+    canonical["seo_description"] = seo["description"]
     return canonical
 
 
@@ -385,8 +469,8 @@ def _product_set_input(item, variants: list, settings, client=None) -> dict:
         payload["descriptionHtml"] = item.description or ""
     if settings.sh_push_vendor and item.brand:
         payload["vendor"] = item.brand
-    if settings.sh_push_product_type and item.item_group:
-        payload["productType"] = item.item_group
+    if settings.sh_push_product_type and item.get("sh_shopify_product_type"):
+        payload["productType"] = item.sh_shopify_product_type
     if settings.sh_push_images:
         images = _item_images(item, settings)
         if images:
@@ -399,11 +483,7 @@ def _product_set_input(item, variants: list, settings, client=None) -> dict:
         category_id = _resolve_category_id(client, item.sh_shopify_category)
         if category_id:
             payload["category"] = category_id
-    seo = {}
-    if item.get("sh_seo_title"):
-        seo["title"] = item.sh_seo_title
-    if item.get("sh_seo_description"):
-        seo["description"] = item.sh_seo_description
+    seo = {k: v for k, v in _seo_values(item).items() if v}
     if seo:
         payload["seo"] = seo
     return payload
@@ -469,6 +549,13 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
             try:
                 if not frappe.db.get_value("Item", item_code, "sync_to_shopify"):
                     frappe.db.set_value("Item", item_code, "sync_to_shopify", 1)
+                # Variants carry their own per-variant include flag (see
+                # _variants_of) -- without opting them in too, a bulk
+                # export of a template would push an empty variant set.
+                frappe.db.set_value(
+                    "Item", {"variant_of": item_code, "sync_to_shopify": 0},
+                    "sync_to_shopify", 1,
+                )
                 push_item(item_code)
                 # A real Shopify id landing on this Item is the only
                 # reliable signal the push actually created something --
@@ -511,7 +598,29 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
 
 
 def _variants_of(item):
-    """Real variant docs for a template, or [item] itself for a simple item."""
+    """
+    Real variant docs for a template, or [item] itself for a simple item.
+
+    Filters to variants with their own sync_to_shopify checked -- a
+    variant's checkbox is the per-variant "include this one" switch (see
+    on_item_change), so an unchecked variant is simply left out of the
+    rebuilt set productSet sends, which Shopify treats as "remove it."
+    """
+    if not item.has_variants:
+        return [item]
+    names = frappe.get_all(
+        "Item",
+        filters={"variant_of": item.name, "sync_to_shopify": 1},
+        pluck="name",
+    )
+    return [frappe.get_doc("Item", v) for v in names]
+
+
+def _all_variants_of(item):
+    """Every variant regardless of its own checkbox -- for archive_item,
+    which must never restructure the product's variant set as a side
+    effect of hiding it (productSet is full-desired-state; archiving with
+    a filtered list would also DELETE the excluded variants on Shopify)."""
     if not item.has_variants:
         return [item]
     names = frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
@@ -542,6 +651,17 @@ def _push_product_unlocked(item):
     settings = frappe.get_single("Shopify Connector Settings")
 
     variants = _variants_of(item)
+    if item.has_variants and not variants:
+        # Every single variant unchecked but the template still on --
+        # pushing a full-desired-state productSet with zero variants would
+        # be Shopify-invalid (a product always has at least one variant)
+        # and destructive even if it weren't. Unchecking the TEMPLATE is
+        # the "take this product off Shopify" action; log and stand down.
+        frappe.log_error(
+            title=f"Shopify push skipped for {item.name}: no variants enabled",
+            message="All variants have Sync to Shopify unchecked. Uncheck it on the template itself to archive the product on Shopify.",
+        )
+        return
 
     canonical = _product_canonical(item, variants, settings)
     fp = fingerprint.fingerprint(canonical)
@@ -839,7 +959,14 @@ def _update_item_from_shopify(item, product: dict):
     if product.get("vendor"):
         item.brand = product["vendor"]
     if product.get("product_type"):
-        item.item_group = product["product_type"]
+        # sh_shopify_product_type, not item_group -- Item Group is a real
+        # Link field with its own master data and validation, and mixing
+        # it with Shopify's free-text product_type meant an inbound update
+        # could fail validation outright if the exact string didn't already
+        # exist as an Item Group. The dedicated field also keeps Item Group
+        # reorganizable locally without it ever touching Shopify or vice
+        # versa (see the field's own description).
+        item.sh_shopify_product_type = product["product_type"]
 
     from alaiy_os_connector_shopify.shopify.product_import import _apply_product_meta
     tags = product.get("tags")
@@ -969,17 +1096,22 @@ def _handle_product_delete(product_id: str, product: dict):
 # ── Archive (disable) ────────────────────────────────────────────────────────
 
 def archive_item(item_code: str):
-    """Called when sync_to_shopify is unchecked on an item that's already
-    linked -- archives the Shopify product (hidden from sales channels,
-    order history intact) rather than deleting it or silently ignoring the
-    checkbox. Resends the full product_set_input (not just {status}) since
-    it's unconfirmed whether productSet treats a missing field as "leave
-    alone" or "clear" -- sending the complete state is correct either way."""
+    """Called when sync_to_shopify is unchecked -- or the Item disabled --
+    on a template that's already linked. Archives the Shopify product
+    (hidden from sales channels, order history intact) rather than
+    deleting it or silently ignoring the checkbox. Resends the full
+    product_set_input (not just {status}) since it's unconfirmed whether
+    productSet treats a missing field as "leave alone" or "clear" --
+    sending the complete state is correct either way."""
     item = frappe.get_doc("Item", item_code)
     if item.variant_of or not item.get("sh_shopify_product_id"):
         return
-    if item.get("sync_to_shopify"):
-        return  # re-checked before this job ran -- don't archive what should stay active
+    if _sync_enabled(item):
+        # Re-enabled before this job ran -- don't archive what should stay
+        # active. Checks the full gate (checkbox AND not disabled), not
+        # just the checkbox: a disabled item with sync still ticked must
+        # NOT early-return here, or disabling would never archive at all.
+        return
 
     try:
         item.lock(timeout=LOCK_TIMEOUT_SECONDS)
@@ -990,7 +1122,11 @@ def archive_item(item_code: str):
         item = frappe.get_doc("Item", item.name)
         settings = frappe.get_single("Shopify Connector Settings")
 
-        variants = _variants_of(item)
+        # Full variant set, deliberately unfiltered: productSet is
+        # full-desired-state, so archiving with only the checked variants
+        # would also DELETE the unchecked ones from Shopify as a side
+        # effect of hiding the product.
+        variants = _all_variants_of(item)
 
         client = ShopifyGraphQLClient()
         product_input = _product_set_input(item, variants, settings, client)
