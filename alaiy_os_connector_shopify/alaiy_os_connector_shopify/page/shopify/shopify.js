@@ -107,6 +107,13 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function import_orders() {
+		// Tracked here instead of via depends_on's "eval:doc.mode==..." --
+		// frappe.ui.Dialog doesn't reliably expose a live `.doc` to evaluate
+		// against in every version, and 'mode' isn't a real input field
+		// anyway (it's the button pair below), so there's nothing for
+		// depends_on to read from the model.
+		var mode = 'All orders';
+
 		var dialog = new frappe.ui.Dialog({
 			title: 'Import Orders from Shopify',
 			fields: [
@@ -121,16 +128,17 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 				},
 				{
 					fieldname: 'date_from', fieldtype: 'Date', label: 'From',
-					depends_on: "eval:doc.mode=='Date range'", mandatory_depends_on: "eval:doc.mode=='Date range'",
 				},
 				{
 					fieldname: 'date_to', fieldtype: 'Date', label: 'To',
-					depends_on: "eval:doc.mode=='Date range'", mandatory_depends_on: "eval:doc.mode=='Date range'",
 				},
 			],
 			primary_action_label: 'Import',
 			primary_action: function(values) {
-				var mode = dialog.get_value('mode');
+				if (mode === 'Date range' && (!values.date_from || !values.date_to)) {
+					frappe.msgprint('Please pick both a From and To date.');
+					return;
+				}
 				dialog.hide();
 				frappe.call({
 					method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
@@ -146,19 +154,18 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 				});
 			}
 		});
-		// NOTE: dialog.set_value('mode', ...) must NOT be used here -- 'mode'
-		// is an HTML-type field (it's our button pair, not a real input), and
-		// Control HTML's set_value overwrites the field's rendered content
-		// with the plain string passed in, destroying both buttons. Set the
-		// value directly on the dialog's doc instead, so depends_on eval
-		// ("eval:doc.mode==...") still sees it without touching the DOM.
-		dialog.doc.mode = 'All orders';
+
+		function toggle_date_fields() {
+			dialog.fields_dict.date_from.$wrapper.toggle(mode === 'Date range');
+			dialog.fields_dict.date_to.$wrapper.toggle(mode === 'Date range');
+		}
+		toggle_date_fields();
+
 		dialog.$wrapper.find('.shopify-mode-btn').on('click', function() {
-			var mode = $(this).data('mode');
+			mode = $(this).data('mode');
 			dialog.$wrapper.find('.shopify-mode-btn').removeClass('shopify-mode-active');
 			$(this).addClass('shopify-mode-active');
-			dialog.doc.mode = mode;
-			dialog.refresh_dependency();
+			toggle_date_fields();
 		});
 		dialog.show();
 	}
