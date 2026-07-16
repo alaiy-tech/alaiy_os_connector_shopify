@@ -23,13 +23,9 @@ frappe.ui.form.on("Shopify Connector Settings", {
     // tax ledgers -- narrow it to Tax-type leaf accounts under the
     // selected company, same as ERPNext's own tax templates do.
     frm.set_query("sh_tax_account", function () {
-      return {
-        filters: {
-          account_type: "Tax",
-          is_group: 0,
-          company: frm.doc.sh_company,
-        },
-      };
+      const filters = { account_type: "Tax", is_group: 0 };
+      if (frm.doc.sh_company) filters.company = frm.doc.sh_company;
+      return { filters };
     });
 
     // Auto-fill Company with the default company if empty
