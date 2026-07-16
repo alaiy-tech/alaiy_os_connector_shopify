@@ -28,6 +28,9 @@ scheduler_events = {
     },
     "hourly": [
         "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only"
+    ],
+    "daily": [
+        "alaiy_os_connector_shopify.shopify.product_sync.fetch_shopify_taxonomy"
     ]
 }
 

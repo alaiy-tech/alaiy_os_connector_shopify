@@ -89,3 +89,18 @@ def get_sync_status(sync_type=None):
         order_by="started_at desc",
         limit=5,
     )
+
+
+@frappe.whitelist()
+def refresh_shopify_taxonomy():
+    """
+    Manually trigger a refresh of Shopify's Standard Product Taxonomy tree.
+    Fetches the full taxonomy from Shopify GraphQL and populates/updates
+    the Shopify Category doctype (tree structure).
+    """
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.product_sync.fetch_shopify_taxonomy",
+        queue="long",
+        timeout=300,
+    )
+    return {"queued": True}

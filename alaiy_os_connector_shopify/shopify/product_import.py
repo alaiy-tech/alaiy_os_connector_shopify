@@ -849,7 +849,22 @@ def _apply_product_meta(item, node: dict):
         item.sh_shopify_tags = ", ".join(tags) if isinstance(tags, list) else tags
     category = node.get("category")
     if category and category.get("name"):
-        item.sh_shopify_category = category["name"]
+        # sh_shopify_category is now a Link to Shopify Category doctype
+        # Find or create the category document
+        cat_name = category["name"]
+        existing_cat = frappe.db.get_value(
+            "Shopify Category",
+            {"shopify_category_name": cat_name},
+            "name"
+        )
+        if existing_cat:
+            item.sh_shopify_category = existing_cat
+        else:
+            # Create new category if it doesn't exist
+            new_cat = frappe.new_doc("Shopify Category")
+            new_cat.shopify_category_name = cat_name
+            new_cat.insert(ignore_permissions=True)
+            item.sh_shopify_category = new_cat.name
     seo = node.get("seo") or {}
     if seo.get("title"):
         item.sh_seo_title = seo["title"]
