@@ -580,8 +580,13 @@ def _import_product_with_variants(
         v_sku = (v.get("sku") or "").strip()
         if not v_sku or not frappe.db.exists("Item", v_sku):
             continue
-        if frappe.db.get_value("Item", v_sku, "sh_shopify_product_id"):
-            continue  # already linked elsewhere -- not a reuse candidate
+        existing_pid = frappe.db.get_value("Item", v_sku, "sh_shopify_product_id")
+        # A variant already linked to THIS SAME product_id is a stale/
+        # incomplete prior import (e.g. its Synced Entity row went
+        # missing) -- still a valid reuse anchor. Only a different
+        # product_id means it's genuinely claimed elsewhere.
+        if existing_pid and existing_pid != product_id:
+            continue
         existing_parent = frappe.db.get_value("Item", v_sku, "variant_of")
         if not existing_parent:
             continue
@@ -663,6 +668,14 @@ def _import_product_with_variants(
                 from alaiy_os_connector_shopify.shopify.sync_engine import entities
                 entity = entities.get_or_new("product", "Item", variant_of, product_id)
                 entities.save(entity, external_id=product_id, erpnext_name=variant_of)
+                continue
+            elif existing_id == product_id:
+                # Already correctly linked to this same product (e.g. a
+                # stale/incomplete prior import) -- just make sure it's
+                # under the reused template, no error needed.
+                variant_of = frappe.db.get_value("Item", sku, "variant_of")
+                if variant_of != template_name:
+                    frappe.db.set_value("Item", sku, "variant_of", template_name)
                 continue
             else:
                 frappe.log_error(
