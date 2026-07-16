@@ -13,6 +13,7 @@ def sync_connector_registry():
     """
     _fix_settings_as_single()
     setup_custom_fields()
+    _unlock_disabled_field_on_variants()
     _backfill_singles_defaults("Shopify Connector Settings", [
         "sh_token_refresh_interval",
         "sh_push_description", "sh_push_vendor", "sh_push_product_type", "sh_push_images",
@@ -60,10 +61,12 @@ def _update_alaiy_os_sidebar():
     """
     try:
         from alaiy_os.setup.install import (
+            create_or_update_workspace,
             create_or_update_workspace_sidebar,
             create_or_update_os_settings_workspace,
             create_or_update_os_settings_workspace_sidebar,
         )
+        create_or_update_workspace()
         create_or_update_workspace_sidebar()
         create_or_update_os_settings_workspace()
         create_or_update_os_settings_workspace_sidebar()
@@ -149,20 +152,31 @@ def _ensure_list_view_column(doctype, fieldname, label):
 
 def setup_custom_fields():
     """Add Shopify custom fields to ERPNext doctypes. Idempotent -- safe to call on every migrate."""
+    # variant_of is itself a Link to Item -- fetch_from lets a variant
+    # auto-pull these values from its template the moment variant_of is
+    # set, and read_only_depends_on locks them from manual edit on a
+    # variant while leaving them freely editable on the template (where
+    # variant_of is blank). Both together satisfy "shows on variant rows,
+    # not independently editable there."
     item_fields = [
         {
             "fieldname": "sh_shopify_product_id",
             "label": "Shopify Product ID",
             "fieldtype": "Data",
             "search_index": 1,
+            "read_only": 1,
+            "fetch_from": "variant_of.sh_shopify_product_id",
             "insert_after": "item_code",
+            "description": "Set by the connector when this product is created on or imported from Shopify. Never hand-edited.",
         },
         {
             "fieldname": "sh_shopify_variant_id",
             "label": "Shopify Variant ID",
             "fieldtype": "Data",
             "search_index": 1,
+            "read_only": 1,
             "insert_after": "sh_shopify_product_id",
+            "description": "Set by the connector when this variant is created on or imported from Shopify. Never hand-edited.",
         },
         {
             "fieldname": "sync_to_shopify",
@@ -178,39 +192,42 @@ def setup_custom_fields():
             "label": "Shopify Tags",
             "fieldtype": "Small Text",
             "insert_after": "sync_to_shopify",
-            "description": "Comma-separated tags, synced both directions with Shopify's product tags field.",
+            "fetch_from": "variant_of.sh_shopify_tags",
+            "read_only_depends_on": "eval:doc.variant_of",
+            "description": "Tags synced both directions with Shopify's product tags field. Fetched from the template on variants -- edit on the template.",
         },
         {
             "fieldname": "sh_shopify_category",
             "label": "Shopify Category",
-            "fieldtype": "Data",
+            "fieldtype": "Link",
+            "options": "Shopify Category",
             "insert_after": "sh_shopify_tags",
-            "description": "Shopify's Standard Product Taxonomy category name. Synced both directions -- outbound resolves this name against Shopify's taxonomy search, so it must match an existing taxonomy category name exactly (case-insensitive) to take effect.",
+            "fetch_from": "variant_of.sh_shopify_category",
+            "read_only_depends_on": "eval:doc.variant_of",
+            "description": "Shopify's Standard Product Taxonomy category. Fetched from the template on variants -- edit on the template.",
+        },
+        {
+            "fieldname": "sh_shopify_product_type",
+            "label": "Shopify Product Type",
+            "fieldtype": "Data",
+            "insert_after": "sh_shopify_category",
+            "fetch_from": "variant_of.sh_shopify_product_type",
+            "read_only_depends_on": "eval:doc.variant_of",
+            "description": "Shopify's product_type field, kept separate from Item Group so renaming/reorganizing Item Group locally never affects Shopify. Synced both directions. Fetched from the template on variants -- edit on the template.",
         },
         {
             "fieldname": "sh_seo_title",
             "label": "Shopify SEO Title",
             "fieldtype": "Data",
-            "insert_after": "sh_shopify_category",
+            "insert_after": "sh_shopify_product_type",
+            "description": "Defaults to the Item Name if left blank.",
         },
         {
             "fieldname": "sh_seo_description",
             "label": "Shopify SEO Description",
             "fieldtype": "Small Text",
             "insert_after": "sh_seo_title",
-        },
-        {
-            "fieldname": "sh_country_of_origin",
-            "label": "Shopify Country of Origin",
-            "fieldtype": "Data",
-            "insert_after": "sh_seo_description",
-            "description": "ISO 3166-1 alpha-2 country code, synced both directions with Shopify's inventoryItem.countryCodeOfOrigin.",
-        },
-        {
-            "fieldname": "sh_harmonized_system_code",
-            "label": "Shopify Harmonized System Code",
-            "fieldtype": "Data",
-            "insert_after": "sh_country_of_origin",
+            "description": "Defaults to the Description if left blank.",
         },
     ]
     sales_order_fields = [
@@ -292,6 +309,46 @@ def setup_custom_fields():
     # update=True re-syncs properties (description, read_only, ...) on
     # already-existing fields, which is what the old hand-rolled upsert did
     # -- e.g. sh_shopify_category started read-only and later became editable.
+    _remove_deprecated_item_fields()
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
     create_custom_fields(custom_fields, update=True)
     frappe.db.commit()
+
+
+def _remove_deprecated_item_fields():
+    """
+    Fields that changed fieldtype or were removed entirely -- delete the
+    Custom Field itself so create_custom_fields can recreate it with the
+    new fieldtype (Frappe blocks fieldtype changes on existing fields).
+    """
+    for fieldname in ("sh_country_of_origin", "sh_harmonized_system_code", "sh_shopify_tags", "sh_shopify_category"):
+        name = f"Item-{fieldname}"
+        if frappe.db.exists("Custom Field", name):
+            frappe.delete_doc("Custom Field", name, ignore_permissions=True)
+    frappe.db.commit()
+
+
+def _unlock_disabled_field_on_variants():
+    """
+    Unlock the 'disabled' field on variant items so users can disable
+    individual variants in the Alaiy OS UI, and ensure 'disabled' is added
+    to Item Variant Settings so template saves do not overwrite it.
+    """
+    # 1. Remove the property setter that was making it read-only on variants
+    frappe.db.sql("""
+        DELETE FROM `tabProperty Setter` 
+        WHERE doc_type = 'Item' AND field_name = 'disabled' AND property = 'read_only_depends_on'
+    """)
+    frappe.clear_cache(doctype="Item")
+
+    # 2. Add 'disabled' to Item Variant Settings so that saving the template
+    # doesn't overwrite individual variant disabled values.
+    if frappe.db.exists("DocType", "Item Variant Settings"):
+        try:
+            settings = frappe.get_doc("Item Variant Settings", "Item Variant Settings")
+            if not any(d.field_name == "disabled" for d in settings.fields):
+                settings.append("fields", {"field_name": "disabled"})
+                settings.save(ignore_permissions=True)
+                frappe.db.commit()
+        except Exception:
+            pass

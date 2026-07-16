@@ -1,0 +1,86 @@
+{
+  "allow_rename": 1,
+  "creation": "2026-07-16 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "shopify_category_name",
+    "shopify_category_id",
+    "lft",
+    "rgt",
+    "parent_shopify_category",
+    "old_parent"
+  ],
+  "fields": [
+    {
+      "fieldname": "shopify_category_name",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Category Name",
+      "reqd": 1,
+      "unique": 0
+    },
+    {
+      "fieldname": "shopify_category_id",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Shopify Category ID",
+      "read_only": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "lft",
+      "fieldtype": "Int",
+      "hidden": 1,
+      "no_copy": 1,
+      "print_hide": 1,
+      "read_only": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "rgt",
+      "fieldtype": "Int",
+      "hidden": 1,
+      "no_copy": 1,
+      "print_hide": 1,
+      "read_only": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "parent_shopify_category",
+      "fieldtype": "Link",
+      "label": "Parent Category",
+      "options": "Shopify Category"
+    },
+    {
+      "fieldname": "old_parent",
+      "fieldtype": "Data",
+      "hidden": 1,
+      "no_copy": 1,
+      "print_hide": 1,
+      "read_only": 1
+    }
+  ],
+  "is_tree": 1,
+  "links": [],
+  "modified": "2026-07-16 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Alaiy OS Connector Shopify",
+  "name": "Shopify Category",
+  "nsm_parent_field": "parent_shopify_category",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "role": "System Manager"
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "title_field": "shopify_category_name",
+  "track_changes": 0
+}
