@@ -891,7 +891,7 @@ def _apply_product_meta(item, node: dict):
     if not desc_val:
         desc_val = node.get("bodyHtml") or item.description or ""
         if desc_val and "<" in desc_val:
-            from frappe.utils.html_utils import strip_html_tags
+            from frappe.utils import strip_html_tags
             desc_val = strip_html_tags(desc_val)
     item.sh_seo_description = desc_val
 
