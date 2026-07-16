@@ -797,8 +797,12 @@ def _get_or_create_customer(customer_data, settings):
         if existing:
             return existing
 
-    first = customer_data.get("first_name", "").strip()
-    last = customer_data.get("last_name", "").strip()
+    # .get(key, "") only falls back when the key is MISSING -- Shopify
+    # sends first_name/last_name present but explicitly null fairly often
+    # (observed live), which .get() happily returns as None, and .strip()
+    # on None crashes the whole webhook.
+    first = (customer_data.get("first_name") or "").strip()
+    last = (customer_data.get("last_name") or "").strip()
     # Only use last_name if it exists and isn't the literal string "None"
     # (some Shopify integrations send "None" instead of null/empty)
     if first and last and last.lower() != "none":
