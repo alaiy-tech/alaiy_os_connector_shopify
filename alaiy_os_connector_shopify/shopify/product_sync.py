@@ -183,11 +183,21 @@ def on_item_change(doc, method=None):
         # variant someone deliberately unchecked afterward.
         sync_changed = doc.has_value_changed("sync_to_shopify")
         disabled_changed = doc.has_value_changed("disabled")
+        
+        # Self-healing: if the template is enabled but 100% of its variants are unchecked,
+        # we must auto-check them to prevent the sync from skipping/stucking.
+        all_variants_unchecked = False
+        if doc.has_variants:
+            all_variants_unchecked = not frappe.db.exists(
+                "Item",
+                {"variant_of": doc.name, "sync_to_shopify": 1}
+            )
+
         frappe.logger().info(
             f"Shopify auto-check: template={doc.name}, sync_changed={sync_changed}, "
-            f"disabled_changed={disabled_changed}, method={method}"
+            f"disabled_changed={disabled_changed}, all_variants_unchecked={all_variants_unchecked}, method={method}"
         )
-        if sync_changed or disabled_changed:
+        if sync_changed or disabled_changed or all_variants_unchecked:
             variant_names = frappe.get_all(
                 "Item",
                 filters={"variant_of": doc.name, "sync_to_shopify": 0},
