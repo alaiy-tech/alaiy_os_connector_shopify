@@ -188,7 +188,7 @@ def setup_custom_fields():
         {
             "fieldname": "sh_shopify_tags",
             "label": "Shopify Tags",
-            "fieldtype": "Tag",
+            "fieldtype": "Small Text",
             "insert_after": "sync_to_shopify",
             "fetch_from": "variant_of.sh_shopify_tags",
             "read_only_depends_on": "eval:doc.variant_of",
