@@ -146,12 +146,19 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 				});
 			}
 		});
-		dialog.set_value('mode', 'All orders');
+		// NOTE: dialog.set_value('mode', ...) must NOT be used here -- 'mode'
+		// is an HTML-type field (it's our button pair, not a real input), and
+		// Control HTML's set_value overwrites the field's rendered content
+		// with the plain string passed in, destroying both buttons. Set the
+		// value directly on the dialog's doc instead, so depends_on eval
+		// ("eval:doc.mode==...") still sees it without touching the DOM.
+		dialog.doc.mode = 'All orders';
 		dialog.$wrapper.find('.shopify-mode-btn').on('click', function() {
 			var mode = $(this).data('mode');
 			dialog.$wrapper.find('.shopify-mode-btn').removeClass('shopify-mode-active');
 			$(this).addClass('shopify-mode-active');
-			dialog.set_value('mode', mode);
+			dialog.doc.mode = mode;
+			dialog.refresh_dependency();
 		});
 		dialog.show();
 	}
