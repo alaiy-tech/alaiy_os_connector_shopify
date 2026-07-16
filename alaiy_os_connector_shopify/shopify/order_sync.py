@@ -41,6 +41,15 @@ query PullOrders($after: String, $queryString: String!) {
         name
         displayFinancialStatus
         displayFulfillmentStatus
+        taxLines {
+          title
+          rate
+          priceSet {
+            shopMoney {
+              amount
+            }
+          }
+        }
         customer {
           legacyResourceId
           firstName
@@ -84,6 +93,14 @@ def _order_node_to_rest_shape(node: dict) -> dict:
     need to diverge.
     """
     customer = node.get("customer") or {}
+    tax_lines = []
+    for tl in (node.get("taxLines") or []):
+        amount = ((tl.get("priceSet") or {}).get("shopMoney") or {}).get("amount")
+        tax_lines.append({
+            "title": tl.get("title") or "Tax",
+            "rate": tl.get("rate"),
+            "price": amount,
+        })
     line_items = []
     for li in (node.get("lineItems") or {}).get("nodes", []):
         variant = li.get("variant") or {}
@@ -105,6 +122,7 @@ def _order_node_to_rest_shape(node: dict) -> dict:
             "email": customer.get("email"),
         } if customer.get("legacyResourceId") else {},
         "line_items": line_items,
+        "tax_lines": tax_lines,
         "financial_status": (node.get("displayFinancialStatus") or "").lower(),
         "fulfillment_status": (node.get("displayFulfillmentStatus") or "").lower(),
     }
@@ -304,6 +322,33 @@ def run_full_import(log_name=None, date_from=None, date_to=None):
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
+def _append_tax_lines(so, tax_lines, settings):
+    """
+    Books Shopify's tax_lines (e.g. CGST 9%, SGST 9%) onto the Sales
+    Order's Sales Taxes and Charges table as Actual charges -- using
+    Shopify's own computed amount rather than recalculating from rate on
+    the ERPNext side avoids rounding drift between the two systems.
+    Skipped entirely (order created tax-free, same as before this fix)
+    until sh_tax_account is configured, since there's no account to
+    book the amount against otherwise.
+    """
+    if not tax_lines or not settings.sh_tax_account:
+        return
+    for tl in tax_lines:
+        amount = flt(tl.get("price") or 0)
+        if amount <= 0:
+            continue
+        rate = tl.get("rate")
+        title = tl.get("title") or "Tax"
+        description = f"{title} ({flt(rate) * 100:.2f}%)" if rate else title
+        so.append("taxes", {
+            "charge_type": "Actual",
+            "account_head": settings.sh_tax_account,
+            "description": description,
+            "tax_amount": amount,
+        })
+
+
 def _upsert_order(order):
     """Returns True if a new Sales Order was created, False if skipped."""
     order_id = str(order.get("id", ""))
@@ -357,6 +402,7 @@ def _upsert_order(order):
     so.sh_fulfillment_status = order.get("fulfillment_status", "")
     for li in line_items:
         so.append("items", li)
+    _append_tax_lines(so, order.get("tax_lines"), settings)
 
     # Set BEFORE insert/submit -- Sales Order's on_update/on_submit doc_events
     # check this flag to skip pushing back to Shopify, since this save
