@@ -141,13 +141,6 @@
       "reqd": 1
     },
     {
-      "description": "Account tax lines pulled from Shopify orders (e.g. CGST, SGST) are booked against. Left blank, incoming orders skip tax entirely -- same as today -- until this is set.",
-      "fieldname": "sh_tax_account",
-      "fieldtype": "Link",
-      "label": "Tax Account",
-      "options": "Account"
-    },
-    {
       "fieldname": "sb_sync",
       "fieldtype": "Section Break",
       "label": "Sync Settings"
@@ -215,7 +208,7 @@
   ],
   "is_single": 1,
   "links": [],
-  "modified": "2026-07-16 00:00:00.000000",
+  "modified": "2026-07-02 00:00:00.000000",
   "modified_by": "Administrator",
   "module": "Alaiy OS Connector Shopify",
   "name": "Shopify Connector Settings",
