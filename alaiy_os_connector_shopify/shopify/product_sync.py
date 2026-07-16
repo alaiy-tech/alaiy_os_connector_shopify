@@ -1193,6 +1193,24 @@ def _update_item_from_shopify(item, product: dict):
             if len(images) > 1:
                 _set_item_slideshow(item.name, images, settings)
 
+    # Uncheck sync_to_shopify on ERPNext variants that are missing from Shopify webhook payload
+    if item.has_variants and "variants" in product:
+        incoming_skus = {
+            (v.get("sku") or "").strip()
+            for v in (product.get("variants") or [])
+            if (v.get("sku") or "").strip()
+        }
+        erpnext_variants = frappe.get_all(
+            "Item",
+            filters={"variant_of": item.name, "sync_to_shopify": 1},
+            pluck="name"
+        )
+        for variant_code in erpnext_variants:
+            if variant_code not in incoming_skus:
+                frappe.db.set_value("Item", variant_code, "sync_to_shopify", 0)
+                frappe.db.set_value("Item", variant_code, "sh_shopify_variant_id", None)
+                frappe.db.set_value("Item", variant_code, "sh_shopify_product_id", None)
+
     # Update price + compare-at price per variant. Was previously never
     # touched on inbound update at all (see this function's old docstring) --
     # the webhook payload already carries both per variant, same as a
