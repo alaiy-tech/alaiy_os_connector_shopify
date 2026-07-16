@@ -313,14 +313,17 @@ def _upsert_order(order):
     pick it up in the same window -- with no lock, two of these can both
     pass the "does this order already exist?" check before either
     commits its insert, creating duplicate Sales Orders for one Shopify
-    order (observed live: 2 duplicate paid orders, same sh_shopify_order_id,
-    ~seconds apart).
+    order (observed live even with a redis-cache-based lock in place --
+    switched to MySQL's own GET_LOCK/RELEASE_LOCK, which is enforced by
+    the DB server itself across separate worker processes regardless of
+    how redis-cache is configured on a given site).
     """
     order_id = str(order.get("id", ""))
     if not order_id:
         return False
-    lock = frappe.cache().lock(f"shopify_order_upsert_{order_id}", timeout=60)
-    if not lock.acquire(blocking=True, blocking_timeout=30):
+    lock_name = f"shopify_order_upsert_{order_id}"
+    got_lock = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (lock_name, 30))[0][0]
+    if not got_lock:
         frappe.log_error(
             title=f"Shopify order {order_id}: upsert lock timed out",
             message="Another process held this order's upsert lock for 30s+ -- skipped to avoid a duplicate.",
@@ -329,7 +332,7 @@ def _upsert_order(order):
     try:
         return _upsert_order_unlocked(order, order_id)
     finally:
-        lock.release()
+        frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock_name,))
 
 
 def _upsert_order_unlocked(order, order_id):
