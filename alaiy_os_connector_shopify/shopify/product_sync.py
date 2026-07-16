@@ -1089,14 +1089,32 @@ def _update_item_from_shopify(item, product: dict):
     if product.get("status"):
         item.disabled = 1 if product["status"] in ("archived", "draft") else 0
 
-    # Self-heal a duplicated UOM row in the conversion factor table --
+    # Self-heal duplicated UOM rows in the conversion factor table --
     # confirmed live: ERPNext's own Item.validate() appends a default UOM
     # row if it doesn't see one yet, and two near-simultaneous saves of the
-    # same freshly-created template (e.g. import creating it, then an
-    # immediate products/update webhook for the same product) can each
-    # independently decide "no row yet" and both append one, leaving a
-    # genuine duplicate that then blocks every future save with
-    # "Unit of Measure ... entered more than once" forever until cleared.
+    # same freshly-created template can each independently decide "no row yet"
+    # and append one, leaving a duplicate. Since saving a template cascades
+    # save() calls to all its variants, we must clean both the template and
+    # all its variants at the database level before executing the save.
+    all_item_names = [item.name]
+    if item.has_variants:
+        all_item_names += frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
+
+    for name in all_item_names:
+        duplicates = frappe.db.sql("""
+            SELECT uom, MIN(name) as keep_name 
+            FROM `tabUOM Conversion Detail` 
+            WHERE parent = %s 
+            GROUP BY uom 
+            HAVING COUNT(*) > 1
+        """, name, as_dict=True)
+        
+        for dup in duplicates:
+            frappe.db.sql("""
+                DELETE FROM `tabUOM Conversion Detail` 
+                WHERE parent = %s AND uom = %s AND name != %s
+            """, (name, dup.uom, dup.keep_name))
+
     seen_uoms = set()
     deduped = []
     for row in item.uoms:
