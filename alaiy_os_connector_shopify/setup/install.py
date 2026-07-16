@@ -13,7 +13,7 @@ def sync_connector_registry():
     """
     _fix_settings_as_single()
     setup_custom_fields()
-    _lock_disabled_field_on_variants()
+    _unlock_disabled_field_on_variants()
     _backfill_singles_defaults("Shopify Connector Settings", [
         "sh_token_refresh_interval",
         "sh_push_description", "sh_push_vendor", "sh_push_product_type", "sh_push_images",
@@ -326,22 +326,27 @@ def _remove_deprecated_item_fields():
     frappe.db.commit()
 
 
-def _lock_disabled_field_on_variants():
+def _unlock_disabled_field_on_variants():
     """
-    Item.disabled is a core field, not one of ours, so create_custom_fields
-    can't touch it -- a Property Setter is the correct mechanism for
-    changing a core field's behavior. Locks it to read-only specifically
-    on variant rows (variant_of set); a template's own disabled checkbox
-    stays freely editable, and toggling it is what on_item_change reads
-    to decide whether to archive the whole product on Shopify.
+    Unlock the 'disabled' field on variant items so users can disable
+    individual variants in the Alaiy OS UI, and ensure 'disabled' is added
+    to Item Variant Settings so template saves do not overwrite it.
     """
-    frappe.make_property_setter(
-        {
-            "doctype": "Item",
-            "fieldname": "disabled",
-            "property": "read_only_depends_on",
-            "value": "eval:doc.variant_of",
-            "property_type": "Code",
-        },
-        validate_fields_for_doctype=False,
-    )
+    # 1. Remove the property setter that was making it read-only on variants
+    frappe.db.sql("""
+        DELETE FROM `tabProperty Setter` 
+        WHERE doc_type = 'Item' AND field_name = 'disabled' AND property = 'read_only_depends_on'
+    """)
+    frappe.clear_cache(doctype="Item")
+
+    # 2. Add 'disabled' to Item Variant Settings so that saving the template
+    # doesn't overwrite individual variant disabled values.
+    if frappe.db.exists("DocType", "Item Variant Settings"):
+        try:
+            settings = frappe.get_doc("Item Variant Settings", "Item Variant Settings")
+            if not any(d.field_name == "disabled" for d in settings.fields):
+                settings.append("fields", {"field_name": "disabled"})
+                settings.save(ignore_permissions=True)
+                frappe.db.commit()
+        except Exception:
+            pass

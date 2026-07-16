@@ -756,7 +756,7 @@ def _variants_of(item):
         return [item]
     names = frappe.get_all(
         "Item",
-        filters={"variant_of": item.name, "sync_to_shopify": 1},
+        filters={"variant_of": item.name, "sync_to_shopify": 1, "disabled": 0},
         pluck="name",
     )
     return [frappe.get_doc("Item", v) for v in names]
