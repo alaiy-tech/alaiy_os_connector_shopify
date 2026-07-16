@@ -510,6 +510,7 @@ query GetTaxonomyTree {
           id
           name
           level
+          fullName
         }
       }
     }
@@ -540,46 +541,24 @@ def fetch_shopify_taxonomy():
         frappe.logger().warning("Shopify taxonomy returned no categories")
         return
 
-    # Build a map of shopify_id -> category info
-    cat_map = {}
+    from alaiy_os_connector_shopify.shopify.product_import import ensure_shopify_category
+
+    created = 0
     for edge in categories:
         node = edge.get("node") or {}
         shopify_id = node.get("id", "")
         name = node.get("name", "")
-        level = node.get("level", 0)
-        if shopify_id and name:
-            cat_map[shopify_id] = {"name": name, "level": level}
-
-    # Get existing categories to avoid duplicates
-    existing = {
-        d.shopify_category_id: d.name
-        for d in frappe.get_all(
-            "Shopify Category",
-            fields=["name", "shopify_category_id"],
-        )
-    }
-
-    created = updated = 0
-    for shopify_id, info in cat_map.items():
-        if shopify_id in existing:
-            # Update name if changed
-            doc = frappe.get_doc("Shopify Category", existing[shopify_id])
-            if doc.shopify_category_name != info["name"]:
-                doc.shopify_category_name = info["name"]
-                doc.save(ignore_permissions=True)
-                updated += 1
-        else:
-            # Create new category
-            doc = frappe.new_doc("Shopify Category")
-            doc.shopify_category_name = info["name"]
-            doc.shopify_category_id = shopify_id
-            doc.insert(ignore_permissions=True)
-            created += 1
+        full_name = node.get("fullName") or name
+        if shopify_id and full_name:
+            # Re-use our robust nested tree builder to ensure parent-child linking and custom name format
+            path_name = ensure_shopify_category(full_name)
+            if path_name:
+                frappe.db.set_value("Shopify Category", path_name, "shopify_category_id", shopify_id)
+                created += 1
 
     frappe.db.commit()
     frappe.logger().info(
-        f"Shopify taxonomy sync: {created} created, {updated} updated, "
-        f"{len(cat_map)} total categories"
+        f"Shopify taxonomy sync completed: processed {len(categories)} categories"
     )
 
 
