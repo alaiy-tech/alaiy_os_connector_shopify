@@ -307,11 +307,10 @@ def setup_custom_fields():
     # update=True re-syncs properties (description, read_only, ...) on
     # already-existing fields, which is what the old hand-rolled upsert did
     # -- e.g. sh_shopify_category started read-only and later became editable.
+    _remove_deprecated_item_fields()
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
     create_custom_fields(custom_fields, update=True)
     frappe.db.commit()
-
-    _remove_deprecated_item_fields()
 
 
 def _remove_deprecated_item_fields():
