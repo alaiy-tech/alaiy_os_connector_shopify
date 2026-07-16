@@ -1000,6 +1000,13 @@ def _handle_product_update(product_id: str, product: dict):
     if not entity:
         return  # Product not linked to ERPNext
 
+    if not frappe.db.exists("Item", entity.erpnext_name):
+        # Self-heal: the item was deleted locally. Delete the stale synced entity
+        # so it can be recreated/re-imported cleanly.
+        frappe.delete_doc("Shopify Synced Entity", entity.name, ignore_permissions=True)
+        frappe.db.commit()
+        return
+
     item = frappe.get_doc("Item", entity.erpnext_name)
 
     # Get Shopify product timestamp
@@ -1170,29 +1177,30 @@ def _handle_product_delete(product_id: str, product: dict):
     if not entity:
         return
 
-    item = frappe.get_doc("Item", entity.erpnext_name)
+    if frappe.db.exists("Item", entity.erpnext_name):
+        item = frappe.get_doc("Item", entity.erpnext_name)
 
-    # Unlink: remove Shopify IDs but keep Item in ERPNext
-    frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
-    frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
+        # Unlink: remove Shopify IDs but keep Item in ERPNext
+        frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
+        frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
 
-    # A template's variants each carry their own copy of sh_shopify_product_id
-    # (set at import time) -- leaving those in place after the template
-    # itself is unlinked means _wipe_unlinked_products() (which only deletes
-    # Items with NO Shopify id) would never clean them up, and a SKU Shopify
-    # later reuses for a genuinely new product would collide with this dead
-    # variant on the next import.
-    if item.has_variants:
-        variant_names = frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
-        for variant_name in variant_names:
-            frappe.db.set_value("Item", variant_name, "sh_shopify_product_id", None)
-            frappe.db.set_value("Item", variant_name, "sh_shopify_variant_id", None)
+        # A template's variants each carry their own copy of sh_shopify_product_id
+        # (set at import time) -- leaving those in place after the template
+        # itself is unlinked means _wipe_unlinked_products() (which only deletes
+        # Items with NO Shopify id) would never clean them up, and a SKU Shopify
+        # later reuses for a genuinely new product would collide with this dead
+        # variant on the next import.
+        if item.has_variants:
+            variant_names = frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
+            for variant_name in variant_names:
+                frappe.db.set_value("Item", variant_name, "sh_shopify_product_id", None)
+                frappe.db.set_value("Item", variant_name, "sh_shopify_variant_id", None)
 
     entity.external_id = None
     entity.save(ignore_permissions=True)
     frappe.db.commit()
 
-    frappe.logger().info(f"Unlinked Item {item.name} (product {product_id} deleted)")
+    frappe.logger().info(f"Unlinked Item {entity.erpnext_name} (product {product_id} deleted)")
 
 
 # ── Archive (disable) ────────────────────────────────────────────────────────
