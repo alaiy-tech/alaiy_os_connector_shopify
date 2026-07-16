@@ -50,6 +50,14 @@ def save(entity, **fields):
     if entity.is_new():
         entity.insert(ignore_permissions=True)
     else:
-        entity.save(ignore_permissions=True)
+        try:
+            entity.save(ignore_permissions=True)
+        except frappe.TimestampMismatchError:
+            # Concurrency fallback: reload the latest database version and re-apply fields
+            entity = frappe.get_doc(entity.doctype, entity.name)
+            for key, value in fields.items():
+                entity.set(key, value)
+            entity.last_synced_at = now_datetime()
+            entity.save(ignore_permissions=True)
     frappe.db.commit()
     return entity
