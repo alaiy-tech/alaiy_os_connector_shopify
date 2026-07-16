@@ -281,11 +281,29 @@
 
 .shopify-mode-btn {
 	flex: 1;
+	padding: 8px 14px;
+	font-size: 13px;
+	font-weight: 500;
+	border-radius: var(--border-radius, 6px);
+	border: 1px solid var(--border-color);
+	background-color: var(--control-bg, var(--fg-color));
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.shopify-mode-btn i {
+	margin-right: 6px;
+}
+
+.shopify-mode-btn:hover {
+	border-color: var(--text-muted);
+	color: var(--text-color);
 }
 
 .shopify-mode-btn.shopify-mode-active {
-	background-color: var(--primary);
-	color: var(--primary-inverse, #fff);
+	background-color: var(--primary-selected, rgba(0, 122, 204, 0.08));
+	color: var(--primary);
 	border-color: var(--primary);
 }
 

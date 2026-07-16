@@ -121,8 +121,12 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					fieldname: 'mode', fieldtype: 'HTML',
 					options: `
 						<div class="shopify-import-mode">
-							<button type="button" class="shopify-btn shopify-mode-btn shopify-mode-active" data-mode="All orders">All orders</button>
-							<button type="button" class="shopify-btn shopify-mode-btn" data-mode="Date range">Date range</button>
+							<button type="button" class="shopify-mode-btn shopify-mode-active" data-mode="All orders">
+								<i class="fa fa-list"></i> All orders
+							</button>
+							<button type="button" class="shopify-mode-btn" data-mode="Date range">
+								<i class="fa fa-calendar"></i> Date range
+							</button>
 						</div>
 					`,
 				},
