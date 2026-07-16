@@ -316,11 +316,11 @@ def setup_custom_fields():
 
 def _remove_deprecated_item_fields():
     """
-    sh_country_of_origin and sh_harmonized_system_code were removed from
-    scope -- delete the Custom Field itself (not just stop creating it),
-    since create_custom_fields only ever adds/updates, never removes.
+    Fields that changed fieldtype or were removed entirely -- delete the
+    Custom Field itself so create_custom_fields can recreate it with the
+    new fieldtype (Frappe blocks fieldtype changes on existing fields).
     """
-    for fieldname in ("sh_country_of_origin", "sh_harmonized_system_code"):
+    for fieldname in ("sh_country_of_origin", "sh_harmonized_system_code", "sh_shopify_tags", "sh_shopify_category"):
         name = f"Item-{fieldname}"
         if frappe.db.exists("Custom Field", name):
             frappe.delete_doc("Custom Field", name, ignore_permissions=True)
