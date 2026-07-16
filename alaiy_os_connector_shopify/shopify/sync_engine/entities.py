@@ -53,11 +53,10 @@ def save(entity, **fields):
         try:
             entity.save(ignore_permissions=True)
         except frappe.TimestampMismatchError:
-            # Concurrency fallback: reload the latest database version and re-apply fields
+            # Concurrency fallback: update the database directly, bypassing checks
+            fields["last_synced_at"] = now_datetime()
+            frappe.db.set_value(entity.doctype, entity.name, fields, update_modified=True)
+            # Reload to keep the in-memory object updated and matching DB
             entity = frappe.get_doc(entity.doctype, entity.name)
-            for key, value in fields.items():
-                entity.set(key, value)
-            entity.last_synced_at = now_datetime()
-            entity.save(ignore_permissions=True)
     frappe.db.commit()
     return entity

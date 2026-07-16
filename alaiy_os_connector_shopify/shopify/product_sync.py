@@ -782,6 +782,9 @@ def _push_product_unlocked(item):
         # be Shopify-invalid (a product always has at least one variant)
         # and destructive even if it weren't. Unchecking the TEMPLATE is
         # the "take this product off Shopify" action; log and stand down.
+        # Set sync_to_shopify to 0 to prevent the template from being stuck in "Uploading to Shopify".
+        frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
+        frappe.db.commit()
         frappe.log_error(
             title=f"Shopify push skipped for {item.name}: no variants enabled",
             message="All variants have Sync to Shopify unchecked. Uncheck it on the template itself to archive the product on Shopify.",
