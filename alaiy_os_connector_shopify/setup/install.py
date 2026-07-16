@@ -61,10 +61,12 @@ def _update_alaiy_os_sidebar():
     """
     try:
         from alaiy_os.setup.install import (
+            create_or_update_workspace,
             create_or_update_workspace_sidebar,
             create_or_update_os_settings_workspace,
             create_or_update_os_settings_workspace_sidebar,
         )
+        create_or_update_workspace()
         create_or_update_workspace_sidebar()
         create_or_update_os_settings_workspace()
         create_or_update_os_settings_workspace_sidebar()
