@@ -335,7 +335,30 @@ def _import_simple_product(
     # Check if Item with this SKU already exists
     if frappe.db.exists("Item", sku):
         existing_id = frappe.db.get_value("Item", sku, "sh_shopify_product_id")
-        return False, f"SKU '{sku}' already used by product_id={existing_id}"
+        if not existing_id:
+            # Auto-link the existing item
+            variant_of = frappe.db.get_value("Item", sku, "variant_of")
+            from alaiy_os_connector_shopify.shopify.sync_engine import entities
+            
+            # If it's part of a template structure:
+            if variant_of:
+                frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
+                entity = entities.get_or_new("product", "Item", variant_of, product_id)
+                entities.save(entity, external_id=product_id, erpnext_name=variant_of)
+            
+            # Link the item itself
+            frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
+            frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
+            
+            # Save Synced Entity mapping for the simple item if no parent template
+            if not variant_of:
+                entity = entities.get_or_new("product", "Item", sku, product_id)
+                entities.save(entity, external_id=product_id, erpnext_name=sku)
+                
+            frappe.db.commit()
+            return True, f"Auto-linked existing SKU '{sku}' (and template if present) to Shopify product '{product_id}'"
+        else:
+            return False, f"SKU '{sku}' already used by product_id={existing_id}"
 
     item_name = sku
 
@@ -518,11 +541,27 @@ def _import_product_with_variants(
         # Check for SKU conflict
         if frappe.db.exists("Item", sku):
             existing_id = frappe.db.get_value("Item", sku, "sh_shopify_product_id")
-            frappe.log_error(
-                title=f"Shopify import: variant SKU '{sku}' skipped (already used by product_id={existing_id})",
-                message=f"Product ID: {product_id}, template: {template_name}",
-            )
-            continue  # Skip this variant if SKU exists elsewhere
+            if not existing_id:
+                # Auto-link the existing variant
+                variant_of = frappe.db.get_value("Item", sku, "variant_of") or template_name
+                frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
+                frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
+                frappe.db.set_value("Item", sku, "variant_of", variant_of)
+                
+                # Also link its parent template to Shopify
+                frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
+                
+                # Create Synced Entity pairing for the template/product
+                from alaiy_os_connector_shopify.shopify.sync_engine import entities
+                entity = entities.get_or_new("product", "Item", variant_of, product_id)
+                entities.save(entity, external_id=product_id, erpnext_name=variant_of)
+                continue
+            else:
+                frappe.log_error(
+                    title=f"Shopify import: variant SKU '{sku}' skipped (already used by product_id={existing_id})",
+                    message=f"Product ID: {product_id}, template: {template_name}",
+                )
+                continue  # Skip this variant if SKU exists elsewhere
 
         variant_name = sku
 
