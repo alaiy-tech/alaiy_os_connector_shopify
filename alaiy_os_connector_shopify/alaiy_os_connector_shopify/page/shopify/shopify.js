@@ -107,8 +107,13 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 			title: 'Import Orders from Shopify',
 			fields: [
 				{
-					fieldname: 'mode', fieldtype: 'Select', label: 'Import',
-					options: 'All orders\nDate range', default: 'All orders', reqd: 1,
+					fieldname: 'mode', fieldtype: 'HTML',
+					options: `
+						<div class="shopify-import-mode">
+							<button type="button" class="shopify-btn shopify-mode-btn shopify-mode-active" data-mode="All orders">All orders</button>
+							<button type="button" class="shopify-btn shopify-mode-btn" data-mode="Date range">Date range</button>
+						</div>
+					`,
 				},
 				{
 					fieldname: 'date_from', fieldtype: 'Date', label: 'From',
@@ -121,10 +126,11 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 			],
 			primary_action_label: 'Import',
 			primary_action: function(values) {
+				var mode = dialog.get_value('mode');
 				dialog.hide();
 				frappe.call({
 					method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
-					args: values.mode === 'Date range'
+					args: mode === 'Date range'
 						? {date_from: values.date_from, date_to: values.date_to}
 						: {},
 					callback: function(r) {
@@ -135,6 +141,13 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					}
 				});
 			}
+		});
+		dialog.set_value('mode', 'All orders');
+		dialog.$wrapper.find('.shopify-mode-btn').on('click', function() {
+			var mode = $(this).data('mode');
+			dialog.$wrapper.find('.shopify-mode-btn').removeClass('shopify-mode-active');
+			$(this).addClass('shopify-mode-active');
+			dialog.set_value('mode', mode);
 		});
 		dialog.show();
 	}

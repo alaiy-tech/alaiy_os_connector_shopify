@@ -273,6 +273,22 @@
 	color: var(--blue-700, #0c5460);
 }
 
+.shopify-import-mode {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 4px;
+}
+
+.shopify-mode-btn {
+	flex: 1;
+}
+
+.shopify-mode-btn.shopify-mode-active {
+	background-color: var(--primary);
+	color: var(--primary-inverse, #fff);
+	border-color: var(--primary);
+}
+
 .shopify-spinner {
 	display: inline-block;
 	width: 12px;
