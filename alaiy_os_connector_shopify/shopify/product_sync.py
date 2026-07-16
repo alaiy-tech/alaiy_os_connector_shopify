@@ -1283,24 +1283,32 @@ def _handle_product_delete(product_id: str, product: dict):
     frappe.logger().info(f"Unlinked Item {entity.erpnext_name} (product {product_id} deleted)")
 
 
-# ── Archive (disable) ────────────────────────────────────────────────────────
+_PRODUCT_UPDATE_MUTATION = """
+mutation productUpdate($input: ProductInput!) {
+  productUpdate(input: $input) {
+    product {
+      id
+      status
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
 
 def archive_item(item_code: str):
     """Called when sync_to_shopify is unchecked -- or the Item disabled --
     on a template that's already linked. Archives the Shopify product
-    (hidden from sales channels, order history intact) rather than
-    deleting it or silently ignoring the checkbox. Resends the full
-    product_set_input (not just {status}) since it's unconfirmed whether
-    productSet treats a missing field as "leave alone" or "clear" --
-    sending the complete state is correct either way."""
+    (hidden from sales channels, order history intact) by setting its status
+    to ARCHIVED via the productUpdate mutation."""
     item = frappe.get_doc("Item", item_code)
     if item.variant_of or not item.get("sh_shopify_product_id"):
         return
     if _sync_enabled(item):
-        # Re-enabled before this job ran -- don't archive what should stay
-        # active. Checks the full gate (checkbox AND not disabled), not
-        # just the checkbox: a disabled item with sync still ticked must
-        # NOT early-return here, or disabling would never archive at all.
+        # Re-enabled before this job ran -- don't archive what should stay active.
         return
 
     try:
@@ -1310,24 +1318,15 @@ def archive_item(item_code: str):
 
     try:
         item = frappe.get_doc("Item", item.name)
-        settings = frappe.get_single("Shopify Connector Settings")
-
-        # Full variant set, deliberately unfiltered: productSet is
-        # full-desired-state, so archiving with only the checked variants
-        # would also DELETE the unchecked ones from Shopify as a side
-        # effect of hiding the product.
-        variants = _all_variants_of(item)
-
         client = ShopifyGraphQLClient()
-        product_input = _product_set_input(item, variants, settings, client)
-        product_input["status"] = "ARCHIVED"
 
-        data = client.execute(_PRODUCT_SET_MUTATION, {
-            "input": product_input,
-            "identifier": {"id": f"gid://shopify/Product/{item.sh_shopify_product_id}"},
-            "synchronous": True,
+        data = client.execute(_PRODUCT_UPDATE_MUTATION, {
+            "input": {
+                "id": f"gid://shopify/Product/{item.sh_shopify_product_id}",
+                "status": "ARCHIVED",
+            }
         })
-        errors = (data.get("productSet") or {}).get("userErrors") or []
+        errors = (data.get("productUpdate") or {}).get("userErrors") or []
         if errors:
             frappe.log_error(
                 title=f"Shopify: archive failed for {item.name}",
