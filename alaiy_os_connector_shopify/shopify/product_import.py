@@ -859,17 +859,19 @@ def _variant_available_qty(variant: dict) -> float:
 def ensure_shopify_category(full_name: str) -> str:
     """
     Ensure the nested parent-child Shopify Category tree exists for a full name path
-    (e.g., 'Apparel & Accessories > Clothing > Activewear > Sweatshirts').
+    (e.g., 'Apparel & Accessories / Clothing / Activewear / Sweatshirts').
     Returns the leaf node document name.
     """
-    parts = [p.strip() for p in full_name.split(">") if p.strip()]
+    # Replace '>' with '/' to comply with Frappe's naming restrictions against special characters '<' and '>'
+    full_name_clean = full_name.replace(">", "/")
+    parts = [p.strip() for p in full_name_clean.split("/") if p.strip()]
     if not parts:
         return None
 
     parent = None
     for i, part in enumerate(parts):
         # Unique node name is the path itself to prevent collision (e.g. Sweatshirts)
-        path_name = " > ".join(parts[:i+1])
+        path_name = " / ".join(parts[:i+1])
         
         if not frappe.db.exists("Shopify Category", path_name):
             doc = frappe.new_doc("Shopify Category")
