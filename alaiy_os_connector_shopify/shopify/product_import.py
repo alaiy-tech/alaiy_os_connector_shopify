@@ -558,6 +558,9 @@ def _import_product_with_variants(
         if default_warehouse_row:
             variant_item.append("item_defaults", default_warehouse_row)
 
+        if product_meta:
+            _apply_product_meta(variant_item, product_meta)
+
         variant_item.flags.from_shopify_sync = True
         variant_item.flags.ignore_permissions = True
         variant_item.insert()
