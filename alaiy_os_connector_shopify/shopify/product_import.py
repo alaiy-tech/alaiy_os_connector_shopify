@@ -121,6 +121,17 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
         frappe.db.commit()
         return log.name
 
+    settings = frappe.get_single("Shopify Connector Settings")
+    try:
+        settings.lock(timeout=1800)  # Lock settings document to prevent concurrent import runs
+    except frappe.DocumentLockedError:
+        log.status = "skipped"
+        log.finished_at = now_datetime()
+        log.error_message = "Skipped: another products sync/import is running (Settings document locked)."
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        return log.name
+
     log.status = "running"
     log.save(ignore_permissions=True)
     frappe.db.commit()
@@ -191,6 +202,11 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
         log.save(ignore_permissions=True)
         frappe.db.commit()
         raise
+    finally:
+        try:
+            settings.unlock()
+        except Exception:
+            pass
 
     return log.name
 

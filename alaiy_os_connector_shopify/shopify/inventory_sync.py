@@ -126,6 +126,54 @@ def run_inventory_push(trigger="manual", log_name=None):
             fields=["name", "sh_shopify_variant_id"],
         )
 
+        # Optimization: Only push items whose stock has changed since the last successful sync.
+        # This avoids making N+1 HTTP API requests (which takes 10+ minutes and causes timeouts
+        # on large catalogs) when most items haven't changed.
+        last_success_time = frappe.db.get_value(
+            "Shopify Sync Log",
+            {"sync_type": "inventory", "status": "success"},
+            "finished_at",
+            order_by="finished_at desc"
+        )
+        
+        if last_success_time:
+            # Find item codes of bins modified since the last success run
+            changed_items = frappe.db.get_all(
+                "Bin",
+                filters={
+                    "modified": [">", last_success_time],
+                    "warehouse": warehouse
+                },
+                pluck="item_code"
+            )
+            # Also get items created since last_success_time to be safe
+            new_items = frappe.db.get_all(
+                "Item",
+                filters={
+                    "creation": [">", last_success_time],
+                    "sh_shopify_variant_id": ["is", "set"]
+                },
+                pluck="name"
+            )
+            changed_item_codes = set(changed_items + new_items)
+            items = [i for i in items if i.name in changed_item_codes]
+            _append_log(log, f"Optimization: checking {len(items)} items modified/created since {last_success_time}")
+        else:
+            # First sync run -- default to only checking bins modified in the last 24 hours
+            # to prevent timeout on full catalogs that are already in sync.
+            import datetime
+            one_day_ago = now_datetime() - datetime.timedelta(days=1)
+            changed_items = frappe.db.get_all(
+                "Bin",
+                filters={
+                    "modified": [">", one_day_ago],
+                    "warehouse": warehouse
+                },
+                pluck="item_code"
+            )
+            items = [i for i in items if i.name in changed_items]
+            _append_log(log, f"Optimization: first run, checking {len(items)} items modified/created in last 24h")
+
         processed = updated = failed = unchanged = 0
         for item in items:
             processed += 1
