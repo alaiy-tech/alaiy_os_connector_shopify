@@ -202,32 +202,44 @@ def _remove_shopify_line_items(order_id: str, removed_variant_ids: list, sales_o
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def _items_before_cache_key(so_name: str) -> str:
+    return f"shopify_items_before::{so_name}"
+
+
 def on_sales_order_validate(doc, method=None):
     """
     Snapshots the DB's current items (before this save's changes land) into
-    a doc flag, for _detect_items_changed/_detect_removed_variant_ids to
-    diff against later in on_update/on_update_after_submit.
+    cache, for _detect_items_changed/_detect_removed_variant_ids to diff
+    against later in on_update/on_update_after_submit.
 
-    validate() is the one hook guaranteed to run BEFORE db_update() writes
-    this save's new values, for both a plain save (on_update) and an
-    already-submitted doc's "Update Items" edit (on_update_after_submit) --
-    unlike get_doc_before_save(), which isn't reliably populated on the
-    latter path (confirmed live: item removal via Update Items produced
-    zero Error Log entries because _detect_items_changed's before-state
-    read nothing and silently returned False, so the removal push never
-    even ran).
+    Persisted in cache keyed by doc.name -- NOT on doc.flags. ERPNext's
+    "Update Items" quick-edit grid (update_child_qty_rate) saves an
+    already-submitted Sales Order TWICE internally: once to apply the item
+    changes, then again on a freshly RELOADED doc object to recalculate
+    totals/taxes. doc.flags is pure in-memory state on one Python object,
+    so it's gone by the second save -- confirmed live: on_update_after_submit
+    saw before_snapshot=None and items_changed=False every single time,
+    because whatever validate() had captured never survived to the save
+    whose on_update_after_submit we actually catch.
+
+    Guarded so the SECOND save in that sequence doesn't overwrite the true
+    original with the already-changed intermediate state: only the first
+    validate() call in a given edit sequence writes the cache key.
     """
     if doc.is_new():
-        doc.flags._shopify_items_before = []
         return
-    doc.flags._shopify_items_before = frappe.get_all(
+    cache_key = _items_before_cache_key(doc.name)
+    if frappe.cache().get_value(cache_key) is not None:
+        return
+    snapshot = frappe.get_all(
         "Sales Order Item",
         filters={"parent": doc.name},
         fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
     )
+    frappe.cache().set_value(cache_key, snapshot, expires_in_sec=120)
     frappe.log_error(
         title=f"Shopify DEBUG: validate snapshot for {doc.name}",
-        message=f"captured before-snapshot {doc.flags._shopify_items_before!r}",
+        message=f"captured before-snapshot {snapshot!r}",
     )
 
 
@@ -236,7 +248,7 @@ def _detect_items_changed(doc) -> bool:
     Check if Sales Order's items have been added, removed, or modified.
     Returns True if any items field changed, False if only status/metadata changed.
     """
-    before_rows = doc.flags.get("_shopify_items_before")
+    before_rows = frappe.cache().get_value(_items_before_cache_key(doc.name))
     if before_rows is None:
         return False
 
@@ -257,7 +269,7 @@ def _detect_removed_variant_ids(doc) -> list:
     order line items for removal; item_code/qty/rate alone can't tell us
     WHICH item to remove on the Shopify side.
     """
-    before_rows = doc.flags.get("_shopify_items_before")
+    before_rows = frappe.cache().get_value(_items_before_cache_key(doc.name))
     if not before_rows:
         return []
     before_keys = {
@@ -289,15 +301,19 @@ def on_sales_order_update(doc, method=None):
         return
 
     # Detect if line items changed (added, removed, or quantity/rate modified)
+    before_rows = frappe.cache().get_value(_items_before_cache_key(doc.name))
     items_changed = _detect_items_changed(doc)
     removed_variant_ids = _detect_removed_variant_ids(doc) if items_changed else []
     frappe.log_error(
         title=f"Shopify DEBUG: on_sales_order_update {doc.name}",
         message=(
-            f"before_snapshot={doc.flags.get('_shopify_items_before')!r} "
+            f"before_snapshot={before_rows!r} "
             f"items_changed={items_changed} removed_variant_ids={removed_variant_ids!r}"
         ),
     )
+    # Consumed -- clear so a later, genuinely separate edit within the 120s
+    # expiry window doesn't accidentally diff against this stale snapshot.
+    frappe.cache().delete_value(_items_before_cache_key(doc.name))
 
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order_push.push_order_update",
