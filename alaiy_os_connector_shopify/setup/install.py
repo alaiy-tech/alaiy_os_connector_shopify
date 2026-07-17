@@ -261,6 +261,17 @@ def setup_custom_fields():
             "in_list_view": 1,
             "insert_after": "sh_financial_status",
         },
+        {
+            "fieldname": "sh_shopify_notes",
+            "label": "Shopify Notes",
+            "fieldtype": "Small Text",
+            "insert_after": "sh_fulfillment_status",
+            "description": "Synced both directions with Shopify's order note field.",
+            # Orders here are typically submitted immediately -- without
+            # this, the field is silently read-only the moment the Sales
+            # Order submits, which is effectively always.
+            "allow_on_submit": 1,
+        },
     ]
     sales_order_item_fields = [
         {

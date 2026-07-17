@@ -11,6 +11,10 @@ after_migrate = [
     "alaiy_os_connector_shopify.setup.install.sync_connector_registry"
 ]
 
+before_request = [
+    "alaiy_os_connector_shopify.shopify.order_push.snapshot_before_update_child_qty_rate"
+]
+
 alaiy_os_sidebar_log_items = [
     {
         "link_type": "DocType",
@@ -46,12 +50,20 @@ doc_events = {
         "on_update": "alaiy_os_connector_shopify.shopify.product_sync.on_item_price_change",
     },
     "Sales Order": {
+        "validate": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_validate",
         "on_submit": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_submit",
         "on_update": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_update",
+        # Editing line items on an ALREADY-submitted Sales Order (ERPNext's
+        # "Update Items" flow) fires on_update_after_submit, not on_update --
+        # without this, item removal on a submitted/paid order silently
+        # never reached our handler at all (confirmed live: zero Error Log
+        # entries because the code never even ran).
+        "on_update_after_submit": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_update",
         "on_cancel": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_cancel",
     },
 }
 
 doctype_list_js = {
     "Item": "public/js/item_list.js",
+    "Sales Order": "public/js/sales_order_list.js",
 }

@@ -107,6 +107,13 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function import_orders() {
+		// Tracked here instead of via depends_on's "eval:doc.mode==..." --
+		// frappe.ui.Dialog doesn't reliably expose a live `.doc` to evaluate
+		// against in every version, and 'mode' isn't a real input field
+		// anyway (it's the button pair below), so there's nothing for
+		// depends_on to read from the model.
+		var mode = 'All orders';
+
 		var dialog = new frappe.ui.Dialog({
 			title: 'Import Orders from Shopify',
 			fields: [
@@ -114,23 +121,28 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					fieldname: 'mode', fieldtype: 'HTML',
 					options: `
 						<div class="shopify-import-mode">
-							<button type="button" class="shopify-btn shopify-mode-btn shopify-mode-active" data-mode="All orders">All orders</button>
-							<button type="button" class="shopify-btn shopify-mode-btn" data-mode="Date range">Date range</button>
+							<button type="button" class="shopify-mode-btn shopify-mode-active" data-mode="All orders">
+								<i class="fa fa-list"></i> All orders
+							</button>
+							<button type="button" class="shopify-mode-btn" data-mode="Date range">
+								<i class="fa fa-calendar"></i> Date range
+							</button>
 						</div>
 					`,
 				},
 				{
 					fieldname: 'date_from', fieldtype: 'Date', label: 'From',
-					depends_on: "eval:doc.mode=='Date range'", mandatory_depends_on: "eval:doc.mode=='Date range'",
 				},
 				{
 					fieldname: 'date_to', fieldtype: 'Date', label: 'To',
-					depends_on: "eval:doc.mode=='Date range'", mandatory_depends_on: "eval:doc.mode=='Date range'",
 				},
 			],
 			primary_action_label: 'Import',
 			primary_action: function(values) {
-				var mode = dialog.get_value('mode');
+				if (mode === 'Date range' && (!values.date_from || !values.date_to)) {
+					frappe.msgprint('Please pick both a From and To date.');
+					return;
+				}
 				dialog.hide();
 				frappe.call({
 					method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
@@ -146,12 +158,18 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 				});
 			}
 		});
-		dialog.set_value('mode', 'All orders');
+
+		function toggle_date_fields() {
+			dialog.fields_dict.date_from.$wrapper.toggle(mode === 'Date range');
+			dialog.fields_dict.date_to.$wrapper.toggle(mode === 'Date range');
+		}
+		toggle_date_fields();
+
 		dialog.$wrapper.find('.shopify-mode-btn').on('click', function() {
-			var mode = $(this).data('mode');
+			mode = $(this).data('mode');
 			dialog.$wrapper.find('.shopify-mode-btn').removeClass('shopify-mode-active');
 			$(this).addClass('shopify-mode-active');
-			dialog.set_value('mode', mode);
+			toggle_date_fields();
 		});
 		dialog.show();
 	}

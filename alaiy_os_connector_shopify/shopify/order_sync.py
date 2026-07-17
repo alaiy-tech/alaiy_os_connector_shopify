@@ -39,6 +39,7 @@ query PullOrders($after: String, $queryString: String!) {
       node {
         legacyResourceId
         name
+        note
         displayFinancialStatus
         displayFulfillmentStatus
         customer {
@@ -105,6 +106,7 @@ def _order_node_to_rest_shape(node: dict) -> dict:
             "email": customer.get("email"),
         } if customer.get("legacyResourceId") else {},
         "line_items": line_items,
+        "note": node.get("note") or "",
         "financial_status": (node.get("displayFinancialStatus") or "").lower(),
         "fulfillment_status": (node.get("displayFulfillmentStatus") or "").lower(),
     }
@@ -304,11 +306,46 @@ def run_full_import(log_name=None, date_from=None, date_to=None):
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
+def _acquire_order_lock(order_id: str, timeout: int = 30) -> bool:
+    """
+    MySQL-native advisory lock shared by BOTH _upsert_order and
+    _update_order for the same Shopify order_id -- enforced by the DB
+    server itself, so it holds across separate worker processes
+    regardless of how redis-cache is configured. A single shared lock
+    name per order_id serializes our own outbound push (which can itself
+    trigger Shopify to send back an echoed orders/updated webhook) against
+    the inbound webhook handler for that very echo: observed live, the
+    inbound handler loaded the Sales Order before an in-flight local save
+    (removing an item) had committed, computed a stale diff against it,
+    and then failed with TimestampMismatchError trying to cancel/amend a
+    document that had changed underneath it by the time it got there.
+    """
+    return bool(frappe.db.sql("SELECT GET_LOCK(%s, %s)", (f"shopify_order_{order_id}", timeout))[0][0])
+
+
+def _release_order_lock(order_id: str):
+    frappe.db.sql("SELECT RELEASE_LOCK(%s)", (f"shopify_order_{order_id}",))
+
+
 def _upsert_order(order):
-    """Returns True if a new Sales Order was created, False if skipped."""
+    """Acquires this order's lock, then defers to _upsert_order_unlocked."""
     order_id = str(order.get("id", ""))
     if not order_id:
         return False
+    if not _acquire_order_lock(order_id):
+        frappe.log_error(
+            title=f"Shopify order {order_id}: upsert lock timed out",
+            message="Another process held this order's lock for 30s+ -- skipped to avoid a duplicate.",
+        )
+        return False
+    try:
+        return _upsert_order_unlocked(order, order_id)
+    finally:
+        _release_order_lock(order_id)
+
+
+def _upsert_order_unlocked(order, order_id):
+    """Returns True if a new Sales Order was created, False if skipped."""
     if get_active_sales_order(order_id):
         return False  # already processed
 
@@ -355,6 +392,7 @@ def _upsert_order(order):
     so.sh_shopify_order_name = order.get("name", "")
     so.sh_financial_status = order.get("financial_status", "")
     so.sh_fulfillment_status = order.get("fulfillment_status", "")
+    so.sh_shopify_notes = order.get("note") or ""
     for li in line_items:
         so.append("items", li)
 
@@ -387,6 +425,27 @@ def _upsert_order(order):
 
 def _update_order(order):
     """
+    Acquires the SAME per-order lock _upsert_order uses (see
+    _acquire_order_lock's docstring) before doing anything, then defers to
+    _update_order_unlocked.
+    """
+    order_id = str(order.get("id", ""))
+    if not order_id:
+        return False
+    if not _acquire_order_lock(order_id):
+        frappe.log_error(
+            title=f"Shopify order {order_id}: update lock timed out",
+            message="Another process held this order's lock for 30s+ -- skipped this update.",
+        )
+        return False
+    try:
+        return _update_order_unlocked(order, order_id)
+    finally:
+        _release_order_lock(order_id)
+
+
+def _update_order_unlocked(order, order_id):
+    """
     Applies an orders/updated or orders/fulfilled webhook to an existing
     Sales Order. Updates status-tracking fields always. If the order hasn't
     shipped yet (no fulfillment_status indicating fulfilled/partially_fulfilled),
@@ -394,13 +453,13 @@ def _update_order(order):
     state. Falls back to a full create if we've never seen this order (e.g.
     Shopify redelivered orders/updated before orders/create ever arrived).
     """
-    order_id = str(order.get("id", ""))
-    if not order_id:
-        return False
-
     so_name = get_active_sales_order(order_id)
     if not so_name:
-        return _upsert_order(order)
+        # Already holding this order_id's lock -- call the unlocked upsert
+        # directly rather than _upsert_order, which would try (harmlessly,
+        # since MySQL's GET_LOCK is reentrant per-session, but needlessly)
+        # to acquire the same lock again.
+        return _upsert_order_unlocked(order, order_id)
 
     financial_status = order.get("financial_status") or ""
     fulfillment_status = order.get("fulfillment_status") or ""
@@ -411,6 +470,11 @@ def _update_order(order):
         updates["sh_financial_status"] = financial_status
     if fulfillment_status:
         updates["sh_fulfillment_status"] = fulfillment_status
+    if "note" in order:
+        # Not gated on truthiness like the status fields above -- clearing
+        # a note to empty on Shopify is a legitimate edit that should sync
+        # too, not get silently ignored.
+        updates["sh_shopify_notes"] = order.get("note") or ""
 
     if updates:
         for field, value in updates.items():
@@ -589,13 +653,29 @@ def _sync_order_line_items(so_name: str, order: dict):
     # docstatus == 1: dry-run the diff on a throwaway copy first -- cancel +
     # amend is a real, visible action (new doc name, original marked
     # Cancelled), not worth doing unless something actually changed.
-    probe = frappe.copy_doc(so)
-    if not _apply_line_item_diff(probe, order, warehouse):
-        return
+    #
+    # Retries once on TimestampMismatchError: our own outbound push (e.g.
+    # removing an item locally) can itself cause Shopify to echo back this
+    # very webhook. Even with _update_order's per-order lock, there's a
+    # narrow window where `so` was loaded a moment before that local save
+    # committed -- so re-fetch fresh and recompute the diff rather than
+    # failing outright (confirmed live: this raced and crashed before the
+    # retry was added). Same self-healing idiom already used elsewhere in
+    # this codebase for TimestampMismatchError.
+    for attempt in range(2):
+        probe = frappe.copy_doc(so)
+        if not _apply_line_item_diff(probe, order, warehouse):
+            return
 
-    so.flags.ignore_permissions = True
-    so.flags.from_shopify_sync = True
-    so.cancel()
+        so.flags.ignore_permissions = True
+        so.flags.from_shopify_sync = True
+        try:
+            so.cancel()
+            break
+        except frappe.TimestampMismatchError:
+            if attempt == 1:
+                raise
+            so = frappe.get_doc("Sales Order", so_name)
     frappe.db.commit()
 
     amended = frappe.copy_doc(so)
@@ -772,8 +852,12 @@ def _get_or_create_customer(customer_data, settings):
         if existing:
             return existing
 
-    first = customer_data.get("first_name", "").strip()
-    last = customer_data.get("last_name", "").strip()
+    # .get(key, "") only falls back when the key is MISSING -- Shopify
+    # sends first_name/last_name present but explicitly null fairly often
+    # (observed live), which .get() happily returns as None, and .strip()
+    # on None crashes the whole webhook.
+    first = (customer_data.get("first_name") or "").strip()
+    last = (customer_data.get("last_name") or "").strip()
     # Only use last_name if it exists and isn't the literal string "None"
     # (some Shopify integrations send "None" instead of null/empty)
     if first and last and last.lower() != "none":
