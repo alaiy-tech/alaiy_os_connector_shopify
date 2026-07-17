@@ -645,13 +645,29 @@ def _sync_order_line_items(so_name: str, order: dict):
     # docstatus == 1: dry-run the diff on a throwaway copy first -- cancel +
     # amend is a real, visible action (new doc name, original marked
     # Cancelled), not worth doing unless something actually changed.
-    probe = frappe.copy_doc(so)
-    if not _apply_line_item_diff(probe, order, warehouse):
-        return
+    #
+    # Retries once on TimestampMismatchError: our own outbound push (e.g.
+    # removing an item locally) can itself cause Shopify to echo back this
+    # very webhook. Even with _update_order's per-order lock, there's a
+    # narrow window where `so` was loaded a moment before that local save
+    # committed -- so re-fetch fresh and recompute the diff rather than
+    # failing outright (confirmed live: this raced and crashed before the
+    # retry was added). Same self-healing idiom already used elsewhere in
+    # this codebase for TimestampMismatchError.
+    for attempt in range(2):
+        probe = frappe.copy_doc(so)
+        if not _apply_line_item_diff(probe, order, warehouse):
+            return
 
-    so.flags.ignore_permissions = True
-    so.flags.from_shopify_sync = True
-    so.cancel()
+        so.flags.ignore_permissions = True
+        so.flags.from_shopify_sync = True
+        try:
+            so.cancel()
+            break
+        except frappe.TimestampMismatchError:
+            if attempt == 1:
+                raise
+            so = frappe.get_doc("Sales Order", so_name)
     frappe.db.commit()
 
     amended = frappe.copy_doc(so)
