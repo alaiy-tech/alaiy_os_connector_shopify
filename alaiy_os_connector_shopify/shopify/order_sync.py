@@ -39,6 +39,7 @@ query PullOrders($after: String, $queryString: String!) {
       node {
         legacyResourceId
         name
+        note
         displayFinancialStatus
         displayFulfillmentStatus
         customer {
@@ -105,6 +106,7 @@ def _order_node_to_rest_shape(node: dict) -> dict:
             "email": customer.get("email"),
         } if customer.get("legacyResourceId") else {},
         "line_items": line_items,
+        "note": node.get("note") or "",
         "financial_status": (node.get("displayFinancialStatus") or "").lower(),
         "fulfillment_status": (node.get("displayFulfillmentStatus") or "").lower(),
     }
@@ -390,6 +392,7 @@ def _upsert_order_unlocked(order, order_id):
     so.sh_shopify_order_name = order.get("name", "")
     so.sh_financial_status = order.get("financial_status", "")
     so.sh_fulfillment_status = order.get("fulfillment_status", "")
+    so.sh_shopify_notes = order.get("note") or ""
     for li in line_items:
         so.append("items", li)
 
@@ -467,6 +470,11 @@ def _update_order_unlocked(order, order_id):
         updates["sh_financial_status"] = financial_status
     if fulfillment_status:
         updates["sh_fulfillment_status"] = fulfillment_status
+    if "note" in order:
+        # Not gated on truthiness like the status fields above -- clearing
+        # a note to empty on Shopify is a legitimate edit that should sync
+        # too, not get silently ignored.
+        updates["sh_shopify_notes"] = order.get("note") or ""
 
     if updates:
         for field, value in updates.items():

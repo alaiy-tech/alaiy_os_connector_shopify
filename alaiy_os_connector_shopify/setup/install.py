@@ -261,6 +261,13 @@ def setup_custom_fields():
             "in_list_view": 1,
             "insert_after": "sh_financial_status",
         },
+        {
+            "fieldname": "sh_shopify_notes",
+            "label": "Shopify Notes",
+            "fieldtype": "Small Text",
+            "insert_after": "sh_fulfillment_status",
+            "description": "Synced both directions with Shopify's order note field.",
+        },
     ]
     sales_order_item_fields = [
         {

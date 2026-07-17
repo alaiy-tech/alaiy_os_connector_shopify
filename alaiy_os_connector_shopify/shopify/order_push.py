@@ -544,12 +544,18 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
     # No item changes - proceed with status push
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
+    # Status used to also overwrite Shopify's note field with an
+    # auto-generated string ("Alaiy OS: ... status = ...") -- that would
+    # fight with a genuine bidirectional notes field, so status now lives
+    # in tags only, and note carries the real user-editable content.
+    notes = frappe.db.get_value("Sales Order", sales_order, "sh_shopify_notes") or ""
+
     try:
         client = ShopifyGraphQLClient()
         data = client.execute(_ORDER_UPDATE_MUTATION, {
             "input": {
                 "id": _to_gid(order_id),
-                "note": f"Alaiy OS: {sales_order} status = {status}",
+                "note": notes,
                 "tags": [f"alaiy-os-status:{status}"],
             },
         })
