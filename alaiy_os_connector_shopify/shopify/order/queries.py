@@ -17,6 +17,16 @@ query PullOrders($after: String, $queryString: String!) {
         note
         displayFinancialStatus
         displayFulfillmentStatus
+        taxesIncluded
+        taxLines {
+          title
+          rate
+          priceSet {
+            shopMoney {
+              amount
+            }
+          }
+        }
         customer {
           legacyResourceId
           firstName

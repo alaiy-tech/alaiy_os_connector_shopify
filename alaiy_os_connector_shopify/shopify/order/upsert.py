@@ -11,6 +11,7 @@ from alaiy_os_connector_shopify.shopify.order.customer import _get_or_create_cus
 from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_warehouse
 from alaiy_os_connector_shopify.shopify.order.utils import _resolve_item_code
 from alaiy_os_connector_shopify.shopify.order.delivery_notes import _sync_fulfillments, _create_delivery_note_if_needed
+from alaiy_os_connector_shopify.shopify.order.tax import _append_tax_lines
 
 
 def get_active_sales_order(order_id: str):
@@ -100,6 +101,7 @@ def _upsert_order_unlocked(order, order_id):
     so.sh_shopify_notes = order.get("note") or ""
     for li in line_items:
         so.append("items", li)
+    _append_tax_lines(so, order.get("tax_lines"), order.get("taxes_included"), settings)
 
     # Set BEFORE insert/submit -- Sales Order's on_update/on_submit doc_events
     # check this flag to skip pushing back to Shopify, since this save

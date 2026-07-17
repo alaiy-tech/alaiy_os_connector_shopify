@@ -63,3 +63,8 @@ from alaiy_os_connector_shopify.shopify.order.webhook import (
     handle_order_webhook,
     _cancel_order,
 )
+from alaiy_os_connector_shopify.shopify.order.tax import (
+    _resolve_tax_account,
+    _create_tax_account,
+    _append_tax_lines,
+)

@@ -21,6 +21,7 @@
     "sh_default_territory",
     "sh_selling_price_list",
     "sh_cost_center",
+    "sh_tax_account",
     "sb_sync",
     "sh_order_status_filter",
     "sh_inventory_sync_interval",
@@ -139,6 +140,13 @@
       "label": "Cost Center",
       "options": "Cost Center",
       "reqd": 1
+    },
+    {
+      "description": "Account that tax lines pulled from Shopify orders (e.g. CGST, SGST, VAT) are booked against. Leave blank to auto-resolve/create a 'Shopify Tax' account under the company.",
+      "fieldname": "sh_tax_account",
+      "fieldtype": "Link",
+      "label": "Tax Account",
+      "options": "Account"
     },
     {
       "fieldname": "sb_sync",
