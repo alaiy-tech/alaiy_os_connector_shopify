@@ -190,11 +190,14 @@ def setup_custom_fields():
         {
             "fieldname": "sh_shopify_tags",
             "label": "Shopify Tags",
-            "fieldtype": "Small Text",
+            "fieldtype": "Table MultiSelect",
+            "options": "Item Shopify Tag",
             "insert_after": "sync_to_shopify",
-            "fetch_from": "variant_of.sh_shopify_tags",
+            # Table MultiSelect can't use fetch_from (child-table data, not a
+            # scalar) -- variant inheritance is instead handled by
+            # _copy_template_tags_to_variant on Item's validate hook.
             "read_only_depends_on": "eval:doc.variant_of",
-            "description": "Tags synced both directions with Shopify's product tags field. Fetched from the template on variants -- edit on the template.",
+            "description": "Tags synced both directions with Shopify's product tags field, picked from the cached Shopify Tag list -- no free typing. Copied from the template on variants -- edit on the template.",
         },
         {
             "fieldname": "sh_shopify_category",

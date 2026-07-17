@@ -104,3 +104,19 @@ def refresh_shopify_taxonomy():
         timeout=300,
     )
     return {"queued": True}
+
+
+@frappe.whitelist()
+def refresh_shopify_tags():
+    """
+    Manually trigger a refresh of the cached Shopify Tag list -- every
+    tag ever used across the store's products, paginated in from
+    productTags. Populates the Shopify Tag doctype the tags multi-select
+    field picks from.
+    """
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
+        queue="long",
+        timeout=300,
+    )
+    return {"queued": True}
