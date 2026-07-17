@@ -48,6 +48,12 @@ doc_events = {
     "Sales Order": {
         "on_submit": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_submit",
         "on_update": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_update",
+        # Editing line items on an ALREADY-submitted Sales Order (ERPNext's
+        # "Update Items" flow) fires on_update_after_submit, not on_update --
+        # without this, item removal on a submitted/paid order silently
+        # never reached our handler at all (confirmed live: zero Error Log
+        # entries because the code never even ran).
+        "on_update_after_submit": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_update",
         "on_cancel": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_cancel",
     },
 }
