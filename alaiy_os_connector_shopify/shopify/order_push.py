@@ -257,6 +257,43 @@ def _items_before_cache_key(so_name: str) -> str:
     return f"shopify_items_before::{so_name}"
 
 
+def snapshot_before_update_child_qty_rate():
+    """
+    before_request hook: for ERPNext's "Update Items" quick-edit grid
+    specifically (erpnext.controllers.accounts_controller.update_child_qty_rate),
+    snapshot the Sales Order's current items into cache BEFORE that
+    whitelisted method runs at all.
+
+    Confirmed live that on_sales_order_validate's capture doesn't reliably
+    fire for this endpoint -- an item ADDITION never produced a validate
+    snapshot at all (items removal did, inconsistently), so relying on
+    validate() for this specific call is a dead end. Capturing here
+    instead, at the request boundary, guarantees the true pre-edit state
+    regardless of how many internal saves/reloads update_child_qty_rate
+    performs afterward.
+    """
+    if frappe.form_dict.get("cmd") != "erpnext.controllers.accounts_controller.update_child_qty_rate":
+        return
+    if frappe.form_dict.get("parent_doctype") != "Sales Order":
+        return
+    so_name = frappe.form_dict.get("parent_doctype_name")
+    if not so_name:
+        return
+    cache_key = _items_before_cache_key(so_name)
+    if frappe.cache().get_value(cache_key) is not None:
+        return
+    snapshot = frappe.get_all(
+        "Sales Order Item",
+        filters={"parent": so_name},
+        fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
+    )
+    frappe.cache().set_value(cache_key, snapshot, expires_in_sec=120)
+    frappe.log_error(
+        title=f"Shopify DEBUG: pre-request snapshot for {so_name}",
+        message=f"captured before-snapshot {snapshot!r}",
+    )
+
+
 def on_sales_order_validate(doc, method=None):
     """
     Snapshots the DB's current items (before this save's changes land) into

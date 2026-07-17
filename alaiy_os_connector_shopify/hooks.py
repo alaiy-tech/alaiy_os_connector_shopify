@@ -11,6 +11,10 @@ after_migrate = [
     "alaiy_os_connector_shopify.setup.install.sync_connector_registry"
 ]
 
+before_request = [
+    "alaiy_os_connector_shopify.shopify.order_push.snapshot_before_update_child_qty_rate"
+]
+
 alaiy_os_sidebar_log_items = [
     {
         "link_type": "DocType",
