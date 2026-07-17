@@ -41,6 +41,14 @@ def _order_node_to_rest_shape(node: dict) -> dict:
     need to diverge.
     """
     customer = node.get("customer") or {}
+    tax_lines = []
+    for tl in (node.get("taxLines") or []):
+        amount = ((tl.get("priceSet") or {}).get("shopMoney") or {}).get("amount")
+        tax_lines.append({
+            "title": tl.get("title") or "Tax",
+            "rate": tl.get("rate"),
+            "price": amount,
+        })
     line_items = []
     for li in (node.get("lineItems") or {}).get("nodes", []):
         variant = li.get("variant") or {}
@@ -62,6 +70,8 @@ def _order_node_to_rest_shape(node: dict) -> dict:
             "email": customer.get("email"),
         } if customer.get("legacyResourceId") else {},
         "line_items": line_items,
+        "tax_lines": tax_lines,
+        "taxes_included": bool(node.get("taxesIncluded")),
         "note": node.get("note") or "",
         "financial_status": (node.get("displayFinancialStatus") or "").lower(),
         "fulfillment_status": (node.get("displayFulfillmentStatus") or "").lower(),
