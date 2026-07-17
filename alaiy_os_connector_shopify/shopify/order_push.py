@@ -187,9 +187,10 @@ def _remove_shopify_line_items(order_id: str, removed_variant_ids: list, sales_o
                 message=str(commit_errors),
             )
             return False
-        frappe.logger("shopify").info(
-            f"_remove_shopify_line_items({sales_order}): committed removal of "
-            f"{matched_line_ids!r} on Shopify order {order_id}")
+        frappe.log_error(
+            title=f"Shopify DEBUG: removed line items for {sales_order}",
+            message=f"Committed removal of {matched_line_ids!r} on Shopify order {order_id}",
+        )
         return True
     except Exception:
         frappe.log_error(
@@ -224,9 +225,10 @@ def on_sales_order_validate(doc, method=None):
         filters={"parent": doc.name},
         fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
     )
-    frappe.logger("shopify").info(
-        f"on_sales_order_validate({doc.name}): captured before-snapshot "
-        f"{doc.flags._shopify_items_before!r}")
+    frappe.log_error(
+        title=f"Shopify DEBUG: validate snapshot for {doc.name}",
+        message=f"captured before-snapshot {doc.flags._shopify_items_before!r}",
+    )
 
 
 def _detect_items_changed(doc) -> bool:
@@ -274,21 +276,28 @@ def _detect_removed_variant_ids(doc) -> list:
 
 def on_sales_order_update(doc, method=None):
     if doc.flags.from_shopify_sync:
-        frappe.logger("shopify").info(
-            f"on_sales_order_update({doc.name}): skipped, from_shopify_sync flag set")
+        frappe.log_error(
+            title=f"Shopify DEBUG: on_sales_order_update {doc.name}",
+            message="skipped, from_shopify_sync flag set",
+        )
         return
     if not doc.get("sh_shopify_order_id"):
-        frappe.logger("shopify").info(
-            f"on_sales_order_update({doc.name}): skipped, no sh_shopify_order_id")
+        frappe.log_error(
+            title=f"Shopify DEBUG: on_sales_order_update {doc.name}",
+            message="skipped, no sh_shopify_order_id",
+        )
         return
 
     # Detect if line items changed (added, removed, or quantity/rate modified)
     items_changed = _detect_items_changed(doc)
     removed_variant_ids = _detect_removed_variant_ids(doc) if items_changed else []
-    frappe.logger("shopify").info(
-        f"on_sales_order_update({doc.name}): before_snapshot="
-        f"{doc.flags.get('_shopify_items_before')!r} items_changed={items_changed} "
-        f"removed_variant_ids={removed_variant_ids!r}")
+    frappe.log_error(
+        title=f"Shopify DEBUG: on_sales_order_update {doc.name}",
+        message=(
+            f"before_snapshot={doc.flags.get('_shopify_items_before')!r} "
+            f"items_changed={items_changed} removed_variant_ids={removed_variant_ids!r}"
+        ),
+    )
 
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order_push.push_order_update",
@@ -355,9 +364,10 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
     manual-edit warning.
     """
     removed_variant_ids = removed_variant_ids or []
-    frappe.logger("shopify").info(
-        f"push_order_update({sales_order}): items_changed={items_changed} "
-        f"removed_variant_ids={removed_variant_ids!r}")
+    frappe.log_error(
+        title=f"Shopify DEBUG: push_order_update {sales_order}",
+        message=f"items_changed={items_changed} removed_variant_ids={removed_variant_ids!r}",
+    )
 
     # State guard: reject line item changes if fulfillment has started
     if items_changed:
