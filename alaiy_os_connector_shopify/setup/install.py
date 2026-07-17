@@ -267,6 +267,10 @@ def setup_custom_fields():
             "fieldtype": "Small Text",
             "insert_after": "sh_fulfillment_status",
             "description": "Synced both directions with Shopify's order note field.",
+            # Orders here are typically submitted immediately -- without
+            # this, the field is silently read-only the moment the Sales
+            # Order submits, which is effectively always.
+            "allow_on_submit": 1,
         },
     ]
     sales_order_item_fields = [
