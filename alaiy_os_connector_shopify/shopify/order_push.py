@@ -59,9 +59,141 @@ mutation PushOrderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOp
 }
 """
 
+# orderUpdate has no line-item support at all -- removing a line requires
+# Shopify's separate Order Editing API (begin a calculated edit session, set
+# the line's quantity to 0, commit).
+_ORDER_EDIT_BEGIN_MUTATION = """
+mutation BeginOrderEdit($id: ID!) {
+  orderEditBegin(id: $id) {
+    calculatedOrder {
+      id
+      lineItems(first: 100) {
+        nodes {
+          id
+          variant {
+            legacyResourceId
+          }
+        }
+      }
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_ORDER_EDIT_SET_QUANTITY_MUTATION = """
+mutation SetOrderEditQuantity($id: ID!, $lineItemId: ID!, $quantity: Int!) {
+  orderEditSetQuantity(id: $id, lineItemId: $lineItemId, quantity: $quantity) {
+    calculatedOrder {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_ORDER_EDIT_COMMIT_MUTATION = """
+mutation CommitOrderEdit($id: ID!, $notifyCustomer: Boolean) {
+  orderEditCommit(id: $id, notifyCustomer: $notifyCustomer) {
+    order {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
 
 def _to_gid(shopify_order_id: str) -> str:
     return f"gid://shopify/Order/{shopify_order_id}"
+
+
+def _remove_shopify_line_items(order_id: str, removed_variant_ids: list, sales_order: str) -> bool:
+    """
+    Removes line items from a live Shopify order via the Order Editing API
+    (orderUpdate has no line-item support at all). Matches removed ERPNext
+    rows to the calculated order's line items by variant ID -- the one
+    identifier both sides share, since Shopify's own line item IDs are
+    order-scoped and never stored on the ERPNext side.
+
+    Returns True only if every removed row was matched and the edit
+    committed cleanly -- any mismatch/failure falls back to the existing
+    manual-edit warning rather than silently reporting success.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    client = ShopifyGraphQLClient()
+    try:
+        begin_data = client.execute(_ORDER_EDIT_BEGIN_MUTATION, {"id": _to_gid(order_id)})
+        begin = begin_data.get("orderEditBegin") or {}
+        begin_errors = begin.get("userErrors") or []
+        if begin_errors:
+            frappe.log_error(
+                title=f"Shopify: orderEditBegin failed for {sales_order}",
+                message=str(begin_errors),
+            )
+            return False
+
+        calc = begin.get("calculatedOrder") or {}
+        calc_id = calc.get("id")
+        if not calc_id:
+            return False
+
+        line_items = (calc.get("lineItems") or {}).get("nodes") or []
+        variant_to_line_id = {
+            str((li.get("variant") or {}).get("legacyResourceId")): li.get("id")
+            for li in line_items if li.get("variant")
+        }
+
+        matched_line_ids = []
+        for variant_id in removed_variant_ids:
+            line_item_id = variant_to_line_id.get(str(variant_id))
+            if not line_item_id:
+                frappe.log_error(
+                    title=f"Shopify: removed variant {variant_id} not found on order {sales_order}",
+                    message=f"Order ID {order_id}, known variants: {list(variant_to_line_id.keys())}",
+                )
+                continue
+            matched_line_ids.append(line_item_id)
+
+        if not matched_line_ids:
+            return False
+
+        for line_item_id in matched_line_ids:
+            qty_data = client.execute(_ORDER_EDIT_SET_QUANTITY_MUTATION, {
+                "id": calc_id, "lineItemId": line_item_id, "quantity": 0,
+            })
+            qty_errors = (qty_data.get("orderEditSetQuantity") or {}).get("userErrors") or []
+            if qty_errors:
+                frappe.log_error(
+                    title=f"Shopify: orderEditSetQuantity failed for {sales_order}",
+                    message=str(qty_errors),
+                )
+                return False
+
+        commit_data = client.execute(_ORDER_EDIT_COMMIT_MUTATION, {"id": calc_id, "notifyCustomer": False})
+        commit_errors = (commit_data.get("orderEditCommit") or {}).get("userErrors") or []
+        if commit_errors:
+            frappe.log_error(
+                title=f"Shopify: orderEditCommit failed for {sales_order}",
+                message=str(commit_errors),
+            )
+            return False
+        return True
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: line item removal push failed for {sales_order}",
+            message=frappe.get_traceback(),
+        )
+        return False
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -70,23 +202,49 @@ def _detect_items_changed(doc) -> bool:
     """
     Check if Sales Order's items have been added, removed, or modified.
     Returns True if any items field changed, False if only status/metadata changed.
+
+    Uses get_doc_before_save() -- NOT a fresh frappe.get_doc() re-fetch. By
+    the time on_update fires, the DB row already reflects this save's new
+    values, so re-fetching from the DB just compares the new state against
+    itself and silently never detects anything (root cause of item removal
+    never reaching Shopify at all: this always returned False in
+    production, so push_order_update never even tried).
     """
     if not doc.get("items"):
         return False
 
-    # Get the original items from database (before any changes in this session)
-    try:
-        original_so = frappe.get_doc("Sales Order", doc.name)
-        original_items = {
-            (item.item_code, item.qty, item.rate) for item in original_so.items
-        }
-        current_items = {
-            (item.item_code, item.qty, item.rate) for item in doc.items
-        }
-        return original_items != current_items
-    except Exception:
-        # If we can't fetch original, assume no change to avoid false positives
+    before = doc.get_doc_before_save()
+    if not before:
         return False
+
+    original_items = {
+        (item.item_code, item.qty, item.rate) for item in before.items
+    }
+    current_items = {
+        (item.item_code, item.qty, item.rate) for item in doc.items
+    }
+    return original_items != current_items
+
+
+def _detect_removed_variant_ids(doc) -> list:
+    """
+    Shopify variant IDs for line item ROWS present before this save but
+    missing after -- i.e. genuinely removed rows, not a qty/rate edit on a
+    surviving row. This is what actually gets matched against Shopify's
+    order line items for removal; item_code/qty/rate alone can't tell us
+    WHICH item to remove on the Shopify side.
+    """
+    before = doc.get_doc_before_save()
+    if not before:
+        return []
+    before_rows = {
+        (item.item_code, item.get("sh_shopify_variant_id")) for item in before.items
+    }
+    after_rows = {
+        (item.item_code, item.get("sh_shopify_variant_id")) for item in doc.items
+    }
+    removed = before_rows - after_rows
+    return [variant_id for (_, variant_id) in removed if variant_id]
 
 
 # ── Doc event entry points ───────────────────────────────────────────────────
@@ -101,6 +259,7 @@ def on_sales_order_update(doc, method=None):
 
     # Detect if line items changed (added, removed, or quantity/rate modified)
     items_changed = _detect_items_changed(doc)
+    removed_variant_ids = _detect_removed_variant_ids(doc) if items_changed else []
 
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order_push.push_order_update",
@@ -110,6 +269,7 @@ def on_sales_order_update(doc, method=None):
         sales_order=doc.name,
         status=doc.status,
         items_changed=items_changed,
+        removed_variant_ids=removed_variant_ids,
     )
 
 
@@ -154,14 +314,19 @@ def on_sales_order_cancel(doc, method=None):
 
 # ── Background job bodies ────────────────────────────────────────────────────
 
-def push_order_update(order_id: str, sales_order: str, status: str, items_changed: bool = False):
+def push_order_update(order_id: str, sales_order: str, status: str, items_changed: bool = False, removed_variant_ids: list = None):
     """
     Pushes order status updates to Shopify. If line items changed on the SO,
     check state guard: if Delivery Notes exist (shipment started), reject the
     update and log a clear error since the Shopify order can't be modified at
-    that point anyway. Otherwise, log a warning that manual order edit is needed
-    on Shopify since orderUpdate mutation doesn't support line-item changes.
+    that point anyway. Otherwise, if any of the changed rows were outright
+    removed (not just qty/rate edited), push that removal via Shopify's
+    Order Editing API. Additions/qty/rate edits still have no Shopify-side
+    equivalent (orderUpdate doesn't support them) and fall back to the
+    manual-edit warning.
     """
+    removed_variant_ids = removed_variant_ids or []
+
     # State guard: reject line item changes if fulfillment has started
     if items_changed:
         has_delivery_notes = frappe.db.exists(
@@ -176,7 +341,12 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
             )
             return
 
-        # Items changed but no shipment yet - warn user that Shopify needs manual edit
+        if removed_variant_ids and _remove_shopify_line_items(order_id, removed_variant_ids, sales_order):
+            return
+
+        # Items changed but no shipment yet, and either nothing was removed
+        # (just added/qty/rate edited) or the removal push itself failed --
+        # warn user that Shopify needs manual edit
         frappe.log_error(
             title=f"Shopify: line items changed for {sales_order}, manual edit needed",
             message=(
