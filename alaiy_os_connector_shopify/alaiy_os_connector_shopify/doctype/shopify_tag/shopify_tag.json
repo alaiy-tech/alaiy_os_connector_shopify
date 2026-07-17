@@ -1,0 +1,41 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "autoname": "field:tag_name",
+  "creation": "2026-07-17 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "tag_name"
+  ],
+  "fields": [
+    {
+      "fieldname": "tag_name",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Tag",
+      "reqd": 1,
+      "unique": 1
+    }
+  ],
+  "links": [],
+  "modified": "2026-07-17 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Alaiy OS Connector Shopify",
+  "name": "Shopify Tag",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "read": 1,
+      "role": "System Manager",
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "title_field": "tag_name",
+  "track_changes": 0
+}

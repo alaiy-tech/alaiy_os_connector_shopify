@@ -125,6 +125,28 @@ def validate_item_uoms(doc, method=None):
             """, (name, dup.uom, dup.keep_name))
 
 
+def copy_template_tags_to_variant(doc, method=None):
+    """
+    sh_shopify_tags is a Table MultiSelect (Item Shopify Tag rows), unlike
+    the plain scalar fields elsewhere on this Item (sh_shopify_category,
+    sh_shopify_product_type) that inherit from the template via
+    fetch_from -- Frappe's fetch_from only copies simple field values, not
+    child-table data, so a variant's tags have to be copied in explicitly
+    here instead. read_only_depends_on already keeps the grid non-editable
+    on a variant in the UI; this keeps its actual data in sync with
+    whatever the template's tags currently are.
+    """
+    if not doc.variant_of:
+        return
+    template_tags = frappe.get_all(
+        "Item Shopify Tag",
+        filters={"parent": doc.variant_of},
+        fields=["shopify_tag"],
+        order_by="idx",
+    )
+    doc.set("sh_shopify_tags", [{"shopify_tag": row.shopify_tag} for row in template_tags])
+
+
 def on_item_change(doc, method=None):
     if doc.flags.from_shopify_sync:
         # This save originated from an inbound webhook update (see
@@ -400,6 +422,13 @@ def _seo_values(item) -> dict:
     return {"title": title, "description": description}
 
 
+def _item_tags(item) -> list:
+    """sh_shopify_tags is a Table MultiSelect (Item Shopify Tag rows) --
+    this is the one place both the outbound push and the fingerprint/
+    canonical comparison should read the plain tag-name list from."""
+    return [row.shopify_tag for row in (item.get("sh_shopify_tags") or []) if row.shopify_tag]
+
+
 def _product_canonical(item, variants, settings) -> dict:
     canonical = {"title": item.item_name, "variants": [
         _variant_canonical(v, settings) for v in variants]}
@@ -411,7 +440,7 @@ def _product_canonical(item, variants, settings) -> dict:
         canonical["product_type"] = item.get("sh_shopify_product_type") or ""
     if settings.sh_push_images:
         canonical["images"] = _item_images(item, settings)
-    canonical["tags"] = item.get("sh_shopify_tags") or ""
+    canonical["tags"] = sorted(_item_tags(item))
     seo = _seo_values(item)
     canonical["seo_title"] = seo["title"]
     canonical["seo_description"] = seo["description"]
@@ -512,9 +541,9 @@ def _resolve_category_id(client, category_name: str):
 # ── Taxonomy Tree Fetch ──────────────────────────────────────────────────────
 
 _TAXONOMY_TREE_QUERY = """
-query GetTaxonomyTree {
+query GetTaxonomyTree($after: String) {
   taxonomy {
-    categories(first: 250) {
+    categories(first: 250, after: $after) {
       edges {
         node {
           id
@@ -522,6 +551,10 @@ query GetTaxonomyTree {
           level
           fullName
         }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
       }
     }
   }
@@ -533,12 +566,32 @@ def fetch_shopify_taxonomy():
     """
     Fetch the full Shopify Standard Product Taxonomy tree and populate
     the Shopify Category doctype. Called on demand or via scheduled job.
+
+    Paginated -- Shopify's full taxonomy has several thousand categories,
+    far past the single page of 250 a single client.execute() call used
+    to silently stop at (confirmed: no pageInfo/after handling at all
+    before this fix, so only the first 250 nodes were ever imported).
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.product_import import ensure_shopify_category
 
     client = ShopifyGraphQLClient()
+    created = 0
+    total = 0
     try:
-        data = client.execute(_TAXONOMY_TREE_QUERY)
+        for page_nodes in client.execute_paginated(_TAXONOMY_TREE_QUERY, {}, ["taxonomy", "categories"]):
+            total += len(page_nodes)
+            for node in page_nodes:
+                shopify_id = node.get("id", "")
+                name = node.get("name", "")
+                full_name = node.get("fullName") or name
+                if shopify_id and full_name:
+                    # Re-use our robust nested tree builder to ensure parent-child linking and custom name format
+                    path_name = ensure_shopify_category(full_name)
+                    if path_name:
+                        frappe.db.set_value("Shopify Category", path_name, "shopify_category_id", shopify_id)
+                        created += 1
+            frappe.db.commit()
     except Exception:
         frappe.log_error(
             title="Shopify: failed to fetch taxonomy tree",
@@ -546,30 +599,67 @@ def fetch_shopify_taxonomy():
         )
         return
 
-    categories = ((data.get("taxonomy") or {}).get("categories") or {}).get("edges") or []
-    if not categories:
+    if not total:
         frappe.logger().warning("Shopify taxonomy returned no categories")
         return
 
-    from alaiy_os_connector_shopify.shopify.product_import import ensure_shopify_category
-
-    created = 0
-    for edge in categories:
-        node = edge.get("node") or {}
-        shopify_id = node.get("id", "")
-        name = node.get("name", "")
-        full_name = node.get("fullName") or name
-        if shopify_id and full_name:
-            # Re-use our robust nested tree builder to ensure parent-child linking and custom name format
-            path_name = ensure_shopify_category(full_name)
-            if path_name:
-                frappe.db.set_value("Shopify Category", path_name, "shopify_category_id", shopify_id)
-                created += 1
-
-    frappe.db.commit()
     frappe.logger().info(
-        f"Shopify taxonomy sync completed: processed {len(categories)} categories"
+        f"Shopify taxonomy sync completed: processed {total} categories"
     )
+
+
+_PRODUCT_TAGS_QUERY = """
+query GetProductTags($after: String) {
+  productTags(first: 250, after: $after) {
+    edges {
+      node
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
+
+
+@frappe.whitelist()
+def sync_shopify_tags():
+    """
+    Fetch every tag ever used across the store's products and cache it
+    locally as a Shopify Tag record -- the master list the Item Shopify
+    Tag multi-select field picks from, so users choose from real Shopify
+    tags instead of free-typing new ones. Paginated (250/page) since a
+    real store can easily have thousands of distinct tags, well past
+    Shopify's per-page connection limit.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    created = 0
+    total = 0
+    try:
+        for page_nodes in client.execute_paginated(_PRODUCT_TAGS_QUERY, {}, ["productTags"]):
+            for tag_name in page_nodes:
+                if not tag_name:
+                    continue
+                total += 1
+                if not frappe.db.exists("Shopify Tag", tag_name):
+                    frappe.get_doc({"doctype": "Shopify Tag", "tag_name": tag_name}).insert(
+                        ignore_permissions=True)
+                    created += 1
+            frappe.db.commit()
+    except Exception:
+        frappe.log_error(
+            title="Shopify: failed to sync product tags",
+            message=frappe.get_traceback(),
+        )
+        return {"status": "failed"}
+
+    frappe.logger().info(
+        f"Shopify tags sync completed: {total} tags seen, {created} new"
+    )
+    return {"status": "ok", "total": total, "created": created}
 
 
 def _product_set_input(item, variants: list, settings, client=None) -> dict:
@@ -609,8 +699,9 @@ def _product_set_input(item, variants: list, settings, client=None) -> dict:
             payload["files"] = [
                 {"originalSource": url, "contentType": "IMAGE"} for url in images
             ]
-    if item.get("sh_shopify_tags"):
-        payload["tags"] = [t.strip() for t in item.sh_shopify_tags.split(",") if t.strip()]
+    tags = _item_tags(item)
+    if tags:
+        payload["tags"] = sorted(tags)
     if item.get("sh_shopify_category"):
         # sh_shopify_category is now a Link to Shopify Category doctype
         category_id = frappe.db.get_value(
@@ -1007,8 +1098,8 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
 
     # Shopify's REST tags field is already a single comma-separated string
     # (unlike GraphQL's [String!]! list) -- pass it through as a one-item
-    # list so _apply_product_meta's isinstance(tags, list) branch joins it
-    # right back into the same string, keeping one code path for both.
+    # list; _normalize_tags splits it back into individual tags the same
+    # way it splits GraphQL's list, keeping one code path for both.
     tags_raw = product.get("tags")
     category = product.get("category") or {}
 

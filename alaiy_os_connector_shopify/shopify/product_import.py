@@ -1049,11 +1049,45 @@ def ensure_shopify_category(full_name: str) -> str:
     return parent
 
 
+def _normalize_tags(tags) -> list:
+    """
+    Shopify's tags arrive in two different shapes depending on the code
+    path: GraphQL gives a list of individual tag strings, while the REST
+    webhook payload gives one comma-joined string wrapped in a list
+    upstream (see product_sync.py's webhook reshape). Splitting every
+    element on "," handles both uniformly, since splitting an
+    already-individual GraphQL tag on "," is a no-op.
+    """
+    if not tags:
+        return []
+    if isinstance(tags, str):
+        tags = [tags]
+    result = []
+    for t in tags:
+        result.extend(p.strip() for p in (t or "").split(",") if p.strip())
+    return result
+
+
+def _set_item_tags(item, tag_names: list):
+    """
+    Sets sh_shopify_tags (a Table MultiSelect of Item Shopify Tag rows)
+    from a plain list of tag name strings, self-healing any "Shopify Tag"
+    master record that doesn't exist yet locally -- a product pulled in
+    with a tag never seen before (i.e. before the next "Sync Shopify
+    Tags" run catches up) shouldn't fail or silently drop it.
+    """
+    for tag_name in tag_names:
+        if not frappe.db.exists("Shopify Tag", tag_name):
+            frappe.get_doc({"doctype": "Shopify Tag", "tag_name": tag_name}).insert(
+                ignore_permissions=True)
+    item.set("sh_shopify_tags", [{"shopify_tag": t} for t in tag_names])
+
+
 def _apply_product_meta(item, node: dict):
     """Apply product meta to Item -- tags, category, and SEO fields."""
-    tags = node.get("tags")
+    tags = _normalize_tags(node.get("tags"))
     if tags:
-        item.sh_shopify_tags = ", ".join(tags) if isinstance(tags, list) else tags
+        _set_item_tags(item, tags)
     category = node.get("category")
     if category:
         cat_name = category.get("fullName") or category.get("name")

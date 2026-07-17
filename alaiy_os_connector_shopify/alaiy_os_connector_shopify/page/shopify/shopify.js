@@ -65,6 +65,19 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 								</button>
 								<div id="products-export-log" class="shopify-sync-log"></div>
 							</div>
+
+							<!-- Taxonomy & Tags -->
+							<div class="shopify-sync-box">
+								<h6><i class="fa fa-tags"></i> Categories &amp; Tags</h6>
+								<p class="shopify-text-muted">Refresh cached taxonomy and tags from Shopify</p>
+								<button id="sync-taxonomy-btn" class="shopify-btn shopify-btn-outline-secondary">
+									Sync Categories
+								</button>
+								<button id="sync-tags-btn" class="shopify-btn shopify-btn-outline-secondary">
+									Sync Tags
+								</button>
+								<div id="taxonomy-log" class="shopify-sync-log"></div>
+							</div>
 						</div>
 					</div>
 				</div>
@@ -238,6 +251,28 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		});
 	}
 
+	function sync_taxonomy() {
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.refresh_shopify_taxonomy',
+			callback: function(r) {
+				if (r.message && r.message.queued) {
+					frappe.show_alert({message: 'Category sync queued', indicator: 'blue'}, 5);
+				}
+			}
+		});
+	}
+
+	function sync_tags() {
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.refresh_shopify_tags',
+			callback: function(r) {
+				if (r.message && r.message.queued) {
+					frappe.show_alert({message: 'Tags sync queued', indicator: 'blue'}, 5);
+				}
+			}
+		});
+	}
+
 	function poll_import_progress(log_name, log_container, btn) {
 		frappe.call({
 			method: 'frappe.client.get',
@@ -299,4 +334,6 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	document.getElementById('sync-inventory-btn').addEventListener('click', sync_inventory);
 	document.getElementById('import-products-btn').addEventListener('click', import_products);
 	document.getElementById('export-products-btn').addEventListener('click', export_products);
+	document.getElementById('sync-taxonomy-btn').addEventListener('click', sync_taxonomy);
+	document.getElementById('sync-tags-btn').addEventListener('click', sync_tags);
 };
