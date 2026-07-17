@@ -198,30 +198,45 @@ def _remove_shopify_line_items(order_id: str, removed_variant_ids: list, sales_o
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def on_sales_order_validate(doc, method=None):
+    """
+    Snapshots the DB's current items (before this save's changes land) into
+    a doc flag, for _detect_items_changed/_detect_removed_variant_ids to
+    diff against later in on_update/on_update_after_submit.
+
+    validate() is the one hook guaranteed to run BEFORE db_update() writes
+    this save's new values, for both a plain save (on_update) and an
+    already-submitted doc's "Update Items" edit (on_update_after_submit) --
+    unlike get_doc_before_save(), which isn't reliably populated on the
+    latter path (confirmed live: item removal via Update Items produced
+    zero Error Log entries because _detect_items_changed's before-state
+    read nothing and silently returned False, so the removal push never
+    even ran).
+    """
+    if doc.is_new():
+        doc.flags._shopify_items_before = []
+        return
+    doc.flags._shopify_items_before = frappe.get_all(
+        "Sales Order Item",
+        filters={"parent": doc.name},
+        fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
+    )
+
+
 def _detect_items_changed(doc) -> bool:
     """
     Check if Sales Order's items have been added, removed, or modified.
     Returns True if any items field changed, False if only status/metadata changed.
-
-    Uses get_doc_before_save() -- NOT a fresh frappe.get_doc() re-fetch. By
-    the time on_update fires, the DB row already reflects this save's new
-    values, so re-fetching from the DB just compares the new state against
-    itself and silently never detects anything (root cause of item removal
-    never reaching Shopify at all: this always returned False in
-    production, so push_order_update never even tried).
     """
-    if not doc.get("items"):
-        return False
-
-    before = doc.get_doc_before_save()
-    if not before:
+    before_rows = doc.flags.get("_shopify_items_before")
+    if before_rows is None:
         return False
 
     original_items = {
-        (item.item_code, item.qty, item.rate) for item in before.items
+        (row["item_code"], row["qty"], row["rate"]) for row in before_rows
     }
     current_items = {
-        (item.item_code, item.qty, item.rate) for item in doc.items
+        (item.item_code, item.qty, item.rate) for item in (doc.items or [])
     }
     return original_items != current_items
 
@@ -234,16 +249,16 @@ def _detect_removed_variant_ids(doc) -> list:
     order line items for removal; item_code/qty/rate alone can't tell us
     WHICH item to remove on the Shopify side.
     """
-    before = doc.get_doc_before_save()
-    if not before:
+    before_rows = doc.flags.get("_shopify_items_before")
+    if not before_rows:
         return []
-    before_rows = {
-        (item.item_code, item.get("sh_shopify_variant_id")) for item in before.items
+    before_keys = {
+        (row["item_code"], row["sh_shopify_variant_id"]) for row in before_rows
     }
-    after_rows = {
-        (item.item_code, item.get("sh_shopify_variant_id")) for item in doc.items
+    after_keys = {
+        (item.item_code, item.get("sh_shopify_variant_id")) for item in (doc.items or [])
     }
-    removed = before_rows - after_rows
+    removed = before_keys - after_keys
     return [variant_id for (_, variant_id) in removed if variant_id]
 
 
