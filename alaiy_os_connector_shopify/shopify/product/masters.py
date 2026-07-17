@@ -1,0 +1,174 @@
+"""
+Master-data ensure-helpers (Brand, Item Group, Item Attribute, UOM, Cost
+Center) -- moved verbatim from product_import.py, unchanged.
+"""
+
+import frappe
+
+
+def _ensure_brand(name: str) -> str:
+    """
+    Item.brand is also a mandatory-shaped Link field (to the Brand
+    doctype), not free text -- Shopify's vendor string fails the same way
+    productType does if no Brand of that exact name exists yet.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    if frappe.db.exists("Brand", name):
+        return name
+    try:
+        doc = frappe.new_doc("Brand")
+        doc.brand = name
+        doc.flags.ignore_permissions = True
+        doc.insert()
+        frappe.db.commit()
+        return name
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify import: failed to create Brand {name}",
+            message=frappe.get_traceback(),
+        )
+        return None
+
+
+def _ensure_item_group(name: str) -> str:
+    """
+    Item.item_group is a mandatory Link field, not free text -- inserting
+    Shopify's productType string directly (e.g. "Demo Item Group") fails
+    outright if no Item Group of that exact name exists yet. Creates one
+    under the root "All Item Groups" if needed, and falls back to that
+    root itself if the name is blank or the create fails for any reason.
+    """
+    name = (name or "").strip()
+    if not name:
+        return "All Item Groups"
+    if frappe.db.exists("Item Group", name):
+        return name
+    try:
+        doc = frappe.new_doc("Item Group")
+        doc.item_group_name = name
+        doc.parent_item_group = "All Item Groups"
+        doc.is_group = 0
+        doc.flags.ignore_permissions = True
+        doc.insert()
+        frappe.db.commit()
+        return name
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify import: failed to create Item Group {name}",
+            message=frappe.get_traceback(),
+        )
+        return "All Item Groups"
+
+
+def _make_attribute_abbr(value: str, existing_abbrs: set) -> str:
+    """Item Attribute Value rows require a short, unique-per-attribute
+    `abbr` alongside the display value -- derive one from the value itself
+    and disambiguate on collision."""
+    base = "".join(ch for ch in value.upper() if ch.isalnum())[:5] or "VAL"
+    abbr = base
+    i = 1
+    while abbr in existing_abbrs:
+        i += 1
+        abbr = f"{base}{i}"
+    return abbr
+
+
+def _ensure_item_attribute(attribute_name: str, values: list):
+    """
+    Ensure an Item Attribute exists with this name, and that every value
+    in `values` is registered in its allowed Item Attribute Value list --
+    ERPNext rejects a variant whose attribute_value isn't pre-registered
+    on the attribute, separately from the template needing the attribute
+    declared at all.
+    """
+    if frappe.db.exists("Item Attribute", attribute_name):
+        doc = frappe.get_doc("Item Attribute", attribute_name)
+    else:
+        doc = frappe.new_doc("Item Attribute")
+        doc.attribute_name = attribute_name
+
+    existing_values = {row.attribute_value for row in (doc.item_attribute_values or [])}
+    existing_abbrs = {row.abbr for row in (doc.item_attribute_values or [])}
+    changed = False
+    for value in values:
+        if not value or value in existing_values:
+            continue
+        abbr = _make_attribute_abbr(value, existing_abbrs)
+        doc.append("item_attribute_values", {"attribute_value": value, "abbr": abbr})
+        existing_values.add(value)
+        existing_abbrs.add(abbr)
+        changed = True
+
+    if doc.is_new():
+        doc.flags.ignore_permissions = True
+        doc.insert()
+        frappe.db.commit()
+    elif changed:
+        doc.flags.ignore_permissions = True
+        doc.save()
+        frappe.db.commit()
+
+
+def _ensure_uom(name: str) -> str:
+    if not frappe.db.exists("UOM", name):
+        frappe.get_doc({"doctype": "UOM", "uom_name": name}).insert(ignore_permissions=True)
+    return name
+
+
+def _ensure_cost_center(company: str) -> str:
+    """
+    Return a usable leaf Cost Center for this company, self-healing broken
+    setups instead of requiring manual console fixes on every client site.
+
+    Confirmed live: a real site's root Cost Center had its own
+    parent_cost_center dangling (pointing at "<company>", a plain string
+    that isn't itself a Cost Center -- the real root is always named
+    "<company> - <abbr>"), which corrupted its lft/rgt to 0/0 and made
+    every attempt to create a child fail with "Item cannot be added to
+    its own descendants". A root's parent must be blank, not a dangling
+    reference, for the nested-set tree to be valid -- clear it and
+    rebuild before trying to create anything.
+    """
+    company_default = frappe.db.get_value("Company", company, "cost_center")
+    if company_default and not frappe.db.get_value("Cost Center", company_default, "is_group"):
+        return company_default
+
+    existing_leaf = frappe.db.get_value(
+        "Cost Center", {"company": company, "is_group": 0}, "name"
+    )
+    if existing_leaf:
+        frappe.db.set_value("Company", company, "cost_center", existing_leaf)
+        return existing_leaf
+
+    abbr = frappe.db.get_value("Company", company, "abbr")
+    root = f"{company} - {abbr}" if abbr else None
+    if not root or not frappe.db.exists("Cost Center", root):
+        return None
+
+    parent = frappe.db.get_value("Cost Center", root, "parent_cost_center")
+    if parent and parent != root and not frappe.db.exists("Cost Center", parent):
+        frappe.db.set_value("Cost Center", root, "parent_cost_center", "")
+
+    root_lft = frappe.db.get_value("Cost Center", root, "lft")
+    if not root_lft:
+        from frappe.utils.nestedset import rebuild_tree
+        rebuild_tree("Cost Center")
+
+    try:
+        cc = frappe.new_doc("Cost Center")
+        cc.cost_center_name = "Main"
+        cc.parent_cost_center = root
+        cc.company = company
+        cc.is_group = 0
+        cc.insert(ignore_permissions=True)
+        frappe.db.set_value("Company", company, "cost_center", cc.name)
+        frappe.db.commit()
+        return cc.name
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify import: failed to auto-create Cost Center for {company}",
+            message=frappe.get_traceback(),
+        )
+        return None
