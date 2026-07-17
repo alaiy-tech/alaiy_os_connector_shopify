@@ -304,35 +304,42 @@ def run_full_import(log_name=None, date_from=None, date_to=None):
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
+def _acquire_order_lock(order_id: str, timeout: int = 30) -> bool:
+    """
+    MySQL-native advisory lock shared by BOTH _upsert_order and
+    _update_order for the same Shopify order_id -- enforced by the DB
+    server itself, so it holds across separate worker processes
+    regardless of how redis-cache is configured. A single shared lock
+    name per order_id serializes our own outbound push (which can itself
+    trigger Shopify to send back an echoed orders/updated webhook) against
+    the inbound webhook handler for that very echo: observed live, the
+    inbound handler loaded the Sales Order before an in-flight local save
+    (removing an item) had committed, computed a stale diff against it,
+    and then failed with TimestampMismatchError trying to cancel/amend a
+    document that had changed underneath it by the time it got there.
+    """
+    return bool(frappe.db.sql("SELECT GET_LOCK(%s, %s)", (f"shopify_order_{order_id}", timeout))[0][0])
+
+
+def _release_order_lock(order_id: str):
+    frappe.db.sql("SELECT RELEASE_LOCK(%s)", (f"shopify_order_{order_id}",))
+
+
 def _upsert_order(order):
-    """
-    Serializes _upsert_order_unlocked per Shopify order_id. Shopify can
-    fire orders/create and orders/updated (via _update_order's
-    not-found-yet fallback) for the same brand-new order within
-    milliseconds of each other, and the scheduled GraphQL pull can also
-    pick it up in the same window -- with no lock, two of these can both
-    pass the "does this order already exist?" check before either
-    commits its insert, creating duplicate Sales Orders for one Shopify
-    order (observed live even with a redis-cache-based lock in place --
-    switched to MySQL's own GET_LOCK/RELEASE_LOCK, which is enforced by
-    the DB server itself across separate worker processes regardless of
-    how redis-cache is configured on a given site).
-    """
+    """Acquires this order's lock, then defers to _upsert_order_unlocked."""
     order_id = str(order.get("id", ""))
     if not order_id:
         return False
-    lock_name = f"shopify_order_upsert_{order_id}"
-    got_lock = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (lock_name, 30))[0][0]
-    if not got_lock:
+    if not _acquire_order_lock(order_id):
         frappe.log_error(
             title=f"Shopify order {order_id}: upsert lock timed out",
-            message="Another process held this order's upsert lock for 30s+ -- skipped to avoid a duplicate.",
+            message="Another process held this order's lock for 30s+ -- skipped to avoid a duplicate.",
         )
         return False
     try:
         return _upsert_order_unlocked(order, order_id)
     finally:
-        frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock_name,))
+        _release_order_lock(order_id)
 
 
 def _upsert_order_unlocked(order, order_id):
@@ -415,6 +422,27 @@ def _upsert_order_unlocked(order, order_id):
 
 def _update_order(order):
     """
+    Acquires the SAME per-order lock _upsert_order uses (see
+    _acquire_order_lock's docstring) before doing anything, then defers to
+    _update_order_unlocked.
+    """
+    order_id = str(order.get("id", ""))
+    if not order_id:
+        return False
+    if not _acquire_order_lock(order_id):
+        frappe.log_error(
+            title=f"Shopify order {order_id}: update lock timed out",
+            message="Another process held this order's lock for 30s+ -- skipped this update.",
+        )
+        return False
+    try:
+        return _update_order_unlocked(order, order_id)
+    finally:
+        _release_order_lock(order_id)
+
+
+def _update_order_unlocked(order, order_id):
+    """
     Applies an orders/updated or orders/fulfilled webhook to an existing
     Sales Order. Updates status-tracking fields always. If the order hasn't
     shipped yet (no fulfillment_status indicating fulfilled/partially_fulfilled),
@@ -422,13 +450,13 @@ def _update_order(order):
     state. Falls back to a full create if we've never seen this order (e.g.
     Shopify redelivered orders/updated before orders/create ever arrived).
     """
-    order_id = str(order.get("id", ""))
-    if not order_id:
-        return False
-
     so_name = get_active_sales_order(order_id)
     if not so_name:
-        return _upsert_order(order)
+        # Already holding this order_id's lock -- call the unlocked upsert
+        # directly rather than _upsert_order, which would try (harmlessly,
+        # since MySQL's GET_LOCK is reentrant per-session, but needlessly)
+        # to acquire the same lock again.
+        return _upsert_order_unlocked(order, order_id)
 
     financial_status = order.get("financial_status") or ""
     fulfillment_status = order.get("fulfillment_status") or ""
