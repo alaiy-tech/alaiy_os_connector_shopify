@@ -15,7 +15,8 @@ frappe.ui.form.on("Shopify Collection", {
 			return;
 		}
 
-		if (chWrap) {
+		function load_channels() {
+			if (!chWrap) return;
 			chWrap.html('<p class="text-muted">Loading channels...</p>');
 			frappe.call({
 				method: "alaiy_os_connector_shopify.shopify.product.collections.get_collection_channels",
@@ -26,19 +27,51 @@ frappe.ui.form.on("Shopify Collection", {
 						chWrap.html('<p class="text-muted">No sales channels.</p>');
 						return;
 					}
-					const chips = chans.map((c) => {
+					chWrap.empty();
+					const note = $('<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Click a channel to publish / unpublish</div>');
+					chWrap.append(note);
+					chans.forEach((c) => {
 						const on = c.published;
 						const color = on ? "var(--green-500,#28a745)" : "var(--text-muted)";
 						const bg = on ? "var(--green-50,#eaf7ee)" : "var(--control-bg)";
 						const dot = on ? "●" : "○";
-						return '<span style="display:inline-block;margin:2px 4px;padding:3px 10px;border-radius:12px;' +
-							"font-size:12px;border:1px solid " + color + ";color:" + color + ";background:" + bg + ';">' +
-							dot + " " + frappe.utils.escape_html(c.name) + "</span>";
-					}).join("");
-					chWrap.html('<div>' + chips + "</div>");
+						const chip = $('<span></span>')
+							.css({
+								display: "inline-block", margin: "2px 4px", padding: "3px 10px",
+								"border-radius": "12px", "font-size": "12px", cursor: "pointer",
+								border: "1px solid " + color, color: color, background: bg,
+							})
+							.text(dot + " " + (c.name || ""));
+						chip.on("click", () => {
+							if (!c.publication_id) return;
+							chip.css("opacity", 0.5).text("… " + (c.name || ""));
+							frappe.call({
+								method: "alaiy_os_connector_shopify.shopify.product.collections.toggle_collection_channel",
+								args: {
+									collection_name: frm.doc.name,
+									publication_id: c.publication_id,
+									publish: on ? 0 : 1,
+								},
+								callback(res) {
+									const m = res.message || {};
+									if (m.ok) {
+										frappe.show_alert({
+											message: (on ? "Unpublished from " : "Published to ") + c.name,
+											indicator: "green",
+										}, 4);
+									} else {
+										frappe.show_alert({ message: "Failed: " + (m.error || ""), indicator: "red" }, 6);
+									}
+									load_channels();
+								},
+							});
+						});
+						chWrap.append(chip);
+					});
 				},
 			});
 		}
+		load_channels();
 
 		wrapper.html('<p class="text-muted">Loading products from Shopify...</p>');
 		frappe.call({

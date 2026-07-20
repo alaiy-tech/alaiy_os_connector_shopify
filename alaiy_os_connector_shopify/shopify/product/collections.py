@@ -74,16 +74,48 @@ query CollectionProducts($id: ID!, $after: String) {
 }
 """
 
+_PUBLICATIONS_QUERY = """
+query AllPublications {
+  publications(first: 25) {
+    nodes {
+      id
+      name
+    }
+  }
+}
+"""
+
 _COLLECTION_CHANNELS_QUERY = """
 query CollectionChannels($id: ID!) {
   collection(id: $id) {
-    resourcePublications(first: 25, onlyPublished: false) {
+    resourcePublications(first: 25, onlyPublished: true) {
       nodes {
-        isPublished
         publication {
-          name
+          id
         }
       }
+    }
+  }
+}
+"""
+
+_PUBLISH_MUTATION = """
+mutation Publish($id: ID!, $input: [PublicationInput!]!) {
+  publishablePublish(id: $id, input: $input) {
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_UNPUBLISH_MUTATION = """
+mutation Unpublish($id: ID!, $input: [PublicationInput!]!) {
+  publishableUnpublish(id: $id, input: $input) {
+    userErrors {
+      field
+      message
     }
   }
 }
@@ -295,6 +327,14 @@ def get_collection_products(collection_name: str):
             title=f"Shopify: could not fetch products for collection {collection_name}",
             message=frappe.get_traceback(),
         )
+        return products
+
+    # Keep the stored count honest -- productsCount at sync time can lag or come
+    # back 0 (seen live) while the live product set is non-empty. Reconcile it
+    # to what we actually fetched.
+    if frappe.db.get_value("Shopify Collection", collection_name, "product_count") != len(products):
+        frappe.db.set_value("Shopify Collection", collection_name, "product_count", len(products), update_modified=False)
+        frappe.db.commit()
     return products
 
 
@@ -311,11 +351,20 @@ def get_collection_channels(collection_name: str):
         return []
     client = ShopifyGraphQLClient()
     try:
+        # ALL publications = the master list, so an unpublished channel still
+        # shows (as a not-published chip) and can be re-published. Then mark
+        # which ones the collection is actually published to.
+        pubs = (client.execute(_PUBLICATIONS_QUERY).get("publications") or {}).get("nodes") or []
         data = client.execute(_COLLECTION_CHANNELS_QUERY, {"id": gid})
-        nodes = ((data.get("collection") or {}).get("resourcePublications") or {}).get("nodes") or []
+        pub_nodes = ((data.get("collection") or {}).get("resourcePublications") or {}).get("nodes") or []
+        published_ids = {(n.get("publication") or {}).get("id") for n in pub_nodes}
         return [
-            {"name": (n.get("publication") or {}).get("name"), "published": bool(n.get("isPublished"))}
-            for n in nodes if (n.get("publication") or {}).get("name")
+            {
+                "name": p.get("name"),
+                "publication_id": p.get("id"),
+                "published": p.get("id") in published_ids,
+            }
+            for p in pubs if p.get("name")
         ]
     except Exception:
         frappe.log_error(
@@ -323,6 +372,45 @@ def get_collection_channels(collection_name: str):
             message=frappe.get_traceback(),
         )
         return []
+
+
+@frappe.whitelist()
+def toggle_collection_channel(collection_name: str, publication_id: str, publish):
+    """
+    Publish or unpublish a collection to one sales channel (Shopify
+    Publication) via publishablePublish / publishableUnpublish. `publish` is
+    truthy to publish, falsy to unpublish (comes in as a string from the form).
+    Returns {"ok": bool, "error": str}.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    if not gid:
+        return {"ok": False, "error": "Collection not linked to Shopify."}
+
+    do_publish = str(publish) in ("1", "true", "True")
+    mutation = _PUBLISH_MUTATION if do_publish else _UNPUBLISH_MUTATION
+    key = "publishablePublish" if do_publish else "publishableUnpublish"
+    try:
+        client = ShopifyGraphQLClient()
+        data = client.execute(mutation, {
+            "id": gid,
+            "input": [{"publicationId": publication_id}],
+        })
+        errors = (data.get(key) or {}).get("userErrors") or []
+        if errors:
+            frappe.log_error(
+                title=f"Shopify: channel toggle failed for {collection_name}",
+                message=str(errors),
+            )
+            return {"ok": False, "error": str(errors)}
+        return {"ok": True}
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: channel toggle errored for {collection_name}",
+            message=frappe.get_traceback(),
+        )
+        return {"ok": False, "error": "See Error Log."}
 
 
 def _set_item_collections(item, collection_titles: list):
