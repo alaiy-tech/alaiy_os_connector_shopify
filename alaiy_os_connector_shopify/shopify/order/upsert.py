@@ -54,16 +54,27 @@ def _upsert_order_unlocked(order, order_id):
         return False  # already processed
 
     settings = frappe.get_single("Shopify Connector Settings")
+    # A missing default Address Template makes ERPNext throw while rendering the
+    # customer's address during Sales Order validate -- ensure one exists first.
+    from alaiy_os_connector_shopify.shopify.order.address import ensure_default_address_template
+    ensure_default_address_template()
     customer_name = _get_or_create_customer(
         order.get("customer") or {}, settings)
     warehouse = _resolve_default_warehouse(settings)
 
     from alaiy_os_connector_shopify.shopify.order.utils import _line_item_qty
 
+    from alaiy_os_connector_shopify.shopify.order.charges import build_custom_line_item
+
     line_items = []
     for li in order.get("line_items", []):
         item_code = _resolve_item_code(li)
         if not item_code:
+            # No catalog match -- keep it as a custom line item rather than
+            # silently dropping it (Shopify allows one-off/custom products).
+            custom = build_custom_line_item(li, warehouse)
+            if custom:
+                line_items.append(custom)
             continue
         qty = _line_item_qty(li)
         if qty <= 0:
@@ -101,7 +112,20 @@ def _upsert_order_unlocked(order, order_id):
     so.sh_shopify_notes = order.get("note") or ""
     for li in line_items:
         so.append("items", li)
+
+    # Shipping address
+    from alaiy_os_connector_shopify.shopify.order.address import sync_order_address
+    from alaiy_os_connector_shopify.shopify.order.charges import (
+        append_shipping_charge, apply_order_discount,
+    )
+    addr = sync_order_address(order, customer_name)
+    if addr:
+        so.customer_address = addr
+        so.shipping_address_name = addr
+
     _append_tax_lines(so, order.get("tax_lines"), order.get("taxes_included"), settings)
+    append_shipping_charge(so, order, settings)
+    apply_order_discount(so, order)
 
     # Set BEFORE insert/submit -- Sales Order's on_update/on_submit doc_events
     # check this flag to skip pushing back to Shopify, since this save
