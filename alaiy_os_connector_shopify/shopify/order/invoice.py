@@ -49,12 +49,56 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str):
             si.flags.ignore_permissions = True
             si.insert()
             si.submit()
+            # Shopify already collected the money -- book a Payment Entry so the
+            # invoice shows Paid, not Unpaid.
+            _mark_invoice_paid(si, settings)
         frappe.db.commit()
     except Exception:
         frappe.log_error(
             title=f"Shopify: auto Sales Invoice failed for {so_name}",
             message=frappe.get_traceback(),
         )
+
+
+def _mark_invoice_paid(si, settings):
+    """
+    Full-payment Payment Entry against the invoice, so it reads Paid. Best-effort:
+    the invoice still stands (as Unpaid) if payment booking fails.
+    """
+    try:
+        from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+        paid_to = _resolve_bank_cash_account(si.company)
+        if not paid_to:
+            frappe.log_error(
+                title=f"Shopify: no bank/cash account to mark {si.name} paid",
+                message="Set a Default Cash/Bank Account on the Company to auto-mark Shopify invoices Paid.",
+            )
+            return
+        pe = get_payment_entry("Sales Invoice", si.name)
+        pe.paid_to = paid_to
+        pe.reference_no = si.name
+        pe.reference_date = frappe.utils.today()
+        pe.flags.from_shopify_sync = True
+        pe.flags.ignore_permissions = True
+        pe.insert()
+        pe.submit()
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: failed to mark invoice {si.name} paid",
+            message=frappe.get_traceback(),
+        )
+
+
+def _resolve_bank_cash_account(company):
+    for fieldname in ("default_cash_account", "default_bank_account"):
+        acc = frappe.get_cached_value("Company", company, fieldname)
+        if acc and not frappe.db.get_value("Account", acc, "is_group"):
+            return acc
+    return frappe.db.get_value(
+        "Account",
+        {"company": company, "account_type": ["in", ["Cash", "Bank"]], "is_group": 0, "disabled": 0},
+        "name",
+    )
 
 
 def _fill_item_accounts(si, settings):
