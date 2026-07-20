@@ -26,6 +26,11 @@ query PullProducts($after: String) {
           title
           description
         }
+        collections(first: 50) {
+          nodes {
+            title
+          }
+        }
         options {
           name
           values

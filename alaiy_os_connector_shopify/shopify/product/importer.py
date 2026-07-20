@@ -698,10 +698,17 @@ def _import_product_with_variants(
 
 
 def _apply_product_meta(item, node: dict):
-    """Apply product meta to Item -- tags, category, and SEO fields."""
+    """Apply product meta to Item -- tags, category, collections, and SEO."""
     tags = _normalize_tags(node.get("tags"))
     if tags:
         _set_item_tags(item, tags)
+    collection_titles = [
+        n.get("title") for n in ((node.get("collections") or {}).get("nodes") or [])
+        if n.get("title")
+    ]
+    if collection_titles:
+        from alaiy_os_connector_shopify.shopify.product.collections import _set_item_collections
+        _set_item_collections(item, collection_titles)
     category = node.get("category")
     if category:
         cat_name = category.get("fullName") or category.get("name")

@@ -14,6 +14,11 @@ WEBHOOK_TOPICS = [
     "products/create",
     "products/update",
     "products/delete",
+
+    # Collection webhooks (bidirectional collection sync - inbound)
+    "collections/create",
+    "collections/update",
+    "collections/delete",
 ]
 
 _CREATE_MUTATION = """

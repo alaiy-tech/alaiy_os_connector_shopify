@@ -105,3 +105,16 @@ def _dispatch(topic, payload):
             topic=topic,
             payload=payload,
         )
+
+    # Collection webhooks (bidirectional collection sync - inbound)
+    collection_topics = {
+        "collections/create", "collections/update", "collections/delete",
+    }
+    if topic in collection_topics:
+        frappe.enqueue(
+            "alaiy_os_connector_shopify.shopify.product_sync.handle_collection_webhook",
+            queue="short",
+            timeout=300,
+            topic=topic,
+            payload=payload,
+        )

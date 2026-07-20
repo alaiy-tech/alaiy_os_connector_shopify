@@ -31,6 +31,18 @@ from alaiy_os_connector_shopify.shopify.product.tags import (
     _item_tags,
     sync_shopify_tags,
 )
+from alaiy_os_connector_shopify.shopify.product.collections import (
+    sync_shopify_collections,
+    copy_template_collections_to_variant,
+    on_shopify_collection_update,
+    on_shopify_collection_trash,
+    push_collection,
+    delete_collection,
+    handle_collection_webhook,
+    sync_item_collections,
+    _set_item_collections,
+    _item_collection_names,
+)
 from alaiy_os_connector_shopify.shopify.product.pricing import (
     _price_rate,
     _variant_price,
