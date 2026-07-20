@@ -23,20 +23,22 @@ import frappe
 _COLLECTIONS_LIST_QUERY = """
 query ListCollections($after: String) {
   collections(first: 100, after: $after) {
-    nodes {
-      id
-      legacyResourceId
-      title
-      handle
-      descriptionHtml
-      updatedAt
-      ruleSet {
-        rules {
-          column
+    edges {
+      node {
+        id
+        legacyResourceId
+        title
+        handle
+        descriptionHtml
+        updatedAt
+        ruleSet {
+          rules {
+            column
+          }
         }
-      }
-      image {
-        url
+        image {
+          url
+        }
       }
     }
     pageInfo {
