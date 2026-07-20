@@ -172,13 +172,20 @@ def _upsert_collection_cache(node: dict):
 
 
 @frappe.whitelist()
-def sync_shopify_collections():
+def sync_shopify_collections(trigger="manual", log_name=None):
     """
     Fetch every collection on the store and cache it locally as a Shopify
     Collection doc -- the master list the Item collections multi-select picks
-    from. Paginated (100/page).
+    from. Paginated (100/page). Writes a Shopify Sync Log row (sync_type
+    "collections") so the run shows up in the dashboard like every other sync.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
+
+    log = load_or_create_log("collections", trigger, log_name)
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
 
     client = ShopifyGraphQLClient()
     total = 0
@@ -189,11 +196,23 @@ def sync_shopify_collections():
                 total += 1
             frappe.db.commit()
     except Exception:
+        log.status = "failed"
+        log.error_message = frappe.get_traceback()[:500]
+        log.finished_at = frappe.utils.now_datetime()
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
         frappe.log_error(
             title="Shopify: failed to sync collections",
             message=frappe.get_traceback(),
         )
         return {"status": "failed"}
+
+    log.status = "success"
+    log.items_processed = total
+    log.items_created = total
+    log.finished_at = frappe.utils.now_datetime()
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
 
     frappe.logger().info(f"Shopify collections sync completed: {total} collections")
     return {"status": "ok", "total": total}

@@ -127,11 +127,10 @@ def refresh_shopify_collections():
     """
     Manually trigger a refresh of the cached Shopify Collection list -- every
     collection on the store, paginated in. Populates the Shopify Collection
-    doctype the collections multi-select field picks from.
+    doctype the collections multi-select field picks from. Logged (sync_type
+    "collections") so it shows in the dashboard like every other sync.
     """
-    frappe.enqueue(
+    return _enqueue_sync(
+        "collections",
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_collections",
-        queue="long",
-        timeout=600,
     )
-    return {"queued": True}
