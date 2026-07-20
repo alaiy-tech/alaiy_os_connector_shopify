@@ -60,6 +60,19 @@ def _order_node_to_rest_shape(node: dict) -> dict:
             "variant_id": variant.get("legacyResourceId"),
             "price": money.get("amount"),
         })
+    def _addr(a):
+        if not a:
+            return None
+        # GraphQL address fields already match the REST webhook shape 1:1.
+        return {k: a.get(k) for k in
+                ("name", "address1", "address2", "city", "province", "country", "zip", "phone")}
+
+    ship_line = node.get("shippingLine") or {}
+    shipping_lines = []
+    if ship_line:
+        amt = ((ship_line.get("originalPriceSet") or {}).get("shopMoney") or {}).get("amount")
+        shipping_lines.append({"title": ship_line.get("title") or "Shipping", "price": amt})
+
     return {
         "id": node.get("legacyResourceId"),
         "name": node.get("name"),
@@ -72,6 +85,10 @@ def _order_node_to_rest_shape(node: dict) -> dict:
         "line_items": line_items,
         "tax_lines": tax_lines,
         "taxes_included": bool(node.get("taxesIncluded")),
+        "shipping_address": _addr(node.get("shippingAddress")),
+        "billing_address": _addr(node.get("billingAddress")),
+        "shipping_lines": shipping_lines,
+        "total_discounts": ((node.get("totalDiscountsSet") or {}).get("shopMoney") or {}).get("amount") or "0",
         "note": node.get("note") or "",
         "financial_status": (node.get("displayFinancialStatus") or "").lower(),
         "fulfillment_status": (node.get("displayFulfillmentStatus") or "").lower(),

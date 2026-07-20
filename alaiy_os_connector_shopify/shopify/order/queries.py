@@ -33,6 +33,39 @@ query PullOrders($after: String, $queryString: String!) {
           lastName
           email
         }
+        totalDiscountsSet {
+          shopMoney {
+            amount
+          }
+        }
+        shippingLine {
+          title
+          originalPriceSet {
+            shopMoney {
+              amount
+            }
+          }
+        }
+        shippingAddress {
+          name
+          address1
+          address2
+          city
+          province
+          country
+          zip
+          phone
+        }
+        billingAddress {
+          name
+          address1
+          address2
+          city
+          province
+          country
+          zip
+          phone
+        }
         lineItems(first: 100) {
           nodes {
             sku
