@@ -63,13 +63,13 @@ Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` 
 `shopify/product/pricing.py` — price / compare-at / cost each map to a Price List. Selling price uses `sh_selling_price_list`; compare-at and cost use synthetic price lists auto-created (`_ensure_price_list`) inheriting the configured list's currency. See the currency note in [Architecture](architecture.md).
 
 ### Media
-`shopify/product/media.py` — `_item_images` gathers `Item.image` + Website Slideshow images; `_download_to_file` pulls remote images into Frappe Files on import. Gated by `sh_push_images`.
+`shopify/product/media.py` — `_item_images` gathers `Item.image` + Website Slideshow images; `_download_to_file` pulls remote images into Frappe Files on import. Always pushed (no toggle).
 
 ### SEO
 `shopify/product/seo.py` — `sh_seo_title` / `sh_seo_description`, defaulting to item name / (stripped) description when blank.
 
 ### Product type & Item Group
-- `sh_shopify_product_type` ⇄ Shopify `productType`, gated by `sh_push_product_type`.
+- `sh_shopify_product_type` ⇄ Shopify `productType`, always synced (no toggle).
 - **Item Group** follows the product's Shopify **category taxonomy** path — `_ensure_item_group_path` (`masters.py`) builds a nested Item Group tree from the category `fullName` ("Apparel & Accessories > Clothing > Shirts") and assigns the leaf; falls back to flat `productType` under "All Item Groups" only when a product has no category.
 
 ### Status: Active / Draft / Archived

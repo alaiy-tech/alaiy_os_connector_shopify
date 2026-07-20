@@ -71,14 +71,7 @@ The connector uses the **client-credentials grant** (`shopify/auth.py::get_clien
 | `sh_inventory_sync_interval` | Select (default "30 min") | How often stock is pushed: Disabled / 5 / 15 / 30 / 60 min. |
 | `sh_token_refresh_interval` | Select (default "12 hours") | Proactive token-refresh cadence: Disabled / 6h / 12h / 24h. |
 
-### Product Push
-
-| Field | Type | Purpose |
-|---|---|---|
-| `sh_push_description` | Check (default 1) | Push `Item.description` as product `body_html`. |
-| `sh_push_vendor` | Check (default 1) | Push `Item.brand` as `vendor`. |
-| `sh_push_product_type` | Check (default 1) | Push `sh_shopify_product_type` as product `productType`. |
-| `sh_push_images` | Check (default 1) | Push `Item.image` + slideshow images. |
+> Product push fields (description, vendor, product type, images) always sync — there is no toggle for them. Earlier versions gated each behind a "Product Push Fields" setting; that section was removed since these should always be kept in sync.
 
 ---
 
