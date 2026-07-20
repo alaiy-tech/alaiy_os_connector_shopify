@@ -114,8 +114,6 @@ def _absolute_file_url(url: str) -> str:
 
 
 def _item_images(item, settings) -> list:
-    if not settings.sh_push_images:
-        return []
     urls = []
     if item.image:
         urls.append(item.image)

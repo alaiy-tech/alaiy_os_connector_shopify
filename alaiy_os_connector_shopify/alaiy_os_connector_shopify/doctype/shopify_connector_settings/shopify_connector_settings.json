@@ -29,12 +29,7 @@
     "sb_sync",
     "sh_order_status_filter",
     "sh_inventory_sync_interval",
-    "sh_token_refresh_interval",
-    "sb_product_push",
-    "sh_push_description",
-    "sh_push_vendor",
-    "sh_push_product_type",
-    "sh_push_images"
+    "sh_token_refresh_interval"
   ],
   "fields": [
     {
@@ -211,39 +206,6 @@
       "label": "Token Refresh Interval",
       "options": "Disabled\n6 hours\n12 hours\n24 hours",
       "reqd": 1
-    },
-    {
-      "fieldname": "sb_product_push",
-      "fieldtype": "Section Break",
-      "label": "Product Push Fields"
-    },
-    {
-      "default": "1",
-      "description": "Push Item.description as the Shopify product's body_html.",
-      "fieldname": "sh_push_description",
-      "fieldtype": "Check",
-      "label": "Push Description"
-    },
-    {
-      "default": "1",
-      "description": "Push Item.brand as the Shopify product's vendor.",
-      "fieldname": "sh_push_vendor",
-      "fieldtype": "Check",
-      "label": "Push Vendor (Brand)"
-    },
-    {
-      "default": "1",
-      "description": "Push Item.item_group as the Shopify product's product_type.",
-      "fieldname": "sh_push_product_type",
-      "fieldtype": "Check",
-      "label": "Push Product Type (Item Group)"
-    },
-    {
-      "default": "1",
-      "description": "Push Item.image (and slideshow images, if any) as the Shopify product's images.",
-      "fieldname": "sh_push_images",
-      "fieldtype": "Check",
-      "label": "Push Images"
     }
   ],
   "is_single": 1,

@@ -19,14 +19,10 @@ def _product_canonical(item, variants, settings) -> dict:
     # Include status so flipping Active<->Draft actually re-pushes (the
     # fingerprint guard skips the push when canonical is unchanged).
     canonical["status"] = "DRAFT" if (item.get("sh_shopify_status") == "Draft") else "ACTIVE"
-    if settings.sh_push_description:
-        canonical["description"] = item.description or ""
-    if settings.sh_push_vendor:
-        canonical["vendor"] = item.brand or ""
-    if settings.sh_push_product_type:
-        canonical["product_type"] = item.get("sh_shopify_product_type") or ""
-    if settings.sh_push_images:
-        canonical["images"] = _item_images(item, settings)
+    canonical["description"] = item.description or ""
+    canonical["vendor"] = item.brand or ""
+    canonical["product_type"] = item.get("sh_shopify_product_type") or ""
+    canonical["images"] = _item_images(item, settings)
     canonical["tags"] = sorted(_item_tags(item))
     seo = _seo_values(item)
     canonical["seo_title"] = seo["title"]
@@ -74,18 +70,16 @@ def _product_set_input(item, variants: list, settings, client=None) -> dict:
             _variant_set_payload(v, settings, option_names) for v in variants
         ],
     }
-    if settings.sh_push_description:
-        payload["descriptionHtml"] = item.description or ""
-    if settings.sh_push_vendor and item.brand:
+    payload["descriptionHtml"] = item.description or ""
+    if item.brand:
         payload["vendor"] = item.brand
-    if settings.sh_push_product_type and item.get("sh_shopify_product_type"):
+    if item.get("sh_shopify_product_type"):
         payload["productType"] = item.sh_shopify_product_type
-    if settings.sh_push_images:
-        images = _item_images(item, settings)
-        if images:
-            payload["files"] = [
-                {"originalSource": url, "contentType": "IMAGE"} for url in images
-            ]
+    images = _item_images(item, settings)
+    if images:
+        payload["files"] = [
+            {"originalSource": url, "contentType": "IMAGE"} for url in images
+        ]
     tags = _item_tags(item)
     if tags:
         payload["tags"] = sorted(tags)
