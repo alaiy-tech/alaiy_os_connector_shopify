@@ -74,15 +74,24 @@ query CollectionProducts($id: ID!, $after: String) {
 }
 """
 
+_PUBLICATIONS_QUERY = """
+query AllPublications {
+  publications(first: 25) {
+    nodes {
+      id
+      name
+    }
+  }
+}
+"""
+
 _COLLECTION_CHANNELS_QUERY = """
 query CollectionChannels($id: ID!) {
   collection(id: $id) {
-    resourcePublications(first: 25, onlyPublished: false) {
+    resourcePublications(first: 25, onlyPublished: true) {
       nodes {
-        isPublished
         publication {
           id
-          name
         }
       }
     }
@@ -318,6 +327,14 @@ def get_collection_products(collection_name: str):
             title=f"Shopify: could not fetch products for collection {collection_name}",
             message=frappe.get_traceback(),
         )
+        return products
+
+    # Keep the stored count honest -- productsCount at sync time can lag or come
+    # back 0 (seen live) while the live product set is non-empty. Reconcile it
+    # to what we actually fetched.
+    if frappe.db.get_value("Shopify Collection", collection_name, "product_count") != len(products):
+        frappe.db.set_value("Shopify Collection", collection_name, "product_count", len(products), update_modified=False)
+        frappe.db.commit()
     return products
 
 
@@ -334,15 +351,20 @@ def get_collection_channels(collection_name: str):
         return []
     client = ShopifyGraphQLClient()
     try:
+        # ALL publications = the master list, so an unpublished channel still
+        # shows (as a not-published chip) and can be re-published. Then mark
+        # which ones the collection is actually published to.
+        pubs = (client.execute(_PUBLICATIONS_QUERY).get("publications") or {}).get("nodes") or []
         data = client.execute(_COLLECTION_CHANNELS_QUERY, {"id": gid})
-        nodes = ((data.get("collection") or {}).get("resourcePublications") or {}).get("nodes") or []
+        pub_nodes = ((data.get("collection") or {}).get("resourcePublications") or {}).get("nodes") or []
+        published_ids = {(n.get("publication") or {}).get("id") for n in pub_nodes}
         return [
             {
-                "name": (n.get("publication") or {}).get("name"),
-                "publication_id": (n.get("publication") or {}).get("id"),
-                "published": bool(n.get("isPublished")),
+                "name": p.get("name"),
+                "publication_id": p.get("id"),
+                "published": p.get("id") in published_ids,
             }
-            for n in nodes if (n.get("publication") or {}).get("name")
+            for p in pubs if p.get("name")
         ]
     except Exception:
         frappe.log_error(
