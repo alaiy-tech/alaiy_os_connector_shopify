@@ -16,6 +16,9 @@ from alaiy_os_connector_shopify.shopify.product.seo import _seo_values
 def _product_canonical(item, variants, settings) -> dict:
     canonical = {"title": item.item_name, "variants": [
         _variant_canonical(v, settings) for v in variants]}
+    # Include status so flipping Active<->Draft actually re-pushes (the
+    # fingerprint guard skips the push when canonical is unchanged).
+    canonical["status"] = "DRAFT" if (item.get("sh_shopify_status") == "Draft") else "ACTIVE"
     if settings.sh_push_description:
         canonical["description"] = item.description or ""
     if settings.sh_push_vendor:
