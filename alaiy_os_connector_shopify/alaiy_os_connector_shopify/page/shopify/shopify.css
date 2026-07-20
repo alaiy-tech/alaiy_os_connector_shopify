@@ -3,22 +3,37 @@
 }
 
 .shopify-container {
-	max-width: 1200px;
+	max-width: 900px;
 }
 
 .shopify-card {
 	border: 1px solid var(--border-color);
-	border-radius: var(--border-radius-lg, 8px);
-	margin-bottom: 20px;
+	border-radius: var(--border-radius-lg, 10px);
+	margin-bottom: 24px;
 	background-color: var(--card-bg, var(--fg-color));
-	box-shadow: var(--card-shadow, 0 1px 3px rgba(0, 0, 0, 0.06));
+	box-shadow: var(--card-shadow, 0 1px 3px rgba(0, 0, 0, 0.05));
 	overflow: hidden;
+	transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.shopify-card:hover {
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+	border-color: var(--dark-border-color, var(--border-color));
 }
 
 .shopify-card-header {
-	padding: 14px 20px;
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	padding: 18px 22px;
 	border-bottom: 1px solid var(--border-color);
 	background-color: var(--subtle-fg, var(--fg-color));
+}
+
+.shopify-card-header-text {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
 }
 
 .shopify-card-header h5 {
@@ -28,22 +43,100 @@
 	color: var(--text-color);
 }
 
+.shopify-card-header-text p {
+	margin: 0;
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
 .shopify-card-body {
-	padding: 20px;
+	padding: 22px;
 }
 
 .shopify-connector-status {
 	margin-bottom: 0;
 }
 
+.shopify-icon-badge {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 38px;
+	height: 38px;
+	border-radius: var(--border-radius, 8px);
+	font-size: 15px;
+	background-color: var(--bg-color, var(--fg-color));
+	border: 1px solid var(--border-color);
+	color: var(--text-color);
+}
+
+.shopify-date-range {
+	display: none;
+	gap: 16px;
+	margin: 14px 0;
+}
+
+.shopify-date-range.shopify-active {
+	display: flex;
+}
+
+.shopify-field-group {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.shopify-field-group label {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--text-muted);
+}
+
+.shopify-input {
+	padding: 6px 10px;
+	font-size: 13px;
+	border-radius: var(--border-radius, 6px);
+	border: 1px solid var(--border-color);
+	background-color: var(--control-bg, var(--fg-color));
+	color: var(--text-color);
+}
+
+.shopify-info-strip {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 8px 0 12px;
+}
+
+.shopify-info-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 8px;
+	border-radius: 4px;
+	background-color: transparent;
+	color: var(--text-muted);
+	font-size: 11px;
+	font-weight: 500;
+}
+
+.shopify-info-pill i {
+	color: var(--text-muted);
+	font-size: 10px;
+}
+
 .shopify-sync-grid {
-	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-	gap: 20px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
 }
 
 .shopify-sync-box {
-	padding: 0;
+	padding: 16px;
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius, 8px);
+	background-color: var(--subtle-fg, var(--fg-color));
 }
 
 .shopify-sync-box h6 {
@@ -74,7 +167,7 @@
 }
 
 .shopify-btn {
-	padding: 6px 14px;
+	padding: 7px 16px;
 	font-size: 13px;
 	font-weight: 500;
 	border-radius: var(--border-radius, 6px);
@@ -85,19 +178,29 @@
 	color: var(--text-color);
 }
 
+.shopify-btn i {
+	margin-right: 6px;
+}
+
 .shopify-btn:hover {
 	border-color: var(--text-muted);
+	transform: translateY(-1px);
+}
+
+.shopify-btn:active {
+	transform: translateY(0);
 }
 
 .shopify-btn-primary {
 	background-color: var(--primary);
 	color: var(--primary-inverse, #fff);
 	border-color: var(--primary);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 .shopify-btn-primary:hover {
 	background-color: var(--primary-dark, var(--primary));
-	opacity: 0.9;
+	opacity: 0.92;
 }
 
 .shopify-btn-outline-primary {
@@ -231,10 +334,27 @@
 	padding: 10px;
 	border-bottom: 1px solid var(--border-color);
 	color: var(--text-color);
+	vertical-align: top;
 }
 
 .shopify-logs-table tr:hover td {
 	background-color: var(--subtle-fg, var(--fg-color));
+}
+
+.shopify-log-link {
+	color: var(--primary);
+	font-weight: 600;
+	text-decoration: none;
+}
+
+.shopify-log-link:hover {
+	text-decoration: underline;
+}
+
+.shopify-logs-table .indicator-pill {
+	display: inline-flex;
+	align-items: center;
+	max-width: 100%;
 }
 
 .shopify-text-muted {
