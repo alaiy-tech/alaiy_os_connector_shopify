@@ -81,9 +81,32 @@ query CollectionChannels($id: ID!) {
       nodes {
         isPublished
         publication {
+          id
           name
         }
       }
+    }
+  }
+}
+"""
+
+_PUBLISH_MUTATION = """
+mutation Publish($id: ID!, $input: [PublicationInput!]!) {
+  publishablePublish(id: $id, input: $input) {
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_UNPUBLISH_MUTATION = """
+mutation Unpublish($id: ID!, $input: [PublicationInput!]!) {
+  publishableUnpublish(id: $id, input: $input) {
+    userErrors {
+      field
+      message
     }
   }
 }
@@ -314,7 +337,11 @@ def get_collection_channels(collection_name: str):
         data = client.execute(_COLLECTION_CHANNELS_QUERY, {"id": gid})
         nodes = ((data.get("collection") or {}).get("resourcePublications") or {}).get("nodes") or []
         return [
-            {"name": (n.get("publication") or {}).get("name"), "published": bool(n.get("isPublished"))}
+            {
+                "name": (n.get("publication") or {}).get("name"),
+                "publication_id": (n.get("publication") or {}).get("id"),
+                "published": bool(n.get("isPublished")),
+            }
             for n in nodes if (n.get("publication") or {}).get("name")
         ]
     except Exception:
@@ -323,6 +350,45 @@ def get_collection_channels(collection_name: str):
             message=frappe.get_traceback(),
         )
         return []
+
+
+@frappe.whitelist()
+def toggle_collection_channel(collection_name: str, publication_id: str, publish):
+    """
+    Publish or unpublish a collection to one sales channel (Shopify
+    Publication) via publishablePublish / publishableUnpublish. `publish` is
+    truthy to publish, falsy to unpublish (comes in as a string from the form).
+    Returns {"ok": bool, "error": str}.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    if not gid:
+        return {"ok": False, "error": "Collection not linked to Shopify."}
+
+    do_publish = str(publish) in ("1", "true", "True")
+    mutation = _PUBLISH_MUTATION if do_publish else _UNPUBLISH_MUTATION
+    key = "publishablePublish" if do_publish else "publishableUnpublish"
+    try:
+        client = ShopifyGraphQLClient()
+        data = client.execute(mutation, {
+            "id": gid,
+            "input": [{"publicationId": publication_id}],
+        })
+        errors = (data.get(key) or {}).get("userErrors") or []
+        if errors:
+            frappe.log_error(
+                title=f"Shopify: channel toggle failed for {collection_name}",
+                message=str(errors),
+            )
+            return {"ok": False, "error": str(errors)}
+        return {"ok": True}
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: channel toggle errored for {collection_name}",
+            message=frappe.get_traceback(),
+        )
+        return {"ok": False, "error": "See Error Log."}
 
 
 def _set_item_collections(item, collection_titles: list):
