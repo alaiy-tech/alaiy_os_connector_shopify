@@ -74,6 +74,21 @@ query CollectionProducts($id: ID!, $after: String) {
 }
 """
 
+_COLLECTION_CHANNELS_QUERY = """
+query CollectionChannels($id: ID!) {
+  collection(id: $id) {
+    resourcePublications(first: 25, onlyPublished: false) {
+      nodes {
+        isPublished
+        publication {
+          name
+        }
+      }
+    }
+  }
+}
+"""
+
 _PRODUCT_COLLECTIONS_QUERY = """
 query ProductCollections($id: ID!) {
   product(id: $id) {
@@ -281,6 +296,33 @@ def get_collection_products(collection_name: str):
             message=frappe.get_traceback(),
         )
     return products
+
+
+@frappe.whitelist()
+def get_collection_channels(collection_name: str):
+    """
+    Live-fetch the sales channels (Shopify Publications) a collection is
+    published to, each with its published/not state. Read-only, on demand.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    if not gid:
+        return []
+    client = ShopifyGraphQLClient()
+    try:
+        data = client.execute(_COLLECTION_CHANNELS_QUERY, {"id": gid})
+        nodes = ((data.get("collection") or {}).get("resourcePublications") or {}).get("nodes") or []
+        return [
+            {"name": (n.get("publication") or {}).get("name"), "published": bool(n.get("isPublished"))}
+            for n in nodes if (n.get("publication") or {}).get("name")
+        ]
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: could not fetch channels for collection {collection_name}",
+            message=frappe.get_traceback(),
+        )
+        return []
 
 
 def _set_item_collections(item, collection_titles: list):

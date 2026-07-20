@@ -7,6 +7,31 @@ frappe.ui.form.on("Shopify Collection", {
 			return;
 		}
 
+		// Sales channels (Shopify Publications)
+		const chWrap = frm.get_field("channels_html").$wrapper;
+		chWrap.html('<p class="text-muted">Loading channels...</p>');
+		frappe.call({
+			method: "alaiy_os_connector_shopify.shopify.product.collections.get_collection_channels",
+			args: { collection_name: frm.doc.name },
+			callback(r) {
+				const chans = r.message || [];
+				if (!chans.length) {
+					chWrap.html('<p class="text-muted">No sales channels.</p>');
+					return;
+				}
+				const chips = chans.map((c) => {
+					const on = c.published;
+					const color = on ? "var(--green-500,#28a745)" : "var(--text-muted)";
+					const bg = on ? "var(--green-50,#eaf7ee)" : "var(--control-bg)";
+					const dot = on ? "●" : "○";
+					return '<span style="display:inline-block;margin:2px 4px;padding:3px 10px;border-radius:12px;' +
+						"font-size:12px;border:1px solid " + color + ";color:" + color + ";background:" + bg + ';">' +
+						dot + " " + frappe.utils.escape_html(c.name) + "</span>";
+				}).join("");
+				chWrap.html('<div>' + chips + "</div>");
+			},
+		});
+
 		wrapper.html('<p class="text-muted">Loading products from Shopify...</p>');
 		frappe.call({
 			method: "alaiy_os_connector_shopify.shopify.product.collections.get_collection_products",
