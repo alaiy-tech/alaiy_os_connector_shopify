@@ -5,6 +5,49 @@ link it to the customer + Sales Order.
 
 import frappe
 
+_ADDRESS_TEMPLATE = """{{ address_line1 }}<br>
+{% if address_line2 %}{{ address_line2 }}<br>{% endif -%}
+{{ city }}<br>
+{% if state %}{{ state }}<br>{% endif -%}
+{% if pincode %}{{ pincode }}<br>{% endif -%}
+{{ country }}<br>
+{% if phone %}Phone: {{ phone }}<br>{% endif -%}
+"""
+
+
+def ensure_default_address_template():
+    """
+    ERPNext refuses to save/render ANY Address (and any Sales Order that
+    references one) if there's no default Address Template -- confirmed live:
+    a fresh site had none, so order import crashed with "No default Address
+    Template found". Self-heal a standard one instead of making the merchant
+    create it by hand.
+    """
+    if frappe.db.exists("Address Template", {"is_default": 1}):
+        return
+    try:
+        company = (frappe.get_single("Shopify Connector Settings").sh_company
+                   or frappe.defaults.get_global_default("company"))
+        country = frappe.db.get_value("Company", company, "country") or "India"
+        if not frappe.db.exists("Country", country):
+            country = frappe.db.get_value("Country", {}, "name") or "India"
+        # Address Template is named by country; reuse if one exists, else create.
+        if frappe.db.exists("Address Template", country):
+            frappe.db.set_value("Address Template", country, "is_default", 1)
+        else:
+            doc = frappe.new_doc("Address Template")
+            doc.country = country
+            doc.is_default = 1
+            doc.template = _ADDRESS_TEMPLATE
+            doc.flags.ignore_permissions = True
+            doc.insert()
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(
+            title="Shopify: failed to create default Address Template",
+            message=frappe.get_traceback(),
+        )
+
 
 def sync_order_address(order, customer_name):
     """

@@ -54,6 +54,10 @@ def _upsert_order_unlocked(order, order_id):
         return False  # already processed
 
     settings = frappe.get_single("Shopify Connector Settings")
+    # A missing default Address Template makes ERPNext throw while rendering the
+    # customer's address during Sales Order validate -- ensure one exists first.
+    from alaiy_os_connector_shopify.shopify.order.address import ensure_default_address_template
+    ensure_default_address_template()
     customer_name = _get_or_create_customer(
         order.get("customer") or {}, settings)
     warehouse = _resolve_default_warehouse(settings)
