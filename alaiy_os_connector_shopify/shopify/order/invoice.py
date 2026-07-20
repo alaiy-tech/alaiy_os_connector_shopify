@@ -16,16 +16,29 @@ from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _t
 from alaiy_os_connector_shopify.shopify.order.queries import _ORDER_MARK_PAID_MUTATION
 
 
-def create_sales_invoice_if_paid(so_name: str, financial_status: str):
+def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillment_status: str = ""):
     """
-    Best-effort: create + submit a Sales Invoice for a paid order. Logs and
-    returns on any problem rather than breaking the webhook/pull that calls it.
-    """
-    if (financial_status or "").lower() != "paid":
-        return
+    Best-effort: create + submit a Sales Invoice once the order meets the
+    configured trigger. Logs and returns on any problem rather than breaking
+    the webhook/pull that calls it.
 
+    Trigger (Shopify Connector Settings.sh_invoice_trigger):
+    - "Paid and Fulfilled" (default): invoice only when the order is paid AND
+      shipped. This is what makes COD work correctly -- a COD order is pending
+      until the merchant marks it paid on delivery, and only then (paid +
+      fulfilled) does it invoice. Prepaid orders wait until shipped.
+    - "Paid": invoice as soon as it's paid, regardless of fulfillment.
+    """
     settings = frappe.get_single("Shopify Connector Settings")
     if not settings.get("sh_auto_sales_invoice"):
+        return
+
+    paid = (financial_status or "").lower() == "paid"
+    fulfilled = (fulfillment_status or "").lower() in ("fulfilled", "partially_fulfilled")
+    trigger = settings.get("sh_invoice_trigger") or "Paid and Fulfilled"
+    if not paid:
+        return
+    if trigger == "Paid and Fulfilled" and not fulfilled:
         return
 
     if frappe.db.get_value("Sales Order", so_name, "docstatus") != 1:

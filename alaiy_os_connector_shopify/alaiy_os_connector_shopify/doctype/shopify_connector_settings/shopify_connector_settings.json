@@ -23,6 +23,7 @@
     "sh_cost_center",
     "sh_tax_account",
     "sh_auto_sales_invoice",
+    "sh_invoice_trigger",
     "sb_sync",
     "sh_order_status_filter",
     "sh_inventory_sync_interval",
@@ -151,10 +152,19 @@
     },
     {
       "default": "1",
-      "description": "Auto-create + submit a Sales Invoice when a Shopify order is paid. Submitting that invoice in ERPNext also marks the order Paid on Shopify.",
+      "description": "Auto-create + submit a Sales Invoice for Shopify orders. Submitting that invoice in ERPNext also marks the order Paid on Shopify.",
       "fieldname": "sh_auto_sales_invoice",
       "fieldtype": "Check",
-      "label": "Auto-create Sales Invoice on Paid"
+      "label": "Auto-create Sales Invoice"
+    },
+    {
+      "default": "Paid and Fulfilled",
+      "depends_on": "sh_auto_sales_invoice",
+      "description": "When to generate the invoice. 'Paid and Fulfilled' (recommended) waits for both payment and shipment -- correct for Cash on Delivery, where payment lands only on delivery. 'Paid' invoices as soon as the order is paid.",
+      "fieldname": "sh_invoice_trigger",
+      "fieldtype": "Select",
+      "label": "Generate Invoice When",
+      "options": "Paid and Fulfilled\nPaid"
     },
     {
       "fieldname": "sb_sync",

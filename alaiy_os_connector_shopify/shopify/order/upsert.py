@@ -128,8 +128,10 @@ def _upsert_order_unlocked(order, order_id):
         # (see _create_delivery_note_if_needed's note) -- full-order fallback.
         _create_delivery_note_if_needed(so.name)
 
-    # Orders often arrive already paid at create time -- invoice right away.
+    # Orders often arrive already paid (and sometimes already fulfilled) at
+    # create time -- invoice right away if the trigger is met.
     if not is_draft_order:
         from alaiy_os_connector_shopify.shopify.order.invoice import create_sales_invoice_if_paid
-        create_sales_invoice_if_paid(so.name, order.get("financial_status", ""))
+        create_sales_invoice_if_paid(
+            so.name, order.get("financial_status", ""), order.get("fulfillment_status", ""))
     return True
