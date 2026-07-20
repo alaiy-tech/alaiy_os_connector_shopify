@@ -43,17 +43,31 @@ def ensure_customer_currency_account(customer_name, company, currency):
         return
 
     customer = frappe.get_doc("Customer", customer_name)
+    changed = False
+
+    # Alaiy OS's own validation (validate_currency_for_receivable_payable_and_advance_account)
+    # requires the receivable account's currency to match either the Customer's
+    # own default_currency or the Company's default currency -- setting only the
+    # Party Account row (below) isn't enough on its own.
+    if customer.get("default_currency") != currency:
+        customer.default_currency = currency
+        changed = True
+
+    account_row_found = False
     for row in customer.get("accounts") or []:
         if row.company == company:
+            account_row_found = True
             if row.account != account:
                 row.account = account
-                customer.flags.ignore_permissions = True
-                customer.save()
-            return
+                changed = True
+            break
+    if not account_row_found:
+        customer.append("accounts", {"company": company, "account": account})
+        changed = True
 
-    customer.append("accounts", {"company": company, "account": account})
-    customer.flags.ignore_permissions = True
-    customer.save()
+    if changed:
+        customer.flags.ignore_permissions = True
+        customer.save()
 
 
 def _ensure_currency_receivable_account(company, currency):
