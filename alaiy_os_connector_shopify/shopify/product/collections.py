@@ -52,6 +52,28 @@ query ListCollections($after: String) {
 }
 """
 
+_COLLECTION_PRODUCTS_QUERY = """
+query CollectionProducts($id: ID!, $after: String) {
+  collection(id: $id) {
+    products(first: 50, after: $after) {
+      edges {
+        node {
+          legacyResourceId
+          title
+          handle
+          featuredImage { url }
+          variants(first: 1) { nodes { price sku } }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+"""
+
 _PRODUCT_COLLECTIONS_QUERY = """
 query ProductCollections($id: ID!) {
   product(id: $id) {
@@ -219,6 +241,47 @@ def sync_shopify_collections(trigger="manual", log_name=None):
 
 
 # ── Item membership field (mirror of tags) ────────────────────────────────────
+
+@frappe.whitelist()
+def get_collection_products(collection_name: str):
+    """
+    Live-fetch the products inside a Shopify collection (title, image, price,
+    sku), for the collection form to show them the way Shopify does. Read-only,
+    on demand -- not stored, since a collection's product set changes on
+    Shopify's side and can be large. Also links any that map to a local Item.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    if not gid:
+        return []
+
+    client = ShopifyGraphQLClient()
+    products = []
+    try:
+        for page in client.execute_paginated(
+                _COLLECTION_PRODUCTS_QUERY, {"id": gid, "after": None}, ["collection", "products"]):
+            for n in page:
+                variant = (n.get("variants") or {}).get("nodes") or [{}]
+                sku = (variant[0] or {}).get("sku")
+                pid = str(n.get("legacyResourceId") or "")
+                item_code = None
+                if pid:
+                    item_code = frappe.db.get_value("Item", {"sh_shopify_product_id": pid}, "name")
+                products.append({
+                    "title": n.get("title"),
+                    "image": (n.get("featuredImage") or {}).get("url"),
+                    "price": (variant[0] or {}).get("price"),
+                    "sku": sku,
+                    "item_code": item_code,
+                })
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: could not fetch products for collection {collection_name}",
+            message=frappe.get_traceback(),
+        )
+    return products
+
 
 def _set_item_collections(item, collection_titles: list):
     """
