@@ -68,3 +68,8 @@ from alaiy_os_connector_shopify.shopify.order.tax import (
     _create_tax_account,
     _append_tax_lines,
 )
+from alaiy_os_connector_shopify.shopify.order.invoice import (
+    create_sales_invoice_if_paid,
+    on_sales_invoice_submit,
+    push_order_paid,
+)

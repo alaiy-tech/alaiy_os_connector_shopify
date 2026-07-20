@@ -58,6 +58,21 @@ query PullOrders($after: String, $queryString: String!) {
 }
 """
 
+_ORDER_MARK_PAID_MUTATION = """
+mutation OrderMarkAsPaid($input: OrderMarkAsPaidInput!) {
+  orderMarkAsPaid(input: $input) {
+    order {
+      id
+      displayFinancialStatus
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
 _ORDER_UPDATE_MUTATION = """
 mutation PushOrderUpdate($input: OrderInput!) {
   orderUpdate(input: $input) {

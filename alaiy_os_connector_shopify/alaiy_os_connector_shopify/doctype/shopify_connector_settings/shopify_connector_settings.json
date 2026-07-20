@@ -22,6 +22,7 @@
     "sh_selling_price_list",
     "sh_cost_center",
     "sh_tax_account",
+    "sh_auto_sales_invoice",
     "sb_sync",
     "sh_order_status_filter",
     "sh_inventory_sync_interval",
@@ -147,6 +148,13 @@
       "fieldtype": "Link",
       "label": "Tax Account",
       "options": "Account"
+    },
+    {
+      "default": "1",
+      "description": "Auto-create + submit a Sales Invoice when a Shopify order is paid. Submitting that invoice in ERPNext also marks the order Paid on Shopify.",
+      "fieldname": "sh_auto_sales_invoice",
+      "fieldtype": "Check",
+      "label": "Auto-create Sales Invoice on Paid"
     },
     {
       "fieldname": "sb_sync",

@@ -6,6 +6,7 @@ WEBHOOK_TOPICS = [
     "orders/updated",
     "orders/cancelled",
     "orders/fulfilled",
+    "orders/paid",
     "orders/delete",
 
     "orders/edited",

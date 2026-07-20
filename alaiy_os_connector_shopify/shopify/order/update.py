@@ -74,6 +74,11 @@ def _update_order_unlocked(order, order_id):
         _sync_order_line_items(so_name, order)
 
     _sync_fulfillments(so_name, order.get("fulfillments") or [])
+
+    # Payment landed (orders/paid, or an orders/updated flipping the status) --
+    # create the Sales Invoice if we haven't already.
+    from alaiy_os_connector_shopify.shopify.order.invoice import create_sales_invoice_if_paid
+    create_sales_invoice_if_paid(so_name, financial_status)
     return False
 
 
