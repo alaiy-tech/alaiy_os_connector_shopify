@@ -337,7 +337,6 @@ def _import_simple_product(
             # another connector (Cloudstore) importing the same product
             # by SKU before Shopify ever linked it.
             variant_of = frappe.db.get_value("Item", sku, "variant_of")
-            from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
             # If it's part of a template structure, the product-level meta
             # (tags/category/SEO/images) describes the PRODUCT, so it
@@ -550,9 +549,8 @@ def _import_product_with_variants(
             frappe.db.set_value("Item", template_name, "sh_shopify_product_id", product_id)
         if product_meta:
             _apply_existing_template_content(template_name, product_meta, images, settings)
-        from alaiy_os_connector_shopify.shopify.sync_engine import entities as _entities
-        entity = _entities.get_or_new("product", "Item", template_name, product_id)
-        _entities.save(entity, external_id=product_id, erpnext_name=template_name)
+        entity = entities.get_or_new("product", "Item", template_name, product_id)
+        entities.save(entity, external_id=product_id, erpnext_name=template_name)
     else:
         # Create template Item
         template = frappe.new_doc("Item")
@@ -610,7 +608,6 @@ def _import_product_with_variants(
                 _apply_existing_variant_content(sku, variant, settings)
 
                 # Create Synced Entity pairing for the template/product
-                from alaiy_os_connector_shopify.shopify.sync_engine import entities
                 entity = entities.get_or_new("product", "Item", variant_of, product_id)
                 entities.save(entity, external_id=product_id, erpnext_name=variant_of)
                 continue

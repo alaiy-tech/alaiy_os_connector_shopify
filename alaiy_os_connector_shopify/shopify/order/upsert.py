@@ -95,10 +95,21 @@ def _upsert_order_unlocked(order, order_id):
         )
         return False
 
+    company = settings.sh_company or frappe.defaults.get_global_default("company")
+
+    from alaiy_os_connector_shopify.shopify.order.currency import (
+        resolve_order_currency, ensure_customer_currency_account, get_order_exchange_rate,
+    )
+    order_currency = resolve_order_currency(order, company)
+    company_currency = frappe.get_cached_value("Company", company, "default_currency")
+    if order_currency != company_currency:
+        ensure_customer_currency_account(customer_name, company, order_currency)
+
     so = frappe.new_doc("Sales Order")
     so.customer = customer_name
-    so.company = settings.sh_company or frappe.defaults.get_global_default(
-        "company")
+    so.company = company
+    so.currency = order_currency
+    so.conversion_rate = get_order_exchange_rate(order_currency, company_currency, frappe.utils.today())
     so.transaction_date = frappe.utils.today()
     so.delivery_date = frappe.utils.today()
     so.selling_price_list = settings.sh_selling_price_list or "Standard Selling"

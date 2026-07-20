@@ -15,6 +15,7 @@ query PullOrders($after: String, $queryString: String!) {
         legacyResourceId
         name
         note
+        currencyCode
         displayFinancialStatus
         displayFulfillmentStatus
         taxesIncluded
