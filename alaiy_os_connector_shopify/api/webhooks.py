@@ -81,7 +81,7 @@ def _dispatch(topic, payload):
     # Order webhooks (inbound order sync)
     order_topics = {
         "orders/create", "orders/updated", "orders/edited",
-        "orders/cancelled", "orders/fulfilled", "orders/delete",
+        "orders/cancelled", "orders/fulfilled", "orders/paid", "orders/delete",
         "draft_orders/create", "draft_orders/update", "draft_orders/delete",
     }
     if topic in order_topics:

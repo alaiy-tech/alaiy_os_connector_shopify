@@ -64,6 +64,9 @@ doc_events = {
         "on_update_after_submit": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_update",
         "on_cancel": "alaiy_os_connector_shopify.shopify.order_push.on_sales_order_cancel",
     },
+    "Sales Invoice": {
+        "on_submit": "alaiy_os_connector_shopify.shopify.order_sync.on_sales_invoice_submit",
+    },
 }
 
 doctype_list_js = {

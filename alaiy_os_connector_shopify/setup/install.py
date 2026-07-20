@@ -17,6 +17,7 @@ def sync_connector_registry():
     _backfill_singles_defaults("Shopify Connector Settings", [
         "sh_token_refresh_interval",
         "sh_push_description", "sh_push_vendor", "sh_push_product_type", "sh_push_images",
+        "sh_auto_sales_invoice", "sh_invoice_trigger",
     ])
     _ensure_list_view_column("Item", "sync_to_shopify", "Sync to Shopify")
     _ensure_list_view_column("Sales Order", "sh_shopify_order_name", "Shopify Order #")
