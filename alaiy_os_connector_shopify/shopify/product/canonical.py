@@ -16,6 +16,9 @@ from alaiy_os_connector_shopify.shopify.product.seo import _seo_values
 def _product_canonical(item, variants, settings) -> dict:
     canonical = {"title": item.item_name, "variants": [
         _variant_canonical(v, settings) for v in variants]}
+    # Include status so flipping Active<->Draft actually re-pushes (the
+    # fingerprint guard skips the push when canonical is unchanged).
+    canonical["status"] = "DRAFT" if (item.get("sh_shopify_status") == "Draft") else "ACTIVE"
     if settings.sh_push_description:
         canonical["description"] = item.description or ""
     if settings.sh_push_vendor:
@@ -62,10 +65,10 @@ def _product_set_input(item, variants: list, settings, client=None) -> dict:
 
     payload = {
         "title": item.item_name,
-        # Pushing implies "this should be live" -- unarchives on every push
-        # rather than needing a separate un-archive step when re-enabled.
+        # Active vs Draft comes from the template's sh_shopify_status; pushing
+        # never leaves ARCHIVED (re-enabling a product unarchives it) --
         # archive_item() overrides this back to ARCHIVED explicitly.
-        "status": "ACTIVE",
+        "status": "DRAFT" if (item.get("sh_shopify_status") == "Draft") else "ACTIVE",
         "productOptions": _product_options_payload(option_names, variants),
         "variants": [
             _variant_set_payload(v, settings, option_names) for v in variants

@@ -134,3 +134,15 @@ def refresh_shopify_collections():
         "collections",
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_collections",
     )
+
+
+@frappe.whitelist()
+def refresh_shopify_locations():
+    """
+    Manually refresh the cached Shopify Location list -- what the
+    warehouse-to-location map picks from for multi-location inventory sync.
+    """
+    return _enqueue_sync(
+        "locations",
+        "alaiy_os_connector_shopify.shopify.inventory_sync.sync_shopify_locations",
+    )

@@ -24,6 +24,8 @@
     "sh_tax_account",
     "sh_auto_sales_invoice",
     "sh_invoice_trigger",
+    "sb_locations",
+    "sh_location_map",
     "sb_sync",
     "sh_order_status_filter",
     "sh_inventory_sync_interval",
@@ -165,6 +167,18 @@
       "fieldtype": "Select",
       "label": "Generate Invoice When",
       "options": "Paid and Fulfilled\nPaid"
+    },
+    {
+      "fieldname": "sb_locations",
+      "fieldtype": "Section Break",
+      "label": "Inventory Locations"
+    },
+    {
+      "description": "Map ERPNext warehouses to Shopify locations for multi-location inventory sync. Run 'Sync Locations' first to load Shopify locations. Leave empty to push only the Default Warehouse to Shopify's primary location (single-location mode).",
+      "fieldname": "sh_location_map",
+      "fieldtype": "Table",
+      "label": "Warehouse to Location Map",
+      "options": "Shopify Location Map"
     },
     {
       "fieldname": "sb_sync",

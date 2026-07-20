@@ -189,11 +189,22 @@ def setup_custom_fields():
             "description": "Push this Item to Shopify as a product/variant. Variants inherit this flag from their template -- checking/unchecking it on a variant itself has no effect. Unchecking on a template archives the product on Shopify (kept, hidden from sales channels); re-checking unarchives and re-syncs it.",
         },
         {
+            "fieldname": "sh_shopify_status",
+            "label": "Shopify Status",
+            "fieldtype": "Select",
+            "options": "Active\nDraft",
+            "default": "Active",
+            "insert_after": "sync_to_shopify",
+            "fetch_from": "variant_of.sh_shopify_status",
+            "read_only_depends_on": "eval:doc.variant_of",
+            "description": "Product visibility on Shopify. Active = live on sales channels; Draft = hidden from customers. Synced both directions. Archived is controlled separately by unchecking Sync to Shopify (or disabling the Item). Set on the template; variants inherit.",
+        },
+        {
             "fieldname": "sh_shopify_tags",
             "label": "Shopify Tags",
             "fieldtype": "Table MultiSelect",
             "options": "Item Shopify Tag",
-            "insert_after": "sync_to_shopify",
+            "insert_after": "sh_shopify_status",
             # Table MultiSelect can't use fetch_from (child-table data, not a
             # scalar) -- variant inheritance is instead handled by
             # _copy_template_tags_to_variant on Item's validate hook.

@@ -10,6 +10,7 @@
     "handle",
     "is_smart",
     "product_count",
+    "channels_html",
     "members_html",
     "sb_shopify",
     "sh_collection_id",
@@ -54,9 +55,14 @@
       "read_only": 1
     },
     {
+      "fieldname": "channels_html",
+      "fieldtype": "HTML",
+      "label": "Sales Channels"
+    },
+    {
       "fieldname": "members_html",
       "fieldtype": "HTML",
-      "label": "Products linked in ERPNext"
+      "label": "Products"
     },
     {
       "fieldname": "sb_shopify",

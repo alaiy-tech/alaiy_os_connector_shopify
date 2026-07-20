@@ -25,7 +25,7 @@
       "fieldtype": "Select",
       "in_list_view": 1,
       "label": "Sync Type",
-      "options": "orders\ninventory\nproducts\nproduct_export\ncollections\nwebhook"
+      "options": "orders\ninventory\nproducts\nproduct_export\ncollections\nlocations\nwebhook"
     },
     {
       "fieldname": "trigger",
