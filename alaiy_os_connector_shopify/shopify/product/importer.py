@@ -25,7 +25,7 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
-from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_attribute
+from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
 from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty
 from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row
@@ -225,7 +225,17 @@ def _import_product(node: dict) -> tuple:
     title = node.get("title", f"Product {product_id}").strip()
     description = node.get("bodyHtml", "")
     vendor = node.get("vendor", "")
-    item_group = node.get("productType", "")
+    # Item Group follows Shopify's category taxonomy tree (nested, matching how
+    # cloudstore builds Item Groups); productType is only the flat fallback when
+    # a product has no category. productType is still stored separately in
+    # sh_shopify_product_type.
+    category = node.get("category") or {}
+    cat_full = category.get("fullName")
+    item_group = ""
+    if cat_full:
+        item_group = _ensure_item_group_path(cat_full) or ""
+    if not item_group:
+        item_group = node.get("productType", "")
 
     variants = node.get("variants", {}).get("nodes", [])
     images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
