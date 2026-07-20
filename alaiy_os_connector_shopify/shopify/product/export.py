@@ -308,6 +308,12 @@ def _push_product_unlocked(item):
             frappe.db.set_value("Item", variant.name,
                                 "sh_shopify_variant_id", variant_id)
 
+    # Reconcile manual-collection membership after the product itself is set --
+    # membership is product-level, driven by the template Item's collections
+    # field. Best-effort: never fails the push it rides on.
+    from alaiy_os_connector_shopify.shopify.product.collections import sync_item_collections
+    sync_item_collections(item, product_id, client)
+
     entities.save(
         entity or entities.get_or_new(
             "product", "Item", item.name, product_id),

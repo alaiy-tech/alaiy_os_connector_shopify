@@ -233,6 +233,18 @@ def setup_custom_fields():
             "insert_after": "sh_seo_title",
             "description": "Defaults to the Description if left blank.",
         },
+        {
+            "fieldname": "sh_shopify_collections",
+            "label": "Shopify Collections",
+            "fieldtype": "Table MultiSelect",
+            "options": "Item Shopify Collection",
+            "insert_after": "sh_seo_description",
+            # Table MultiSelect can't use fetch_from (child-table data, not a
+            # scalar) -- variant inheritance is handled by
+            # copy_template_collections_to_variant on Item's validate hook.
+            "read_only_depends_on": "eval:doc.variant_of",
+            "description": "Manual Shopify collections this product belongs to, picked from the cached Shopify Collection list (run Sync Collections first). Membership syncs to Shopify on push. Copied from the template on variants -- edit on the template.",
+        },
     ]
     sales_order_fields = [
         {

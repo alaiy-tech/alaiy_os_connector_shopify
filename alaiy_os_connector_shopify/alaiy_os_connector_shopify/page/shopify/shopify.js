@@ -76,6 +76,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 								<button id="sync-tags-btn" class="shopify-btn shopify-btn-outline-secondary">
 									Sync Tags
 								</button>
+								<button id="sync-collections-btn" class="shopify-btn shopify-btn-outline-secondary">
+									Sync Collections
+								</button>
 								<div id="taxonomy-log" class="shopify-sync-log"></div>
 							</div>
 						</div>
@@ -273,6 +276,17 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		});
 	}
 
+	function sync_collections() {
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.refresh_shopify_collections',
+			callback: function(r) {
+				if (r.message && r.message.queued) {
+					frappe.show_alert({message: 'Collections sync queued', indicator: 'blue'}, 5);
+				}
+			}
+		});
+	}
+
 	function poll_import_progress(log_name, log_container, btn) {
 		frappe.call({
 			method: 'frappe.client.get',
@@ -336,4 +350,5 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	document.getElementById('export-products-btn').addEventListener('click', export_products);
 	document.getElementById('sync-taxonomy-btn').addEventListener('click', sync_taxonomy);
 	document.getElementById('sync-tags-btn').addEventListener('click', sync_tags);
+	document.getElementById('sync-collections-btn').addEventListener('click', sync_collections);
 };

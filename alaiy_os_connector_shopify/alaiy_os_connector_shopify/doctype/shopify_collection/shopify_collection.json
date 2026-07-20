@@ -1,0 +1,120 @@
+{
+  "actions": [],
+  "allow_rename": 1,
+  "autoname": "hash",
+  "creation": "2026-07-20 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "collection_title",
+    "handle",
+    "is_smart",
+    "product_count",
+    "members_html",
+    "sb_shopify",
+    "sh_collection_id",
+    "sh_collection_gid",
+    "sb_content",
+    "description",
+    "image_url",
+    "last_synced"
+  ],
+  "fields": [
+    {
+      "fieldname": "collection_title",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Title",
+      "reqd": 1,
+      "read_only_depends_on": "eval:doc.sh_collection_gid"
+    },
+    {
+      "fieldname": "handle",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Handle",
+      "read_only": 1
+    },
+    {
+      "default": "0",
+      "description": "Smart (rule-based) collection on Shopify. Membership is driven by Shopify's own conditions -- read-only here, products can't be added/removed manually.",
+      "fieldname": "is_smart",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Smart (Automated)",
+      "read_only": 1
+    },
+    {
+      "default": "0",
+      "description": "Number of products in this collection on Shopify, as of the last sync.",
+      "fieldname": "product_count",
+      "fieldtype": "Int",
+      "in_list_view": 1,
+      "label": "Products (Shopify)",
+      "read_only": 1
+    },
+    {
+      "fieldname": "members_html",
+      "fieldtype": "HTML",
+      "label": "Products linked in ERPNext"
+    },
+    {
+      "fieldname": "sb_shopify",
+      "fieldtype": "Section Break",
+      "label": "Shopify"
+    },
+    {
+      "fieldname": "sh_collection_id",
+      "fieldtype": "Data",
+      "label": "Shopify Collection ID",
+      "read_only": 1
+    },
+    {
+      "fieldname": "sh_collection_gid",
+      "fieldtype": "Data",
+      "label": "Shopify Collection GID",
+      "read_only": 1
+    },
+    {
+      "fieldname": "sb_content",
+      "fieldtype": "Section Break",
+      "label": "Content"
+    },
+    {
+      "fieldname": "description",
+      "fieldtype": "Text Editor",
+      "label": "Description"
+    },
+    {
+      "fieldname": "image_url",
+      "fieldtype": "Data",
+      "label": "Image URL"
+    },
+    {
+      "fieldname": "last_synced",
+      "fieldtype": "Datetime",
+      "label": "Last Synced",
+      "read_only": 1
+    }
+  ],
+  "links": [],
+  "modified": "2026-07-20 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Alaiy OS Connector Shopify",
+  "name": "Shopify Collection",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "read": 1,
+      "role": "System Manager",
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "title_field": "collection_title",
+  "track_changes": 0
+}
