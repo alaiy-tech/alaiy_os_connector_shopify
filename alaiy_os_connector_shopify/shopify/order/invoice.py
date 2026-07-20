@@ -41,6 +41,7 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str):
         with _as_administrator():
             si = make_sales_invoice(so_name)
             si.update_stock = 0
+            _fill_item_accounts(si, settings)
             # Mirrors every other webhook-driven save in this connector: mark
             # it as Shopify-originated and bypass the Guest permission checks
             # the allow_guest webhook context would otherwise fail.
@@ -54,6 +55,72 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str):
             title=f"Shopify: auto Sales Invoice failed for {so_name}",
             message=frappe.get_traceback(),
         )
+
+
+def _fill_item_accounts(si, settings):
+    """
+    Force a valid Income Account (and cost center) onto every invoice row.
+    Confirmed live: neither the Item nor the Company carried a default income
+    account, so ERPNext rejected the invoice ("Income Account None does not
+    belong to the company"). Self-heal one rather than making the merchant
+    configure accounts by hand -- same pattern as warehouse/tax self-heal.
+    """
+    income = _resolve_income_account(si.company)
+    cost_center = settings.sh_cost_center or frappe.get_cached_value(
+        "Company", si.company, "cost_center")
+    for row in si.items:
+        if income and not row.income_account:
+            row.income_account = income
+        if cost_center and not row.cost_center:
+            row.cost_center = cost_center
+
+
+def _resolve_income_account(company):
+    configured = frappe.get_cached_value("Company", company, "default_income_account")
+    if configured and not frappe.db.get_value("Account", configured, "is_group"):
+        return configured
+    existing = frappe.db.get_value(
+        "Account",
+        {"company": company, "root_type": "Income", "is_group": 0, "disabled": 0},
+        "name",
+    )
+    if existing:
+        return existing
+    return _create_income_account(company)
+
+
+def _create_income_account(company):
+    abbr = frappe.db.get_value("Company", company, "abbr")
+    parent = None
+    for candidate in (f"Direct Income - {abbr}", f"Income - {abbr}"):
+        if abbr and frappe.db.exists("Account", candidate):
+            parent = candidate
+            break
+    if not parent:
+        parent = frappe.db.get_value(
+            "Account", {"company": company, "is_group": 1, "root_type": "Income"}, "name")
+    if not parent:
+        frappe.log_error(
+            title=f"Shopify: no Income group to create a Sales account under for {company}",
+            message="Set a Default Income Account on the Company to enable auto Sales Invoice.",
+        )
+        return None
+    try:
+        acc = frappe.new_doc("Account")
+        acc.account_name = "Shopify Sales"
+        acc.parent_account = parent
+        acc.company = company
+        acc.account_type = "Income Account"
+        acc.is_group = 0
+        acc.insert(ignore_permissions=True)
+        frappe.db.commit()
+        return acc.name
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: failed to auto-create Income account for {company}",
+            message=frappe.get_traceback(),
+        )
+        return None
 
 
 # ── Reverse direction: ERPNext Sales Invoice -> mark Shopify order paid ────────
