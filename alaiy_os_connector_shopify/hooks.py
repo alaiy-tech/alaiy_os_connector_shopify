@@ -34,7 +34,10 @@ scheduler_events = {
         "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only"
     ],
     "daily": [
-        "alaiy_os_connector_shopify.shopify.product_sync.fetch_shopify_taxonomy"
+        "alaiy_os_connector_shopify.shopify.product_sync.fetch_shopify_taxonomy",
+        "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
+        "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_collections",
+        "alaiy_os_connector_shopify.shopify.inventory_sync.sync_shopify_locations",
     ]
 }
 
