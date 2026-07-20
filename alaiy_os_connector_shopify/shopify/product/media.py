@@ -50,7 +50,7 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
     if len(image_urls) < 2:
         return
 
-    # "slideshow" is a core Item field on some ERPNext builds but not
+    # "slideshow" is a core Item field on some Alaiy OS builds but not
     # others -- confirmed live on a second client site: "Unknown column
     # 'slideshow' in 'SET'" crashed every multi-image import outright.
     # Registering our own custom field with the same name risks colliding
@@ -101,7 +101,7 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
 
 def _absolute_file_url(url: str) -> str:
     """
-    ERPNext's own file fields (Item.image, Website Slideshow's image rows)
+    Alaiy OS's own file fields (Item.image, Website Slideshow's image rows)
     store root-relative paths like "/files/xyz.jpg" -- fine for our own
     UI, but Shopify's productSet rejected every single one live with
     "File URL is invalid" since originalSource needs a real, publicly

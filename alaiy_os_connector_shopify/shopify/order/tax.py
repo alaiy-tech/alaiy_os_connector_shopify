@@ -3,7 +3,7 @@ Booking Shopify order tax lines (CGST/SGST/VAT/etc.) onto the Sales Order's
 Sales Taxes and Charges table.
 
 Shopify's own computed per-line amount is used rather than recalculating from
-rate on the ERPNext side, to avoid rounding drift between the two systems.
+rate on the Alaiy OS side, to avoid rounding drift between the two systems.
 
 The Tax Account is self-healed the same way warehouse/cost-center/territory
 are elsewhere in this connector: an explicit setting wins, else an existing
@@ -94,7 +94,7 @@ def _append_tax_lines(so, tax_lines, taxes_included, settings):
 
     taxes_included=True (item prices already contain the tax): booked as an
     "On Net Total" percentage flagged included_in_print_rate, so the tax
-    breakup shows without inflating the grand total (ERPNext forbids Actual +
+    breakup shows without inflating the grand total (Alaiy OS forbids Actual +
     included_in_print_rate, hence the percentage form here).
     """
     if not tax_lines:

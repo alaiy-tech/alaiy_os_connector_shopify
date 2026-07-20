@@ -54,7 +54,7 @@ def _upsert_order_unlocked(order, order_id):
         return False  # already processed
 
     settings = frappe.get_single("Shopify Connector Settings")
-    # A missing default Address Template makes ERPNext throw while rendering the
+    # A missing default Address Template makes Alaiy OS throw while rendering the
     # customer's address during Sales Order validate -- ensure one exists first.
     from alaiy_os_connector_shopify.shopify.order.address import ensure_default_address_template
     ensure_default_address_template()
@@ -135,7 +135,7 @@ def _upsert_order_unlocked(order, order_id):
     so.flags.ignore_permissions = True
     so.insert()
 
-    # Draft orders from Shopify should stay as draft in ERPNext until customer completes checkout.
+    # Draft orders from Shopify should stay as draft in Alaiy OS until customer completes checkout.
     # Real orders are submitted immediately and ready for fulfillment.
     # Draft orders have Order # like #D9, #D10; real orders are numeric like #1015
     order_name = order.get("name", "")

@@ -59,7 +59,7 @@ def on_sales_order_update(doc, method=None):
 def on_sales_order_submit(doc, method=None):
     """
     The one 'vice versa' direction that was genuinely missing: a Sales
-    Order created directly in ERPNext (not from a Shopify pull/webhook)
+    Order created directly in Alaiy OS (not from a Shopify pull/webhook)
     never had anything pushing it to Shopify at all. Only fires for orders
     with at least one Shopify-linked Item -- an order with zero Shopify
     products has nothing meaningful to create over there.

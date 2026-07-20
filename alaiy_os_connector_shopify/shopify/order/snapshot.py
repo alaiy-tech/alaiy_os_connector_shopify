@@ -12,7 +12,7 @@ def _items_before_cache_key(so_name: str) -> str:
 
 def snapshot_before_update_child_qty_rate():
     """
-    before_request hook: for ERPNext's "Update Items" quick-edit grid
+    before_request hook: for Alaiy OS's "Update Items" quick-edit grid
     specifically (erpnext.controllers.accounts_controller.update_child_qty_rate),
     snapshot the Sales Order's current items into cache BEFORE that
     whitelisted method runs at all.
@@ -53,7 +53,7 @@ def on_sales_order_validate(doc, method=None):
     cache, for _detect_items_changed/_detect_removed_variant_ids to diff
     against later in on_update/on_update_after_submit.
 
-    Persisted in cache keyed by doc.name -- NOT on doc.flags. ERPNext's
+    Persisted in cache keyed by doc.name -- NOT on doc.flags. Alaiy OS's
     "Update Items" quick-edit grid (update_child_qty_rate) saves an
     already-submitted Sales Order TWICE internally: once to apply the item
     changes, then again on a freshly RELOADED doc object to recalculate

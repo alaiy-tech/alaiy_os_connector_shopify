@@ -59,7 +59,7 @@ def trigger_product_import():
 def trigger_product_export():
     """
     Bulk push every local (not-yet-linked) product to Shopify in one go --
-    for manually-created ERPNext Items that predate any Shopify connection.
+    for manually-created Alaiy OS Items that predate any Shopify connection.
     Enqueued as background job.
     """
     return _enqueue_sync(

@@ -75,10 +75,10 @@ _COMPARE_AT_PRICE_LIST = "Shopify Compare At"
 
 def _set_item_compare_at_price(item_code: str, price: float, settings):
     """
-    Compare-at price has no dedicated field on ERPNext's Item -- reusing
+    Compare-at price has no dedicated field on Alaiy OS's Item -- reusing
     the existing Item Price / Price List mechanism (same pattern as
     _set_item_price) in a second, auto-created price list keeps this a
-    plain ERPNext concept instead of a bespoke Currency field that every
+    plain Alaiy OS concept instead of a bespoke Currency field that every
     other price-list-aware report/screen wouldn't know about.
     """
     _ensure_price_list(_COMPARE_AT_PRICE_LIST, settings)
@@ -90,9 +90,9 @@ _COST_PRICE_LIST = "Shopify Cost"
 
 def _set_item_cost(item_code: str, cost: float, settings):
     """
-    Shopify's per-variant unit cost has no dedicated ERPNext Item field --
+    Shopify's per-variant unit cost has no dedicated Alaiy OS Item field --
     same reasoning as _set_item_compare_at_price: a second, auto-created
-    Buying price list keeps this a plain ERPNext concept (usable in
+    Buying price list keeps this a plain Alaiy OS concept (usable in
     standard costing reports) instead of a bespoke Currency field.
     """
     _ensure_price_list(_COST_PRICE_LIST, settings, buying=True)

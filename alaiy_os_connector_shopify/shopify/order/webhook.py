@@ -19,7 +19,7 @@ def handle_order_webhook(topic, payload):
 
     orders/create and draft_orders/create insert new Sales Orders.
     updated/fulfilled variants apply in-place (or fall back to create).
-    cancelled/delete variants cancel, never hard-delete per ERPNext's docstatus.
+    cancelled/delete variants cancel, never hard-delete per Alaiy OS's docstatus.
     """
     try:
         if topic in ("orders/cancelled", "orders/delete", "draft_orders/delete"):

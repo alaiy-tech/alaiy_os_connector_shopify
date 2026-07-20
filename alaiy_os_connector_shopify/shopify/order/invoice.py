@@ -3,7 +3,7 @@ Auto-create a Sales Invoice from a Shopify order once it's paid.
 
 Shopify order -> Sales Order is the authoritative flow; this adds the billing
 document. On financial_status "paid" we make + submit a Sales Invoice from the
-submitted Sales Order (tax lines carry over via ERPNext's own mapping).
+submitted Sales Order (tax lines carry over via Alaiy OS's own mapping).
 
 Gated by Shopify Connector Settings.sh_auto_sales_invoice (default on).
 Idempotent: never a second invoice for a Sales Order already invoiced.
@@ -118,7 +118,7 @@ def _fill_item_accounts(si, settings):
     """
     Force a valid Income Account (and cost center) onto every invoice row.
     Confirmed live: neither the Item nor the Company carried a default income
-    account, so ERPNext rejected the invoice ("Income Account None does not
+    account, so Alaiy OS rejected the invoice ("Income Account None does not
     belong to the company"). Self-heal one rather than making the merchant
     configure accounts by hand -- same pattern as warehouse/tax self-heal.
     """
@@ -180,7 +180,7 @@ def _create_income_account(company):
         return None
 
 
-# ── Reverse direction: ERPNext Sales Invoice -> mark Shopify order paid ────────
+# ── Reverse direction: Alaiy OS Sales Invoice -> mark Shopify order paid ────────
 
 def _linked_shopify_order_id(doc):
     """Shopify order id behind a Sales Invoice, via its items' Sales Order."""
@@ -196,7 +196,7 @@ def _linked_shopify_order_id(doc):
 
 def on_sales_invoice_submit(doc, method=None):
     """
-    Submitting a Sales Invoice in ERPNext for a Shopify-originated order marks
+    Submitting a Sales Invoice in Alaiy OS for a Shopify-originated order marks
     that order Paid on Shopify (orderMarkAsPaid). Skipped for invoices we
     ourselves auto-created from an already-paid Shopify order (from_shopify_sync)
     -- that order is already paid there, pushing back would just error.

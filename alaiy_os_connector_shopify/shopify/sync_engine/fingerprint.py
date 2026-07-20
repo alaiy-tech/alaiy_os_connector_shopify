@@ -2,7 +2,7 @@
 Echo detection: compute a stable hash of the fields that actually matter for
 a given entity, so a webhook/doc-event carrying data we JUST wrote ourselves
 can be recognized and skipped, instead of bouncing back and forth forever
-between ERPNext and Shopify.
+between Alaiy OS and Shopify.
 """
 
 import hashlib
@@ -11,7 +11,7 @@ import json
 
 def _money(value) -> str:
     """
-    Normalize a price to a 2-decimal string so "20.0" (ERPNext float) and
+    Normalize a price to a 2-decimal string so "20.0" (Alaiy OS float) and
     "20.00" (Shopify string) produce the same fingerprint.
     """
     if value is None or value == "":

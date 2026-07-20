@@ -1,6 +1,6 @@
 // Loaded via hooks.py's doctype_list_js AFTER Item's own list settings, so
 // this only ADDS a formatter for our own field rather than replacing
-// whatever ERPNext's core Item list view already configured.
+// whatever Alaiy OS's core Item list view already configured.
 frappe.listview_settings["Item"] = frappe.listview_settings["Item"] || {};
 frappe.listview_settings["Item"].formatters = frappe.listview_settings["Item"].formatters || {};
 

@@ -11,7 +11,7 @@ from alaiy_os_connector_shopify.shopify.product.masters import _ensure_cost_cent
 def _default_warehouse_row(settings) -> dict:
     """
     Item Defaults row (company + default_warehouse) to append on every
-    stocked Item at creation time. Without this, ERPNext has no warehouse
+    stocked Item at creation time. Without this, Alaiy OS has no warehouse
     to suggest when an Item is picked on any document created directly in
     the desk UI (not through our own webhook/import code, which always
     resolves a warehouse itself) -- confirmed live: manually creating a
@@ -30,10 +30,10 @@ def _default_warehouse_row(settings) -> dict:
 def _set_opening_stock(item_code: str, qty: float, settings):
     """
     Record Shopify's current available quantity as this Item's opening
-    stock via a Material Receipt Stock Entry -- the standard ERPNext way
+    stock via a Material Receipt Stock Entry -- the standard Alaiy OS way
     to set an initial stock balance (Bin.actual_qty is derived from the
     stock ledger, not directly writable). Without this, every imported
-    item lands in ERPNext with zero stock regardless of what's actually
+    item lands in Alaiy OS with zero stock regardless of what's actually
     available on Shopify.
     """
     warehouse = settings.sh_default_warehouse
@@ -84,7 +84,7 @@ def _set_opening_stock(item_code: str, qty: float, settings):
 
     # Confirmed live: a real site had zero "Stock Entry Type" master
     # records at all (Material Receipt/Issue/etc.), which is standard
-    # ERPNext seed data -- every Stock Entry insert failed with
+    # Alaiy OS seed data -- every Stock Entry insert failed with
     # "Could not find Stock Entry Type: Material Receipt" regardless of
     # warehouse/cost center being correct. Self-heal the one type we
     # actually need rather than requiring console setup per client.
@@ -96,7 +96,7 @@ def _set_opening_stock(item_code: str, qty: float, settings):
         }).insert(ignore_permissions=True)
         frappe.db.commit()
 
-    # Same class of missing-company-default: ERPNext requires a Stock
+    # Same class of missing-company-default: Alaiy OS requires a Stock
     # Adjustment Account (or a per-entry Difference Account) for any
     # Material Receipt. Confirmed live: company had the account itself
     # but never had it set as the default. Pick any existing "Stock
@@ -121,7 +121,7 @@ def _set_opening_stock(item_code: str, qty: float, settings):
             "cost_center": cost_center,
             # Shopify's price is a selling price, not a cost basis -- we
             # have no real valuation rate to give this opening stock, and
-            # ERPNext otherwise blocks submit with "Valuation Rate Missing"
+            # Alaiy OS otherwise blocks submit with "Valuation Rate Missing"
             # on an item's very first stock-in.
             "allow_zero_valuation_rate": 1,
         })

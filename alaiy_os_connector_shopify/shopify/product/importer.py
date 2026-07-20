@@ -1,8 +1,8 @@
 """
-Shopify → ERPNext product import (one-time full sync) -- moved verbatim
+Shopify → Alaiy OS product import (one-time full sync) -- moved verbatim
 from product_import.py, unchanged.
 
-One-time import of all products from Shopify into ERPNext as Items.
+One-time import of all products from Shopify into Alaiy OS as Items.
 Wipes existing product mappings (Item records without sh_shopify_product_id)
 and imports fresh from Shopify source of truth.
 
@@ -36,7 +36,7 @@ from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _se
 
 def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True):
     """
-    One-time import of all products from Shopify into ERPNext.
+    One-time import of all products from Shopify into Alaiy OS.
 
     Args:
         trigger: "manual", "scheduled", or "webhook"
@@ -154,7 +154,7 @@ def _wipe_all_items():
     NOT genuinely local/manual items, which are left untouched. Per
     explicit decision: re-importing should always start Shopify-linked
     data from zero, without disturbing anything created directly in
-    ERPNext.
+    Alaiy OS.
 
     Deliberately scoped to Items and their direct child tables only:
     Sales Orders, Delivery Notes, Stock Entries, Stock Ledger Entries, and
@@ -203,7 +203,7 @@ def _wipe_all_items():
 
 def _import_product(node: dict) -> tuple:
     """
-    Import a single Shopify product (template + variants) as ERPNext Item(s).
+    Import a single Shopify product (template + variants) as Alaiy OS Item(s).
 
     Returns:
         (created: bool, reason: str) -- reason is always populated, even on
@@ -472,7 +472,7 @@ def _import_product_with_variants(
     if frappe.db.exists("Item", template_name):
         return False, f"template '{template_name}' already exists (duplicate product_id in feed)"
 
-    # ERPNext requires a has_variants=1 template to declare at least one
+    # Alaiy OS requires a has_variants=1 template to declare at least one
     # attribute (e.g. Size, Color), and every variant must carry a value
     # for each -- "Attribute table is mandatory" otherwise. Shopify's own
     # `options` field is the source of truth for the names; fall back to
@@ -494,7 +494,7 @@ def _import_product_with_variants(
         """Same {option_name: value} resolution used both to pre-register
         Item Attribute Values and to set each variant's own attribute row
         -- must stay identical or a variant could get a value that was
-        never registered on the attribute, which ERPNext also rejects."""
+        never registered on the attribute, which Alaiy OS also rejects."""
         selected = {
             opt.get("name"): opt.get("value")
             for opt in (variant.get("selectedOptions") or [])
@@ -633,7 +633,7 @@ def _import_product_with_variants(
 
         # Shopify's own variant "title" is just the bare option value(s)
         # (e.g. "M", or "38") -- fine inside one product's own variant
-        # list on Shopify, but meaningless on its own in a flat ERPNext
+        # list on Shopify, but meaningless on its own in a flat Alaiy OS
         # Item list next to hundreds of other variants. Build a name that
         # carries the parent product title along with the actual
         # attribute values instead of relying on Shopify's title field.

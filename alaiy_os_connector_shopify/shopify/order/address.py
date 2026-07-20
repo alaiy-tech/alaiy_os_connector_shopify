@@ -1,5 +1,5 @@
 """
-Import a Shopify order's shipping/billing address into an ERPNext Address and
+Import a Shopify order's shipping/billing address into an Alaiy OS Address and
 link it to the customer + Sales Order.
 """
 
@@ -17,7 +17,7 @@ _ADDRESS_TEMPLATE = """{{ address_line1 }}<br>
 
 def ensure_default_address_template():
     """
-    ERPNext refuses to save/render ANY Address (and any Sales Order that
+    Alaiy OS refuses to save/render ANY Address (and any Sales Order that
     references one) if there's no default Address Template -- confirmed live:
     a fresh site had none, so order import crashed with "No default Address
     Template found". Self-heal a standard one instead of making the merchant

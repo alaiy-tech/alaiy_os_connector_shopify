@@ -100,13 +100,13 @@ def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
 
 def _sync_order_line_items(so_name: str, order: dict):
     """
-    Reconciles line items between Shopify order and ERPNext Sales Order.
+    Reconciles line items between Shopify order and Alaiy OS Sales Order.
 
     A submitted Sales Order can't have its Items table structurally changed
-    in place -- ERPNext enforces this (UpdateAfterSubmitError), confirmed
+    in place -- Alaiy OS enforces this (UpdateAfterSubmitError), confirmed
     live: removing a line via Shopify's Order Editing hit this the moment
     a real submitted order was edited. The correct handling for "a
-    submitted document needs to change" is ERPNext's own amend mechanism
+    submitted document needs to change" is Alaiy OS's own amend mechanism
     (cancel, then create a new revision carrying amended_from) rather than
     silently dropping the change or bypassing the doctype's own guard.
     A still-Draft order (not yet auto-submitted -- see _upsert_order's

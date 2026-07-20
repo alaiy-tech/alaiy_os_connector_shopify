@@ -97,7 +97,7 @@ def _backfill_missing_default_warehouse(warehouse):
     """
     One-time-per-item heal for stock items imported before Item Defaults
     were set at import time (see product_import._default_warehouse_row) --
-    without it, ERPNext has no warehouse to suggest on any document
+    without it, Alaiy OS has no warehouse to suggest on any document
     created directly in the desk UI, forcing it to be typed in by hand
     every time. Runs on every scheduled inventory push (already the one
     place that iterates every Shopify-linked stock item); capped per run
@@ -133,7 +133,7 @@ def _backfill_missing_default_warehouse(warehouse):
 
 def run_inventory_push(trigger="manual", log_name=None):
     """
-    Push current ERPNext bin quantities to Shopify inventory levels
+    Push current Alaiy OS bin quantities to Shopify inventory levels
     for all items that have a sh_shopify_variant_id set.
     """
     log = load_or_create_log("inventory", trigger, log_name)

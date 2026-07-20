@@ -1,6 +1,6 @@
 // Loaded via hooks.py's doctype_list_js AFTER Sales Order's own list
 // settings, so this only ADDS formatters for our own fields rather than
-// replacing whatever ERPNext's core Sales Order list view already configured.
+// replacing whatever Alaiy OS's core Sales Order list view already configured.
 frappe.listview_settings["Sales Order"] = frappe.listview_settings["Sales Order"] || {};
 frappe.listview_settings["Sales Order"].formatters = frappe.listview_settings["Sales Order"].formatters || {};
 

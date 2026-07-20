@@ -46,7 +46,7 @@ def _get_or_create_customer(customer_data, settings):
 
 def _resolve_default_territory(settings):
     """
-    "All Territories" is ERPNext's usual seeded root, but nothing guarantees
+    "All Territories" is Alaiy OS's usual seeded root, but nothing guarantees
     it exists under that exact name on every site (renamed, demo data never
     loaded, or a from-scratch site with zero Territory rows at all --
     confirmed live on a real site). Order import must never hard-fail over
