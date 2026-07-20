@@ -62,6 +62,54 @@ def _ensure_item_group(name: str) -> str:
         return "All Item Groups"
 
 
+def _ensure_item_group_path(full_name: str) -> str:
+    """
+    Build a nested Item Group hierarchy from a Shopify taxonomy fullName
+    ("Apparel & Accessories > Clothing > Shirts") and return the leaf group
+    name -- so Shopify products land in a real category tree (the way the
+    cloudstore connector builds Item Groups) instead of everything flat under
+    "All Item Groups" keyed off productType.
+
+    Reuses existing groups by name; a node that will carry children is forced
+    to is_group=1, the leaf is a normal assignable group. On any failure,
+    falls back to the deepest group created so far (or None to let the caller
+    fall back to productType).
+
+    NOTE: ERPNext Item Group names are globally unique, so a leaf name that
+    repeats across branches (e.g. "Shirts" under both Men and Women) resolves
+    to a single shared group -- an ERPNext constraint, not a bug here.
+    """
+    parts = [p.strip() for p in (full_name or "").split(">") if p.strip()]
+    if not parts:
+        return None
+    parent = "All Item Groups"
+    leaf = None
+    for i, name in enumerate(parts):
+        is_last = i == len(parts) - 1
+        if frappe.db.exists("Item Group", name):
+            # A node that now needs children must be a group.
+            if not is_last and not frappe.db.get_value("Item Group", name, "is_group"):
+                frappe.db.set_value("Item Group", name, "is_group", 1)
+        else:
+            try:
+                doc = frappe.new_doc("Item Group")
+                doc.item_group_name = name
+                doc.parent_item_group = parent
+                doc.is_group = 0 if is_last else 1
+                doc.flags.ignore_permissions = True
+                doc.insert()
+            except Exception:
+                frappe.log_error(
+                    title=f"Shopify import: failed to create Item Group {name}",
+                    message=frappe.get_traceback(),
+                )
+                return leaf
+        parent = name
+        leaf = name
+    frappe.db.commit()
+    return leaf
+
+
 def _make_attribute_abbr(value: str, existing_abbrs: set) -> str:
     """Item Attribute Value rows require a short, unique-per-attribute
     `abbr` alongside the display value -- derive one from the value itself
