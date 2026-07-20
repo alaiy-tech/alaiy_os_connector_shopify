@@ -1,5 +1,5 @@
 """
-Shopify Collections <-> ERPNext sync.
+Shopify Collections <-> Alaiy OS sync.
 
 Bidirectional, manual collections:
 - Import: cache every Shopify collection as a "Shopify Collection" doc (the
@@ -11,7 +11,7 @@ Bidirectional, manual collections:
   field, using collectionAddProducts / collectionRemoveProducts. Smart
   collections are never touched.
 - Export (collection CRUD): a Shopify Collection created/edited/deleted in
-  ERPNext is pushed via collectionCreate / collectionUpdate / collectionDelete.
+  Alaiy OS is pushed via collectionCreate / collectionUpdate / collectionDelete.
 - Webhooks: collections/create|update|delete keep the cache in step with
   changes made on Shopify.
 """
@@ -451,7 +451,7 @@ def copy_template_collections_to_variant(doc, method=None):
     doc.set("sh_shopify_collections", [{"shopify_collection": r.shopify_collection} for r in rows])
 
 
-# ── Membership export (ERPNext -> Shopify) ────────────────────────────────────
+# ── Membership export (Alaiy OS -> Shopify) ────────────────────────────────────
 
 def sync_item_collections(item, product_id, client):
     """
@@ -524,7 +524,7 @@ def _collection_membership_call(client, mutation, collection_gid, product_gid, v
         )
 
 
-# ── Collection CRUD push (ERPNext -> Shopify) ─────────────────────────────────
+# ── Collection CRUD push (Alaiy OS -> Shopify) ─────────────────────────────────
 
 def _collection_input(doc):
     payload = {"title": doc.collection_title}
@@ -623,7 +623,7 @@ def delete_collection(collection_gid: str):
         )
 
 
-# ── Webhook handler (Shopify -> ERPNext) ──────────────────────────────────────
+# ── Webhook handler (Shopify -> Alaiy OS) ──────────────────────────────────────
 
 def handle_collection_webhook(topic, payload):
     """

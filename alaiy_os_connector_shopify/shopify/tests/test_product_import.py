@@ -15,7 +15,7 @@ from alaiy_os_connector_shopify.shopify.product_import import (
 
 class TestWeightUnitMaps(unittest.TestCase):
     def test_graphql_and_uom_maps_are_exact_inverses(self):
-        # Push (ERPNext UOM -> Shopify enum) must round-trip back to the
+        # Push (Alaiy OS UOM -> Shopify enum) must round-trip back to the
         # same UOM the import path would have set, or weight silently
         # drifts every time a variant syncs in both directions.
         for enum_value, uom in _WEIGHT_UNIT_TO_UOM.items():

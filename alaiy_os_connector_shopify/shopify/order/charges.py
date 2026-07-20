@@ -34,7 +34,7 @@ def append_shipping_charge(so, order, settings):
 
 def apply_order_discount(so, order):
     """
-    Apply Shopify's order-level total discount as an ERPNext Additional Discount
+    Apply Shopify's order-level total discount as an Alaiy OS Additional Discount
     on the net total. Per-line discounts already come through in each line's
     price, so this is only the order-level remainder Shopify reports separately.
     """
@@ -47,7 +47,7 @@ def apply_order_discount(so, order):
 
 def build_custom_line_item(li, warehouse):
     """
-    A Shopify line item that maps to no ERPNext Item (custom/one-off product) --
+    A Shopify line item that maps to no Alaiy OS Item (custom/one-off product) --
     represent it with a single shared placeholder Item ("Shopify Custom Item"),
     carrying the real title in the row description so nothing is silently
     dropped. Returns a row dict, or None if it can't be built.

@@ -10,7 +10,7 @@ def validate_item_uoms(doc, method=None):
     """
     Validation hook on Item before saving to automatically deduplicate
     the UOM conversion factors for both template and variant Items.
-    This prevents standard ERPNext validation errors from blocking
+    This prevents standard Alaiy OS validation errors from blocking
     Desk UI saves and webhook runs.
     """
     # 1. Clean up the document's own in-memory UOMs list first
@@ -73,7 +73,7 @@ def on_item_change(doc, method=None):
         # flow to Shopify without someone remembering to tick its own
         # checkbox -- otherwise _variants_of's filter would silently leave
         # it out of every future push (this exact regression, confirmed by
-        # walking the flow: "add variant in ERPNext -> appears on Shopify"
+        # walking the flow: "add variant in Alaiy OS -> appears on Shopify"
         # worked before the per-variant filter existed).
         current_sync = doc.get("sync_to_shopify")
         frappe.logger().info(
@@ -159,7 +159,7 @@ def on_item_change(doc, method=None):
 
 def on_item_delete(doc, method=None):
     """
-    Deleting a variant in ERPNext should remove it from Shopify too,
+    Deleting a variant in Alaiy OS should remove it from Shopify too,
     rather than silently diverging. push_item always rebuilds the FULL
     variant list from the template's current children before calling
     productSet, which Shopify treats as the complete desired state -- so

@@ -43,13 +43,13 @@
       "fieldname": "erpnext_doctype",
       "fieldtype": "Data",
       "in_list_view": 1,
-      "label": "ERPNext DocType"
+      "label": "Alaiy OS DocType"
     },
     {
       "fieldname": "erpnext_name",
       "fieldtype": "Data",
       "in_list_view": 1,
-      "label": "ERPNext Document",
+      "label": "Alaiy OS Document",
       "search_index": 1
     },
     {
@@ -59,10 +59,10 @@
       "label": "Shopify-side Fingerprint"
     },
     {
-      "description": "Fingerprint of the data as last seen coming FROM ERPNext (doc event). Used to detect and skip echoes of our own prior write.",
+      "description": "Fingerprint of the data as last seen coming FROM Alaiy OS (doc event). Used to detect and skip echoes of our own prior write.",
       "fieldname": "erpnext_fingerprint",
       "fieldtype": "Data",
-      "label": "ERPNext-side Fingerprint"
+      "label": "Alaiy OS-side Fingerprint"
     },
     {
       "fieldname": "last_synced_at",

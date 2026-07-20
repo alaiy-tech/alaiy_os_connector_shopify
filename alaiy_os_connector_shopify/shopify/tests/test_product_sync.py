@@ -4,7 +4,7 @@ site context for frappe.utils.get_system_timezone, same as every other
 test in this app) -- not runnable as bare `python -m pytest`.
 
 _to_utc_naive fixed a real crash: comparing Shopify's timezone-aware
-updated_at against ERPNext's naive last_synced_at raised TypeError on
+updated_at against Alaiy OS's naive last_synced_at raised TypeError on
 every single real inbound webhook update.
 """
 

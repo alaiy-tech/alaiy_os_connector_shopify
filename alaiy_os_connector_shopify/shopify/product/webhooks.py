@@ -134,7 +134,7 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
 
 
 def _handle_product_create(product_id: str, product: dict):
-    """New product on Shopify - create ERPNext Item."""
+    """New product on Shopify - create Alaiy OS Item."""
     entity = entities.get_by_external_id("product", product_id)
 
     if entity:
@@ -150,11 +150,11 @@ def _handle_product_create(product_id: str, product: dict):
 
 
 def _handle_product_update(product_id: str, product: dict):
-    """Product updated on Shopify - update ERPNext Item if Shopify is newer."""
+    """Product updated on Shopify - update Alaiy OS Item if Shopify is newer."""
     entity = entities.get_by_external_id("product", product_id)
 
     if not entity:
-        return  # Product not linked to ERPNext
+        return  # Product not linked to Alaiy OS
 
     if not frappe.db.exists("Item", entity.erpnext_name):
         # Self-heal: the item was deleted locally. Delete the stale synced entity
@@ -173,7 +173,7 @@ def _handle_product_update(product_id: str, product: dict):
     # Shopify wins if newer than our last sync. Both sides must be
     # normalized to the same UTC-naive form before comparing -- Shopify's
     # timestamp string carries a UTC offset (parses to a timezone-AWARE
-    # datetime) while entity.last_synced_at is a naive ERPNext-local
+    # datetime) while entity.last_synced_at is a naive Alaiy OS-local
     # datetime; comparing aware to naive directly raises TypeError, which
     # was silently swallowed by this function's own caller and made every
     # single real webhook update fail with no visible symptom beyond
@@ -202,7 +202,7 @@ def _handle_product_update(product_id: str, product: dict):
 
 def _update_item_from_shopify(item, product: dict):
     """
-    Update ERPNext Item from Shopify product (inbound sync).
+    Update Alaiy OS Item from Shopify product (inbound sync).
 
     Fields updated: title, description, vendor, product_type, status, images,
     tags, category (read-only, see _apply_product_meta), variant price,
@@ -251,7 +251,7 @@ def _update_item_from_shopify(item, product: dict):
         item.disabled = 0
 
     # Self-heal duplicated UOM rows in the conversion factor table --
-    # confirmed live: ERPNext's own Item.validate() appends a default UOM
+    # confirmed live: Alaiy OS's own Item.validate() appends a default UOM
     # row if it doesn't see one yet, and two near-simultaneous saves of the
     # same freshly-created template can each independently decide "no row yet"
     # and append one, leaving a duplicate. Since saving a template cascades
@@ -286,7 +286,7 @@ def _update_item_from_shopify(item, product: dict):
     item.uoms = deduped
 
     # Save item. item.flags.ignore_permissions only covers this save --
-    # ERPNext's Item.on_update() cascades into update_variants(), which
+    # Alaiy OS's Item.on_update() cascades into update_variants(), which
     # fetches fresh sibling variant Item docs and calls variant.save() on
     # each of THOSE, none of which inherit our flag. This webhook runs as
     # Guest (allow_guest=True endpoint), so that cascaded save hits a real
@@ -310,7 +310,7 @@ def _update_item_from_shopify(item, product: dict):
             if len(images) > 1:
                 _set_item_slideshow(item.name, images, settings)
 
-    # Uncheck sync_to_shopify on ERPNext variants that are missing from Shopify webhook payload
+    # Uncheck sync_to_shopify on Alaiy OS variants that are missing from Shopify webhook payload
     if item.has_variants and "variants" in product:
         incoming_skus = {
             (v.get("sku") or "").strip()
@@ -370,7 +370,7 @@ def _update_item_from_shopify(item, product: dict):
 
 
 def _handle_product_delete(product_id: str, product: dict):
-    """Product deleted on Shopify - unlink ERPNext Item (preserve local data)."""
+    """Product deleted on Shopify - unlink Alaiy OS Item (preserve local data)."""
     entity = entities.get_by_external_id("product", product_id)
 
     if not entity:
@@ -379,7 +379,7 @@ def _handle_product_delete(product_id: str, product: dict):
     if frappe.db.exists("Item", entity.erpnext_name):
         item = frappe.get_doc("Item", entity.erpnext_name)
 
-        # Unlink: remove Shopify IDs but keep Item in ERPNext
+        # Unlink: remove Shopify IDs but keep Item in Alaiy OS
         frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
         frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
 

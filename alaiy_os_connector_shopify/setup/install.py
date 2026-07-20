@@ -152,7 +152,7 @@ def _ensure_list_view_column(doctype, fieldname, label):
 
 
 def setup_custom_fields():
-    """Add Shopify custom fields to ERPNext doctypes. Idempotent -- safe to call on every migrate."""
+    """Add Shopify custom fields to Alaiy OS doctypes. Idempotent -- safe to call on every migrate."""
     # variant_of is itself a Link to Item -- fetch_from lets a variant
     # auto-pull these values from its template the moment variant_of is
     # set, and read_only_depends_on locks them from manual edit on a

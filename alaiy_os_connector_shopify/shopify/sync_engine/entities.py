@@ -1,6 +1,6 @@
 """
 Lookup/upsert helpers for Shopify Synced Entity -- the table that pairs an
-ERPNext document with its Shopify counterpart and holds both sides'
+Alaiy OS document with its Shopify counterpart and holds both sides'
 fingerprints for echo detection.
 """
 
@@ -28,7 +28,7 @@ def get_by_external_id(entity_type: str, external_id: str):
 
 def get_or_new(entity_type: str, erpnext_doctype: str = None, erpnext_name: str = None, external_id: str = None):
     """
-    Look up an existing pairing by ERPNext document first, falling back to
+    Look up an existing pairing by Alaiy OS document first, falling back to
     Shopify's external ID, or start a fresh (unsaved) one if neither matches.
     """
     entity = None

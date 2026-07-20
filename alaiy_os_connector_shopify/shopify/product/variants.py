@@ -12,7 +12,7 @@ from alaiy_os_connector_shopify.shopify.product.pricing import (
 )
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_uom
 
-# Shopify's GraphQL WeightUnit enum <-> a plain ERPNext UOM name. ERPNext's
+# Shopify's GraphQL WeightUnit enum <-> a plain Alaiy OS UOM name. Alaiy OS's
 # weight_uom is a Link to UOM with no fixed seeded names, so these are
 # auto-created (see _ensure_uom) rather than assumed to already exist.
 _WEIGHT_UNIT_TO_UOM = {

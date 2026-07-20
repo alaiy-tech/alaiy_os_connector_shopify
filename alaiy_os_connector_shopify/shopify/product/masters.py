@@ -75,9 +75,9 @@ def _ensure_item_group_path(full_name: str) -> str:
     falls back to the deepest group created so far (or None to let the caller
     fall back to productType).
 
-    NOTE: ERPNext Item Group names are globally unique, so a leaf name that
+    NOTE: Alaiy OS Item Group names are globally unique, so a leaf name that
     repeats across branches (e.g. "Shirts" under both Men and Women) resolves
-    to a single shared group -- an ERPNext constraint, not a bug here.
+    to a single shared group -- an Alaiy OS constraint, not a bug here.
     """
     parts = [p.strip() for p in (full_name or "").split(">") if p.strip()]
     if not parts:
@@ -127,7 +127,7 @@ def _ensure_item_attribute(attribute_name: str, values: list):
     """
     Ensure an Item Attribute exists with this name, and that every value
     in `values` is registered in its allowed Item Attribute Value list --
-    ERPNext rejects a variant whose attribute_value isn't pre-registered
+    Alaiy OS rejects a variant whose attribute_value isn't pre-registered
     on the attribute, separately from the template needing the attribute
     declared at all.
     """

@@ -24,7 +24,7 @@ def _apply_shopify_line_item_changes(order_id: str, removed_variant_ids: list, a
 
     Removed rows are matched to the calculated order's existing line items
     by variant ID -- the one identifier both sides share, since Shopify's
-    own line item IDs are order-scoped and never stored on the ERPNext
+    own line item IDs are order-scoped and never stored on the Alaiy OS
     side. Added rows are pushed via orderEditAddVariant directly (no
     matching needed, they're new).
 

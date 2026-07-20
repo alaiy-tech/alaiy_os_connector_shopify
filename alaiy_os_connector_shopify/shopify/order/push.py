@@ -1,5 +1,5 @@
 """
-Background job bodies for ERPNext -> Shopify order push-back -- moved
+Background job bodies for Alaiy OS -> Shopify order push-back -- moved
 verbatim from order_push.py, unchanged.
 """
 
@@ -102,7 +102,7 @@ def push_order_create(sales_order: str):
     Line items without a linked sh_shopify_variant_id are skipped (and
     logged) rather than failing the whole push -- a partially-representable
     order on Shopify is more useful than none at all, but skipped lines are
-    flagged loudly since Shopify's total won't match ERPNext's.
+    flagged loudly since Shopify's total won't match Alaiy OS's.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 

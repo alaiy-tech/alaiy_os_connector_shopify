@@ -18,7 +18,7 @@ class ShopifyConnectorSettings(Document):
         """
         Confirmed live: a real site had Default Warehouse set to the
         auto-seeded root Group Warehouse ("All Warehouses - <Co Abbr>") --
-        it "looked like" a sensible default (top of the tree) but ERPNext
+        it "looked like" a sensible default (top of the tree) but Alaiy OS
         rejects any stock transaction against a Group Warehouse, so every
         Delivery Note auto-created from a Shopify fulfillment failed. Catch
         this at save time so it can never be configured wrong in the first
@@ -29,7 +29,7 @@ class ShopifyConnectorSettings(Document):
         if frappe.db.get_value("Warehouse", self.sh_default_warehouse, "is_group"):
             frappe.throw(
                 f"'{self.sh_default_warehouse}' is a Group Warehouse (an organizational "
-                "folder, not a real stock location) -- ERPNext doesn't allow stock "
+                "folder, not a real stock location) -- Alaiy OS doesn't allow stock "
                 "transactions against it. Pick a leaf warehouse instead, e.g. "
                 "'Stores - <Company Abbr>' or 'Finished Goods - <Company Abbr>'."
             )

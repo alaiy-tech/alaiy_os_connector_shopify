@@ -13,7 +13,7 @@
       "fieldname": "warehouse",
       "fieldtype": "Link",
       "in_list_view": 1,
-      "label": "ERPNext Warehouse",
+      "label": "Alaiy OS Warehouse",
       "options": "Warehouse",
       "reqd": 1
     },

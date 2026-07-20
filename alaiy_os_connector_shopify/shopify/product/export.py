@@ -1,5 +1,5 @@
 """
-ERPNext -> Shopify product/variant push -- moved verbatim from
+Alaiy OS -> Shopify product/variant push -- moved verbatim from
 product_sync.py, unchanged.
 
 Gated by Item.sync_to_shopify (opt-in). The TEMPLATE's checkbox is the
@@ -17,7 +17,7 @@ since each variant payload carries its own Shopify variant `id` when it has
 one -- Shopify updates existing variants and creates new ones from the same
 call.
 
-Every push acquires a document lock on the template first. ERPNext's own
+Every push acquires a document lock on the template first. Alaiy OS's own
 Item controller resaves every sibling variant whenever a template is saved
 (unless the caller sets dont_update_variants, which our own doc_events
 can't control since the trigger is the user's/Cloudstore's save, not ours) --
@@ -57,7 +57,7 @@ def push_item(item_code: str):
 def run_bulk_export_to_shopify(trigger="manual", log_name=None):
     """
     One-off bulk push of every local (not-yet-linked) product to Shopify --
-    for manually-created ERPNext Items that predate any Shopify connection,
+    for manually-created Alaiy OS Items that predate any Shopify connection,
     rather than requiring someone to open each one and tick the checkbox
     individually. Opts each candidate Item into sync_to_shopify as it's
     pushed (so future edits keep flowing outbound the normal way) and
@@ -257,7 +257,7 @@ def _push_product_unlocked(item):
 
         if invalid_variant_ids:
             frappe.logger().warning(
-                f"Shopify push: found stale variant IDs {invalid_variant_ids} in ERPNext database. "
+                f"Shopify push: found stale variant IDs {invalid_variant_ids} in Alaiy OS database. "
                 "Clearing them and retrying sync..."
             )
             for v_id in invalid_variant_ids:
@@ -296,7 +296,7 @@ def _push_product_unlocked(item):
     # Match by SKU, not response order -- productSet's variants connection
     # isn't documented to preserve submission order, and getting this wrong
     # would silently write one variant's Shopify ID onto a different
-    # ERPNext item.
+    # Alaiy OS item.
     returned_by_sku = {
         v.get("sku"): v.get("legacyResourceId")
         for v in (product.get("variants") or {}).get("nodes", [])
