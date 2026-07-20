@@ -62,10 +62,10 @@ def _product_set_input(item, variants: list, settings, client=None) -> dict:
 
     payload = {
         "title": item.item_name,
-        # Pushing implies "this should be live" -- unarchives on every push
-        # rather than needing a separate un-archive step when re-enabled.
+        # Active vs Draft comes from the template's sh_shopify_status; pushing
+        # never leaves ARCHIVED (re-enabling a product unarchives it) --
         # archive_item() overrides this back to ARCHIVED explicitly.
-        "status": "ACTIVE",
+        "status": "DRAFT" if (item.get("sh_shopify_status") == "Draft") else "ACTIVE",
         "productOptions": _product_options_payload(option_names, variants),
         "variants": [
             _variant_set_payload(v, settings, option_names) for v in variants

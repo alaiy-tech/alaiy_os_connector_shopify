@@ -698,7 +698,10 @@ def _import_product_with_variants(
 
 
 def _apply_product_meta(item, node: dict):
-    """Apply product meta to Item -- tags, category, collections, and SEO."""
+    """Apply product meta to Item -- status, tags, category, collections, SEO."""
+    status = (node.get("status") or "").upper()
+    if status in ("ACTIVE", "DRAFT"):
+        item.sh_shopify_status = "Draft" if status == "DRAFT" else "Active"
     tags = _normalize_tags(node.get("tags"))
     if tags:
         _set_item_tags(item, tags)

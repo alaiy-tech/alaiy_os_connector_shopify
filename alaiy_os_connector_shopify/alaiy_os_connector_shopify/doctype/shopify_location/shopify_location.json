@@ -1,0 +1,71 @@
+{
+  "actions": [],
+  "allow_rename": 1,
+  "autoname": "hash",
+  "creation": "2026-07-20 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "location_name",
+    "is_active",
+    "sh_location_id",
+    "sh_location_gid",
+    "last_synced"
+  ],
+  "fields": [
+    {
+      "fieldname": "location_name",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Location Name",
+      "reqd": 1
+    },
+    {
+      "default": "0",
+      "fieldname": "is_active",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Active",
+      "read_only": 1
+    },
+    {
+      "fieldname": "sh_location_id",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Shopify Location ID",
+      "read_only": 1
+    },
+    {
+      "fieldname": "sh_location_gid",
+      "fieldtype": "Data",
+      "label": "Shopify Location GID",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_synced",
+      "fieldtype": "Datetime",
+      "label": "Last Synced",
+      "read_only": 1
+    }
+  ],
+  "links": [],
+  "modified": "2026-07-20 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Alaiy OS Connector Shopify",
+  "name": "Shopify Location",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "read": 1,
+      "role": "System Manager",
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "title_field": "location_name",
+  "track_changes": 0
+}

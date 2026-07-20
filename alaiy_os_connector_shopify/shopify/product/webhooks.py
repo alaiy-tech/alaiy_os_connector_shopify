@@ -99,6 +99,7 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
         "bodyHtml": product.get("body_html", ""),
         "vendor": product.get("vendor", ""),
         "productType": product.get("product_type", ""),
+        "status": product.get("status", ""),
         "tags": [tags_raw] if tags_raw else [],
         "category": {"name": category.get("name") or category.get("full_name")} if category.get("name") or category.get("full_name") else None,
         "options": [{"name": opt.get("name")} for opt in options if opt.get("name")],
@@ -238,11 +239,16 @@ def _update_item_from_shopify(item, product: dict):
     _apply_product_meta(item, {
         "tags": [tags] if tags else [],
         "category": {"name": category.get("name") or category.get("full_name")} if category.get("name") or category.get("full_name") else None,
+        "status": product.get("status") or "",
     })
 
-    # Status: active/draft/archived
-    if product.get("status"):
-        item.disabled = 1 if product["status"] in ("archived", "draft") else 0
+    # Status: active/draft/archived. Draft is a real visibility state now (kept
+    # on sh_shopify_status by _apply_product_meta), NOT a disable -- only an
+    # ARCHIVED product disables the Item.
+    if product.get("status") == "archived":
+        item.disabled = 1
+    elif product.get("status") in ("active", "draft"):
+        item.disabled = 0
 
     # Self-heal duplicated UOM rows in the conversion factor table --
     # confirmed live: ERPNext's own Item.validate() appends a default UOM

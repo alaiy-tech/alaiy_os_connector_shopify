@@ -17,6 +17,7 @@ query PullProducts($after: String) {
         bodyHtml
         vendor
         productType
+        status
         tags
         category {
           name
