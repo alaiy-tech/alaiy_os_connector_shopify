@@ -300,15 +300,14 @@ def _update_item_from_shopify(item, product: dict):
     frappe.db.commit()
 
     # Update images
-    if settings.sh_push_images:
-        images = [img.get("src") for img in (product.get("images") or []) if img.get("src")]
-        if images:
-            from alaiy_os_connector_shopify.shopify.product.media import (
-                _set_item_image, _set_item_slideshow
-            )
-            _set_item_image(item.name, images[0])
-            if len(images) > 1:
-                _set_item_slideshow(item.name, images, settings)
+    images = [img.get("src") for img in (product.get("images") or []) if img.get("src")]
+    if images:
+        from alaiy_os_connector_shopify.shopify.product.media import (
+            _set_item_image, _set_item_slideshow
+        )
+        _set_item_image(item.name, images[0])
+        if len(images) > 1:
+            _set_item_slideshow(item.name, images, settings)
 
     # Uncheck sync_to_shopify on Alaiy OS variants that are missing from Shopify webhook payload
     if item.has_variants and "variants" in product:
