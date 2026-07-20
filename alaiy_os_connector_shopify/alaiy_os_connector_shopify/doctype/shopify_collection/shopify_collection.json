@@ -9,6 +9,8 @@
     "collection_title",
     "handle",
     "is_smart",
+    "product_count",
+    "members_html",
     "sb_shopify",
     "sh_collection_id",
     "sh_collection_gid",
@@ -40,6 +42,20 @@
       "in_list_view": 1,
       "label": "Smart (Automated)",
       "read_only": 1
+    },
+    {
+      "default": "0",
+      "description": "Number of products in this collection on Shopify, as of the last sync.",
+      "fieldname": "product_count",
+      "fieldtype": "Int",
+      "in_list_view": 1,
+      "label": "Products (Shopify)",
+      "read_only": 1
+    },
+    {
+      "fieldname": "members_html",
+      "fieldtype": "HTML",
+      "label": "Products linked in ERPNext"
     },
     {
       "fieldname": "sb_shopify",

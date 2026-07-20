@@ -31,6 +31,9 @@ query ListCollections($after: String) {
         handle
         descriptionHtml
         updatedAt
+        productsCount {
+          count
+        }
         ruleSet {
           rules {
             column
@@ -150,6 +153,7 @@ def _upsert_collection_cache(node: dict):
         "description": node.get("descriptionHtml") or "",
         "image_url": (node.get("image") or {}).get("url") or "",
         "is_smart": is_smart,
+        "product_count": (node.get("productsCount") or {}).get("count") or 0,
         "sh_collection_id": legacy,
         "sh_collection_gid": gid,
         "last_synced": frappe.utils.now_datetime(),
