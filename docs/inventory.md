@@ -26,9 +26,21 @@ Triggered by dashboard **Sync Inventory** (`api.sync.trigger_inventory_push`) or
 1. **Resolve pairs** (`_resolve_location_pairs`): if `sh_location_map` has rows → one `(warehouse, location_gid)` pair per mapping (**multi-location**); otherwise a single pair of Default Warehouse → primary Shopify location (`_get_primary_location_id`).
 2. For each pair (`_push_warehouse_to_location`):
    - Selects items with a `sh_shopify_variant_id`, narrowed to those whose **Bin changed since the last successful sync** (or, on first run, the last 24h) — avoids N+1 API calls on large, mostly-unchanged catalogs.
-   - Reads the bin's `actual_qty` for that warehouse, fetches the current Shopify quantity (`_get_inventory_item_state`), and **skips the write if already equal** (Shopify no-op).
-   - Otherwise calls `inventorySetQuantities` with `changeFromQuantity` (mandatory as of API 2026-04 — a concurrent-change race fails loudly rather than silently overwriting), using an idempotency key.
-3. Counters (processed / updated / unchanged / failed) roll up into one `Shopify Sync Log` (sync_type `inventory`).
+   - Reads the bin's `actual_qty` for that warehouse. **A missing Bin record is skipped (logged), never pushed as 0** — no data means unknown, not confirmed zero. This is what caused a real incident (a Bin table wipe followed by a scheduled push overwrote real Shopify stock with false zeros); fixed by skipping instead of guessing.
+   - Fetches the current Shopify quantity (`_get_inventory_item_state`), and **skips the write if already equal** (Shopify no-op).
+   - Otherwise calls `inventorySetQuantities` with `changeFromQuantity` (mandatory as of API 2026-04 — a concurrent-change race fails loudly rather than silently overwriting), using an idempotency key. Every real push logs the item, variant, warehouse, and old → new quantity.
+3. Counters (processed / updated / unchanged / failed) roll up into one `Shopify Sync Log` (sync_type `inventory`). Scheduled runs use a 3600s job timeout (raised from 600s, which was provably too short for a full catalog).
+
+---
+
+## Correcting local stock drift (`scripts/pull_stock_from_shopify.py`)
+
+This connector never pulls stock *from* Shopify automatically -- product import only sets opening stock once, at creation (see [Products](products.md)). If local Alaiy OS stock ever drifts from Shopify's real numbers (e.g. after manual data cleanup, or recovering from an incident), a one-off script pulls Shopify's live quantity per item and applies the correction via a real, audited **Stock Reconciliation** (never touches sales/opening-stock history):
+
+- Dry-run first (reports every mismatch, changes nothing), then apply for real once reviewed.
+- Clamps a negative Shopify quantity (oversold variants) to 0 rather than writing a negative stock value.
+- Skips disabled Items (a single disabled row otherwise fails the entire Stock Reconciliation batch) and reports them separately.
+- Needs `allow_zero_valuation_rate` on each corrected row and an explicit `frappe.db.commit()` after submit -- both confirmed live as required, the same way opening stock's own creation path already needed the first one.
 
 `_backfill_missing_default_warehouse` heals Item Defaults for items imported before defaults were set, capped per run.
 

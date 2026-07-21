@@ -59,7 +59,7 @@ Token refresh is also proactive: `sync_jobs._maybe_refresh_token` refreshes on t
 `hooks.py` `scheduler_events`:
 - **cron `* * * * *`** → `sync_jobs.check_and_enqueue` — every minute: ensures webhooks are registered (`_maybe_ensure_webhooks`), refreshes the token if due (`_maybe_refresh_token`), and enqueues an inventory push if the interval elapsed and none is running (`_maybe_enqueue_inventory`), with a 30-minute staleness guard so a crashed job can't block the schedule forever.
 - **hourly** → `product_sync.push_changed_items_only`.
-- **daily** → `product_sync.fetch_shopify_taxonomy`.
+- **daily** → `product_sync.fetch_shopify_taxonomy`, `product_sync.sync_shopify_tags`, `product_sync.sync_shopify_collections`, `inventory_sync.sync_shopify_locations` — the same 4 dashboard cache-refresh buttons, so routine upkeep doesn't need a manual click.
 
 ---
 

@@ -139,4 +139,4 @@ The settings form's **Test Connection** button calls `alaiy_os.api.connectors.te
 
 The page also renders the connector status card and the last 5 sync logs (`get_sync_status`), polling while a sync runs.
 
-> **Cache syncs (Categories / Tags / Collections / Locations)** are occasional — run once after setup and again only when you add new ones on Shopify. Categories auto-refresh daily via the scheduler; the others are manual (or scheduled if you wire them).
+> **Cache syncs (Categories / Tags / Collections / Locations)** are occasional — run once after setup, and after that all four auto-refresh daily via the scheduler. The dashboard buttons remain for an on-demand refresh anytime.
