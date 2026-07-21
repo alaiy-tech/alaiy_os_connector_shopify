@@ -118,7 +118,15 @@ def _save_taxonomy_node(node):
             path_name = ensure_shopify_category(full_name)
             if not path_name:
                 return False
-            frappe.db.set_value("Shopify Category", path_name, "shopify_category_id", shopify_id)
+            # Root-level categories are shared ancestors of nearly every
+            # product's path, so they're re-visited constantly during a
+            # full tree walk (and hit by real live product webhooks at the
+            # same time on a busy site) -- skip the write (and the lock it
+            # takes) entirely once the value's already correct, instead of
+            # re-locking the same hot row on every single revisit.
+            current = frappe.db.get_value("Shopify Category", path_name, "shopify_category_id")
+            if current != shopify_id:
+                frappe.db.set_value("Shopify Category", path_name, "shopify_category_id", shopify_id)
             return True
         except Exception as exc:
             is_lock_timeout = "Lock wait timeout" in str(exc)
