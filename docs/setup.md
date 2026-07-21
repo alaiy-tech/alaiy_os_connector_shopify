@@ -130,7 +130,7 @@ The settings form's **Test Connection** button calls `alaiy_os.api.connectors.te
 |---|---|---|
 | Import Orders from Shopify | `api.sync.import_existing_orders` | Modal: all orders or a date range. |
 | Sync Inventory | `api.sync.trigger_inventory_push` | Push stock levels now. |
-| Import Products from Shopify | `api.sync.trigger_product_import` | Full product import (wipes prior Shopify-linked items). |
+| Import Products from Shopify | `api.sync.trigger_product_import` | First run: wipes prior Shopify-linked items then imports fresh. Every run after: creates new products, updates changed ones, skips unchanged ones -- no wipe. See [Products](products.md). |
 | Export Products to Shopify | `api.sync.trigger_product_export` | Push local (unlinked) products. |
 | Sync Categories | `api.sync.refresh_shopify_taxonomy` | Refresh the taxonomy tree. |
 | Sync Tags | `api.sync.refresh_shopify_tags` | Refresh the tag cache. |

@@ -84,7 +84,7 @@ Token refresh is also proactive: `sync_jobs._maybe_refresh_token` refreshes on t
 | `sync.trigger_orders_sync` | Enqueue routine order pull. |
 | `sync.import_existing_orders` | Import all / date-range orders. |
 | `sync.trigger_inventory_push` | Push stock now. |
-| `sync.trigger_product_import` | Full product import (4h). |
+| `sync.trigger_product_import` | Product import/sync: create new, update changed, skip unchanged (4h). Wipes only on first run. |
 | `sync.trigger_product_export` | Bulk export local products (30m). |
 | `sync.get_sync_status` | Last 5 logs (feeds the dashboard + connector card). |
 | `sync.refresh_shopify_taxonomy` / `_tags` / `_collections` / `_locations` | Refresh each cache. |
