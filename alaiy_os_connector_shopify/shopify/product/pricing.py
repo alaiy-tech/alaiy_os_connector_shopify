@@ -99,20 +99,30 @@ def _set_item_cost(item_code: str, cost: float, settings):
     _upsert_item_price(item_code, _COST_PRICE_LIST, cost, buying=True)
 
 
-def _price_rate(item_code: str, price_list: str, buying: bool = False) -> float:
+def _price_rate(item_code: str, price_list: str, buying: bool = False):
+    """
+    Returns None when no Item Price row exists at all -- distinct from a
+    real price of 0 -- so callers that PUSH this to Shopify can skip the
+    field instead of overwriting a real live price with an assumed zero
+    (same bug shape as inventory_sync.py's missing-Bin fix).
+    """
     filters = {"item_code": item_code, "price_list": price_list}
     if buying:
         filters["buying"] = 1
-    return flt(frappe.db.get_value("Item Price", filters, "price_list_rate") or 0)
+    rate = frappe.db.get_value("Item Price", filters, "price_list_rate")
+    return flt(rate) if rate is not None else None
 
 
-def _variant_price(item_code: str, settings) -> float:
+def _variant_price(item_code: str, settings):
+    """None if no Item Price row exists -- caller must not push that as 0."""
     return _price_rate(item_code, settings.sh_selling_price_list or "Standard Selling")
 
 
-def _variant_compare_at_price(item_code: str) -> float:
+def _variant_compare_at_price(item_code: str):
+    """None if no Item Price row exists -- caller must not push that as 0."""
     return _price_rate(item_code, _COMPARE_AT_PRICE_LIST)
 
 
-def _variant_cost(item_code: str) -> float:
+def _variant_cost(item_code: str):
+    """None if no Item Price row exists -- caller must not push that as 0."""
     return _price_rate(item_code, _COST_PRICE_LIST, buying=True)
