@@ -12,6 +12,21 @@ from alaiy_os_connector_shopify.shopify.product.queries import (
 _NODES_PER_CALL = 250  # Shopify's node-by-id bulk lookup cap, same as any other connection page size here.
 
 
+def _safe_doc_name(path_name: str) -> str:
+    """
+    Frappe's `name` column is varchar(140) -- a deep real taxonomy path
+    ("Apparel & Accessories / Jewelry / ... / <long leaf>") can exceed
+    that, confirmed live: 'Data too long for column name'. Truncate with
+    a short deterministic hash suffix so it stays unique instead of
+    colliding once cut off.
+    """
+    if len(path_name) <= 140:
+        return path_name
+    import hashlib
+    h = hashlib.sha1(path_name.encode("utf-8")).hexdigest()[:8]
+    return path_name[:130] + "-" + h
+
+
 def ensure_shopify_category(full_name: str) -> str:
     """
     Ensure the nested parent-child Shopify Category tree exists for a full name path
@@ -27,7 +42,7 @@ def ensure_shopify_category(full_name: str) -> str:
     parent = None
     for i, part in enumerate(parts):
         # Unique node name is the path itself to prevent collision (e.g. Sweatshirts)
-        path_name = " / ".join(parts[:i+1])
+        path_name = _safe_doc_name(" / ".join(parts[:i+1]))
 
         if not frappe.db.exists("Shopify Category", path_name):
             doc = frappe.new_doc("Shopify Category")
