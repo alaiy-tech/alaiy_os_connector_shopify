@@ -23,7 +23,7 @@ frappe.listview_settings["Item"].formatters.sync_to_shopify = function (value, d
 		// checkbox is off -- edits made here won't be sent back until
 		// it's turned on. Distinct from a genuinely local item that has
 		// never touched Shopify at all (the else branch below).
-		label = __("From Shopify (changes stay here only)");
+		label = __("Shopify (paused)");
 		color = "blue";
 	} else {
 		label = __("Not on Shopify");
