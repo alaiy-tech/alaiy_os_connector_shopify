@@ -95,16 +95,43 @@ def _resolve_category_id(client, category_name: str):
 
 
 def _save_taxonomy_node(node):
+    """
+    Returns False (never raises) on failure -- confirmed live on a busy
+    production site: a real inbound product webhook writing to the same
+    Shopify Category table at the same moment caused a MySQL lock-wait
+    timeout here, which used to abort the ENTIRE BFS (one contended node
+    killed every node after it, including all its unfetched children).
+    Retries the transient lock case a few times with backoff before
+    giving up on just this one node -- the rest of the tree still
+    completes either way.
+    """
     shopify_id = node.get("id", "")
     name = node.get("name", "")
     full_name = node.get("fullName") or name
     if not (shopify_id and full_name):
         return False
-    # Re-use our robust nested tree builder to ensure parent-child linking and custom name format
-    path_name = ensure_shopify_category(full_name)
-    if path_name:
-        frappe.db.set_value("Shopify Category", path_name, "shopify_category_id", shopify_id)
-        return True
+
+    import time
+    for attempt in range(3):
+        try:
+            # Re-use our robust nested tree builder to ensure parent-child linking and custom name format
+            path_name = ensure_shopify_category(full_name)
+            if not path_name:
+                return False
+            frappe.db.set_value("Shopify Category", path_name, "shopify_category_id", shopify_id)
+            return True
+        except Exception as exc:
+            is_lock_timeout = "Lock wait timeout" in str(exc)
+            if is_lock_timeout and attempt < 2:
+                frappe.db.rollback()
+                time.sleep(1 + attempt)
+                continue
+            frappe.log_error(
+                title=f"Shopify: failed to save taxonomy node '{full_name}'",
+                message=frappe.get_traceback(),
+            )
+            frappe.db.rollback()
+            return False
     return False
 
 
