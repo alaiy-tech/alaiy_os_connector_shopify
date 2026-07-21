@@ -28,14 +28,14 @@ Scalar fields (`sh_shopify_product_type`, `sh_shopify_category`, `sh_shopify_sta
 
 `shopify/product/importer.py`, entry point `run_full_product_import()` (dashboard → **Import Products**, or `api.sync.trigger_product_import`, 4h timeout).
 
-- **Wipe phase** (`_wipe_all_items`) — deletes only Items that carry a `sh_shopify_product_id` (previously imported), plus their own single-line opening-stock Stock Entries. Manually-created local Items and all transactional docs (Sales Orders, Delivery Notes, GL/Stock Ledger) are never touched. Uses raw SQL to avoid firing `on_item_delete` per row.
+- **Wipe phase** (`_wipe_all_items`) — only runs automatically on the **first ever run** (no product `Shopify Synced Entity` exists yet), as a safety net against duplicates. Deletes only Items that carry a `sh_shopify_product_id` (previously imported), plus their own single-line opening-stock Stock Entries. Manually-created local Items and all transactional docs (Sales Orders, Delivery Notes, GL/Stock Ledger) are never touched. Uses raw SQL to avoid firing `on_item_delete` per row. Every run after the first does **not** wipe — see below.
 - **Paginated fetch** — `_PRODUCTS_QUERY` via the GraphQL client's cursor pagination.
-- **Per product** (`_import_product`):
-  - 1 variant → `_import_simple_product` (single Item).
-  - >1 variant → `_import_product_with_variants` (template Item + variant Items, with Item Attributes).
-  - Pre-existing Items (matched by SKU/variant id) get content merged via `_apply_existing_variant_content` / `_apply_existing_template_content` rather than duplicated.
-- **Applied per product**: pricing (price / compare-at / cost), images (main + slideshow), tags, category, collections membership, SEO, product type, Active/Draft status, opening stock, Item-group hierarchy.
-- Progress + skip reasons are written to a `Shopify Sync Log` (sync_type `products`).
+- **Per product** (`_import_product`), on every run after the first:
+  - Not imported yet → create. 1 variant → `_import_simple_product` (single Item); >1 variant → `_import_product_with_variants` (template Item + variant Items, with Item Attributes).
+  - Already imported, Shopify's data unchanged since last import (`_shopify_node_fingerprint` matches the stored `external_fingerprint` on its Synced Entity) → **skipped untouched**, no write at all.
+  - Already imported, Shopify's data changed → **updated** in place (`_update_existing_product`): title, description, vendor, tags, category, SEO, images, Active/Draft status, and per-variant price/compare-at/cost/weight, matched by SKU. Deliberately does **not** touch stock/quantity (opening stock is a one-time Material Receipt at creation only — reapplying it on update would add Shopify's qty on top of the current balance instead of correcting it; stock reconciliation is `inventory_sync.py`'s job) and does **not** add/remove variants (a variant added on Shopify after the original import needs a manual re-link; flagged in the log, not silently dropped).
+  - Pre-existing Items with no Shopify link yet (matched by SKU, e.g. created by another connector) get auto-linked and their content populated via `_apply_existing_variant_content` / `_apply_existing_template_content`, same as before.
+- Progress, including per-run created/updated/skipped counts and skip reasons, is written to a `Shopify Sync Log` (sync_type `products`).
 
 Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` check.
 
