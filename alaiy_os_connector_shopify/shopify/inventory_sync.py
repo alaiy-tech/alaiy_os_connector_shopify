@@ -291,6 +291,10 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
             if errors:
                 raise RuntimeError(f"Shopify userErrors: {errors}")
             totals["updated"] += 1
+            _append_log(
+                log,
+                f"PUSHED item={item.name} variant={item.sh_shopify_variant_id} @ {warehouse}: "
+                f"{int(current_qty)} -> {int(qty)}")
         except Exception as exc:
             totals["failed"] += 1
             _append_log(log, f"ERROR item={item.name} @ {warehouse}: {exc}")
