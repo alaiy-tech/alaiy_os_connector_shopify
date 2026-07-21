@@ -53,6 +53,14 @@ def main(site, dry_run=True):
             print(f"ERROR {item.name}: {exc}", flush=True)
             continue
         shopify_qty = int(shopify_qty or 0)
+        if shopify_qty < 0:
+            # Shopify itself can report negative available qty (oversold --
+            # an order went through while "continue selling when out of
+            # stock" was on for that variant). Alaiy OS doesn't allow
+            # negative stock by default; clamp to 0 rather than fail the
+            # whole reconciliation over one variant.
+            print(f"NOTE {item.name}: Shopify qty is negative ({shopify_qty}), clamping to 0", flush=True)
+            shopify_qty = 0
         if int(local_qty) != shopify_qty:
             corrections.append({"item_code": item.name, "qty": shopify_qty, "was": int(local_qty)})
             print(f"MISMATCH {item.name}: {int(local_qty)} -> {shopify_qty}", flush=True)
@@ -75,7 +83,17 @@ def main(site, dry_run=True):
     sr.company = company
     sr.purpose = "Stock Reconciliation"
     for c in corrections:
-        sr.append("items", {"item_code": c["item_code"], "warehouse": warehouse, "qty": c["qty"]})
+        sr.append("items", {
+            "item_code": c["item_code"],
+            "warehouse": warehouse,
+            "qty": c["qty"],
+            # Confirmed live: without this, submit fails partway through
+            # (past the docstatus flip, before the actual stock ledger/GL
+            # entries are created) with "Valuation Rate required" for any
+            # item that's never had a cost basis recorded -- same reasoning
+            # as opening stock's own allow_zero_valuation_rate=1.
+            "allow_zero_valuation_rate": 1,
+        })
     sr.flags.ignore_permissions = True
     sr.insert()
     sr.submit()
