@@ -28,7 +28,7 @@ from alaiy_os_connector_shopify.shopify.sync_engine import entities
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
-from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute
+from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute, _dedupe_item_uoms
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
 from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty
 from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row
@@ -411,6 +411,7 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     _apply_variant_physical(item, variant)
     if product_meta:
         _apply_product_meta(item, product_meta)
+    _dedupe_item_uoms(item)
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     item.save()
@@ -441,6 +442,7 @@ def _apply_existing_template_content(template_name: str, product_meta: dict, ima
     product as a whole, so they land on the template, not the variant."""
     template = frappe.get_doc("Item", template_name)
     _apply_product_meta(template, product_meta)
+    _dedupe_item_uoms(template)
     template.flags.from_shopify_sync = True
     template.flags.ignore_permissions = True
     template.save()
