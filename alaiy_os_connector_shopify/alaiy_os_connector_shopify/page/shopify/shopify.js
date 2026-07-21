@@ -68,7 +68,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						<span class="shopify-icon-badge"><i class="fa fa-archive"></i></span>
 						<div class="shopify-card-header-text">
 							<h5>Inventory</h5>
-							<p>Sync stock levels between Alaiy OS and Shopify.</p>
+							<p>Push stock levels from Alaiy OS to Shopify.</p>
 						</div>
 					</div>
 					<div class="shopify-card-body">

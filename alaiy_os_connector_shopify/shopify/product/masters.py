@@ -196,7 +196,17 @@ def _ensure_cost_center(company: str) -> str:
         return None
 
     parent = frappe.db.get_value("Cost Center", root, "parent_cost_center")
-    if parent and parent != root and not frappe.db.exists("Cost Center", parent):
+    # A parent literally shaped like "<company>" is unsubstituted ERPNext
+    # seed-data placeholder text, not a real reference -- even if a Cost
+    # Center row happens to exist under that exact broken name (leftover
+    # corrupt seed data), it's still not a valid parent. Checking
+    # `not exists(...)` alone missed this case: the corrupt row's mere
+    # presence let the dangling reference stand, and every later nested-set
+    # operation that touched it re-threw "Name cannot contain special
+    # characters like '<', '>'" -- identically, for every single product,
+    # since nothing ever cleared it.
+    parent_is_placeholder = bool(parent) and ("<" in parent or ">" in parent)
+    if parent and parent != root and (parent_is_placeholder or not frappe.db.exists("Cost Center", parent)):
         frappe.db.set_value("Cost Center", root, "parent_cost_center", "")
 
     root_lft = frappe.db.get_value("Cost Center", root, "lft")
