@@ -10,28 +10,43 @@ def has_active_sync(sync_type: str, exclude_name: str = None) -> bool:
     queued/running log older than the stale threshold is treated as orphaned
     -- e.g. its worker was killed mid-run by a deploy/restart -- and is
     marked failed so it stops permanently blocking future runs.
+
+    Uses a MySQL named lock to serialize the check-then-mark-stale logic
+    across concurrent callers (e.g. a scheduled tick and a manual button
+    click landing at the same moment) -- without it, two callers could both
+    read "no active rows" before either flips a row to running, letting two
+    pushes run at once.
     """
-    cutoff = add_to_date(now_datetime(), minutes=-STALE_ACTIVE_THRESHOLD_MINUTES)
-    active_rows = frappe.get_all(
-        "Shopify Sync Log",
-        filters={"sync_type": sync_type, "status": ["in", ["queued", "running"]]},
-        fields=["name", "started_at"],
-    )
-    active = False
-    for row in active_rows:
-        if row.name == exclude_name:
-            continue
-        if row.started_at and row.started_at < cutoff:
-            frappe.db.set_value("Shopify Sync Log", row.name, {
-                "status": "failed",
-                "finished_at": now_datetime(),
-                "error_message": "Marked failed: orphaned queued/running log (worker likely restarted mid-run).",
-            })
-        else:
-            active = True
-    if active_rows:
-        frappe.db.commit()
-    return active
+    lock_name = f"shopify_sync_guard_{sync_type}"
+    got_lock = frappe.db.sql("SELECT GET_LOCK(%s, 5)", (lock_name,))[0][0]
+    if not got_lock:
+        # Another caller is mid-check right now -- treat as active rather
+        # than risk a double-run.
+        return True
+    try:
+        cutoff = add_to_date(now_datetime(), minutes=-STALE_ACTIVE_THRESHOLD_MINUTES)
+        active_rows = frappe.get_all(
+            "Shopify Sync Log",
+            filters={"sync_type": sync_type, "status": ["in", ["queued", "running"]]},
+            fields=["name", "started_at"],
+        )
+        active = False
+        for row in active_rows:
+            if row.name == exclude_name:
+                continue
+            if row.started_at and row.started_at < cutoff:
+                frappe.db.set_value("Shopify Sync Log", row.name, {
+                    "status": "failed",
+                    "finished_at": now_datetime(),
+                    "error_message": "Marked failed: orphaned queued/running log (worker likely restarted mid-run).",
+                })
+            else:
+                active = True
+        if active_rows:
+            frappe.db.commit()
+        return active
+    finally:
+        frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock_name,))
 
 
 def load_or_create_log(sync_type: str, trigger: str, log_name: str = None):

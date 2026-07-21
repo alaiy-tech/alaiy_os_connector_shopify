@@ -40,7 +40,7 @@ def snapshot_before_update_child_qty_rate():
         filters={"parent": so_name},
         fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
     )
-    frappe.cache().set_value(cache_key, snapshot, expires_in_sec=120)
+    frappe.cache().set_value(cache_key, snapshot, expires_in_sec=1800)
     frappe.log_error(
         title=f"Shopify DEBUG: pre-request snapshot for {so_name}",
         message=f"captured before-snapshot {snapshot!r}",
@@ -77,7 +77,7 @@ def on_sales_order_validate(doc, method=None):
         filters={"parent": doc.name},
         fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
     )
-    frappe.cache().set_value(cache_key, snapshot, expires_in_sec=120)
+    frappe.cache().set_value(cache_key, snapshot, expires_in_sec=1800)
     frappe.log_error(
         title=f"Shopify DEBUG: validate snapshot for {doc.name}",
         message=f"captured before-snapshot {snapshot!r}",
@@ -91,7 +91,17 @@ def _detect_items_changed(doc) -> bool:
     """
     before_rows = frappe.cache().get_value(_items_before_cache_key(doc.name))
     if before_rows is None:
-        return False
+        # No snapshot means "we don't actually know if items changed", NOT
+        # "confirmed nothing changed" -- returning False here would silently
+        # skip reflecting a real item edit to Shopify (same bug shape as
+        # the missing-Bin-as-zero inventory incident). Assume changed and
+        # log it so a genuinely expired/evicted snapshot is visible instead
+        # of a silent no-op.
+        frappe.log_error(
+            title=f"Shopify: no before-snapshot for {doc.name}, assuming items changed",
+            message="Snapshot cache key missing/expired -- cannot diff, erring toward reflecting the edit.",
+        )
+        return True
 
     original_items = {
         (row["item_code"], row["qty"], row["rate"]) for row in before_rows
@@ -112,6 +122,13 @@ def _detect_removed_variant_ids(doc) -> list:
     """
     before_rows = frappe.cache().get_value(_items_before_cache_key(doc.name))
     if not before_rows:
+        # Can't know WHICH rows were removed without the before-state --
+        # nothing safe to fabricate here, but flag it so a real removal
+        # that silently fails to reflect to Shopify is at least visible.
+        frappe.log_error(
+            title=f"Shopify: no before-snapshot for {doc.name}, cannot detect removed items",
+            message="Snapshot cache key missing/expired -- any item removal in this save will NOT be reflected to Shopify.",
+        )
         return []
     before_keys = {
         (row["item_code"], row["sh_shopify_variant_id"]) for row in before_rows
@@ -136,6 +153,13 @@ def _detect_added_items(doc) -> list:
     """
     before_rows = frappe.cache().get_value(_items_before_cache_key(doc.name))
     if before_rows is None:
+        # Same reasoning as _detect_removed_variant_ids: can't fabricate
+        # which rows are genuinely new without the before-state, but flag
+        # it so a real addition that silently fails to reflect is visible.
+        frappe.log_error(
+            title=f"Shopify: no before-snapshot for {doc.name}, cannot detect added items",
+            message="Snapshot cache key missing/expired -- any item addition in this save will NOT be reflected to Shopify.",
+        )
         return []
     before_keys = {
         (row["item_code"], row["sh_shopify_variant_id"]) for row in before_rows
