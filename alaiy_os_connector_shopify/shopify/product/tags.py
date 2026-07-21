@@ -46,10 +46,11 @@ def _set_item_tags(item, tag_names: list):
     usable_tags = []
     for tag_name in tag_names:
         if "<" in tag_name or ">" in tag_name:
-            frappe.log_error(
-                title=f"Shopify: skipping tag with invalid characters: {tag_name!r}",
-                message="Shopify Tag is autonamed from tag_name directly; '<'/'>' fail Frappe's name validation.",
-            )
+            # Expected/handled, not a failure -- plain logger only, so this
+            # doesn't show up as a red Error Log entry indistinguishable
+            # from a real crash.
+            frappe.logger().warning(
+                f"Shopify: skipping tag with invalid characters: {tag_name!r}")
             continue
         if not frappe.db.exists("Shopify Tag", tag_name):
             frappe.get_doc({"doctype": "Shopify Tag", "tag_name": tag_name}).insert(
