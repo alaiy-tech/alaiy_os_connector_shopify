@@ -127,6 +127,22 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
                         message=frappe.get_traceback(),
                     )
 
+            # Flush real progress to the DB after every page (not just at the
+            # end) -- _append_log only mutates log_messages in memory, so
+            # without this, both live visibility (what's happening RIGHT
+            # NOW while it's still running) and crash survival (what
+            # actually got done before a kill/timeout) were both lost, same
+            # gap already found and fixed for inventory_sync.py's job.
+            log.items_processed = processed
+            log.items_created = created
+            log.pages_done = pages
+            _append_log(
+                log,
+                f"...page {pages}: {processed} processed so far "
+                f"({created} created, {updated} updated, {skipped} skipped, {failed} failed)")
+            log.save(ignore_permissions=True)
+            frappe.db.commit()
+
         log.status = "success"
         log.items_processed = processed
         log.items_created = created

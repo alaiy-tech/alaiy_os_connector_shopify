@@ -41,10 +41,10 @@ def snapshot_before_update_child_qty_rate():
         fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
     )
     frappe.cache().set_value(cache_key, snapshot, expires_in_sec=1800)
-    frappe.log_error(
-        title=f"Shopify DEBUG: pre-request snapshot for {so_name}",
-        message=f"captured before-snapshot {snapshot!r}",
-    )
+    # Plain logger, not frappe.log_error -- this is a routine trace, not a
+    # failure. Confirmed live: leaving debug traces on log_error made
+    # Error Log indistinguishable from real crashes for anyone checking it.
+    frappe.logger().debug(f"Shopify: pre-request snapshot for {so_name}: {snapshot!r}")
 
 
 def on_sales_order_validate(doc, method=None):
@@ -78,10 +78,9 @@ def on_sales_order_validate(doc, method=None):
         fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
     )
     frappe.cache().set_value(cache_key, snapshot, expires_in_sec=1800)
-    frappe.log_error(
-        title=f"Shopify DEBUG: validate snapshot for {doc.name}",
-        message=f"captured before-snapshot {snapshot!r}",
-    )
+    # Plain logger, not frappe.log_error -- see snapshot_before_update_child_qty_rate's
+    # matching comment.
+    frappe.logger().debug(f"Shopify: validate snapshot for {doc.name}: {snapshot!r}")
 
 
 def _detect_items_changed(doc) -> bool:
