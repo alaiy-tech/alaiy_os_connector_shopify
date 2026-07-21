@@ -40,8 +40,10 @@ def trigger_inventory_push():
 @frappe.whitelist()
 def trigger_product_import():
     """
-    One-time import of all products from Shopify, wiping existing unlinked items.
-    Enqueued as background job.
+    Import products from Shopify. First run (nothing imported yet) wipes
+    first as a safety net, then imports everything. Every run after that
+    is a real create/update/skip sync -- no wipe -- see
+    run_full_product_import's docstring for why.
     """
     return _enqueue_sync(
         "products",
@@ -51,7 +53,6 @@ def trigger_product_import():
         # Category) makes an extra taxonomy-search API call, confirmed live
         # to blow the old ceiling partway through a ~3000-item catalog.
         timeout=14400,  # 4 hours
-        wipe_existing=True,
     )
 
 
