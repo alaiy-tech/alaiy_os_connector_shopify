@@ -116,6 +116,6 @@ def _maybe_enqueue_inventory(interval_setting):
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_push",
         queue="long",
-        timeout=600,
+        timeout=3600,
         trigger="scheduled",
     )

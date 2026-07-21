@@ -6,6 +6,53 @@ Center) -- moved verbatim from product_import.py, unchanged.
 import frappe
 
 
+def _dedupe_item_uoms(item):
+    """
+    Self-heal duplicated UOM rows in the conversion factor table before
+    saving `item` -- confirmed live: Alaiy OS's own Item.validate() appends
+    a default UOM row if it doesn't see one yet, and two near-simultaneous
+    saves of the same freshly-created template can each independently
+    decide "no row yet" and append one, leaving a duplicate. Since saving
+    a template cascades save() calls to all its variants, both the
+    template and all its variants must be cleaned at the database level
+    before the save runs, or ERPNext's own validate_conversion_factor
+    throws "Unit of Measure ... entered more than once".
+
+    Shared by both inbound paths that can hit this: webhook product
+    updates (product/webhooks.py) and the product-import update path
+    (product/importer.py) -- confirmed live to hit the exact same error
+    on a real re-import once a duplicate already existed from an earlier
+    race.
+    """
+    all_item_names = [item.name]
+    if item.has_variants:
+        all_item_names += frappe.get_all("Item", filters={"variant_of": item.name}, pluck="name")
+
+    for name in all_item_names:
+        duplicates = frappe.db.sql("""
+            SELECT uom, MIN(name) as keep_name
+            FROM `tabUOM Conversion Detail`
+            WHERE parent = %s
+            GROUP BY uom
+            HAVING COUNT(*) > 1
+        """, name, as_dict=True)
+
+        for dup in duplicates:
+            frappe.db.sql("""
+                DELETE FROM `tabUOM Conversion Detail`
+                WHERE parent = %s AND uom = %s AND name != %s
+            """, (name, dup.uom, dup.keep_name))
+
+    seen_uoms = set()
+    deduped = []
+    for row in item.uoms:
+        if row.uom in seen_uoms:
+            continue
+        seen_uoms.add(row.uom)
+        deduped.append(row)
+    item.uoms = deduped
+
+
 def _ensure_brand(name: str) -> str:
     """
     Item.brand is also a mandatory-shaped Link field (to the Brand
@@ -196,7 +243,17 @@ def _ensure_cost_center(company: str) -> str:
         return None
 
     parent = frappe.db.get_value("Cost Center", root, "parent_cost_center")
-    if parent and parent != root and not frappe.db.exists("Cost Center", parent):
+    # A parent literally shaped like "<company>" is unsubstituted ERPNext
+    # seed-data placeholder text, not a real reference -- even if a Cost
+    # Center row happens to exist under that exact broken name (leftover
+    # corrupt seed data), it's still not a valid parent. Checking
+    # `not exists(...)` alone missed this case: the corrupt row's mere
+    # presence let the dangling reference stand, and every later nested-set
+    # operation that touched it re-threw "Name cannot contain special
+    # characters like '<', '>'" -- identically, for every single product,
+    # since nothing ever cleared it.
+    parent_is_placeholder = bool(parent) and ("<" in parent or ">" in parent)
+    if parent and parent != root and (parent_is_placeholder or not frappe.db.exists("Cost Center", parent)):
         frappe.db.set_value("Cost Center", root, "parent_cost_center", "")
 
     root_lft = frappe.db.get_value("Cost Center", root, "lft")

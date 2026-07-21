@@ -13,20 +13,20 @@ frappe.listview_settings["Item"].formatters.sync_to_shopify = function (value, d
 	const hasShopifyId = doc.sh_shopify_product_id || doc.sh_shopify_variant_id;
 	let label, color;
 	if (value && hasShopifyId) {
-		label = __("On Shopify");
+		label = __("Shopify (active)");
 		color = "green";
 	} else if (value) {
-		label = __("Uploading to Shopify");
+		label = __("Shopify (uploading)");
 		color = "orange";
 	} else if (hasShopifyId) {
 		// Imported from Shopify (still linked), but the opt-in outbound
 		// checkbox is off -- edits made here won't be sent back until
 		// it's turned on. Distinct from a genuinely local item that has
 		// never touched Shopify at all (the else branch below).
-		label = __("From Shopify (changes stay here only)");
+		label = __("Shopify (paused)");
 		color = "blue";
 	} else {
-		label = __("Not on Shopify");
+		label = __("Shopify (none)");
 		color = "grey";
 	}
 	return `<span class="indicator-pill ${color} filterable" data-filter="sync_to_shopify,=,${value ? 1 : 0}">

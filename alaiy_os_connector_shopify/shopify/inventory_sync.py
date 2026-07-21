@@ -243,8 +243,20 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
     for item in items:
         totals["processed"] += 1
         try:
-            qty = flt(frappe.db.get_value(
-                "Bin", {"item_code": item.name, "warehouse": warehouse}, "actual_qty") or 0)
+            # A missing Bin means "no stock data recorded for this item/
+            # warehouse", NOT "confirmed zero" -- treating it as 0 pushed a
+            # false zero to Shopify the one time Alaiy OS's own Bin table was
+            # emptied (e.g. by an unrelated cleanup), overwriting real Shopify
+            # stock with a number Alaiy OS never actually knew. Skip instead
+            # of guessing.
+            bin_qty = frappe.db.get_value(
+                "Bin", {"item_code": item.name, "warehouse": warehouse}, "actual_qty")
+            if bin_qty is None:
+                totals["failed"] += 1
+                _append_log(
+                    log, f"SKIPPED item={item.name}: no Bin record for warehouse {warehouse} -- not pushing an assumed zero")
+                continue
+            qty = flt(bin_qty)
 
             inventory_item_id, current_qty = _get_inventory_item_state(
                 client, item.sh_shopify_variant_id, location_id)
@@ -279,6 +291,10 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
             if errors:
                 raise RuntimeError(f"Shopify userErrors: {errors}")
             totals["updated"] += 1
+            _append_log(
+                log,
+                f"PUSHED item={item.name} variant={item.sh_shopify_variant_id} @ {warehouse}: "
+                f"{int(current_qty)} -> {int(qty)}")
         except Exception as exc:
             totals["failed"] += 1
             _append_log(log, f"ERROR item={item.name} @ {warehouse}: {exc}")

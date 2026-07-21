@@ -14,17 +14,18 @@ from alaiy_os_connector_shopify.shopify.order.snapshot import (
 
 
 def on_sales_order_update(doc, method=None):
+    # Plain logger, not frappe.log_error -- these are routine trace/skip
+    # points, not failures. Confirmed live: leaving debug traces on
+    # log_error made Error Log indistinguishable from real crashes for
+    # anyone checking it (same mistake found in tags.py during the 21-07
+    # audit).
     if doc.flags.from_shopify_sync:
-        frappe.log_error(
-            title=f"Shopify DEBUG: on_sales_order_update {doc.name}",
-            message="skipped, from_shopify_sync flag set",
-        )
+        frappe.logger().debug(
+            f"Shopify: on_sales_order_update {doc.name} skipped, from_shopify_sync flag set")
         return
     if not doc.get("sh_shopify_order_id"):
-        frappe.log_error(
-            title=f"Shopify DEBUG: on_sales_order_update {doc.name}",
-            message="skipped, no sh_shopify_order_id",
-        )
+        frappe.logger().debug(
+            f"Shopify: on_sales_order_update {doc.name} skipped, no sh_shopify_order_id")
         return
 
     # Detect if line items changed (added, removed, or quantity/rate modified)
@@ -32,13 +33,10 @@ def on_sales_order_update(doc, method=None):
     items_changed = _detect_items_changed(doc)
     removed_variant_ids = _detect_removed_variant_ids(doc) if items_changed else []
     added_items = _detect_added_items(doc) if items_changed else []
-    frappe.log_error(
-        title=f"Shopify DEBUG: on_sales_order_update {doc.name}",
-        message=(
-            f"before_snapshot={before_rows!r} items_changed={items_changed} "
-            f"removed_variant_ids={removed_variant_ids!r} added_items={added_items!r}"
-        ),
-    )
+    frappe.logger().debug(
+        f"Shopify: on_sales_order_update {doc.name} before_snapshot={before_rows!r} "
+        f"items_changed={items_changed} removed_variant_ids={removed_variant_ids!r} "
+        f"added_items={added_items!r}")
     # Consumed -- clear so a later, genuinely separate edit within the 120s
     # expiry window doesn't accidentally diff against this stale snapshot.
     frappe.cache().delete_value(_items_before_cache_key(doc.name))

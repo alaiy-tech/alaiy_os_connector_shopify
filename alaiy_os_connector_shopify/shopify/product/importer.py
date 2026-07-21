@@ -1,16 +1,18 @@
 """
-Shopify → Alaiy OS product import (one-time full sync) -- moved verbatim
-from product_import.py, unchanged.
+Shopify → Alaiy OS product import.
 
-One-time import of all products from Shopify into Alaiy OS as Items.
-Wipes existing product mappings (Item records without sh_shopify_product_id)
-and imports fresh from Shopify source of truth.
+First run (nothing imported yet) wipes any stray unlinked Item mappings
+as a safety net, then imports every product from Shopify fresh. Every
+run after that is a real sync: new Shopify products are created,
+products whose Shopify data changed since the last import are updated,
+and unchanged products are skipped untouched -- no wipe.
 
 Handles:
 - Templates and variants (creates Item + item variants)
 - Images (main + slideshow)
 - Pricing (uses configured price list)
-- Stock tracking setup
+- Stock tracking setup (create only -- see _update_existing_product for
+  why stock is never touched on an update)
 - Edge cases: missing data, duplicate SKUs, image failures, etc.
 """
 
@@ -23,9 +25,10 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
     load_or_create_log, has_active_sync, append_log as _append_log,
 )
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
+from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
-from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute
+from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute, _dedupe_item_uoms
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
 from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty
 from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row
@@ -34,36 +37,47 @@ from alaiy_os_connector_shopify.shopify.product.taxonomy import ensure_shopify_c
 from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _set_item_tags
 
 
-def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True):
+def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None):
     """
-    One-time import of all products from Shopify into Alaiy OS.
+    Import products from Shopify into Alaiy OS. First run (no product ever
+    imported yet) wipes first as a safety net against duplicates, then
+    imports everything fresh. Every run after that is a real sync: new
+    Shopify products are created, changed ones are updated, unchanged ones
+    are skipped untouched -- no wipe, since re-wiping a live catalog on
+    every click is both wasteful (redoes thousands of unchanged items) and
+    risky (this exact wipe is what emptied real stock data right before a
+    scheduler fired during the 20-07-2026 incident).
 
     Args:
         trigger: "manual", "scheduled", or "webhook"
         log_name: Optional existing log to reuse
-        wipe_existing: If True, deletes non-linked Items to prevent duplicates
+        wipe_existing: True/False to force the wipe phase explicitly; None
+            (default) auto-detects first-run by checking whether any
+            product Synced Entity exists yet.
 
     Returns:
         Log name (for tracking progress)
     """
+    if wipe_existing is None:
+        wipe_existing = not frappe.db.exists("Shopify Synced Entity", {"entity_type": "product"})
+
     log = load_or_create_log("products", trigger, log_name)
 
-    # Concurrency check
+    # Concurrency check. This is the ONLY guard -- a separate
+    # settings.lock()/unlock() document lock used to run alongside this,
+    # but unlike has_active_sync (which self-heals a stale queued/running
+    # row after STALE_ACTIVE_THRESHOLD_MINUTES, and is race-safe via a
+    # MySQL named lock -- see sync_guard.py), a document lock has no
+    # crash recovery at all: a killed worker (SIGKILL, OOM, deploy
+    # restart) skips Python's finally block entirely, so the lock never
+    # releases until its own timeout -- confirmed live, this required a
+    # manual console unlock every single time a worker was killed during
+    # testing. Two guards for one job, only one of which self-heals, was
+    # the actual bug. Removed the fragile one.
     if has_active_sync("products", exclude_name=log.name):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another products sync is already running."
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
-        return log.name
-
-    settings = frappe.get_single("Shopify Connector Settings")
-    try:
-        settings.lock(timeout=1800)  # Lock settings document to prevent concurrent import runs
-    except frappe.DocumentLockedError:
-        log.status = "skipped"
-        log.finished_at = now_datetime()
-        log.error_message = "Skipped: another products sync/import is running (Settings document locked)."
         log.save(ignore_permissions=True)
         frappe.db.commit()
         return log.name
@@ -83,7 +97,7 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
         client = ShopifyGraphQLClient()
         variables = {"after": None}
 
-        processed = created = skipped = failed = pages = 0
+        processed = created = updated = skipped = failed = pages = 0
         skip_reason_counts = Counter()
         skip_examples = []  # capped list of "title: reason" strings for the log
 
@@ -93,7 +107,9 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
                 processed += 1
                 try:
                     was_created, reason = _import_product(node)
-                    if was_created:
+                    if was_created and reason.startswith("updated"):
+                        updated += 1
+                    elif was_created:
                         created += 1
                     else:
                         skipped += 1
@@ -110,6 +126,22 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
                         message=frappe.get_traceback(),
                     )
 
+            # Flush real progress to the DB after every page (not just at the
+            # end) -- _append_log only mutates log_messages in memory, so
+            # without this, both live visibility (what's happening RIGHT
+            # NOW while it's still running) and crash survival (what
+            # actually got done before a kill/timeout) were both lost, same
+            # gap already found and fixed for inventory_sync.py's job.
+            log.items_processed = processed
+            log.items_created = created
+            log.pages_done = pages
+            _append_log(
+                log,
+                f"...page {pages}: {processed} processed so far "
+                f"({created} created, {updated} updated, {skipped} skipped, {failed} failed)")
+            log.save(ignore_permissions=True)
+            frappe.db.commit()
+
         log.status = "success"
         log.items_processed = processed
         log.items_created = created
@@ -117,6 +149,8 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
         log.pages_done = pages
         log.finished_at = now_datetime()
         summary = f"Imported {created} products from Shopify"
+        if updated:
+            summary += f"; {updated} updated"
         if skipped:
             summary += f"; {skipped} skipped"
         if failed:
@@ -138,11 +172,6 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=True)
         log.save(ignore_permissions=True)
         frappe.db.commit()
         raise
-    finally:
-        try:
-            settings.unlock()
-        except Exception:
-            pass
 
     return log.name
 
@@ -201,25 +230,122 @@ def _wipe_all_items():
     frappe.db.commit()
 
 
+def _shopify_node_fingerprint(node: dict) -> str:
+    """
+    Hash of the Shopify-side fields that decide whether an already-imported
+    product needs updating on a re-run of Import Products. Deliberately
+    excludes inventory quantity -- that's inventory_sync.py's concern, not
+    the importer's; including it here would mark every product "changed"
+    on every run just because stock moved, defeating the whole point of
+    skipping unchanged products.
+    """
+    variants_fp = [
+        {
+            "sku": (v.get("sku") or "").strip(),
+            "price": v.get("price"),
+            "compare_at_price": v.get("compareAtPrice"),
+            "weight": ((v.get("inventoryItem") or {}).get("measurement") or {}).get("weight"),
+        }
+        for v in (node.get("variants", {}).get("nodes") or [])
+    ]
+    canonical = {
+        "title": node.get("title"),
+        "bodyHtml": node.get("bodyHtml"),
+        "vendor": node.get("vendor"),
+        "productType": node.get("productType"),
+        "status": node.get("status"),
+        "tags": sorted(node.get("tags") or []),
+        "category": (node.get("category") or {}).get("fullName"),
+        "images": [img.get("src") for img in (node.get("images", {}).get("nodes") or [])],
+        "variants": variants_fp,
+    }
+    return fingerprint.fingerprint(canonical)
+
+
+def _update_existing_product(entity, node: dict) -> tuple:
+    """
+    Product already imported (Synced Entity + Item both exist). Compares a
+    fingerprint of Shopify's current data against what was stored at the
+    last pull -- updates content only if something actually changed, skips
+    otherwise, so re-running Import Products on a large catalog doesn't
+    touch (or re-timestamp) every already-correct item.
+
+    Deliberately does NOT touch stock/quantity -- opening stock is set
+    ONCE at creation via a Material Receipt (_set_opening_stock always
+    creates a new one); applying it again here on every re-run would ADD
+    Shopify's current qty on top of the existing balance instead of
+    correcting it. Stock reconciliation is inventory_sync.py's job.
+
+    Also does NOT add or remove variants -- only updates content on
+    variants that already exist locally by SKU. A variant added on
+    Shopify after the original import needs a manual re-link; this is
+    flagged in the returned reason rather than silently dropped.
+    """
+    new_fp = _shopify_node_fingerprint(node)
+    if entity.external_fingerprint == new_fp:
+        return False, "already imported, unchanged"
+
+    settings = frappe.get_single("Shopify Connector Settings")
+    template_name = entity.erpnext_name
+    variants = node.get("variants", {}).get("nodes", [])
+    images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
+
+    has_variants = frappe.db.get_value("Item", template_name, "has_variants")
+    if has_variants:
+        _apply_existing_template_content(template_name, node, images, settings)
+        updated_skus = 0
+        missing_skus = []
+        for variant in variants:
+            sku = (variant.get("sku") or "").strip()
+            if not sku or not frappe.db.exists("Item", sku):
+                missing_skus.append(sku or "(no sku)")
+                continue
+            _apply_existing_variant_content(sku, variant, settings, set_stock=False)
+            updated_skus += 1
+        reason = f"updated (template + {updated_skus} variant(s))"
+        if missing_skus:
+            reason += f"; {len(missing_skus)} Shopify variant(s) not locally linked, needs manual re-link: {missing_skus[:5]}"
+    else:
+        variant = variants[0] if variants else {}
+        _apply_existing_variant_content(
+            template_name, variant, settings, product_meta=node, images=images, set_stock=False)
+        reason = "updated"
+
+    entities.save(entity, external_fingerprint=new_fp)
+    return True, reason
+
+
 def _import_product(node: dict) -> tuple:
     """
-    Import a single Shopify product (template + variants) as Alaiy OS Item(s).
+    Import a single Shopify product (template + variants) as Alaiy OS Item(s),
+    or update it if already imported and Shopify's data has since changed.
 
     Returns:
         (created: bool, reason: str) -- reason is always populated, even on
         success, so the caller can log exactly what happened per product
-        instead of only a bare count. Skips previously vanished into a
-        single aggregate number with no way to tell "already imported"
-        (fine) apart from "SKU collision" (worth investigating).
+        instead of only a bare count. `reason` starting with "updated"
+        (created=True) is how the caller distinguishes a real update from a
+        fresh create without changing this tuple's shape everywhere else in
+        the file. Skips (created=False) previously vanished into a single
+        aggregate number with no way to tell "already imported, unchanged"
+        apart from "SKU collision" (worth investigating) -- reason still
+        disambiguates those.
     """
     product_id = str(node.get("legacyResourceId", ""))
     if not product_id:
         return False, "missing product_id"
 
-    # Check if already imported (via Synced Entity)
     existing_entity = entities.get_by_external_id("product", product_id)
+    if existing_entity and not frappe.db.exists("Item", existing_entity.erpnext_name):
+        # Local item was deleted since the last import/link -- the mapping
+        # is stale. Drop it and fall through to a fresh create below,
+        # exactly like a genuinely new product.
+        frappe.delete_doc("Shopify Synced Entity", existing_entity.name, ignore_permissions=True)
+        frappe.db.commit()
+        existing_entity = None
+
     if existing_entity:
-        return False, "already imported"
+        return _update_existing_product(existing_entity, node)
 
     settings = frappe.get_single("Shopify Connector Settings")
     title = node.get("title", f"Product {product_id}").strip()
@@ -266,18 +392,26 @@ def _import_product(node: dict) -> tuple:
         return False, "product has zero variants"
 
 
-def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None):
+def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None, set_stock: bool = True):
     """
     Populate price/stock/cost/weight (and, for a genuinely standalone
     item, tags/category/SEO/images) on an Item that was auto-linked to
     Shopify rather than freshly created. Auto-linking only ever wrote the
     Shopify IDs, so without this an auto-linked item showed as "synced"
     with none of Shopify's actual content ever pulled in.
+
+    set_stock=False for the "update an already-imported product" path
+    (_update_existing_product) -- _set_opening_stock always creates a NEW
+    Material Receipt, so calling it again on every re-run would ADD
+    Shopify's current qty on top of the existing balance instead of
+    correcting it. Only the one-time auto-link case (this function's
+    original use) should ever set it.
     """
     item = frappe.get_doc("Item", item_code)
     _apply_variant_physical(item, variant)
     if product_meta:
         _apply_product_meta(item, product_meta)
+    _dedupe_item_uoms(item)
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     item.save()
@@ -291,9 +425,10 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
         _set_item_compare_at_price(item_code, compare_at_price, settings)
     _set_item_variant_cost(item_code, variant, settings)
 
-    qty = _variant_available_qty(variant)
-    if qty > 0:
-        _set_opening_stock(item_code, qty, settings)
+    if set_stock:
+        qty = _variant_available_qty(variant)
+        if qty > 0:
+            _set_opening_stock(item_code, qty, settings)
 
     if images:
         _set_item_image(item_code, images[0])
@@ -307,6 +442,7 @@ def _apply_existing_template_content(template_name: str, product_meta: dict, ima
     product as a whole, so they land on the template, not the variant."""
     template = frappe.get_doc("Item", template_name)
     _apply_product_meta(template, product_meta)
+    _dedupe_item_uoms(template)
     template.flags.from_shopify_sync = True
     template.flags.ignore_permissions = True
     template.save()
@@ -434,13 +570,17 @@ def _import_simple_product(
         if len(images) > 1:
             _set_item_slideshow(item_name, images, settings)
 
-    # Create Synced Entity record
+    # Create Synced Entity record. Stamping external_fingerprint now (not
+    # empty) means the next Import Products run can tell "unchanged since
+    # this import" apart from "changed" instead of always seeing a blank
+    # baseline and treating every product as changed on its first re-check.
     entities.save(
         entities.get_or_new("product", "Item", item_name, product_id),
         erpnext_doctype="Item",
         erpnext_name=item_name,
         external_id=product_id,
         erpnext_fingerprint="",  # Empty for initial import
+        external_fingerprint=_shopify_node_fingerprint(product_meta) if product_meta else "",
     )
 
     return True, "created"
@@ -692,12 +832,15 @@ def _import_product_with_variants(
         if len(images) > 1:
             _set_item_slideshow(template_name, images, settings)
 
-    # Create Synced Entity record
+    # Create Synced Entity record. See _import_simple_product's matching
+    # comment: stamping external_fingerprint now avoids a blank baseline
+    # making every product look "changed" on the very next import run.
     entities.save(
         entities.get_or_new("product", "Item", template_name, product_id),
         erpnext_doctype="Item",
         erpnext_name=template_name,
         external_id=product_id,
+        external_fingerprint=_shopify_node_fingerprint(product_meta) if product_meta else "",
         erpnext_fingerprint="",
     )
 

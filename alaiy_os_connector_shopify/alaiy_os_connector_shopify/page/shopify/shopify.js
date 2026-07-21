@@ -68,7 +68,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						<span class="shopify-icon-badge"><i class="fa fa-archive"></i></span>
 						<div class="shopify-card-header-text">
 							<h5>Inventory</h5>
-							<p>Sync stock levels between Alaiy OS and Shopify.</p>
+							<p>Push stock levels from Alaiy OS to Shopify.</p>
 						</div>
 					</div>
 					<div class="shopify-card-body">
@@ -248,7 +248,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 
 	function import_products() {
 		frappe.confirm(
-			'This will import all products from Shopify and <strong>replace any existing unlinked local products</strong>. This action cannot be undone.<br><br>Continue?',
+			'This will import products from Shopify: new products are created, changed products are updated, unchanged ones are left alone. On the very first run only, any stray unlinked product data is wiped first as a safety net.<br><br>Continue?',
 			function() {
 				var btn = document.getElementById('import-products-btn');
 				var log_container = document.getElementById('products-log');

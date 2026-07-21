@@ -34,12 +34,29 @@ def _set_item_tags(item, tag_names: list):
     master record that doesn't exist yet locally -- a product pulled in
     with a tag never seen before (i.e. before the next "Sync Shopify
     Tags" run catches up) shouldn't fail or silently drop it.
+
+    Shopify Tag is autonamed directly from tag_name (no separate label
+    field) -- a tag containing '<' or '>' (seen live: fashion-catalog
+    filter tags like "Price < 500") crashes Frappe's own name-character
+    validation on insert. Confirmed live: this took down the ENTIRE
+    product's import, not just that one tag, since the exception wasn't
+    caught here. Skip and log the offending tag instead of crashing the
+    whole product over one bad tag.
     """
+    usable_tags = []
     for tag_name in tag_names:
+        if "<" in tag_name or ">" in tag_name:
+            # Expected/handled, not a failure -- plain logger only, so this
+            # doesn't show up as a red Error Log entry indistinguishable
+            # from a real crash.
+            frappe.logger().warning(
+                f"Shopify: skipping tag with invalid characters: {tag_name!r}")
+            continue
         if not frappe.db.exists("Shopify Tag", tag_name):
             frappe.get_doc({"doctype": "Shopify Tag", "tag_name": tag_name}).insert(
                 ignore_permissions=True)
-    item.set("sh_shopify_tags", [{"shopify_tag": t} for t in tag_names])
+        usable_tags.append(tag_name)
+    item.set("sh_shopify_tags", [{"shopify_tag": t} for t in usable_tags])
 
 
 def _item_tags(item) -> list:
@@ -86,12 +103,21 @@ def sync_shopify_tags():
     client = ShopifyGraphQLClient()
     created = 0
     total = 0
+    skipped = 0
     try:
         for page_nodes in client.execute_paginated(_PRODUCT_TAGS_QUERY, {}, ["productTags"]):
             for tag_name in page_nodes:
                 if not tag_name:
                     continue
                 total += 1
+                # Shopify Tag is autonamed directly from tag_name -- a tag
+                # containing '<'/'>' (seen live: fashion-catalog filter
+                # tags like "Price < 500") fails Frappe's name validation.
+                # Skip just that one tag instead of crashing this entire
+                # paginated sync over one bad value.
+                if "<" in tag_name or ">" in tag_name:
+                    skipped += 1
+                    continue
                 if not frappe.db.exists("Shopify Tag", tag_name):
                     frappe.get_doc({"doctype": "Shopify Tag", "tag_name": tag_name}).insert(
                         ignore_permissions=True)
@@ -105,6 +131,6 @@ def sync_shopify_tags():
         return {"status": "failed"}
 
     frappe.logger().info(
-        f"Shopify tags sync completed: {total} tags seen, {created} new"
+        f"Shopify tags sync completed: {total} tags seen, {created} new, {skipped} skipped (invalid characters)"
     )
-    return {"status": "ok", "total": total, "created": created}
+    return {"status": "ok", "total": total, "created": created, "skipped": skipped}
