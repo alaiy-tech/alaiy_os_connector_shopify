@@ -6,8 +6,10 @@ and product_sync.py, unchanged.
 import frappe
 
 from alaiy_os_connector_shopify.shopify.product.queries import (
-    _TAXONOMY_SEARCH_QUERY, _TAXONOMY_TREE_QUERY,
+    _TAXONOMY_SEARCH_QUERY, _TAXONOMY_TREE_QUERY, _TAXONOMY_NODES_BY_ID_QUERY,
 )
+
+_NODES_PER_CALL = 250  # Shopify's node-by-id bulk lookup cap, same as any other connection page size here.
 
 
 def ensure_shopify_category(full_name: str) -> str:
@@ -77,35 +79,71 @@ def _resolve_category_id(client, category_name: str):
     return result
 
 
+def _save_taxonomy_node(node):
+    shopify_id = node.get("id", "")
+    name = node.get("name", "")
+    full_name = node.get("fullName") or name
+    if not (shopify_id and full_name):
+        return False
+    # Re-use our robust nested tree builder to ensure parent-child linking and custom name format
+    path_name = ensure_shopify_category(full_name)
+    if path_name:
+        frappe.db.set_value("Shopify Category", path_name, "shopify_category_id", shopify_id)
+        return True
+    return False
+
+
 def fetch_shopify_taxonomy():
     """
     Fetch the full Shopify Standard Product Taxonomy tree and populate
     the Shopify Category doctype. Called on demand or via scheduled job.
 
-    Paginated -- Shopify's full taxonomy has several thousand categories,
-    far past the single page of 250 a single client.execute() call used
-    to silently stop at (confirmed: no pageInfo/after handling at all
-    before this fix, so only the first 250 nodes were ever imported).
+    taxonomy.categories() (the query this used before) only ever returns
+    the 26 ROOT (level-1) nodes -- confirmed live via introspection, it is
+    NOT a flat connection over the whole multi-thousand-node tree despite
+    supporting first/after pagination. The real tree is only reachable by
+    walking each node's childrenIds recursively (BFS here), batch-fetching
+    each next level via Shopify's generic nodes(ids:) bulk lookup (up to
+    250 ids per call) instead of one round trip per node.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     client = ShopifyGraphQLClient()
-    created = 0
+    saved = 0
     total = 0
+    seen_ids = set()
+
     try:
+        # Level 1 root ids -- the only thing the flat query is actually
+        # good for. Everything below is walked via childrenIds instead.
+        queue = []
         for page_nodes in client.execute_paginated(_TAXONOMY_TREE_QUERY, {}, ["taxonomy", "categories"]):
-            total += len(page_nodes)
             for node in page_nodes:
-                shopify_id = node.get("id", "")
-                name = node.get("name", "")
-                full_name = node.get("fullName") or name
-                if shopify_id and full_name:
-                    # Re-use our robust nested tree builder to ensure parent-child linking and custom name format
-                    path_name = ensure_shopify_category(full_name)
-                    if path_name:
-                        frappe.db.set_value("Shopify Category", path_name, "shopify_category_id", shopify_id)
-                        created += 1
-            frappe.db.commit()
+                node_id = node.get("id")
+                if node_id and node_id not in seen_ids:
+                    seen_ids.add(node_id)
+                    queue.append(node_id)
+
+        # BFS: fetch each level's full node data (name/fullName/childrenIds/
+        # isLeaf) in one bulk call per _NODES_PER_CALL ids, save it, queue
+        # its children for the next round. One fetch per node, not two.
+        while queue:
+            next_queue = []
+            for i in range(0, len(queue), _NODES_PER_CALL):
+                batch = queue[i:i + _NODES_PER_CALL]
+                data = client.execute(_TAXONOMY_NODES_BY_ID_QUERY, {"ids": batch})
+                nodes = [n for n in (data.get("nodes") or []) if n]
+                for node in nodes:
+                    total += 1
+                    if _save_taxonomy_node(node):
+                        saved += 1
+                    if not node.get("isLeaf"):
+                        for child_id in (node.get("childrenIds") or []):
+                            if child_id not in seen_ids:
+                                seen_ids.add(child_id)
+                                next_queue.append(child_id)
+                frappe.db.commit()
+            queue = next_queue
     except Exception:
         frappe.log_error(
             title="Shopify: failed to fetch taxonomy tree",
@@ -118,5 +156,5 @@ def fetch_shopify_taxonomy():
         return
 
     frappe.logger().info(
-        f"Shopify taxonomy sync completed: processed {total} categories"
+        f"Shopify taxonomy sync completed: processed {total} categories, saved {saved}"
     )
