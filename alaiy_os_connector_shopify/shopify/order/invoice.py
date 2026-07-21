@@ -123,13 +123,31 @@ def _fill_item_accounts(si, settings):
     configure accounts by hand -- same pattern as warehouse/tax self-heal.
     """
     income = _resolve_income_account(si.company)
-    cost_center = settings.sh_cost_center or frappe.get_cached_value(
-        "Company", si.company, "cost_center")
+    cost_center = _resolve_cost_center(si.company, settings.sh_cost_center)
     for row in si.items:
         if income and not row.income_account:
             row.income_account = income
         if cost_center and not row.cost_center:
             row.cost_center = cost_center
+
+
+def _resolve_cost_center(company, configured):
+    """
+    Same self-heal shape as _resolve_income_account/_resolve_bank_cash_account:
+    a configured sh_cost_center or Company.cost_center that turns out to be a
+    GROUP cost center is invalid for any real transaction ("Cost Center X is a
+    group cost center and group cost centers cannot be used in transactions")
+    -- confirmed live, this crashed every auto Sales Invoice on a real site.
+    Falls back to the same leaf-resolving self-heal product import already
+    uses for opening stock, instead of requiring a manual settings fix.
+    """
+    if configured and not frappe.db.get_value("Cost Center", configured, "is_group"):
+        return configured
+    company_default = frappe.get_cached_value("Company", company, "cost_center")
+    if company_default and not frappe.db.get_value("Cost Center", company_default, "is_group"):
+        return company_default
+    from alaiy_os_connector_shopify.shopify.product.masters import _ensure_cost_center
+    return _ensure_cost_center(company)
 
 
 def _resolve_income_account(company):
