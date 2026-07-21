@@ -97,6 +97,13 @@ def main(site, dry_run=True):
     sr.flags.ignore_permissions = True
     sr.insert()
     sr.submit()
+    # Confirmed live: without an explicit commit, this write only exists
+    # inside the current DB transaction -- fine if this script runs to a
+    # normal process exit (which commits), but a `bench console` session
+    # that gets closed (or crashes) without this rolls the whole
+    # insert+submit back silently, even though sr.name and every print
+    # above already looked like a real success.
+    frappe.db.commit()
     print(f"Applied. Stock Reconciliation: {sr.name}", flush=True)
 
 
