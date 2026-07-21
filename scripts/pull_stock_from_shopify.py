@@ -3,34 +3,45 @@ One-off: pull Shopify's live inventory quantity for every Shopify-linked
 item and apply it locally via Stock Reconciliation (audited correction,
 doesn't touch sales/opening-stock history).
 
-Run inside `bench --site <site> console`:
-    exec(open("pull_stock_from_shopify.py").read())
+Run backgrounded (recommended -- ~1000+ items, one API call each):
+    nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/pull_stock_from_shopify.py <site_name> --dry-run > ~/pull_stock.log 2>&1 &
+    tail -f ~/pull_stock.log
+
+Then, once the dry run's mismatch list looks right, apply for real:
+    nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/pull_stock_from_shopify.py <site_name> --apply > ~/pull_stock_apply.log 2>&1 &
+    tail -f ~/pull_stock_apply.log
 """
+import sys
+
 import frappe
-from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-from alaiy_os_connector_shopify.shopify.inventory_sync import (
-    _resolve_location_pairs, _get_inventory_item_state,
-)
 
 
-def pull_stock_from_shopify(dry_run=True):
+def main(site, dry_run=True):
+    frappe.init(site=site)
+    frappe.connect()
+
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.inventory_sync import (
+        _resolve_location_pairs, _get_inventory_item_state,
+    )
+
     client = ShopifyGraphQLClient()
     settings = frappe.get_single("Shopify Connector Settings")
     pairs = _resolve_location_pairs(settings, client)
     if not pairs:
-        print("No warehouse/location pair resolved -- aborting.")
+        print("No warehouse/location pair resolved -- aborting.", flush=True)
         return
     warehouse, location_id = pairs[0]
-    print(f"Pulling live Shopify qty for warehouse={warehouse} location={location_id}")
+    print(f"Pulling live Shopify qty for warehouse={warehouse} location={location_id}", flush=True)
 
     items = frappe.get_all(
         "Item",
         filters=[["sh_shopify_variant_id", "is", "set"]],
         fields=["name", "sh_shopify_variant_id"],
     )
-    print(f"TOTAL {len(items)} items")
+    total = len(items)
+    print(f"TOTAL {total} items", flush=True)
 
-    company = frappe.db.get_value("Warehouse", warehouse, "company")
     corrections = []
     for i, item in enumerate(items):
         local_qty = frappe.db.get_value(
@@ -39,28 +50,27 @@ def pull_stock_from_shopify(dry_run=True):
             _, shopify_qty = _get_inventory_item_state(
                 client, item.sh_shopify_variant_id, location_id)
         except Exception as exc:
-            print(f"ERROR {item.name}: {exc}")
+            print(f"ERROR {item.name}: {exc}", flush=True)
             continue
         shopify_qty = int(shopify_qty or 0)
         if int(local_qty) != shopify_qty:
             corrections.append({"item_code": item.name, "qty": shopify_qty, "was": int(local_qty)})
-        if (i + 1) % 200 == 0:
-            print(f"progress {i+1}/{len(items)} -- {len(corrections)} mismatches so far")
+            print(f"MISMATCH {item.name}: {int(local_qty)} -> {shopify_qty}", flush=True)
 
-    print(f"DONE scanning. {len(corrections)} items need correction.")
-    for c in corrections[:20]:
-        print(f"  {c['item_code']}: {c['was']} -> {c['qty']}")
-    if len(corrections) > 20:
-        print(f"  ... and {len(corrections) - 20} more")
+        if (i + 1) % 100 == 0:
+            print(f"progress {i+1}/{total} -- {len(corrections)} mismatches so far", flush=True)
+
+    print(f"DONE scanning. {len(corrections)} items need correction.", flush=True)
 
     if dry_run:
-        print("\nDRY RUN -- nothing applied. Call with dry_run=False to actually correct.")
-        return corrections
+        print("DRY RUN -- nothing applied. Re-run with --apply to actually correct.", flush=True)
+        return
 
     if not corrections:
-        print("Nothing to correct.")
-        return corrections
+        print("Nothing to correct.", flush=True)
+        return
 
+    company = frappe.db.get_value("Warehouse", warehouse, "company")
     sr = frappe.new_doc("Stock Reconciliation")
     sr.company = company
     sr.purpose = "Stock Reconciliation"
@@ -69,5 +79,13 @@ def pull_stock_from_shopify(dry_run=True):
     sr.flags.ignore_permissions = True
     sr.insert()
     sr.submit()
-    print(f"Applied. Stock Reconciliation: {sr.name}")
-    return corrections
+    print(f"Applied. Stock Reconciliation: {sr.name}", flush=True)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python pull_stock_from_shopify.py <site_name> [--dry-run|--apply]", flush=True)
+        sys.exit(1)
+    site = sys.argv[1]
+    dry_run = "--apply" not in sys.argv
+    main(site, dry_run=dry_run)
