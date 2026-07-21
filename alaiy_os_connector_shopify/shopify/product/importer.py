@@ -63,22 +63,21 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
 
     log = load_or_create_log("products", trigger, log_name)
 
-    # Concurrency check
+    # Concurrency check. This is the ONLY guard -- a separate
+    # settings.lock()/unlock() document lock used to run alongside this,
+    # but unlike has_active_sync (which self-heals a stale queued/running
+    # row after STALE_ACTIVE_THRESHOLD_MINUTES, and is race-safe via a
+    # MySQL named lock -- see sync_guard.py), a document lock has no
+    # crash recovery at all: a killed worker (SIGKILL, OOM, deploy
+    # restart) skips Python's finally block entirely, so the lock never
+    # releases until its own timeout -- confirmed live, this required a
+    # manual console unlock every single time a worker was killed during
+    # testing. Two guards for one job, only one of which self-heals, was
+    # the actual bug. Removed the fragile one.
     if has_active_sync("products", exclude_name=log.name):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another products sync is already running."
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
-        return log.name
-
-    settings = frappe.get_single("Shopify Connector Settings")
-    try:
-        settings.lock(timeout=1800)  # Lock settings document to prevent concurrent import runs
-    except frappe.DocumentLockedError:
-        log.status = "skipped"
-        log.finished_at = now_datetime()
-        log.error_message = "Skipped: another products sync/import is running (Settings document locked)."
         log.save(ignore_permissions=True)
         frappe.db.commit()
         return log.name
@@ -173,11 +172,6 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
         log.save(ignore_permissions=True)
         frappe.db.commit()
         raise
-    finally:
-        try:
-            settings.unlock()
-        except Exception:
-            pass
 
     return log.name
 
