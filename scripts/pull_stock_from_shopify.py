@@ -37,13 +37,23 @@ def main(site, dry_run=True):
     items = frappe.get_all(
         "Item",
         filters=[["sh_shopify_variant_id", "is", "set"]],
-        fields=["name", "sh_shopify_variant_id"],
+        fields=["name", "sh_shopify_variant_id", "disabled"],
     )
     total = len(items)
     print(f"TOTAL {total} items", flush=True)
 
     corrections = []
+    skipped_disabled = []
     for i, item in enumerate(items):
+        if item.disabled:
+            # ERPNext's Stock Reconciliation rejects the ENTIRE document if
+            # any row is a disabled Item -- confirmed live, one disabled
+            # item blocked all other real corrections in the same batch.
+            # A disabled item can't be sold anyway, so its stock number
+            # isn't meaningful to correct; skip it rather than failing
+            # everything else over it.
+            skipped_disabled.append(item.name)
+            continue
         local_qty = frappe.db.get_value(
             "Bin", {"item_code": item.name, "warehouse": warehouse}, "actual_qty") or 0
         try:
@@ -69,6 +79,8 @@ def main(site, dry_run=True):
             print(f"progress {i+1}/{total} -- {len(corrections)} mismatches so far", flush=True)
 
     print(f"DONE scanning. {len(corrections)} items need correction.", flush=True)
+    if skipped_disabled:
+        print(f"SKIPPED {len(skipped_disabled)} disabled item(s), not corrected: {skipped_disabled}", flush=True)
 
     if dry_run:
         print("DRY RUN -- nothing applied. Re-run with --apply to actually correct.", flush=True)
