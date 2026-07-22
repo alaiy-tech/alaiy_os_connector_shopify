@@ -141,6 +141,26 @@ query GetTaxonomyTree($after: String) {
 }
 """
 
+# taxonomy.categories() only ever returns the 26 ROOT (level-1) nodes --
+# confirmed live via introspection, Shopify's full multi-thousand-node tree
+# is only reachable by walking each node's childrenIds recursively. This
+# bulk node-by-id lookup (up to 250 ids per call) is what a BFS traversal
+# uses to fetch each next level in as few round trips as possible.
+_TAXONOMY_NODES_BY_ID_QUERY = """
+query GetTaxonomyNodesByIds($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on TaxonomyCategory {
+      id
+      name
+      level
+      fullName
+      childrenIds
+      isLeaf
+    }
+  }
+}
+"""
+
 _PRODUCT_TAGS_QUERY = """
 query GetProductTags($after: String) {
   productTags(first: 250, after: $after) {
