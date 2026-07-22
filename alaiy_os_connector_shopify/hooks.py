@@ -87,4 +87,5 @@ doctype_list_js = {
 
 doctype_js = {
     "Item": "public/js/item.js",
+    "Shopify Product Listing": "public/js/shopify_product_listing.js",
 }

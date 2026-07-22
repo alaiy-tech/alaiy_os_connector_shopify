@@ -22,6 +22,30 @@ from alaiy_os_connector_shopify.shopify.product.pricing import _price_rate, _var
 from alaiy_os_connector_shopify.shopify.product.media import _item_images, _absolute_file_url
 
 
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def item_without_listing_query(doctype, txt, searchfield, start, page_len, filters):
+    """Link-field query for the Listing's `item`: only template/simple Items
+    (never variants) that don't already have a Shopify Product Listing -- so
+    the picker can't offer a variant or an already-listed product (both of
+    which would fail on save)."""
+    like = f"%{txt}%"
+    return frappe.db.sql(
+        """
+        SELECT i.name, i.item_name
+        FROM `tabItem` i
+        WHERE (i.variant_of IS NULL OR i.variant_of = '')
+          AND NOT EXISTS (
+              SELECT 1 FROM `tabShopify Product Listing` l WHERE l.item = i.name
+          )
+          AND (i.name LIKE %(txt)s OR i.item_name LIKE %(txt)s)
+        ORDER BY i.modified DESC
+        LIMIT %(start)s, %(page_len)s
+        """,
+        {"txt": like, "start": start, "page_len": page_len},
+    )
+
+
 def _template_name(item) -> str:
     """The template a Listing would be keyed to for any Item (self if simple)."""
     return item.variant_of or item.name
