@@ -1,15 +1,12 @@
 """
-Alaiy OS -> Shopify product/variant push -- moved verbatim from
-product_sync.py, unchanged.
+Alaiy OS -> Shopify product/variant push.
 
-Gated by Item.sync_to_shopify (opt-in). The TEMPLATE's checkbox is the
-master switch for the whole product (checking it auto-checks all variants;
-unchecking or disabling the Item archives the product on Shopify -- kept,
-hidden from sales channels, order history intact -- and re-checking
-unarchives + pushes again). Each VARIANT's own checkbox is a per-variant
-include flag: unchecking one drops just that variant from the next
-productSet push, which removes it on Shopify; new variants added under a
-syncing template are auto-checked on insert.
+Gated by the template's Shopify Product Listing (is_enabled). Enabling the
+Listing pushes the whole product; disabling or trashing it archives the
+product on Shopify (kept, hidden from sales channels, order history intact)
+and re-enabling unarchives + pushes again. Each variant's inclusion is its
+Shopify Listing Variant row (is_enabled): an excluded variant drops from the
+next productSet push, which removes it on Shopify.
 
 Always operates at the template level: even when only one variant changed,
 the whole current variant set is rebuilt and sent to Shopify via productSet,
@@ -60,11 +57,9 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
     """
     One-off bulk push of every local (not-yet-linked) product to Shopify --
     for manually-created Alaiy OS Items that predate any Shopify connection,
-    rather than requiring someone to open each one and tick the checkbox
-    individually. Opts each candidate Item into sync_to_shopify as it's
-    pushed (so future edits keep flowing outbound the normal way) and
-    reuses the exact same push_item path Item's own doc_events already use,
-    just called synchronously in a loop instead of one enqueue per save.
+    rather than requiring someone to create + enable a Listing for each one
+    by hand. Creates and enables a Listing per candidate (all variant rows
+    on), then reuses the same push_item path, called synchronously in a loop.
 
     Scoped to templates and simple items only (skips variants -- pushing a
     template already pushes its full current variant set in one call).

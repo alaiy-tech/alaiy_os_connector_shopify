@@ -13,7 +13,7 @@ LOCK_TIMEOUT_SECONDS = 30
 
 
 def archive_item(item_code: str):
-    """Called when sync_to_shopify is unchecked -- or the Item disabled --
+    """Called when the Listing is disabled/trashed -- or the Item disabled --
     on a template that's already linked. Archives the Shopify product
     (hidden from sales channels, order history intact) by setting its status
     to ARCHIVED via the productUpdate mutation."""

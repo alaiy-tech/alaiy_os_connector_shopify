@@ -360,7 +360,6 @@ def _handle_product_delete(product_id: str, product: dict):
 
         # Unlink: remove Shopify IDs but keep Item in Alaiy OS
         frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
-        frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
 
         # Disable + unlink the Listing too, or the hourly outbound
         # reconciliation would re-push (and recreate on Shopify) a product

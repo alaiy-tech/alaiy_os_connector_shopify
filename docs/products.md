@@ -12,7 +12,6 @@ Tags, Categories, Collections and Sales Channels are product-adjacent domains wi
 |---|---|---|
 | `sh_shopify_product_id` | Data, read-only, indexed | Set on import/first push. Variants fetch it from their template. |
 | `sh_shopify_variant_id` | Data, read-only, indexed | Shopify variant id for this Item. |
-| `sync_to_shopify` | Check (default 0) | Master push switch. On a **template** it controls the whole product; on a **variant** it's a per-variant include flag. |
 | `sh_shopify_status` | Select (Active/Draft) | Product visibility; template-level, variants inherit. |
 | `sh_shopify_product_type` | Data | Shopify `productType`; kept separate from Item Group. |
 | `sh_shopify_category` | Link → Shopify Category | Standard Product Taxonomy node ([Categories](categories.md)). |

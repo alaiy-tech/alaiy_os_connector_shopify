@@ -4,11 +4,14 @@ rows) for every Item already linked to Shopify, so the Listing-driven export
 pipeline has a record to read the moment it goes live -- without this, every
 already-live Shopify product would silently stop syncing on upgrade.
 
+This is the ONLY reader of the legacy Item.sync_to_shopify field: it copies
+that value into each Listing's is_enabled (and per-variant is_enabled) to
+preserve exactly which products/variants were syncing before. It MUST run
+before drop_sync_to_shopify_field (ordered in patches.txt) -- after that
+patch the column is gone.
+
 Idempotent: a template that already has a Listing is skipped, so a partial
-run is safe to re-run. Only touches Items with a Shopify product id -- never
-creates Listings for products that were never on Shopify. Creation logic
-lives in shopify.product.listing.ensure_listing (shared with the inbound
-importer) so there is exactly one definition of "build a Listing from an Item".
+run is safe to re-run. Only touches Items with a Shopify product id.
 """
 
 import frappe
@@ -32,7 +35,7 @@ def execute():
             skipped += 1
             continue
         try:
-            ensure_listing(name)
+            _backfill_one(name)
             migrated += 1
         except Exception:
             frappe.log_error(
@@ -44,3 +47,21 @@ def execute():
     frappe.logger().info(
         f"Shopify Product Listing backfill: {migrated} created, {skipped} already existed"
     )
+
+
+def _backfill_one(template_name):
+    template_synced = frappe.db.get_value("Item", template_name, "sync_to_shopify")
+    listing = ensure_listing(template_name, default_enabled=1 if template_synced else 0)
+    if not listing:
+        return
+    # Preserve each variant's old per-variant sync flag onto its Listing row.
+    changed = False
+    for row in listing.variants:
+        old = frappe.db.get_value("Item", row.item_variant, "sync_to_shopify")
+        want = 1 if old else 0
+        if row.is_enabled != want:
+            row.is_enabled = want
+            changed = True
+    if changed:
+        listing.flags.from_shopify_sync = True
+        listing.save(ignore_permissions=True)

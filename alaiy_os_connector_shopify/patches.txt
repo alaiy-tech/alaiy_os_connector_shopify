@@ -1,2 +1,3 @@
 [post_model_sync]
 alaiy_os_connector_shopify.patches.create_shopify_product_listings
+alaiy_os_connector_shopify.patches.drop_sync_to_shopify_field

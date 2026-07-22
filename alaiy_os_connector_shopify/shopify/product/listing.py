@@ -118,21 +118,25 @@ def variant_price(listing, variant_code: str, settings):
 
 # ── Creation / upkeep ────────────────────────────────────────────────────────
 
-def ensure_listing(template_name: str):
+def ensure_listing(template_name: str, default_enabled: int = 0):
     """
     Get-or-create the Listing for a template Item, built from the Item's
-    current state (used by the backfill patch AND on every inbound import so a
-    Shopify-linked product always has a manageable Listing). Idempotent: an
-    existing Listing is returned untouched, so re-running never duplicates or
-    clobbers merchant edits. Returns None if the Item doesn't exist.
+    current state (used on every inbound import so a Shopify-linked product
+    always has a manageable Listing). Idempotent: an existing Listing is
+    returned untouched, so re-running never duplicates or clobbers merchant
+    edits. Returns None if the Item doesn't exist.
+
+    is_enabled defaults to 0 -- an inbound import came FROM Shopify, so it must
+    not auto-push back. The backfill patch passes the Item's old
+    sync_to_shopify value to preserve which products were already syncing;
+    nothing else reads that (now-removed) field.
     """
     existing = get_listing(template_name)
     if existing:
         return existing
     tmpl = frappe.db.get_value(
         "Item", template_name,
-        ["name", "has_variants", "image", "sync_to_shopify",
-         "sh_shopify_product_id", "sh_shopify_status"],
+        ["name", "has_variants", "image", "sh_shopify_product_id", "sh_shopify_status"],
         as_dict=True,
     )
     if not tmpl:
@@ -140,7 +144,7 @@ def ensure_listing(template_name: str):
 
     listing = frappe.new_doc("Shopify Product Listing")
     listing.item = tmpl.name
-    listing.is_enabled = 1 if tmpl.sync_to_shopify else 0
+    listing.is_enabled = 1 if default_enabled else 0
     listing.sh_shopify_product_id = tmpl.sh_shopify_product_id or None
     listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
     # title/description/price left blank -> inherit from Item via the resolver.
@@ -151,11 +155,11 @@ def ensure_listing(template_name: str):
     if tmpl.has_variants:
         for v in frappe.get_all(
             "Item", filters={"variant_of": tmpl.name},
-            fields=["name", "sync_to_shopify", "sh_shopify_variant_id"],
+            fields=["name", "sh_shopify_variant_id"],
         ):
             listing.append("variants", {
                 "item_variant": v.name,
-                "is_enabled": 1 if v.sync_to_shopify else 0,
+                "is_enabled": 1,
                 "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
             })
 
