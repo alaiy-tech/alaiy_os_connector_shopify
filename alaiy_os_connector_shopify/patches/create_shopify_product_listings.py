@@ -20,11 +20,13 @@ from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
 
 
 def execute():
+    # NOTE: use "is set", NOT ["not in", ["", None]] -- SQL `NOT IN (…, NULL)`
+    # is never true, so that filter silently matches ZERO rows.
     templates = frappe.get_all(
         "Item",
         filters={
             "variant_of": ["in", ["", None]],
-            "sh_shopify_product_id": ["not in", ["", None]],
+            "sh_shopify_product_id": ["is", "set"],
         },
         pluck="name",
     )
@@ -50,9 +52,12 @@ def execute():
 
 
 def _backfill_one(template_name):
-    template_synced = frappe.db.get_value("Item", template_name, "sync_to_shopify")
+    # If sync_to_shopify is already gone (e.g. a re-run after the drop patch),
+    # a linked product is live on Shopify, so default it enabled.
+    has_flag = "sync_to_shopify" in frappe.db.get_table_columns("Item")
+    template_synced = frappe.db.get_value("Item", template_name, "sync_to_shopify") if has_flag else 1
     listing = ensure_listing(template_name, default_enabled=1 if template_synced else 0)
-    if not listing:
+    if not listing or not has_flag:
         return
     # Preserve each variant's old per-variant sync flag onto its Listing row.
     changed = False
