@@ -118,6 +118,13 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 								</button>
 								<div id="products-export-log" class="shopify-sync-log"></div>
 							</div>
+							<div class="shopify-sync-box">
+								<h6><i class="fa fa-list"></i> Listings</h6>
+								<p class="shopify-text-muted">Per-marketplace product listings (title, price, images, variants).</p>
+								<button id="manage-listings-btn" class="shopify-btn shopify-btn-outline-primary">
+									Manage Listings
+								</button>
+							</div>
 						</div>
 					</div>
 				</div>
@@ -443,4 +450,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	document.getElementById('sync-tags-btn').addEventListener('click', sync_tags);
 	document.getElementById('sync-collections-btn').addEventListener('click', sync_collections);
 	document.getElementById('sync-locations-btn').addEventListener('click', sync_locations);
+	document.getElementById('manage-listings-btn').addEventListener('click', function() {
+		frappe.set_route('List', 'Shopify Product Listing');
+	});
 };
