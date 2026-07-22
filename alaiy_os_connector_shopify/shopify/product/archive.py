@@ -7,7 +7,7 @@ import frappe
 
 from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_UPDATE_MUTATION
-from alaiy_os_connector_shopify.shopify.product.item_hooks import _sync_enabled
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 LOCK_TIMEOUT_SECONDS = 30
 
@@ -20,7 +20,7 @@ def archive_item(item_code: str):
     item = frappe.get_doc("Item", item_code)
     if item.variant_of or not item.get("sh_shopify_product_id"):
         return
-    if _sync_enabled(item):
+    if listing_resolver.is_enabled(item):
         # Re-enabled before this job ran -- don't archive what should stay active.
         return
 

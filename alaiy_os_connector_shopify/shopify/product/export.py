@@ -38,14 +38,16 @@ from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_SET_MUTATION
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical, _product_set_input
-from alaiy_os_connector_shopify.shopify.product.item_hooks import _sync_enabled
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 LOCK_TIMEOUT_SECONDS = 30
 
 
 def push_item(item_code: str):
     item = frappe.get_doc("Item", item_code)
-    if not _sync_enabled(item):
+    # The Shopify Product Listing's is_enabled is the sole live gate now
+    # (replaces Item.sync_to_shopify) -- no enabled Listing, nothing pushes.
+    if not listing_resolver.is_enabled(item):
         return
 
     if item.variant_of:
@@ -99,15 +101,17 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
         for item_code in candidates:
             processed += 1
             try:
-                if not frappe.db.get_value("Item", item_code, "sync_to_shopify"):
-                    frappe.db.set_value("Item", item_code, "sync_to_shopify", 1)
-                # Variants carry their own per-variant include flag (see
-                # _variants_of) -- without opting them in too, a bulk
-                # export of a template would push an empty variant set.
-                frappe.db.set_value(
-                    "Item", {"variant_of": item_code, "sync_to_shopify": 0},
-                    "sync_to_shopify", 1,
-                )
+                # Give each candidate an enabled Listing (all variant rows on)
+                # and push it -- the Listing is the enable gate now, so a bulk
+                # export must create + enable one rather than ticking
+                # Item.sync_to_shopify.
+                listing = listing_resolver.ensure_listing(item_code)
+                if listing:
+                    for r in listing.variants:
+                        r.is_enabled = 1
+                    listing.is_enabled = 1
+                    listing.flags.from_shopify_sync = True  # push explicitly below, not via echo
+                    listing.save(ignore_permissions=True)
                 push_item(item_code)
                 # A real Shopify id landing on this Item is the only
                 # reliable signal the push actually created something --
@@ -153,18 +157,13 @@ def _variants_of(item):
     """
     Real variant docs for a template, or [item] itself for a simple item.
 
-    Filters to variants with their own sync_to_shopify checked -- a
-    variant's checkbox is the per-variant "include this one" switch (see
-    on_item_change), so an unchecked variant is simply left out of the
+    Included variants come from the template's Shopify Listing Variant rows
+    (is_enabled) via the resolver -- a variant left out is simply not in the
     rebuilt set productSet sends, which Shopify treats as "remove it."
     """
     if not item.has_variants:
         return [item]
-    names = frappe.get_all(
-        "Item",
-        filters={"variant_of": item.name, "sync_to_shopify": 1, "disabled": 0},
-        pluck="name",
-    )
+    names = listing_resolver.enabled_variant_names(item.name)
     return [frappe.get_doc("Item", v) for v in names]
 
 
@@ -201,24 +200,27 @@ def _push_product_unlocked(item):
     # not from what `item` looked like before we acquired it.
     item = frappe.get_doc("Item", item.name)
     settings = frappe.get_single("Shopify Connector Settings")
+    listing = listing_resolver.get_listing(item.name)
+    if not listing:
+        return  # gate already checked is_enabled, but stay defensive
 
     variants = _variants_of(item)
     if item.has_variants and not variants:
-        # Every single variant unchecked but the template still on --
-        # pushing a full-desired-state productSet with zero variants would
-        # be Shopify-invalid (a product always has at least one variant)
-        # and destructive even if it weren't. Unchecking the TEMPLATE is
-        # the "take this product off Shopify" action; log and stand down.
-        # Set sync_to_shopify to 0 to prevent the template from being stuck in "Uploading to Shopify".
-        frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
+        # Every variant row disabled but the Listing still enabled -- pushing
+        # a full-desired-state productSet with zero variants would be
+        # Shopify-invalid (a product always has at least one variant) and
+        # destructive even if it weren't. Disabling the LISTING is the "take
+        # this product off Shopify" action; disable it and stand down instead
+        # of leaving it stuck "uploading".
+        frappe.db.set_value("Shopify Product Listing", listing.name, "is_enabled", 0)
         frappe.db.commit()
         frappe.log_error(
             title=f"Shopify push skipped for {item.name}: no variants enabled",
-            message="All variants have Sync to Shopify unchecked. Uncheck it on the template itself to archive the product on Shopify.",
+            message="All Listing Variant rows are disabled. Disable the Listing itself to archive the product on Shopify.",
         )
         return
 
-    canonical = _product_canonical(item, variants, settings)
+    canonical = _product_canonical(item, variants, settings, listing)
     fp = fingerprint.fingerprint(canonical)
 
     entity = entities.get_by_erpnext("product", "Item", item.name)
@@ -226,7 +228,7 @@ def _push_product_unlocked(item):
         return  # unchanged since our own last push -- avoid spamming the API
 
     client = ShopifyGraphQLClient()
-    product_input = _product_set_input(item, variants, settings, client)
+    product_input = _product_set_input(item, variants, settings, listing, client)
 
     identifier = None
     if item.get("sh_shopify_product_id"):
@@ -271,7 +273,7 @@ def _push_product_unlocked(item):
             # Re-fetch item, rebuild variants list and payload, then retry the sync
             item = frappe.get_doc("Item", item.name)
             variants = _variants_of(item)
-            product_input = _product_set_input(item, variants, settings, client)
+            product_input = _product_set_input(item, variants, settings, listing, client)
 
             data = client.execute(_PRODUCT_SET_MUTATION, {
                 "input": product_input,
@@ -292,6 +294,13 @@ def _push_product_unlocked(item):
     if item.sh_shopify_product_id != product_id:
         frappe.db.set_value("Item", item.name,
                             "sh_shopify_product_id", product_id)
+    # Keep the Listing's own id/last-synced in step (db.set_value: no
+    # on_listing_update echo). The Item still physically owns the id this
+    # phase; the Listing mirrors it for display and for the eventual cutover.
+    frappe.db.set_value("Shopify Product Listing", listing.name, {
+        "sh_shopify_product_id": product_id,
+        "last_synced_at": frappe.utils.now_datetime(),
+    })
 
     # Match by SKU, not response order -- productSet's variants connection
     # isn't documented to preserve submission order, and getting this wrong
@@ -327,16 +336,16 @@ def _push_product_unlocked(item):
 
 def push_changed_items_only():
     """
-    Hourly reconciliation: push every template flagged sync_to_shopify.
+    Hourly reconciliation: push every template with an enabled Listing.
 
     Each push fingerprint-guards itself (see _push_product_unlocked), so an
     unchanged item early-returns before any Shopify API call -- no separate
     pre-check needed here. Called by the scheduled job in hooks.py.
     """
     sync_items = frappe.get_all(
-        "Item",
-        filters={"sync_to_shopify": 1, "variant_of": ""},
-        pluck="name",
+        "Shopify Product Listing",
+        filters={"is_enabled": 1},
+        pluck="item",
     )
     pushed = failed = 0
     for code in sync_items:

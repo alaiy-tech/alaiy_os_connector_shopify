@@ -1,0 +1,54 @@
+{
+  "actions": [],
+  "creation": "2026-07-22 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "item_variant",
+    "is_enabled",
+    "variant_price",
+    "sh_shopify_variant_id"
+  ],
+  "fields": [
+    {
+      "fieldname": "item_variant",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Variant Item",
+      "options": "Item",
+      "reqd": 1
+    },
+    {
+      "default": "1",
+      "fieldname": "is_enabled",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Enabled"
+    },
+    {
+      "description": "Blank inherits the variant's Item Price on the connector's selling price list.",
+      "fieldname": "variant_price",
+      "fieldtype": "Currency",
+      "in_list_view": 1,
+      "label": "Variant Price"
+    },
+    {
+      "fieldname": "sh_shopify_variant_id",
+      "fieldtype": "Data",
+      "label": "Shopify Variant ID",
+      "read_only": 1,
+      "search_index": 1
+    }
+  ],
+  "istable": 1,
+  "links": [],
+  "modified": "2026-07-22 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Alaiy OS Connector Shopify",
+  "name": "Shopify Listing Variant",
+  "owner": "Administrator",
+  "permissions": [],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
+}

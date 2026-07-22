@@ -193,9 +193,16 @@ def _handle_product_update(product_id: str, product: dict):
     # straight back to Shopify.
     item = frappe.get_doc("Item", item.name)
     settings = frappe.get_single("Shopify Connector Settings")
-    variants = _variants_of(item)
-    canonical = _product_canonical(item, variants, settings)
-    entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
+    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+    listing = listing_resolver.get_listing(item.name)
+    # Only re-fingerprint when a Listing exists (i.e. this product is
+    # outbound-managed) -- the canonical must match what an outbound push
+    # would build, which now reads the Listing. No Listing => outbound never
+    # pushes this product anyway, so there's nothing to guard against.
+    if listing:
+        variants = _variants_of(item)
+        canonical = _product_canonical(item, variants, settings, listing)
+        entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
 
     frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
 
@@ -277,23 +284,28 @@ def _update_item_from_shopify(item, product: dict):
         if len(images) > 1:
             _set_item_slideshow(item.name, images, settings)
 
-    # Uncheck sync_to_shopify on Alaiy OS variants that are missing from Shopify webhook payload
+    # Disable Listing Variant rows for variants no longer present on Shopify,
+    # and clear their stale Item-level ids. The Listing's rows are the
+    # outbound include set now (not Item.sync_to_shopify), so this is what
+    # actually drops them from future pushes.
     if item.has_variants and "variants" in product:
         incoming_skus = {
             (v.get("sku") or "").strip()
             for v in (product.get("variants") or [])
             if (v.get("sku") or "").strip()
         }
-        erpnext_variants = frappe.get_all(
-            "Item",
-            filters={"variant_of": item.name, "sync_to_shopify": 1},
-            pluck="name"
-        )
-        for variant_code in erpnext_variants:
-            if variant_code not in incoming_skus:
-                frappe.db.set_value("Item", variant_code, "sync_to_shopify", 0)
-                frappe.db.set_value("Item", variant_code, "sh_shopify_variant_id", None)
-                frappe.db.set_value("Item", variant_code, "sh_shopify_product_id", None)
+        from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+        listing = listing_resolver.get_listing(item.name)
+        changed = False
+        for row in (listing.variants if listing else []):
+            if row.is_enabled and row.item_variant not in incoming_skus:
+                row.is_enabled = 0
+                frappe.db.set_value("Item", row.item_variant, "sh_shopify_variant_id", None)
+                frappe.db.set_value("Item", row.item_variant, "sh_shopify_product_id", None)
+                changed = True
+        if changed:
+            listing.flags.from_shopify_sync = True  # inbound reconcile, don't echo a push
+            listing.save(ignore_permissions=True)
 
     # Update price + compare-at price per variant. Was previously never
     # touched on inbound update at all (see this function's old docstring) --
@@ -349,6 +361,13 @@ def _handle_product_delete(product_id: str, product: dict):
         # Unlink: remove Shopify IDs but keep Item in Alaiy OS
         frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
         frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
+
+        # Disable + unlink the Listing too, or the hourly outbound
+        # reconciliation would re-push (and recreate on Shopify) a product
+        # that was just deleted there. db.set_value: no on_listing_update echo.
+        if frappe.db.exists("Shopify Product Listing", item.name):
+            frappe.db.set_value("Shopify Product Listing", item.name,
+                                {"is_enabled": 0, "sh_shopify_product_id": None})
 
         # A template's variants each carry their own copy of sh_shopify_product_id
         # (set at import time) -- leaving those in place after the template

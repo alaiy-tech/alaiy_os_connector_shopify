@@ -11,6 +11,7 @@ from alaiy_os_connector_shopify.shopify.product.pricing import (
     _variant_price, _variant_compare_at_price, _variant_cost, _set_item_cost,
 )
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_uom
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 # Shopify's GraphQL WeightUnit enum <-> a plain Alaiy OS UOM name. Alaiy OS's
 # weight_uom is a Link to UOM with no fixed seeded names, so these are
@@ -82,14 +83,14 @@ def _variant_inventory_item_payload(variant) -> dict:
     return payload
 
 
-def _variant_canonical(variant, settings) -> dict:
+def _variant_canonical(variant, settings, listing) -> dict:
     # Fingerprint-only dict (diffed to decide "needs push", never pushed
     # itself) -- safe to default missing prices to 0 here, unlike the
     # payload builders below which must skip instead of guessing.
     return {
         "sku": variant.item_code,
         "title": variant.item_name,
-        "price": _variant_price(variant.item_code, settings) or 0,
+        "price": listing_resolver.variant_price(listing, variant.item_code, settings) or 0,
         "compare_at_price": _variant_compare_at_price(variant.item_code) or 0,
         "cost": _variant_cost(variant.item_code) or 0,
         "weight_per_unit": flt(variant.get("weight_per_unit") or 0),
@@ -102,7 +103,7 @@ def _variant_canonical(variant, settings) -> dict:
     }
 
 
-def _variant_set_payload(variant, settings, option_names: list) -> dict:
+def _variant_set_payload(variant, settings, option_names: list, listing) -> dict:
     attrs = {a.attribute: a.attribute_value for a in (variant.attributes or [])}
     payload = {
         "sku": variant.item_code,
@@ -111,7 +112,7 @@ def _variant_set_payload(variant, settings, option_names: list) -> dict:
             for name in option_names
         ],
     }
-    price = _variant_price(variant.item_code, settings)
+    price = listing_resolver.variant_price(listing, variant.item_code, settings)
     if price is not None:
         payload["price"] = f"{price:.2f}"
     else:

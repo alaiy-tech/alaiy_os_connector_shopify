@@ -317,6 +317,30 @@ def _update_existing_product(entity, node: dict) -> tuple:
 
 def _import_product(node: dict) -> tuple:
     """
+    Import a single Shopify product, then make sure it has a manageable
+    Shopify Product Listing. A product linked/imported inbound must get a
+    Listing so it's manageable and so the outbound pipeline (which now reads
+    the Listing) sees it -- ensure_listing is idempotent, so re-imports and
+    updates never duplicate or clobber merchant edits.
+    """
+    created, reason = _import_product_inner(node)
+    product_id = str(node.get("legacyResourceId", ""))
+    if product_id:
+        try:
+            entity = entities.get_by_external_id("product", product_id)
+            if entity and entity.erpnext_name:
+                from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+                listing_resolver.ensure_listing(entity.erpnext_name)
+        except Exception:
+            frappe.log_error(
+                title=f"Shopify import: ensure_listing failed for product {product_id}",
+                message=frappe.get_traceback(),
+            )
+    return created, reason
+
+
+def _import_product_inner(node: dict) -> tuple:
+    """
     Import a single Shopify product (template + variants) as Alaiy OS Item(s),
     or update it if already imported and Shopify's data has since changed.
 

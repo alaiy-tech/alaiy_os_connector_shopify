@@ -24,6 +24,20 @@ Scalar fields (`sh_shopify_product_type`, `sh_shopify_category`, `sh_shopify_sta
 
 ---
 
+## Product Listings (per-marketplace)
+
+`Shopify Product Listing` (`shopify/product/listing.py`, `listing_hooks.py`) is the per-marketplace abstraction over Item. One Listing per **template** Item holds the fields that can differ per sales channel — `listing_title`, `listing_description`, `listing_price`, `images` (child `Shopify Listing Image`, incl. AI-enhanced), and `variants` (child `Shopify Listing Variant`: per-variant `is_enabled` + `variant_price`) — plus `is_enabled`, which is now the **sole gate** for whether the product is live on Shopify (it replaces `Item.sync_to_shopify` as the switch).
+
+**Blank = inherit.** A blank Listing field falls back to the Item's current value at push time (`listing.effective_title/description/price/images`), so an un-diverged listing stores no duplicate data. The resolver is the single place every export read routes through, and the fingerprint hashes the **resolved** (post-fallback) values — so an Item-level change a blank Listing is inheriting still re-pushes.
+
+**Item saves no longer push.** Editing an Item is inert for Shopify; only saving/enabling its Listing pushes. Category, brand, tags, and UOM stay Item-level (not part of the abstraction this phase).
+
+**IDs stay on Item (this phase).** `sh_shopify_product_id` / `sh_shopify_variant_id` physically remain on Item and are still the lookup source for order matching, inventory push, importer idempotency, and collections. The Listing mirrors `sh_shopify_product_id` for display. Relocating the ids onto the Listing (and dropping the Item columns) is a separate, verification-gated phase.
+
+A one-time patch (`patches/create_shopify_product_listings.py` → `listing.ensure_listing`) backfills a Listing for every already-linked Item; inbound imports call the same `ensure_listing` so every linked product stays manageable. UI is a placeholder for now: a **Shopify Listing** button on the template Item form (`public/js/item.js`).
+
+---
+
 ## Import (Shopify → Alaiy OS)
 
 `shopify/product/importer.py`, entry point `run_full_product_import()` (dashboard → **Import Products**, or `api.sync.trigger_product_import`, 4h timeout).
@@ -43,18 +57,18 @@ Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` 
 
 ## Export (Alaiy OS → Shopify)
 
-`shopify/product/export.py`. Opt-in via `Item.sync_to_shopify`.
+`shopify/product/export.py`. Gated by the template's **Shopify Product Listing** `is_enabled` (`listing.is_enabled`), not `Item.sync_to_shopify`.
 
 - `push_item(item_code)` — always operates at the **template** level. A variant push re-pushes its template.
-- `_push_product()` takes a document lock on the template (`LOCK_TIMEOUT_SECONDS`) so the cascade of `on_update` events Alaiy OS fires when a template is saved can't race into duplicate products.
+- `_push_product()` takes a document lock on the template (`LOCK_TIMEOUT_SECONDS`) so concurrent pushes (import, webhook, hourly reconciliation) can't race into duplicate products.
 - `_push_product_unlocked()`:
-  - Rebuilds the **full** variant set (`_variants_of` — only variants with their own `sync_to_shopify` checked) and the canonical payload (`_product_set_input`).
+  - Loads the Listing and rebuilds the **full** variant set (`_variants_of` — variants whose `Shopify Listing Variant.is_enabled` is set) and the canonical payload (`_product_set_input`), sourcing title/description/price/images from the Listing (fallback to Item).
   - **Fingerprint guard** — if the canonical fingerprint matches the last successful push (stored on `Shopify Synced Entity`), it returns without calling the API.
   - Calls `productSet` (`_PRODUCT_SET_MUTATION`) as the full desired state — Shopify creates new variants and updates existing ones in one call.
   - Self-heals stale variant ids (Shopify "variant ids do not exist" → clears them locally and retries).
   - Writes back `sh_shopify_product_id` and per-variant `sh_shopify_variant_id` (matched by SKU, not response order), then reconciles collection membership.
-- `run_bulk_export_to_shopify()` (dashboard → **Export Products**) — opts every local, unlinked, non-disabled template into `sync_to_shopify` and pushes it. One-off for pre-existing catalogs.
-- `push_changed_items_only()` — hourly scheduler; re-pushes every `sync_to_shopify` template (each fingerprint-guarded, so unchanged items are no-ops).
+- `run_bulk_export_to_shopify()` (dashboard → **Export Products**) — creates + enables a Listing (all variant rows on) for every local, unlinked, non-disabled template and pushes it. One-off for pre-existing catalogs.
+- `push_changed_items_only()` — hourly scheduler; re-pushes every template with an enabled Listing (each fingerprint-guarded, so unchanged items are no-ops).
 
 ### Variants
 `shopify/product/variants.py` — builds each variant's canonical + `productSet` payload: price, compare-at, cost, SKU, title, selected options, weight/dimensions (`_apply_variant_physical`), and inventory item payload.
@@ -74,7 +88,7 @@ Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` 
 
 ### Status: Active / Draft / Archived
 - `sh_shopify_status` (Active/Draft) is pushed as the product `status` and is part of the fingerprint (so flipping it re-pushes). Imported back from `product.status`.
-- **Archived** is separate: unchecking `sync_to_shopify` (or disabling the Item) archives the product on Shopify (`archive.py::archive_item`); re-checking unarchives and re-pushes. On import, an archived Shopify product disables the Item; draft does **not** disable it.
+- **Archived** is separate: disabling (or trashing) the **Listing** archives the product on Shopify (`archive.py::archive_item`); re-enabling unarchives and re-pushes. On import, an archived Shopify product disables the Item; draft does **not** disable it.
 
 ---
 
@@ -84,7 +98,7 @@ Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` 
 - `_webhook_product_to_graphql_node` reshapes the REST webhook payload into the same GraphQL node shape the importer consumes.
 - create → import; update → `_update_item_from_shopify` (title, description, vendor, product_type, status, tags, category); delete → archive the Item.
 
-Inbound saves set `flags.from_shopify_sync` so the outbound `on_item_change` hook doesn't echo them back.
+Inbound saves set `flags.from_shopify_sync` so nothing echoes back. A product deleted on Shopify also disables + unlinks its Listing (so hourly reconciliation doesn't recreate it); a variant missing from an inbound payload has its `Shopify Listing Variant` row disabled.
 
 ---
 
@@ -93,8 +107,9 @@ Inbound saves set `flags.from_shopify_sync` so the outbound `on_item_change` hoo
 | Hook | Function | Purpose |
 |---|---|---|
 | Item `validate` | `validate_item_uoms`, `copy_template_tags_to_variant`, `copy_template_collections_to_variant` | Dedup UOMs; copy template tags/collections onto variants. |
-| Item `after_insert` / `on_update` | `on_item_change` | Enqueue push (or archive) when a synced Item changes; auto-check variants of a newly-enabled template. |
-| Item `on_trash` | `on_item_delete` | Re-push the template so a deleted variant drops from Shopify. |
-| Item Price `after_insert` / `on_update` | `on_item_price_change` | Push when the selling price list changes. |
-| Scheduler `hourly` | `push_changed_items_only` | Reconciliation push. |
+| Item `after_insert` | `sync_new_variant_to_listing` | Data upkeep only: add a desk-created variant to its template's Listing (which then pushes). Never pushes directly. |
+| Item `on_trash` | `remove_variant_from_listing` | Data upkeep only: drop a deleted variant's row from the Listing (which re-pushes). |
+| Shopify Product Listing `on_update` | `on_listing_update` | Push the product when the Listing is enabled; archive it when just disabled. **The push trigger.** |
+| Shopify Product Listing `on_trash` | `on_listing_trash` | Archive the product on Shopify. |
+| Scheduler `hourly` | `push_changed_items_only` | Reconciliation push (every enabled Listing). |
 | Scheduler `daily` | `fetch_shopify_taxonomy`, `sync_shopify_tags`, `sync_shopify_collections`, `sync_shopify_locations` | Refresh category tree, tags, collections, and locations caches. |

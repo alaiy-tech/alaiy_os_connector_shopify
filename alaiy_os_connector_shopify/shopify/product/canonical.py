@@ -8,21 +8,25 @@ import frappe
 from alaiy_os_connector_shopify.shopify.product.variants import (
     _variant_canonical, _variant_set_payload,
 )
-from alaiy_os_connector_shopify.shopify.product.media import _item_images
 from alaiy_os_connector_shopify.shopify.product.tags import _item_tags
 from alaiy_os_connector_shopify.shopify.product.seo import _seo_values
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 
-def _product_canonical(item, variants, settings) -> dict:
-    canonical = {"title": item.item_name, "variants": [
-        _variant_canonical(v, settings) for v in variants]}
-    # Include status so flipping Active<->Draft actually re-pushes (the
-    # fingerprint guard skips the push when canonical is unchanged).
-    canonical["status"] = "DRAFT" if (item.get("sh_shopify_status") == "Draft") else "ACTIVE"
-    canonical["description"] = item.description or ""
+def _product_canonical(item, variants, settings, listing) -> dict:
+    # Effective (post-fallback) values -- MUST fingerprint what actually gets
+    # pushed, not the raw Listing fields, so an inherited Item-level change a
+    # blank Listing field is currently showing still re-pushes (see #58).
+    canonical = {
+        "title": listing_resolver.effective_title(listing, item),
+        "variants": [_variant_canonical(v, settings, listing) for v in variants],
+    }
+    # Status now lives on the Listing; keep flipping Active<->Draft re-pushing.
+    canonical["status"] = "DRAFT" if (listing.sh_shopify_status == "Draft") else "ACTIVE"
+    canonical["description"] = listing_resolver.effective_description(listing, item)
     canonical["vendor"] = item.brand or ""
     canonical["product_type"] = item.get("sh_shopify_product_type") or ""
-    canonical["images"] = _item_images(item, settings)
+    canonical["images"] = listing_resolver.effective_images(listing, item, settings)
     canonical["tags"] = sorted(_item_tags(item))
     seo = _seo_values(item)
     canonical["seo_title"] = seo["title"]
@@ -45,7 +49,7 @@ def _product_options_payload(option_names: list, variants: list) -> list:
     return options
 
 
-def _product_set_input(item, variants: list, settings, client=None) -> dict:
+def _product_set_input(item, variants: list, settings, listing, client=None) -> dict:
     """Shared by templates (variants = real children) and simple items
     (variants = [item] itself, standing in as its own only variant). Always
     the full desired state, never a partial patch -- used for both a normal
@@ -60,22 +64,22 @@ def _product_set_input(item, variants: list, settings, client=None) -> dict:
         option_names = ["Title"]
 
     payload = {
-        "title": item.item_name,
-        # Active vs Draft comes from the template's sh_shopify_status; pushing
+        "title": listing_resolver.effective_title(listing, item),
+        # Active vs Draft comes from the Listing's sh_shopify_status; pushing
         # never leaves ARCHIVED (re-enabling a product unarchives it) --
         # archive_item() overrides this back to ARCHIVED explicitly.
-        "status": "DRAFT" if (item.get("sh_shopify_status") == "Draft") else "ACTIVE",
+        "status": "DRAFT" if (listing.sh_shopify_status == "Draft") else "ACTIVE",
         "productOptions": _product_options_payload(option_names, variants),
         "variants": [
-            _variant_set_payload(v, settings, option_names) for v in variants
+            _variant_set_payload(v, settings, option_names, listing) for v in variants
         ],
     }
-    payload["descriptionHtml"] = item.description or ""
+    payload["descriptionHtml"] = listing_resolver.effective_description(listing, item)
     if item.brand:
         payload["vendor"] = item.brand
     if item.get("sh_shopify_product_type"):
         payload["productType"] = item.sh_shopify_product_type
-    images = _item_images(item, settings)
+    images = listing_resolver.effective_images(listing, item, settings)
     if images:
         payload["files"] = [
             {"originalSource": url, "contentType": "IMAGE"} for url in images

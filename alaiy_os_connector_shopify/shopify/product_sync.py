@@ -21,10 +21,6 @@ from alaiy_os_connector_shopify.shopify.product.queries import (
 )
 from alaiy_os_connector_shopify.shopify.product.item_hooks import (
     validate_item_uoms,
-    on_item_change,
-    on_item_delete,
-    on_item_price_change,
-    _sync_enabled,
 )
 from alaiy_os_connector_shopify.shopify.product.tags import (
     copy_template_tags_to_variant,
