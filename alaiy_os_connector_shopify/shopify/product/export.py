@@ -289,13 +289,11 @@ def _push_product_unlocked(item):
     if item.sh_shopify_product_id != product_id:
         frappe.db.set_value("Item", item.name,
                             "sh_shopify_product_id", product_id)
-    # Keep the Listing's own id/last-synced in step (db.set_value: no
-    # on_listing_update echo). The Item still physically owns the id this
-    # phase; the Listing mirrors it for display and for the eventual cutover.
-    frappe.db.set_value("Shopify Product Listing", listing.name, {
-        "sh_shopify_product_id": product_id,
-        "last_synced_at": frappe.utils.now_datetime(),
-    })
+    # Item is the single source of truth for the id; the Listing's
+    # sh_shopify_product_id is a read-only fetch_from view of it (no separate
+    # write here -- avoids a drifting mirror, rule 4). Only stamp last_synced_at.
+    frappe.db.set_value("Shopify Product Listing", listing.name,
+                        "last_synced_at", frappe.utils.now_datetime())
 
     # Match by SKU, not response order -- productSet's variants connection
     # isn't documented to preserve submission order, and getting this wrong

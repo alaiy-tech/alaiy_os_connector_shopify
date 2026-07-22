@@ -31,7 +31,7 @@ Scalar fields (`sh_shopify_product_type`, `sh_shopify_category`, `sh_shopify_sta
 
 **Item saves no longer push.** Editing an Item is inert for Shopify; only saving/enabling its Listing pushes. Category, brand, tags, and UOM stay Item-level (not part of the abstraction this phase).
 
-**IDs stay on Item (this phase).** `sh_shopify_product_id` / `sh_shopify_variant_id` physically remain on Item and are still the lookup source for order matching, inventory push, importer idempotency, and collections. The Listing mirrors `sh_shopify_product_id` for display. Relocating the ids onto the Listing (and dropping the Item columns) is a separate, verification-gated phase.
+**IDs stay on Item (this phase), single source of truth.** `sh_shopify_product_id` / `sh_shopify_variant_id` physically live on Item and are the sole lookup source for order matching, inventory push, importer idempotency, and collections. The Listing's own id fields are **read-only `fetch_from` views** of the Item — displayed, never written independently, so there's no drifting mirror (contract rule 4). Relocating id *ownership* onto the Listing (and dropping the Item columns) is a separate, verification-gated phase.
 
 A one-time patch (`patches/create_shopify_product_listings.py` → `listing.ensure_listing`) backfills a Listing for every already-linked Item; inbound imports call the same `ensure_listing` so every linked product stays manageable. UI is a placeholder for now: a **Shopify Listing** button on the template Item form (`public/js/item.js`).
 

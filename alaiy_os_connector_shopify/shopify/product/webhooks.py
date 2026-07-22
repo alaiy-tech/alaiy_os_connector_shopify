@@ -361,12 +361,12 @@ def _handle_product_delete(product_id: str, product: dict):
         # Unlink: remove Shopify IDs but keep Item in Alaiy OS
         frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
 
-        # Disable + unlink the Listing too, or the hourly outbound
-        # reconciliation would re-push (and recreate on Shopify) a product
-        # that was just deleted there. db.set_value: no on_listing_update echo.
+        # Disable the Listing too, or the hourly outbound reconciliation would
+        # re-push (and recreate on Shopify) a product just deleted there. The
+        # id itself lives on the Item (cleared above); the Listing's id field
+        # is a fetch_from view, so only is_enabled needs writing here.
         if frappe.db.exists("Shopify Product Listing", item.name):
-            frappe.db.set_value("Shopify Product Listing", item.name,
-                                {"is_enabled": 0, "sh_shopify_product_id": None})
+            frappe.db.set_value("Shopify Product Listing", item.name, "is_enabled", 0)
 
         # A template's variants each carry their own copy of sh_shopify_product_id
         # (set at import time) -- leaving those in place after the template

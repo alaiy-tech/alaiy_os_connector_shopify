@@ -145,8 +145,9 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     listing = frappe.new_doc("Shopify Product Listing")
     listing.item = tmpl.name
     listing.is_enabled = 1 if default_enabled else 0
-    listing.sh_shopify_product_id = tmpl.sh_shopify_product_id or None
     listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
+    # sh_shopify_product_id / variant id are read-only fetch_from views of the
+    # Item (single source of truth) -- populated automatically, never set here.
     # title/description/price left blank -> inherit from Item via the resolver.
 
     for order, url in enumerate(_template_image_urls(tmpl)):
@@ -154,14 +155,9 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
 
     if tmpl.has_variants:
         for v in frappe.get_all(
-            "Item", filters={"variant_of": tmpl.name},
-            fields=["name", "sh_shopify_variant_id"],
+            "Item", filters={"variant_of": tmpl.name}, pluck="name",
         ):
-            listing.append("variants", {
-                "item_variant": v.name,
-                "is_enabled": 1,
-                "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
-            })
+            listing.append("variants", {"item_variant": v, "is_enabled": 1})
 
     # Data mirrored straight from trusted existing Items -- skip the push echo
     # (this is a data provisioning step, not a merchant edit).

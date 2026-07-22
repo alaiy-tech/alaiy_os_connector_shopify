@@ -33,6 +33,7 @@
       "label": "Variant Price"
     },
     {
+      "fetch_from": "item_variant.sh_shopify_variant_id",
       "fieldname": "sh_shopify_variant_id",
       "fieldtype": "Data",
       "label": "Shopify Variant ID",
