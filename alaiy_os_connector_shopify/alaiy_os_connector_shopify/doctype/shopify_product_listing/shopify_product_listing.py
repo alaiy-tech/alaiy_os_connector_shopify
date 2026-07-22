@@ -4,6 +4,13 @@ from frappe.model.document import Document
 
 
 class ShopifyProductListing(Document):
+    def before_insert(self):
+        # Auto-fill Images + Variants from the Item so a manually created
+        # listing (pick a template -> save) gets the same rows an imported one
+        # does. No-op if rows are already present.
+        from alaiy_os_connector_shopify.shopify.product.listing import fill_children_from_item
+        fill_children_from_item(self)
+
     def validate(self):
         self._validate_item_is_template()
         self._validate_variants()

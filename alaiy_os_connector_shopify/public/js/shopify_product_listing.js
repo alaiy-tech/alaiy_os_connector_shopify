@@ -1,10 +1,12 @@
-// Only let the Item picker offer template/simple Items that don't already
-// have a Listing -- variants and already-listed products would fail on save
-// (one listing per template Item).
+// Only let the Item picker offer template / simple Items (never variants) --
+// a Listing is keyed to the template; picking a variant fails on save.
+// Plain filter (not a server query) so it can't silently fall back to the
+// unfiltered default. "Already has a listing" is enforced by the unique
+// constraint on save.
 frappe.ui.form.on("Shopify Product Listing", {
     setup(frm) {
         frm.set_query("item", () => ({
-            query: "alaiy_os_connector_shopify.shopify.product.listing.item_without_listing_query",
+            filters: { variant_of: ["in", ["", null]] },
         }));
     },
 });

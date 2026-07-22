@@ -173,21 +173,34 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     # sh_shopify_product_id / variant id are read-only fetch_from views of the
     # Item (single source of truth) -- populated automatically, never set here.
     # title/description/price left blank -> inherit from Item via the resolver.
-
-    for order, url in enumerate(_template_image_urls(tmpl)):
-        listing.append("images", {"image": url, "source": "Original", "sort_order": order})
-
-    if tmpl.has_variants:
-        for v in frappe.get_all(
-            "Item", filters={"variant_of": tmpl.name}, pluck="name",
-        ):
-            listing.append("variants", {"item_variant": v, "is_enabled": 1})
-
-    # Data mirrored straight from trusted existing Items -- skip the push echo
-    # (this is a data provisioning step, not a merchant edit).
+    # Image/variant child rows are filled by the controller's before_insert
+    # (fill_children_from_item) -- same path as a manually created listing.
+    # Data mirrored straight from trusted existing Items -- skip the push echo.
     listing.flags.from_shopify_sync = True
     listing.insert(ignore_permissions=True)
     return listing
+
+
+def fill_children_from_item(listing):
+    """
+    Populate a listing's Images and Variants tables from its Item when they're
+    empty -- so both a manually created listing (pick a template -> save) and
+    an imported/backfilled one end up with the same rows. No-op for rows that
+    already exist (won't clobber merchant edits or re-add on every save).
+    """
+    if not listing.item:
+        return
+    tmpl = frappe.db.get_value("Item", listing.item, ["name", "image", "has_variants"], as_dict=True)
+    if not tmpl:
+        return
+
+    if not listing.images:
+        for order, url in enumerate(_template_image_urls(tmpl)):
+            listing.append("images", {"image": url, "source": "Original", "sort_order": order})
+
+    if not listing.variants and tmpl.has_variants:
+        for v in frappe.get_all("Item", filters={"variant_of": tmpl.name}, pluck="name"):
+            listing.append("variants", {"item_variant": v, "is_enabled": 1})
 
 
 def _template_image_urls(tmpl) -> list:
