@@ -15,35 +15,47 @@ frappe.ui.form.on("Shopify Product Listing", {
     },
 
     refresh(frm) {
-        if (!frm.doc.item) {
-            return;
-        }
-        // Pull the Item's images + variants into the grids, visible before
-        // save. Auto-fill on insert is the safety net; this is the explicit,
-        // visible path. Skips rows already present.
-        frm.add_custom_button(__("Populate from Item"), () => {
-            frappe.call({
-                method: "alaiy_os_connector_shopify.shopify.product.listing.get_item_children",
-                args: { item: frm.doc.item },
-                callback(r) {
-                    if (!r.message) {
-                        return;
-                    }
-                    (r.message.images || []).forEach((row) => {
-                        if (!(frm.doc.images || []).some((x) => x.image === row.image)) {
-                            frm.add_child("images", row);
-                        }
-                    });
-                    (r.message.variants || []).forEach((row) => {
-                        if (!(frm.doc.variants || []).some((x) => x.item_variant === row.item_variant)) {
-                            frm.add_child("variants", row);
-                        }
-                    });
-                    frm.refresh_field("images");
-                    frm.refresh_field("variants");
-                    frappe.show_alert({ message: __("Pulled from Item"), indicator: "green" });
-                },
-            });
-        });
+        add_populate_button(frm);
+    },
+
+    item(frm) {
+        // Re-render the button the moment a template is picked on a new doc
+        // (refresh doesn't re-fire on field change).
+        add_populate_button(frm);
     },
 });
+
+function add_populate_button(frm) {
+    if (!frm.doc.item) {
+        return;
+    }
+    if (frm.custom_buttons[__("Populate from Item")]) {
+        return; // already added -- don't duplicate
+    }
+    // Pull the Item's images + variants into the grids, visible before save.
+    // Auto-fill on insert is the safety net; this is the explicit path.
+    frm.add_custom_button(__("Populate from Item"), () => {
+        frappe.call({
+            method: "alaiy_os_connector_shopify.shopify.product.listing.get_item_children",
+            args: { item: frm.doc.item },
+            callback(r) {
+                if (!r.message) {
+                    return;
+                }
+                (r.message.images || []).forEach((row) => {
+                    if (!(frm.doc.images || []).some((x) => x.image === row.image)) {
+                        frm.add_child("images", row);
+                    }
+                });
+                (r.message.variants || []).forEach((row) => {
+                    if (!(frm.doc.variants || []).some((x) => x.item_variant === row.item_variant)) {
+                        frm.add_child("variants", row);
+                    }
+                });
+                frm.refresh_field("images");
+                frm.refresh_field("variants");
+                frappe.show_alert({ message: __("Pulled from Item"), indicator: "green" });
+            },
+        });
+    });
+}
