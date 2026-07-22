@@ -42,6 +42,15 @@ def handle_product_webhook(topic: str, payload: dict):
             _handle_product_create(product_id, product)
         elif topic == "products/update":
             _handle_product_update(product_id, product)
+    except frappe.DocumentLockedError:
+        # The Item is locked by an in-flight outbound push (or a stale lock
+        # left by a killed worker). Not a real failure -- Shopify retries the
+        # webhook, and it lands once the lock frees. Log quietly instead of
+        # spamming the Error Log on every collision.
+        frappe.logger().info(
+            f"Product webhook {topic} deferred: Item for product {product_id} "
+            "is locked; Shopify will retry."
+        )
     except Exception:
         # str(exc) alone was landing blank for some exception types,
         # losing all diagnostic info -- full traceback always has
