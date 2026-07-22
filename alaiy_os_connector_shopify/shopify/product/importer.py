@@ -520,7 +520,11 @@ def _import_simple_product(
     item.item_name = title
     item.description = description
     item.item_group = _ensure_item_group(item_group)
-    item.sh_shopify_product_type = item_group
+    # Shopify's real productType, NOT whatever won for item_group -- those
+    # are the same string only when no category exists; when a category
+    # DOES exist, item_group holds the taxonomy leaf name and the real
+    # productType was being silently lost here.
+    item.sh_shopify_product_type = product_meta.get("productType", "") if product_meta else ""
     item.brand = _ensure_brand(vendor)
     item.stock_uom = "Nos"  # Default; can be configured per variant
     item.is_stock_item = 1
@@ -698,7 +702,9 @@ def _import_product_with_variants(
         template.item_name = title
         template.description = description
         template.item_group = _ensure_item_group(item_group)
-        template.sh_shopify_product_type = item_group
+        # See _import_simple_product's matching comment: real productType,
+        # not whatever won for item_group.
+        template.sh_shopify_product_type = product_meta.get("productType", "") if product_meta else ""
         template.brand = _ensure_brand(vendor)
         template.stock_uom = "Nos"
         template.has_variants = 1
