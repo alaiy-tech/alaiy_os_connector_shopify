@@ -85,7 +85,7 @@ For an `orders/edited` / `orders/updated` on an order not yet shipped:
 
 When an order qualifies (per `sh_invoice_trigger`: **Paid and Fulfilled** default — COD-correct — or **Paid**), `create_sales_invoice_if_paid`:
 - Makes + submits a Sales Invoice from the submitted SO (idempotent — never a second invoice for an already-invoiced SO; non-stock; tax carried over).
-- Self-heals accounts: Income Account + cost center on each line (`_fill_item_accounts` / `_resolve_income_account`), and books a full **Payment Entry** so the invoice reads **Paid** (`_mark_invoice_paid` / `_resolve_bank_cash_account`).
+- Self-heals accounts: Income Account + cost center on each line (`_fill_item_accounts` / `_resolve_income_account` / `_resolve_cost_center`), and books a full **Payment Entry** so the invoice reads **Paid** (`_mark_invoice_paid` / `_resolve_bank_cash_account`). `_resolve_cost_center` specifically checks `is_group` before using a configured cost center — a group cost center crashes any real transaction ("group cost centers cannot be used in transactions"), confirmed live; falls back through the Company default, then the same leaf-resolving self-heal (`_ensure_cost_center`) product import already uses.
 
 **Reverse:** submitting a Sales Invoice in Alaiy OS for a Shopify order marks that order **Paid** on Shopify — `on_sales_invoice_submit` → `push_order_paid` (`orderMarkAsPaid`). Skipped for invoices we auto-created from an already-paid order (no ping-pong).
 
