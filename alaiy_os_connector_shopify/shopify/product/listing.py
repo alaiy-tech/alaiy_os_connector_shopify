@@ -181,6 +181,27 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     return listing
 
 
+@frappe.whitelist()
+def get_item_children(item):
+    """Return a template Item's images + variant rows for the form's
+    'Populate from Item' button (client fills the grids so they're visible
+    before save). Mirrors fill_children_from_item, for the UI path."""
+    tmpl = frappe.db.get_value("Item", item, ["name", "image", "has_variants"], as_dict=True)
+    if not tmpl:
+        return {"images": [], "variants": []}
+    images = [
+        {"image": url, "source": "Original", "sort_order": i}
+        for i, url in enumerate(_template_image_urls(tmpl))
+    ]
+    variants = []
+    if tmpl.has_variants:
+        variants = [
+            {"item_variant": v, "is_enabled": 1}
+            for v in frappe.get_all("Item", filters={"variant_of": tmpl.name}, pluck="name")
+        ]
+    return {"images": images, "variants": variants}
+
+
 def fill_children_from_item(listing):
     """
     Populate a listing's Images and Variants tables from its Item when they're
