@@ -5,6 +5,13 @@ frappe.ui.form.on("Shopify Product Listing", {
         frm.set_query("item", () => ({
             filters: { variant_of: ["in", ["", null]] },
         }));
+        // Variant-row picker: only this template's own variants. If the
+        // product is simple (no variants), this list is empty -- which is
+        // correct, a simple product needs no variant rows (it pushes as its
+        // own single variant).
+        frm.set_query("item_variant", "variants", () => ({
+            filters: { variant_of: frm.doc.item || "__no_item__" },
+        }));
     },
 
     refresh(frm) {
