@@ -488,9 +488,10 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
 def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id: str, settings) -> str:
     """Ensure a variant node from Shopify exists as an Item under template_name in ERPNext."""
     sku = (variant.get("sku") or "").strip()
-    v_id = str(variant.get("legacyResourceId", ""))
+    v_id = str(variant.get("legacyResourceId") or variant.get("id") or "")
     if not sku:
-        sku = f"{template_name}-{v_id}" if v_id else f"{template_name}-v"
+        opt_title = (variant.get("option1") or variant.get("title") or "").strip()
+        sku = f"{template_name}-{opt_title}" if opt_title else f"{template_name}-{v_id}"
 
     if frappe.db.exists("Item", sku):
         if v_id and not frappe.db.get_value("Item", sku, "sh_shopify_variant_id"):
