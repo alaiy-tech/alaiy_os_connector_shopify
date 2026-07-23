@@ -30,11 +30,13 @@ def on_listing_update(doc, method=None):
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.product_sync.push_item",
             queue="short", timeout=120, item_code=doc.item,
+            enqueue_after_commit=True,
         )
     elif doc.sh_shopify_product_id:
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.product_sync.archive_item",
             queue="short", timeout=60, item_code=doc.item,
+            enqueue_after_commit=True,
         )
 
 
@@ -45,6 +47,7 @@ def on_listing_trash(doc, method=None):
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.product_sync.archive_item",
             queue="short", timeout=60, item_code=doc.item,
+            enqueue_after_commit=True,
         )
 
 
