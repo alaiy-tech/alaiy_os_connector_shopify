@@ -15,7 +15,7 @@ One-directional stock push: Alaiy OS bin quantities → Shopify inventory levels
 
 ## Sync locations
 
-`sync_shopify_locations()` (dashboard → **Sync Locations**, or `api.sync.refresh_shopify_locations`) fetches every Shopify location (`_LOCATIONS_QUERY`) and caches it as a `Shopify Location` doc — the list the warehouse→location map picks from. Writes a `Shopify Sync Log` (sync_type `locations`).
+`sync_shopify_locations()` (dashboard → **Sync Locations**, or `api.sync.refresh_shopify_locations`) fetches every Shopify location (`_LOCATIONS_QUERY`, cursor-paginated at 250/page via `pageInfo.hasNextPage`/`endCursor` — a store with more than 50 locations used to have the rest silently dropped by a flat `first: 50` fetch) and caches it as a `Shopify Location` doc — the list the warehouse→location map picks from. Writes a `Shopify Sync Log` (sync_type `locations`).
 
 ---
 

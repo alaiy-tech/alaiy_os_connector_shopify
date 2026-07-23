@@ -46,8 +46,10 @@ A one-time patch (`patches/create_shopify_product_listings.py` → `listing.ensu
 - **Per product** (`_import_product`), on every run after the first:
   - Not imported yet → create. 1 variant → `_import_simple_product` (single Item); >1 variant → `_import_product_with_variants` (template Item + variant Items, with Item Attributes).
   - Already imported, Shopify's data unchanged since last import (`_shopify_node_fingerprint` matches the stored `external_fingerprint` on its Synced Entity) → **skipped untouched**, no write at all.
-  - Already imported, Shopify's data changed → **updated** in place (`_update_existing_product`): title, description, vendor, tags, category, SEO, images, Active/Draft status, and per-variant price/compare-at/cost/weight, matched by SKU. Deliberately does **not** touch stock/quantity (opening stock is a one-time Material Receipt at creation only — reapplying it on update would add Shopify's qty on top of the current balance instead of correcting it; `inventory_sync.py` only ever pushes Alaiy OS's qty out to Shopify, it never pulls the other way, so fixing a wrong local qty on an already-imported item needs the separate `scripts/pull_stock_from_shopify.py` one-off tool -- see [Inventory](inventory.md)) and does **not** add/remove variants (a variant added on Shopify after the original import needs a manual re-link; flagged in the log, not silently dropped).
+  - Already imported, Shopify's data changed → **updated** in place (`_update_existing_product`): vendor, tags, category, SEO, Active/Draft status, and per-variant compare-at/cost/weight, matched by SKU. Title/description/images/price are **abstracted** fields: if the product has a Listing, they route onto it (`listing.apply_inbound_from_shopify`) instead of overwriting the Item (`skip_abstracted=True` on the Item-level apply helpers) -- a re-import can no longer clobber the marketplace-agnostic default. No Listing yet → same Item-level behavior as before. Deliberately does **not** touch stock/quantity (opening stock is a one-time Material Receipt at creation only — reapplying it on update would add Shopify's qty on top of the current balance instead of correcting it; `inventory_sync.py` only ever pushes Alaiy OS's qty out to Shopify, it never pulls the other way, so fixing a wrong local qty on an already-imported item needs the separate `scripts/pull_stock_from_shopify.py` one-off tool -- see [Inventory](inventory.md)).
+  - A **variant added on Shopify** after the original import is no longer a manual-re-link case: `_ensure_variant_exists_locally` creates the missing Item variant (matching it to an existing sibling by attribute values first, to avoid `ItemVariantExistsError` if an older/differently-named variant already occupies that combination), and `listing.sync_listing_variants` adds it as an enabled `Shopify Listing Variant` row.
   - Pre-existing Items with no Shopify link yet (matched by SKU, e.g. created by another connector) get auto-linked and their content populated via `_apply_existing_variant_content` / `_apply_existing_template_content`, same as before.
+  - Every import/re-import ends with `listing.ensure_listing` (create one if missing) + `listing.sync_listing_variants` (add any newly-created variant rows), so a linked product always has a manageable, current Listing.
 - Progress, including per-run created/updated/skipped counts and skip reasons, is written to a `Shopify Sync Log` (sync_type `products`).
 
 Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` check.
@@ -62,7 +64,8 @@ Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` 
 - `_push_product()` takes a document lock on the template (`LOCK_TIMEOUT_SECONDS`) so concurrent pushes (import, webhook, hourly reconciliation) can't race into duplicate products.
 - `_push_product_unlocked()`:
   - Loads the Listing and rebuilds the **full** variant set (`_variants_of` — variants whose `Shopify Listing Variant.is_enabled` is set) and the canonical payload (`_product_set_input`), sourcing title/description/price/images from the Listing (fallback to Item).
-  - **Fingerprint guard** — if the canonical fingerprint matches the last successful push (stored on `Shopify Synced Entity`), it returns without calling the API.
+  - **Fingerprint guard** — if the canonical fingerprint matches the last successful push (stored on `Shopify Synced Entity`), it returns without calling the API. `archive_item` (below) and the inbound webhook both explicitly clear this fingerprint when a product gets archived/disabled -- otherwise a later re-enable would compute the same ACTIVE/DRAFT fingerprint it had before archiving and silently skip the very push meant to unarchive it.
+  - If the product already has a Shopify id, calls `productUpdate` first to force its status back to ACTIVE/DRAFT -- `productSet` alone does not unarchive an ARCHIVED product, it ignores a status change on an already-archived product.
   - Calls `productSet` (`_PRODUCT_SET_MUTATION`) as the full desired state — Shopify creates new variants and updates existing ones in one call.
   - Self-heals stale variant ids (Shopify "variant ids do not exist" → clears them locally and retries).
   - Writes back `sh_shopify_product_id` and per-variant `sh_shopify_variant_id` (matched by SKU, not response order), then reconciles collection membership.
@@ -87,7 +90,7 @@ Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` 
 
 ### Status: Active / Draft / Archived
 - `sh_shopify_status` (Active/Draft) is pushed as the product `status` and is part of the fingerprint (so flipping it re-pushes). Imported back from `product.status`.
-- **Archived** is separate: disabling (or trashing) the **Listing** archives the product on Shopify (`archive.py::archive_item`); re-enabling unarchives and re-pushes. On import, an archived Shopify product disables the Item; draft does **not** disable it.
+- **Archived** is separate: disabling (or trashing) the **Listing** archives the product on Shopify (`archive.py::archive_item`, which also clears the stored fingerprint on success); re-enabling unarchives (via `productUpdate`, see Export above) and re-pushes. Archived-on-Shopify (inbound) disables the **Listing**, never the Item -- a per-marketplace state must not hide the product on every other connector too.
 
 ---
 
@@ -95,9 +98,13 @@ Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` 
 
 `shopify/product/webhooks.py::handle_product_webhook` routes `products/create|update|delete`:
 - `_webhook_product_to_graphql_node` reshapes the REST webhook payload into the same GraphQL node shape the importer consumes.
-- create → import; update → `_update_item_from_shopify` (title, description, vendor, product_type, status, tags, category); delete → archive the Item.
+- create → import; update → `_update_item_from_shopify`; delete → archive the Item.
 
-Inbound saves set `flags.from_shopify_sync` so nothing echoes back. A product deleted on Shopify also disables + unlinks its Listing (so hourly reconciliation doesn't recreate it); a variant missing from an inbound payload has its `Shopify Listing Variant` row disabled.
+`_update_item_from_shopify` follows the same abstracted/Item-level split as the re-import path: title/description/images/variant-price go to the **Listing** when one exists (`listing.listing_title` etc, never the Item); vendor/`sh_shopify_product_type`/tags/category/status stay Item-level via `_apply_product_meta`. Archived status (or the Listing being disabled) explicitly clears the stored fingerprint (see Export above) and never disables the Item — only the Listing.
+
+For each variant in the payload, `_ensure_variant_exists_locally` creates the Item variant if missing (matching an existing sibling by attribute values first, so an older/differently-named variant already occupying that attribute combination is reused instead of raising `ItemVariantExistsError`), and a matching enabled `Shopify Listing Variant` row is added inline if one doesn't already exist — a variant added on Shopify reaches the Listing on the very next webhook, not just on a later re-import.
+
+Inbound saves set `flags.from_shopify_sync` so nothing echoes back. A product deleted on Shopify also disables + unlinks its Listing (so hourly reconciliation doesn't recreate it); a variant missing from an inbound payload has its `Shopify Listing Variant` row disabled (Item variant left intact).
 
 ---
 
