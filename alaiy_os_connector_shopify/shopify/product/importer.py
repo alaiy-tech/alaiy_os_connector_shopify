@@ -512,11 +512,25 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
     v_item.include_item_in_buying = 1
     v_item.sh_shopify_product_id = product_id
     v_item.sh_shopify_variant_id = v_id
-
-    for opt in (variant.get("selectedOptions") or []):
-        name = opt.get("name")
-        val = opt.get("value")
-        if name and val:
+    template = frappe.get_doc("Item", template_name)
+    template_attrs = [r.attribute for r in (template.attributes or [])]
+    selected_options = variant.get("selectedOptions")
+    if selected_options:
+        for opt in selected_options:
+            name = opt.get("name")
+            val = opt.get("value")
+            if name and val:
+                _ensure_item_attribute(name, [val])
+                v_item.append("attributes", {"attribute": name, "attribute_value": val})
+    else:
+        for i, name in enumerate(template_attrs):
+            opt_val = variant.get(f"option{i+1}") or (variant.get("title") if i == 0 else "Default")
+            if opt_val:
+                _ensure_item_attribute(name, [opt_val])
+                v_item.append("attributes", {"attribute": name, "attribute_value": opt_val})
+    if not v_item.attributes:
+        for name in (template_attrs or ["Title"]):
+            val = variant.get("title") or "Default"
             _ensure_item_attribute(name, [val])
             v_item.append("attributes", {"attribute": name, "attribute_value": val})
 
