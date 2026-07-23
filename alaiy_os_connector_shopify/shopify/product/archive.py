@@ -45,5 +45,14 @@ def archive_item(item_code: str):
                 title=f"Shopify: archive failed for {item.name}",
                 message=str(errors),
             )
+        else:
+            # Clear fingerprint on successful archive so a subsequent push_item
+            # (when re-enabled or unarchived) detects the status change and pushes.
+            from alaiy_os_connector_shopify.shopify.sync_engine import entities
+            entity = entities.get_by_erpnext("product", "Item", item.name)
+            if entity:
+                entity.erpnext_fingerprint = None
+                entity.save(ignore_permissions=True)
+                frappe.db.commit()
     finally:
         item.unlock()
