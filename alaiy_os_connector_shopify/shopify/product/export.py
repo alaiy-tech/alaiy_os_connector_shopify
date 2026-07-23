@@ -327,6 +327,36 @@ def _push_product_unlocked(item):
     frappe.db.commit()
 
 
+def _clear_stale_locks(max_age_seconds=300):
+    """
+    Self-heal stranded document locks. A push holds an Item lock for at most a
+    few seconds; a lock file older than max_age_seconds was left behind by a
+    worker killed mid-push (e.g. a bench restart), and now permanently blocks
+    inbound webhooks for that Item ("document is currently locked"). Delete the
+    old ones -- never a live lock, so the dup-push guard stays intact.
+    """
+    import os
+    import time
+
+    lock_dir = frappe.get_site_path("locks")
+    if not os.path.isdir(lock_dir):
+        return
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    for fname in os.listdir(lock_dir):
+        if not fname.endswith(".lock"):
+            continue
+        path = os.path.join(lock_dir, fname)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass  # already gone / race with a real unlock -- fine
+    if removed:
+        frappe.logger().info(f"Cleared {removed} stale document lock(s)")
+
+
 def push_changed_items_only():
     """
     Hourly reconciliation: push every template with an enabled Listing.
@@ -336,6 +366,8 @@ def push_changed_items_only():
     pre-check needed here. Called by the scheduled job in hooks.py.
     """
     import time
+
+    _clear_stale_locks()
 
     sync_items = frappe.get_all(
         "Shopify Product Listing",
