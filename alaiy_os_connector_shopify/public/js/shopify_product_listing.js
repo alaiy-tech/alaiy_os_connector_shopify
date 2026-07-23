@@ -43,12 +43,18 @@ function add_populate_button(frm) {
                     return;
                 }
                 (r.message.images || []).forEach((row) => {
-                    if (!(frm.doc.images || []).some((x) => x.image === row.image)) {
+                    const exists = (frm.doc.images || []).some(
+                        (x) => x.image && row.image && x.image.trim() === row.image.trim()
+                    );
+                    if (!exists) {
                         frm.add_child("images", row);
                     }
                 });
                 (r.message.variants || []).forEach((row) => {
-                    if (!(frm.doc.variants || []).some((x) => x.item_variant === row.item_variant)) {
+                    const exists = (frm.doc.variants || []).some(
+                        (x) => x.item_variant && row.item_variant && x.item_variant.trim() === row.item_variant.trim()
+                    );
+                    if (!exists) {
                         frm.add_child("variants", row);
                     }
                 });
