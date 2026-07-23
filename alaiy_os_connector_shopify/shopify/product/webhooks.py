@@ -356,8 +356,9 @@ def _update_item_from_shopify(item, product: dict):
     from alaiy_os_connector_shopify.shopify.product.masters import _ensure_uom
     from alaiy_os_connector_shopify.shopify.product.variants import _REST_WEIGHT_UNIT_TO_UOM
     from alaiy_os_connector_shopify.shopify.product.importer import _ensure_variant_exists_locally
+    product_id = str(product.get("id", ""))
     for variant in (product.get("variants") or []):
-        sku = _ensure_variant_exists_locally(item.name, variant, entity.external_id, settings)
+        sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings)
         price = flt(variant.get("price") or 0)
         if price > 0:
             row = next((r for r in listing.variants if r.item_variant == sku), None) if listing else None
