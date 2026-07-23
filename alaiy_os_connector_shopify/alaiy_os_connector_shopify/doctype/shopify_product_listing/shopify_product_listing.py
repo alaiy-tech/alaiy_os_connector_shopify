@@ -28,9 +28,21 @@ class ShopifyProductListing(Document):
     def _validate_item_is_template(self):
         # A Listing is always keyed to the template, matching how
         # product/export.py::push_item resolves variant -> template today.
-        if frappe.db.get_value("Item", self.item, "variant_of"):
+        it = frappe.db.get_value("Item", self.item, ["variant_of", "has_variants"], as_dict=True)
+        if it and it.variant_of:
             frappe.throw(
                 _("Shopify Product Listing must link a template Item, not a variant ({0}).").format(self.item)
+            )
+        # A template with ZERO variant children can't be pushed (Shopify needs
+        # at least one variant, and an empty template is invalid). Block manual
+        # creation with a clear message rather than letting it save a listing
+        # that silently never syncs. The trusted from_shopify_sync path
+        # (backfill/import) is exempt -- it only mirrors existing data.
+        if not self.flags.from_shopify_sync and it and it.has_variants \
+                and not frappe.db.exists("Item", {"variant_of": self.item}):
+            frappe.throw(
+                _("{0} is a template with no variants -- nothing to list on Shopify. "
+                  "Add at least one variant to the product first.").format(self.item)
             )
 
     def _validate_variants(self):
