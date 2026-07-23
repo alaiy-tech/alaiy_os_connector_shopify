@@ -169,9 +169,10 @@
       "label": "Inventory Locations"
     },
     {
-      "description": "Map Alaiy OS warehouses to Shopify locations for multi-location inventory sync. Run 'Sync Locations' first to load Shopify locations. Leave empty to push only the Default Warehouse to Shopify's primary location (single-location mode).",
+      "description": "Managed from the Shopify dashboard page's Location Map card, not here. Leave empty to push only the Default Warehouse to Shopify's primary location (single-location mode).",
       "fieldname": "sh_location_map",
       "fieldtype": "Table",
+      "hidden": 1,
       "label": "Warehouse to Location Map",
       "options": "Shopify Location Map"
     },
