@@ -232,11 +232,30 @@ def _update_item_from_shopify(item, product: dict):
     """
     settings = frappe.get_single("Shopify Connector Settings")
 
-    # Basic fields
+    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+    listing = listing_resolver.get_listing(item.name)
+    listing_dirty = False
+
+    # Title & description are LISTING-scoped (marketplace-specific). A change
+    # made on Shopify must land on the Listing, never on the shared Item --
+    # otherwise a Shopify-side title edit (or the echo of our own listing-title
+    # push) overwrites the Item's name, corrupting the marketplace-agnostic
+    # default that every other connector inherits from. Only fall back to the
+    # Item when there's no Listing (un-abstracted product).
     if product.get("title"):
-        item.item_name = product["title"]
+        if listing:
+            if listing.listing_title != product["title"]:
+                listing.listing_title = product["title"]
+                listing_dirty = True
+        else:
+            item.item_name = product["title"]
     if product.get("body_html"):
-        item.description = product["body_html"]
+        if listing:
+            if listing.listing_description != product["body_html"]:
+                listing.listing_description = product["body_html"]
+                listing_dirty = True
+        else:
+            item.description = product["body_html"]
     if product.get("vendor"):
         item.brand = product["vendor"]
     if product.get("product_type"):
@@ -283,38 +302,43 @@ def _update_item_from_shopify(item, product: dict):
         item.save()
     frappe.db.commit()
 
-    # Update images
+    # Images are LISTING-scoped too. With a Listing, route Shopify's images
+    # into the Listing's image rows and leave the Item's own image untouched
+    # (don't corrupt the shared default). Without a Listing, keep the old
+    # Item-image behavior.
     images = [img.get("src") for img in (product.get("images") or []) if img.get("src")]
     if images:
-        from alaiy_os_connector_shopify.shopify.product.media import (
-            _set_item_image, _set_item_slideshow
-        )
-        _set_item_image(item.name, images[0])
-        if len(images) > 1:
-            _set_item_slideshow(item.name, images, settings)
+        if listing:
+            existing = {row.image for row in (listing.images or [])}
+            if set(images) != existing:
+                listing.set("images", [])
+                for order, url in enumerate(images):
+                    listing.append("images", {"image": url, "source": "Original", "sort_order": order})
+                listing_dirty = True
+        else:
+            from alaiy_os_connector_shopify.shopify.product.media import (
+                _set_item_image, _set_item_slideshow
+            )
+            _set_item_image(item.name, images[0])
+            if len(images) > 1:
+                _set_item_slideshow(item.name, images, settings)
 
     # Disable Listing Variant rows for variants no longer present on Shopify,
     # and clear their stale Item-level ids. The Listing's rows are the
     # outbound include set now (not Item.sync_to_shopify), so this is what
     # actually drops them from future pushes.
-    if item.has_variants and "variants" in product:
+    if item.has_variants and "variants" in product and listing:
         incoming_skus = {
             (v.get("sku") or "").strip()
             for v in (product.get("variants") or [])
             if (v.get("sku") or "").strip()
         }
-        from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
-        listing = listing_resolver.get_listing(item.name)
-        changed = False
-        for row in (listing.variants if listing else []):
+        for row in listing.variants:
             if row.is_enabled and row.item_variant not in incoming_skus:
                 row.is_enabled = 0
                 frappe.db.set_value("Item", row.item_variant, "sh_shopify_variant_id", None)
                 frappe.db.set_value("Item", row.item_variant, "sh_shopify_product_id", None)
-                changed = True
-        if changed:
-            listing.flags.from_shopify_sync = True  # inbound reconcile, don't echo a push
-            listing.save(ignore_permissions=True)
+                listing_dirty = True
 
     # Update price + compare-at price per variant. Was previously never
     # touched on inbound update at all (see this function's old docstring) --
@@ -332,7 +356,17 @@ def _update_item_from_shopify(item, product: dict):
             continue
         price = flt(variant.get("price") or 0)
         if price > 0:
-            _set_item_price(sku, price, settings)
+            # Price is LISTING-scoped: a Shopify price edit lands on the
+            # matching Listing Variant row, not the Item's price list (the
+            # marketplace-agnostic default). Fall back to Item Price only when
+            # there's no Listing row for this variant.
+            row = next((r for r in listing.variants if r.item_variant == sku), None) if listing else None
+            if row:
+                if flt(row.variant_price) != price:
+                    row.variant_price = price
+                    listing_dirty = True
+            else:
+                _set_item_price(sku, price, settings)
         compare_at_price = flt(variant.get("compare_at_price") or variant.get("compareAtPrice") or 0)
         if compare_at_price > 0:
             _set_item_compare_at_price(sku, compare_at_price, settings)
@@ -347,6 +381,16 @@ def _update_item_from_shopify(item, product: dict):
                 "weight_per_unit": weight_value,
                 "weight_uom": _ensure_uom(weight_unit),
             })
+
+    # Persist all listing-scoped changes (title/description/images/variant
+    # price/variant enable) in one save. from_shopify_sync so on_listing_update
+    # doesn't echo a push back to Shopify for a change that came FROM Shopify.
+    if listing and listing_dirty:
+        listing.flags.from_shopify_sync = True
+        listing.flags.ignore_permissions = True
+        with _as_administrator():
+            listing.save()
+        frappe.db.commit()
 
     # Log variant inventory data (for inventory_sync to use later)
     variants = product.get("variants") or []
