@@ -277,13 +277,22 @@ def _update_item_from_shopify(item, product: dict):
         "status": product.get("status") or "",
     })
 
-    # Status: active/draft/archived. Draft is a real visibility state now (kept
-    # on sh_shopify_status by _apply_product_meta), NOT a disable -- only an
-    # ARCHIVED product disables the Item.
+    # Status: active/draft/archived. Archived = removed from Shopify's sales
+    # channels -- that's a PER-MARKETPLACE state, so it disables the Shopify
+    # LISTING (is_enabled=0), NOT the shared Item (which would hide the product
+    # on every other connector too). Only fall back to disabling the Item when
+    # there's no Listing. Draft stays a visibility state on sh_shopify_status,
+    # never a disable.
     if product.get("status") == "archived":
-        item.disabled = 1
+        if listing:
+            if listing.is_enabled:
+                listing.is_enabled = 0
+                listing_dirty = True
+        else:
+            item.disabled = 1
     elif product.get("status") in ("active", "draft"):
-        item.disabled = 0
+        if not listing:
+            item.disabled = 0
 
     from alaiy_os_connector_shopify.shopify.product.masters import _dedupe_item_uoms
     _dedupe_item_uoms(item)
