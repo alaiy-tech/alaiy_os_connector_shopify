@@ -33,7 +33,7 @@ from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClie
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
-from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_SET_MUTATION
+from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_SET_MUTATION, _PRODUCT_UPDATE_MUTATION
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical, _product_set_input
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
@@ -229,6 +229,15 @@ def _push_product_unlocked(item):
     if item.get("sh_shopify_product_id"):
         identifier = {
             "id": f"gid://shopify/Product/{item.sh_shopify_product_id}"}
+        # productSet ignores status changes if product is currently ARCHIVED.
+        # Ensure product is unarchived to ACTIVE/DRAFT via productUpdate mutation.
+        target_status = "DRAFT" if (listing.sh_shopify_status == "Draft") else "ACTIVE"
+        client.execute(_PRODUCT_UPDATE_MUTATION, {
+            "input": {
+                "id": identifier["id"],
+                "status": target_status,
+            }
+        })
 
     data = client.execute(_PRODUCT_SET_MUTATION, {
         "input": product_input,
