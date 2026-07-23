@@ -202,6 +202,29 @@ def get_item_children(item):
     return {"images": images, "variants": variants}
 
 
+def sync_listing_variants(template_name):
+    """
+    Add a Listing Variant row (enabled) for any Item variant of the template
+    that isn't listed yet -- e.g. a variant added on a re-import, which the
+    desk after_insert hook skips because it's flagged from_shopify_sync.
+    Never REMOVES rows: disabling/dropping a variant is a deliberate,
+    separate action (Listing edit or an inbound 'variant missing' reconcile),
+    not something a routine re-sync should do. No-op without a listing.
+    """
+    listing = get_listing(template_name)
+    if not listing:
+        return
+    listed = {r.item_variant for r in listing.variants}
+    added = False
+    for v in frappe.get_all("Item", filters={"variant_of": template_name}, pluck="name"):
+        if v not in listed:
+            listing.append("variants", {"item_variant": v, "is_enabled": 1})
+            added = True
+    if added:
+        listing.flags.from_shopify_sync = True
+        listing.save(ignore_permissions=True)
+
+
 def fill_children_from_item(listing):
     """
     Populate a listing's Images and Variants tables from its Item when they're

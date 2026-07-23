@@ -331,6 +331,9 @@ def _import_product(node: dict) -> tuple:
             if entity and entity.erpnext_name:
                 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
                 listing_resolver.ensure_listing(entity.erpnext_name)
+                # Re-imports can add variants to an existing product -- make
+                # sure any new variant gets a Listing Variant row too.
+                listing_resolver.sync_listing_variants(entity.erpnext_name)
         except Exception:
             frappe.log_error(
                 title=f"Shopify import: ensure_listing failed for product {product_id}",
