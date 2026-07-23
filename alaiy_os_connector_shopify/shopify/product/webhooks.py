@@ -209,9 +209,12 @@ def _handle_product_update(product_id: str, product: dict):
     # would build, which now reads the Listing. No Listing => outbound never
     # pushes this product anyway, so there's nothing to guard against.
     if listing:
-        variants = _variants_of(item)
-        canonical = _product_canonical(item, variants, settings, listing)
-        entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
+        if not listing.is_enabled or product.get("status") == "archived":
+            entities.save(entity, erpnext_fingerprint=None)
+        else:
+            variants = _variants_of(item)
+            canonical = _product_canonical(item, variants, settings, listing)
+            entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
 
     frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
 
