@@ -155,35 +155,6 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					</div>
 				</div>
 
-				<!-- Location Map -->
-				<div class="shopify-card">
-					<div class="shopify-card-header">
-						<span class="shopify-icon-badge"><i class="fa fa-map-marker"></i></span>
-						<div class="shopify-card-header-text">
-							<h5>Location Map</h5>
-							<p>Map each Shopify location to an Alaiy OS warehouse (any name, no auto-create). Drives multi-location stock push.</p>
-						</div>
-					</div>
-					<div class="shopify-card-body">
-						<table class="shopify-location-map-table" style="width:100%; border-collapse:collapse;">
-							<thead>
-								<tr>
-									<th style="text-align:left; padding:6px 8px;">Shopify Location</th>
-									<th style="text-align:left; padding:6px 8px;">Active</th>
-									<th style="text-align:left; padding:6px 8px;">Alaiy OS Warehouse</th>
-								</tr>
-							</thead>
-							<tbody id="location-map-rows">
-								<tr><td colspan="3" class="shopify-text-muted" style="padding:8px;">Loading...</td></tr>
-							</tbody>
-						</table>
-						<button id="save-location-map-btn" class="shopify-btn shopify-btn-primary" style="margin-top:12px;">
-							Save Mapping
-						</button>
-						<span id="location-map-status" class="shopify-text-muted" style="margin-left:10px;"></span>
-					</div>
-				</div>
-
 				<!-- Sync Logs -->
 				<div class="shopify-card">
 					<div class="shopify-card-header">
@@ -377,83 +348,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 			callback: function(r) {
 				if (r.message && r.message.queued) {
 					frappe.show_alert({message: 'Locations sync queued', indicator: 'blue'}, 5);
-					// Newly-synced locations won't show in the map until the
-					// background job finishes -- give it a moment, then reload.
-					setTimeout(load_location_map, 4000);
 				}
-			}
-		});
-	}
-
-	// Inline "which Shopify location maps to which Alaiy OS warehouse" table --
-	// full row set always visible on the page (not a raw child-table grid on
-	// Settings, not a dialog). Each row's warehouse cell is a real Link
-	// control so it gets the normal Frappe autocomplete.
-	var location_map_controls = {};
-
-	function load_location_map() {
-		frappe.call({
-			method: 'alaiy_os_connector_shopify.api.sync.get_location_map',
-			callback: function(r) {
-				render_location_map(r.message || []);
-			}
-		});
-	}
-
-	function render_location_map(locations) {
-		var $tbody = $('#location-map-rows');
-		$tbody.empty();
-		location_map_controls = {};
-
-		if (!locations.length) {
-			$tbody.html('<tr><td colspan="3" class="shopify-text-muted" style="padding:8px;">' +
-				'No locations cached yet -- click Sync Locations first.</td></tr>');
-			return;
-		}
-
-		locations.forEach(function(loc) {
-			var $row = $(
-				'<tr>' +
-					'<td style="padding:6px 8px;">' + frappe.utils.escape_html(loc.location_name || loc.name) + '</td>' +
-					'<td style="padding:6px 8px;">' + (loc.is_active ? 'Yes' : 'No') + '</td>' +
-					'<td style="padding:6px 8px;"><div class="location-map-warehouse-cell"></div></td>' +
-				'</tr>'
-			).appendTo($tbody);
-
-			var control = frappe.ui.form.make_control({
-				df: {
-					fieldtype: 'Link',
-					fieldname: 'warehouse',
-					options: 'Warehouse',
-					placeholder: 'Select warehouse...',
-				},
-				parent: $row.find('.location-map-warehouse-cell').get(0),
-				only_input: true,
-				render_input: true,
-			});
-			control.set_value(loc.warehouse || '');
-			location_map_controls[loc.name] = control;
-		});
-	}
-
-	function save_location_map() {
-		var mappings = Object.keys(location_map_controls).map(function(location_name) {
-			return {
-				shopify_location: location_name,
-				warehouse: location_map_controls[location_name].get_value(),
-			};
-		});
-		var $status = $('#location-map-status');
-		$status.text('Saving...');
-		frappe.call({
-			method: 'alaiy_os_connector_shopify.api.sync.save_location_map',
-			args: { mappings: mappings },
-			callback: function() {
-				$status.text('Saved.');
-				setTimeout(function() { $status.text(''); }, 3000);
-			},
-			error: function() {
-				$status.text('Failed to save -- see console.');
 			}
 		});
 	}
@@ -555,8 +450,6 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	document.getElementById('sync-tags-btn').addEventListener('click', sync_tags);
 	document.getElementById('sync-collections-btn').addEventListener('click', sync_collections);
 	document.getElementById('sync-locations-btn').addEventListener('click', sync_locations);
-	document.getElementById('save-location-map-btn').addEventListener('click', save_location_map);
-	load_location_map();
 	document.getElementById('manage-listings-btn').addEventListener('click', function() {
 		frappe.set_route('List', 'Shopify Product Listing');
 	});
