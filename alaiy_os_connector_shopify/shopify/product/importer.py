@@ -304,21 +304,17 @@ def _update_existing_product(entity, node: dict) -> tuple:
         missing_skus = []
         variant_prices = {}
         for variant in variants:
-            sku = (variant.get("sku") or "").strip()
-            if not sku or not frappe.db.exists("Item", sku):
-                missing_skus.append(sku or "(no sku)")
-                continue
+            sku = _ensure_variant_exists_locally(template_name, variant, entity.external_id, settings)
             _apply_existing_variant_content(sku, variant, settings, set_stock=False, skip_abstracted=has_listing)
             price = flt(variant.get("price") or 0)
             if price > 0:
                 variant_prices[sku] = price
             updated_skus += 1
         if has_listing:
+            listing_resolver.sync_listing_variants(template_name)
             listing_resolver.apply_inbound_from_shopify(
                 template_name, images=images, variant_prices=variant_prices)
         reason = f"updated (template + {updated_skus} variant(s))"
-        if missing_skus:
-            reason += f"; {len(missing_skus)} Shopify variant(s) not locally linked, needs manual re-link: {missing_skus[:5]}"
     else:
         variant = variants[0] if variants else {}
         _apply_existing_variant_content(
@@ -487,6 +483,52 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
         _set_item_image(item_code, images[0])
         if len(images) > 1:
             _set_item_slideshow(item_code, images, settings)
+
+
+def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id: str, settings) -> str:
+    """Ensure a variant node from Shopify exists as an Item under template_name in ERPNext."""
+    sku = (variant.get("sku") or "").strip()
+    v_id = str(variant.get("legacyResourceId", ""))
+    if not sku:
+        sku = f"{template_name}-{v_id}" if v_id else f"{template_name}-v"
+
+    if frappe.db.exists("Item", sku):
+        if v_id and not frappe.db.get_value("Item", sku, "sh_shopify_variant_id"):
+            frappe.db.set_value("Item", sku, "sh_shopify_variant_id", v_id)
+            frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
+        return sku
+
+    template = frappe.get_doc("Item", template_name)
+    v_item = frappe.new_doc("Item")
+    v_item.item_code = sku
+    v_item.item_name = f"{template.item_name} - {variant.get('title') or v_id}"
+    v_item.variant_of = template_name
+    v_item.item_group = template.item_group
+    v_item.brand = template.brand
+    v_item.description = template.description
+    v_item.stock_uom = template.stock_uom or "Nos"
+    v_item.is_stock_item = 1
+    v_item.include_item_in_selling = 1
+    v_item.include_item_in_buying = 1
+    v_item.sh_shopify_product_id = product_id
+    v_item.sh_shopify_variant_id = v_id
+
+    for opt in (variant.get("selectedOptions") or []):
+        name = opt.get("name")
+        val = opt.get("value")
+        if name and val:
+            _ensure_item_attribute(name, [val])
+            v_item.append("attributes", {"attribute": name, "attribute_value": val})
+
+    default_wh = _default_warehouse_row(settings)
+    if default_wh:
+        v_item.append("item_defaults", default_wh)
+
+    v_item.flags.from_shopify_sync = True
+    v_item.flags.ignore_permissions = True
+    v_item.insert()
+    frappe.db.commit()
+    return sku
 
 
 def _apply_existing_template_content(template_name: str, product_meta: dict, images: list, settings, skip_abstracted: bool = False):
