@@ -7,13 +7,17 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
 )
 
 _LOCATIONS_QUERY = """
-{
-  locations(first: 50) {
+query GetLocations($after: String) {
+  locations(first: 250, after: $after) {
     nodes {
       id
       legacyResourceId
       name
       isActive
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
     }
   }
 }
@@ -35,29 +39,40 @@ def sync_shopify_locations(trigger="manual", log_name=None):
 
     try:
         client = ShopifyGraphQLClient()
-        data = client.execute(_LOCATIONS_QUERY)
-        nodes = (data.get("locations") or {}).get("nodes", [])
+        has_next_page = True
+        after_cursor = None
         total = 0
-        for loc in nodes:
-            legacy = str(loc.get("legacyResourceId") or "")
-            if not legacy:
-                continue
-            values = {
-                "location_name": loc.get("name") or f"Location {legacy}",
-                "is_active": 1 if loc.get("isActive") else 0,
-                "sh_location_id": legacy,
-                "sh_location_gid": loc.get("id") or "",
-                "last_synced": now_datetime(),
-            }
-            name = frappe.db.get_value("Shopify Location", {"sh_location_id": legacy}, "name")
-            if name:
-                doc = frappe.get_doc("Shopify Location", name)
-                doc.update(values)
-            else:
-                doc = frappe.get_doc(dict(doctype="Shopify Location", **values))
-            doc.flags.ignore_permissions = True
-            doc.save()
-            total += 1
+
+        while has_next_page:
+            data = client.execute(_LOCATIONS_QUERY, {"after": after_cursor})
+            loc_data = data.get("locations") or {}
+            nodes = loc_data.get("nodes", [])
+
+            for loc in nodes:
+                legacy = str(loc.get("legacyResourceId") or "")
+                if not legacy:
+                    continue
+                values = {
+                    "location_name": loc.get("name") or f"Location {legacy}",
+                    "is_active": 1 if loc.get("isActive") else 0,
+                    "sh_location_id": legacy,
+                    "sh_location_gid": loc.get("id") or "",
+                    "last_synced": now_datetime(),
+                }
+                name = frappe.db.get_value("Shopify Location", {"sh_location_id": legacy}, "name")
+                if name:
+                    doc = frappe.get_doc("Shopify Location", name)
+                    doc.update(values)
+                else:
+                    doc = frappe.get_doc(dict(doctype="Shopify Location", **values))
+                doc.flags.ignore_permissions = True
+                doc.save()
+                total += 1
+
+            page_info = loc_data.get("pageInfo") or {}
+            has_next_page = page_info.get("hasNextPage", False)
+            after_cursor = page_info.get("endCursor")
+
         frappe.db.commit()
         _close_log(log, "success", processed=total, created=total)
     except Exception:
