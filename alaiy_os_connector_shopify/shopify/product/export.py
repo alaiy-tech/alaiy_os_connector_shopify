@@ -335,13 +335,25 @@ def push_changed_items_only():
     unchanged item early-returns before any Shopify API call -- no separate
     pre-check needed here. Called by the scheduled job in hooks.py.
     """
+    import time
+
     sync_items = frappe.get_all(
         "Shopify Product Listing",
         filters={"is_enabled": 1},
         pluck="item",
     )
+    # Time-box under the RQ 300s job timeout: each push commits its own
+    # fingerprint, so a run that stops early still makes permanent progress,
+    # and the next hourly run fast-skips the already-synced ones (fingerprint
+    # guard = no API call) and continues. Converges without one giant job that
+    # times out on a large enabled set. ponytail: 240s budget, resume next run.
+    deadline = time.monotonic() + 240
     pushed = failed = 0
+    stopped_early = False
     for code in sync_items:
+        if time.monotonic() > deadline:
+            stopped_early = True
+            break
         try:
             push_item(code)
             pushed += 1
@@ -351,4 +363,7 @@ def push_changed_items_only():
                 title=f"Shopify: sync push failed for {code}",
                 message=frappe.get_traceback(),
             )
-    frappe.logger().info(f"Sync push reconciliation: {pushed} processed, {failed} failed")
+    frappe.logger().info(
+        f"Sync push reconciliation: {pushed} processed, {failed} failed"
+        + (", time-boxed (rest resume next run)" if stopped_early else "")
+    )

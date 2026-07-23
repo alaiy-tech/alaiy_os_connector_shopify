@@ -119,10 +119,12 @@ def _variant_set_payload(variant, settings, option_names: list, listing) -> dict
         # No Item Price row for this item at all -- NOT the same as a real
         # price of 0. Skip the field (leave Shopify's price untouched)
         # rather than pushing an assumed 0 (same bug shape as the
-        # missing-Bin-as-zero inventory incident).
-        frappe.log_error(
-            title=f"Shopify: no local price for {variant.item_code}, skipping price push",
-            message="Item Price row missing on the configured selling price list.",
+        # missing-Bin-as-zero inventory incident). A missing price is an
+        # expected data gap, not an error -- log quietly so it doesn't fill
+        # the Error Log on every reconciliation of an unpriced item.
+        frappe.logger().warning(
+            f"Shopify: no local price for {variant.item_code}; skipping price push "
+            "(no Item Price on the selling list)."
         )
     if variant.get("sh_shopify_variant_id"):
         payload["id"] = f"gid://shopify/ProductVariant/{variant.sh_shopify_variant_id}"
