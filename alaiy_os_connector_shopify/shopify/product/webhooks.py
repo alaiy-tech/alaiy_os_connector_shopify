@@ -359,9 +359,20 @@ def _update_item_from_shopify(item, product: dict):
     product_id = str(product.get("id", ""))
     for variant in (product.get("variants") or []):
         sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings)
+        row = None
+        if listing:
+            row = next((r for r in listing.variants if r.item_variant == sku), None)
+            if not row:
+                # Brand-new variant added on Shopify: _ensure_variant_exists_locally
+                # just created its Item, but with no Listing Variant row it would
+                # stay invisible to every future push (enabled_variant_names only
+                # includes listed rows) until someone runs a full re-import. Add
+                # it here too, same as importer.sync_listing_variants does on
+                # the re-import path.
+                row = listing.append("variants", {"item_variant": sku, "is_enabled": 1})
+                listing_dirty = True
         price = flt(variant.get("price") or 0)
         if price > 0:
-            row = next((r for r in listing.variants if r.item_variant == sku), None) if listing else None
             if row:
                 if flt(row.variant_price) != price:
                     row.variant_price = price
