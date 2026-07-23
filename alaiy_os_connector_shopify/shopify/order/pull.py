@@ -75,6 +75,18 @@ def _run_orders_pull(log, query_string, skip_existing=False):
                         message=frappe.get_traceback(),
                     )
 
+            # Flush real progress after every page, not just at the very end --
+            # a long historical import (hundreds of orders) otherwise shows
+            # 0/0/0 in the Sync Log the entire time it's running, giving no
+            # way to tell "actively working" from "stuck". Same fix already
+            # applied to the product importer and inventory push.
+            log.items_processed = processed
+            log.items_created = created
+            log.items_failed = failed
+            log.pages_done = pages
+            log.save(ignore_permissions=True)
+            frappe.db.commit()
+
         log.status = "success"
         log.items_processed = processed
         log.items_created = created
