@@ -289,25 +289,46 @@ def _update_existing_product(entity, node: dict) -> tuple:
     variants = node.get("variants", {}).get("nodes", [])
     images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
 
+    # If this product has a Listing, its ABSTRACTED fields (images, price)
+    # belong to the Listing -- a re-import must NOT overwrite the Item's
+    # marketplace-agnostic defaults (same rule the webhook update path
+    # follows). skip_abstracted keeps the Item writes off; we route images +
+    # prices to the Listing below. No Listing => keep the old Item behavior.
+    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+    has_listing = bool(listing_resolver.get_listing(template_name))
+
     has_variants = frappe.db.get_value("Item", template_name, "has_variants")
     if has_variants:
-        _apply_existing_template_content(template_name, node, images, settings)
+        _apply_existing_template_content(template_name, node, images, settings, skip_abstracted=has_listing)
         updated_skus = 0
         missing_skus = []
+        variant_prices = {}
         for variant in variants:
             sku = (variant.get("sku") or "").strip()
             if not sku or not frappe.db.exists("Item", sku):
                 missing_skus.append(sku or "(no sku)")
                 continue
-            _apply_existing_variant_content(sku, variant, settings, set_stock=False)
+            _apply_existing_variant_content(sku, variant, settings, set_stock=False, skip_abstracted=has_listing)
+            price = flt(variant.get("price") or 0)
+            if price > 0:
+                variant_prices[sku] = price
             updated_skus += 1
+        if has_listing:
+            listing_resolver.apply_inbound_from_shopify(
+                template_name, images=images, variant_prices=variant_prices)
         reason = f"updated (template + {updated_skus} variant(s))"
         if missing_skus:
             reason += f"; {len(missing_skus)} Shopify variant(s) not locally linked, needs manual re-link: {missing_skus[:5]}"
     else:
         variant = variants[0] if variants else {}
         _apply_existing_variant_content(
-            template_name, variant, settings, product_meta=node, images=images, set_stock=False)
+            template_name, variant, settings, product_meta=node, images=images,
+            set_stock=False, skip_abstracted=has_listing)
+        if has_listing:
+            price = flt(variant.get("price") or 0)
+            listing_resolver.apply_inbound_from_shopify(
+                template_name, images=images,
+                template_price=price if price > 0 else None)
         reason = "updated"
 
     entities.save(entity, external_fingerprint=new_fp)
@@ -418,7 +439,7 @@ def _import_product_inner(node: dict) -> tuple:
         return False, "product has zero variants"
 
 
-def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None, set_stock: bool = True):
+def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None, set_stock: bool = True, skip_abstracted: bool = False):
     """
     Populate price/stock/cost/weight (and, for a genuinely standalone
     item, tags/category/SEO/images) on an Item that was auto-linked to
@@ -443,9 +464,14 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     item.save()
     frappe.db.commit()
 
-    price = flt(variant.get("price") or 0)
-    if price > 0:
-        _set_item_price(item_code, price, settings)
+    # selling PRICE is an abstracted (per-marketplace) field -- on the update
+    # path (skip_abstracted) it must NOT overwrite the Item's price default;
+    # the caller routes it to the Listing instead. compare-at, cost and weight
+    # stay Item-level either way.
+    if not skip_abstracted:
+        price = flt(variant.get("price") or 0)
+        if price > 0:
+            _set_item_price(item_code, price, settings)
     compare_at_price = flt(variant.get("compareAtPrice") or 0)
     if compare_at_price > 0:
         _set_item_compare_at_price(item_code, compare_at_price, settings)
@@ -456,16 +482,19 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
         if qty > 0:
             _set_opening_stock(item_code, qty, settings)
 
-    if images:
+    # IMAGES are abstracted too -- skip the Item write on the update path.
+    if images and not skip_abstracted:
         _set_item_image(item_code, images[0])
         if len(images) > 1:
             _set_item_slideshow(item_code, images, settings)
 
 
-def _apply_existing_template_content(template_name: str, product_meta: dict, images: list, settings):
+def _apply_existing_template_content(template_name: str, product_meta: dict, images: list, settings, skip_abstracted: bool = False):
     """Same idea as _apply_existing_variant_content but for the template
-    side of an auto-link -- tags/category/SEO/images describe the
-    product as a whole, so they land on the template, not the variant."""
+    side of an auto-link -- tags/category/SEO describe the product as a whole,
+    so they land on the template. IMAGES are abstracted: on the update path
+    (skip_abstracted) they must NOT overwrite the Item image -- the caller
+    routes them to the Listing instead."""
     template = frappe.get_doc("Item", template_name)
     _apply_product_meta(template, product_meta)
     _dedupe_item_uoms(template)
@@ -474,7 +503,7 @@ def _apply_existing_template_content(template_name: str, product_meta: dict, ima
     template.save()
     frappe.db.commit()
 
-    if images:
+    if images and not skip_abstracted:
         _set_item_image(template_name, images[0])
         if len(images) > 1:
             _set_item_slideshow(template_name, images, settings)

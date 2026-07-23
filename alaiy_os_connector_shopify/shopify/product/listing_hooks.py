@@ -78,7 +78,7 @@ def remove_variant_from_listing(doc, method=None):
     disappears on Shopify). Scoped to variants; deleting a whole product is
     done by trashing its Listing.
     """
-    if not doc.variant_of:
+    if doc.flags.from_shopify_sync or not doc.variant_of:
         return
     listing = listing_resolver.get_listing(doc.variant_of)
     if not listing:

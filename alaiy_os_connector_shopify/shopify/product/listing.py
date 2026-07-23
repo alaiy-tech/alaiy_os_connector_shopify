@@ -86,15 +86,6 @@ def effective_description(listing, item) -> str:
     return listing.listing_description or item.description or ""
 
 
-def effective_price(listing, item, settings):
-    """Template-level price for a simple product. None only when neither the
-    Listing nor an Item Price row has a value -- callers must skip (never push
-    an assumed 0), same rule as pricing.py."""
-    if listing and listing.listing_price:
-        return float(listing.listing_price)
-    return _price_rate(item.item_code, settings.sh_selling_price_list or "Standard Selling")
-
-
 def effective_images(listing, item, settings) -> list:
     """Listing image rows (by sort_order) as absolute URLs; fall back to the
     Item image/slideshow when the Listing has no image rows."""
@@ -132,11 +123,19 @@ def enabled_variant_names(template_name: str) -> list:
 
 
 def variant_price(listing, variant_code: str, settings):
-    """Per-variant price override, falling back to the Item Price lookup when
-    blank. None only when neither has a value."""
+    """
+    Effective price for a variant on push:
+    1. the variant row's variant_price override, else
+    2. for a SIMPLE product (the template Item is its own single variant),
+       the template-level listing_price override, else
+    3. the Item Price on the selling list.
+    None only when none of these has a value (caller must skip, never push 0).
+    """
     row = _variant_rows(listing).get(variant_code)
     if row and row.variant_price:
         return float(row.variant_price)
+    if listing and variant_code == listing.item and listing.listing_price:
+        return float(listing.listing_price)
     return _variant_price(variant_code, settings)
 
 
@@ -223,6 +222,45 @@ def sync_listing_variants(template_name):
     if added:
         listing.flags.from_shopify_sync = True
         listing.save(ignore_permissions=True)
+
+
+def apply_inbound_from_shopify(template_name, images=None, variant_prices=None, template_price=None):
+    """
+    Route inbound Shopify ABSTRACTED fields (images, per-variant price, and a
+    simple product's template-level price) onto the Listing -- never the Item.
+    Used by the re-import update path so a re-import can't clobber the Item's
+    marketplace-agnostic defaults (same rule the webhook update path follows).
+    Returns True if a Listing existed and was handled, False if none (caller
+    then keeps the un-abstracted Item fallback). One save, from_shopify_sync so
+    it doesn't echo a push.
+    """
+    listing = get_listing(template_name)
+    if not listing:
+        return False
+    dirty = False
+
+    if images:
+        existing = [r.image for r in listing.images]
+        if existing != images:
+            listing.set("images", [])
+            for order, url in enumerate(images):
+                listing.append("images", {"image": url, "source": "Original", "sort_order": order})
+            dirty = True
+
+    if template_price is not None and float(listing.listing_price or 0) != float(template_price):
+        listing.listing_price = template_price
+        dirty = True
+
+    for code, price in (variant_prices or {}).items():
+        row = next((r for r in listing.variants if r.item_variant == code), None)
+        if row and float(row.variant_price or 0) != float(price):
+            row.variant_price = price
+            dirty = True
+
+    if dirty:
+        listing.flags.from_shopify_sync = True
+        listing.save(ignore_permissions=True)
+    return True
 
 
 def fill_children_from_item(listing):
