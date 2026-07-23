@@ -1,0 +1,116 @@
+{
+  "actions": [],
+  "autoname": "field:item",
+  "creation": "2026-07-22 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "item",
+    "is_enabled",
+    "sh_shopify_status",
+    "listing_title",
+    "listing_description",
+    "listing_price",
+    "images",
+    "variants",
+    "sh_shopify_product_id",
+    "last_synced_at"
+  ],
+  "fields": [
+    {
+      "fieldname": "item",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Item (Template)",
+      "options": "Item",
+      "reqd": 1,
+      "unique": 1
+    },
+    {
+      "default": "0",
+      "description": "Sole gate for whether this product is live on Shopify (replaces Item.sync_to_shopify).",
+      "fieldname": "is_enabled",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Enabled"
+    },
+    {
+      "default": "Active",
+      "fieldname": "sh_shopify_status",
+      "fieldtype": "Select",
+      "label": "Shopify Status",
+      "options": "Active\nDraft"
+    },
+    {
+      "description": "Blank inherits Item.item_name at push time.",
+      "fieldname": "listing_title",
+      "fieldtype": "Data",
+      "label": "Listing Title"
+    },
+    {
+      "description": "Blank inherits Item.description at push time.",
+      "fieldname": "listing_description",
+      "fieldtype": "Text Editor",
+      "label": "Listing Description"
+    },
+    {
+      "description": "Simple/no-variant products. Blank inherits the Item Price on the connector's selling price list.",
+      "fieldname": "listing_price",
+      "fieldtype": "Currency",
+      "label": "Listing Price"
+    },
+    {
+      "fieldname": "images",
+      "fieldtype": "Table",
+      "label": "Images",
+      "options": "Shopify Listing Image"
+    },
+    {
+      "fieldname": "variants",
+      "fieldtype": "Table",
+      "label": "Variants",
+      "options": "Shopify Listing Variant"
+    },
+    {
+      "fetch_from": "item.sh_shopify_product_id",
+      "fieldname": "sh_shopify_product_id",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Shopify Product ID",
+      "read_only": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "last_synced_at",
+      "fieldtype": "Datetime",
+      "label": "Last Synced At",
+      "read_only": 1
+    }
+  ],
+  "index_web_pages_for_search": 1,
+  "links": [],
+  "modified": "2026-07-22 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Alaiy OS Connector Shopify",
+  "name": "Shopify Product Listing",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "title_field": "item",
+  "track_changes": 1
+}

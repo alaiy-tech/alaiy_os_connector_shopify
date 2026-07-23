@@ -42,6 +42,15 @@ def handle_product_webhook(topic: str, payload: dict):
             _handle_product_create(product_id, product)
         elif topic == "products/update":
             _handle_product_update(product_id, product)
+    except frappe.DocumentLockedError:
+        # The Item is locked by an in-flight outbound push (or a stale lock
+        # left by a killed worker). Not a real failure -- Shopify retries the
+        # webhook, and it lands once the lock frees. Log quietly instead of
+        # spamming the Error Log on every collision.
+        frappe.logger().info(
+            f"Product webhook {topic} deferred: Item for product {product_id} "
+            "is locked; Shopify will retry."
+        )
     except Exception:
         # str(exc) alone was landing blank for some exception types,
         # losing all diagnostic info -- full traceback always has
@@ -193,12 +202,22 @@ def _handle_product_update(product_id: str, product: dict):
     # straight back to Shopify.
     item = frappe.get_doc("Item", item.name)
     settings = frappe.get_single("Shopify Connector Settings")
-    variants = _variants_of(item)
-    canonical = _product_canonical(item, variants, settings)
-    entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
+    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+    listing = listing_resolver.get_listing(item.name)
+    # Only re-fingerprint when a Listing exists (i.e. this product is
+    # outbound-managed) -- the canonical must match what an outbound push
+    # would build, which now reads the Listing. No Listing => outbound never
+    # pushes this product anyway, so there's nothing to guard against.
+    if listing:
+        if not listing.is_enabled or product.get("status") == "archived":
+            entities.save(entity, erpnext_fingerprint=None)
+        else:
+            variants = _variants_of(item)
+            canonical = _product_canonical(item, variants, settings, listing)
+            entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
 
     frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
-
+ 
 
 def _update_item_from_shopify(item, product: dict):
     """
@@ -216,11 +235,30 @@ def _update_item_from_shopify(item, product: dict):
     """
     settings = frappe.get_single("Shopify Connector Settings")
 
-    # Basic fields
+    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+    listing = listing_resolver.get_listing(item.name)
+    listing_dirty = False
+
+    # Title & description are LISTING-scoped (marketplace-specific). A change
+    # made on Shopify must land on the Listing, never on the shared Item --
+    # otherwise a Shopify-side title edit (or the echo of our own listing-title
+    # push) overwrites the Item's name, corrupting the marketplace-agnostic
+    # default that every other connector inherits from. Only fall back to the
+    # Item when there's no Listing (un-abstracted product).
     if product.get("title"):
-        item.item_name = product["title"]
+        if listing:
+            if listing.listing_title != product["title"]:
+                listing.listing_title = product["title"]
+                listing_dirty = True
+        else:
+            item.item_name = product["title"]
     if product.get("body_html"):
-        item.description = product["body_html"]
+        if listing:
+            if listing.listing_description != product["body_html"]:
+                listing.listing_description = product["body_html"]
+                listing_dirty = True
+        else:
+            item.description = product["body_html"]
     if product.get("vendor"):
         item.brand = product["vendor"]
     if product.get("product_type"):
@@ -242,13 +280,15 @@ def _update_item_from_shopify(item, product: dict):
         "status": product.get("status") or "",
     })
 
-    # Status: active/draft/archived. Draft is a real visibility state now (kept
-    # on sh_shopify_status by _apply_product_meta), NOT a disable -- only an
-    # ARCHIVED product disables the Item.
-    if product.get("status") == "archived":
-        item.disabled = 1
-    elif product.get("status") in ("active", "draft"):
-        item.disabled = 0
+    # Status: active/draft/archived is a PER-MARKETPLACE concern -- it only
+    # ever affects the Shopify LISTING, NEVER the shared Item (disabling the
+    # Item would hide the product on every other connector too, and Shopify
+    # must never mutate the marketplace-agnostic default). Archived => disable
+    # the Listing. No Listing (e.g. it was just deleted) => nothing to do;
+    # leave the Item completely untouched.
+    if product.get("status") == "archived" and listing and listing.is_enabled:
+        listing.is_enabled = 0
+        listing_dirty = True
 
     from alaiy_os_connector_shopify.shopify.product.masters import _dedupe_item_uoms
     _dedupe_item_uoms(item)
@@ -267,33 +307,43 @@ def _update_item_from_shopify(item, product: dict):
         item.save()
     frappe.db.commit()
 
-    # Update images
+    # Images are LISTING-scoped too. With a Listing, route Shopify's images
+    # into the Listing's image rows and leave the Item's own image untouched
+    # (don't corrupt the shared default). Without a Listing, keep the old
+    # Item-image behavior.
     images = [img.get("src") for img in (product.get("images") or []) if img.get("src")]
     if images:
-        from alaiy_os_connector_shopify.shopify.product.media import (
-            _set_item_image, _set_item_slideshow
-        )
-        _set_item_image(item.name, images[0])
-        if len(images) > 1:
-            _set_item_slideshow(item.name, images, settings)
+        if listing:
+            existing = {row.image for row in (listing.images or [])}
+            if set(images) != existing:
+                listing.set("images", [])
+                for order, url in enumerate(images):
+                    listing.append("images", {"image": url, "source": "Original", "sort_order": order})
+                listing_dirty = True
+        else:
+            from alaiy_os_connector_shopify.shopify.product.media import (
+                _set_item_image, _set_item_slideshow
+            )
+            _set_item_image(item.name, images[0])
+            if len(images) > 1:
+                _set_item_slideshow(item.name, images, settings)
 
-    # Uncheck sync_to_shopify on Alaiy OS variants that are missing from Shopify webhook payload
-    if item.has_variants and "variants" in product:
+    # Disable Listing Variant rows for variants no longer present on Shopify,
+    # and clear their stale Item-level ids. The Listing's rows are the
+    # outbound include set now (not Item.sync_to_shopify), so this is what
+    # actually drops them from future pushes.
+    if item.has_variants and "variants" in product and listing:
         incoming_skus = {
             (v.get("sku") or "").strip()
             for v in (product.get("variants") or [])
             if (v.get("sku") or "").strip()
         }
-        erpnext_variants = frappe.get_all(
-            "Item",
-            filters={"variant_of": item.name, "sync_to_shopify": 1},
-            pluck="name"
-        )
-        for variant_code in erpnext_variants:
-            if variant_code not in incoming_skus:
-                frappe.db.set_value("Item", variant_code, "sync_to_shopify", 0)
-                frappe.db.set_value("Item", variant_code, "sh_shopify_variant_id", None)
-                frappe.db.set_value("Item", variant_code, "sh_shopify_product_id", None)
+        for row in listing.variants:
+            if row.is_enabled and row.item_variant not in incoming_skus:
+                row.is_enabled = 0
+                frappe.db.set_value("Item", row.item_variant, "sh_shopify_variant_id", None)
+                frappe.db.set_value("Item", row.item_variant, "sh_shopify_product_id", None)
+                listing_dirty = True
 
     # Update price + compare-at price per variant. Was previously never
     # touched on inbound update at all (see this function's old docstring) --
@@ -305,13 +355,30 @@ def _update_item_from_shopify(item, product: dict):
     )
     from alaiy_os_connector_shopify.shopify.product.masters import _ensure_uom
     from alaiy_os_connector_shopify.shopify.product.variants import _REST_WEIGHT_UNIT_TO_UOM
+    from alaiy_os_connector_shopify.shopify.product.importer import _ensure_variant_exists_locally
+    product_id = str(product.get("id", ""))
     for variant in (product.get("variants") or []):
-        sku = (variant.get("sku") or "").strip()
-        if not sku or not frappe.db.exists("Item", sku):
-            continue
+        sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings)
+        row = None
+        if listing:
+            row = next((r for r in listing.variants if r.item_variant == sku), None)
+            if not row:
+                # Brand-new variant added on Shopify: _ensure_variant_exists_locally
+                # just created its Item, but with no Listing Variant row it would
+                # stay invisible to every future push (enabled_variant_names only
+                # includes listed rows) until someone runs a full re-import. Add
+                # it here too, same as importer.sync_listing_variants does on
+                # the re-import path.
+                row = listing.append("variants", {"item_variant": sku, "is_enabled": 1})
+                listing_dirty = True
         price = flt(variant.get("price") or 0)
         if price > 0:
-            _set_item_price(sku, price, settings)
+            if row:
+                if flt(row.variant_price) != price:
+                    row.variant_price = price
+                    listing_dirty = True
+            else:
+                _set_item_price(sku, price, settings)
         compare_at_price = flt(variant.get("compare_at_price") or variant.get("compareAtPrice") or 0)
         if compare_at_price > 0:
             _set_item_compare_at_price(sku, compare_at_price, settings)
@@ -326,6 +393,16 @@ def _update_item_from_shopify(item, product: dict):
                 "weight_per_unit": weight_value,
                 "weight_uom": _ensure_uom(weight_unit),
             })
+
+    # Persist all listing-scoped changes (title/description/images/variant
+    # price/variant enable) in one save. from_shopify_sync so on_listing_update
+    # doesn't echo a push back to Shopify for a change that came FROM Shopify.
+    if listing and listing_dirty:
+        listing.flags.from_shopify_sync = True
+        listing.flags.ignore_permissions = True
+        with _as_administrator():
+            listing.save()
+        frappe.db.commit()
 
     # Log variant inventory data (for inventory_sync to use later)
     variants = product.get("variants") or []
@@ -348,7 +425,13 @@ def _handle_product_delete(product_id: str, product: dict):
 
         # Unlink: remove Shopify IDs but keep Item in Alaiy OS
         frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
-        frappe.db.set_value("Item", item.name, "sync_to_shopify", 0)
+
+        # Disable the Listing too, or the hourly outbound reconciliation would
+        # re-push (and recreate on Shopify) a product just deleted there. The
+        # id itself lives on the Item (cleared above); the Listing's id field
+        # is a fetch_from view, so only is_enabled needs writing here.
+        if frappe.db.exists("Shopify Product Listing", item.name):
+            frappe.db.set_value("Shopify Product Listing", item.name, "is_enabled", 0)
 
         # A template's variants each carry their own copy of sh_shopify_product_id
         # (set at import time) -- leaving those in place after the template

@@ -11,6 +11,7 @@ from alaiy_os_connector_shopify.shopify.product.pricing import (
     _variant_price, _variant_compare_at_price, _variant_cost, _set_item_cost,
 )
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_uom
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 # Shopify's GraphQL WeightUnit enum <-> a plain Alaiy OS UOM name. Alaiy OS's
 # weight_uom is a Link to UOM with no fixed seeded names, so these are
@@ -82,14 +83,14 @@ def _variant_inventory_item_payload(variant) -> dict:
     return payload
 
 
-def _variant_canonical(variant, settings) -> dict:
+def _variant_canonical(variant, settings, listing) -> dict:
     # Fingerprint-only dict (diffed to decide "needs push", never pushed
     # itself) -- safe to default missing prices to 0 here, unlike the
     # payload builders below which must skip instead of guessing.
     return {
         "sku": variant.item_code,
         "title": variant.item_name,
-        "price": _variant_price(variant.item_code, settings) or 0,
+        "price": listing_resolver.variant_price(listing, variant.item_code, settings) or 0,
         "compare_at_price": _variant_compare_at_price(variant.item_code) or 0,
         "cost": _variant_cost(variant.item_code) or 0,
         "weight_per_unit": flt(variant.get("weight_per_unit") or 0),
@@ -102,7 +103,7 @@ def _variant_canonical(variant, settings) -> dict:
     }
 
 
-def _variant_set_payload(variant, settings, option_names: list) -> dict:
+def _variant_set_payload(variant, settings, option_names: list, listing) -> dict:
     attrs = {a.attribute: a.attribute_value for a in (variant.attributes or [])}
     payload = {
         "sku": variant.item_code,
@@ -111,17 +112,19 @@ def _variant_set_payload(variant, settings, option_names: list) -> dict:
             for name in option_names
         ],
     }
-    price = _variant_price(variant.item_code, settings)
+    price = listing_resolver.variant_price(listing, variant.item_code, settings)
     if price is not None:
         payload["price"] = f"{price:.2f}"
     else:
         # No Item Price row for this item at all -- NOT the same as a real
         # price of 0. Skip the field (leave Shopify's price untouched)
         # rather than pushing an assumed 0 (same bug shape as the
-        # missing-Bin-as-zero inventory incident).
-        frappe.log_error(
-            title=f"Shopify: no local price for {variant.item_code}, skipping price push",
-            message="Item Price row missing on the configured selling price list.",
+        # missing-Bin-as-zero inventory incident). A missing price is an
+        # expected data gap, not an error -- log quietly so it doesn't fill
+        # the Error Log on every reconciliation of an unpriced item.
+        frappe.logger().warning(
+            f"Shopify: no local price for {variant.item_code}; skipping price push "
+            "(no Item Price on the selling list)."
         )
     if variant.get("sh_shopify_variant_id"):
         payload["id"] = f"gid://shopify/ProductVariant/{variant.sh_shopify_variant_id}"

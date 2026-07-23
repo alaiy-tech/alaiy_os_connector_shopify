@@ -195,9 +195,8 @@ def _wipe_all_items():
     its own new opening-stock Stock Entry.
 
     Raw SQL throughout: going through frappe.delete_doc one Item at a time
-    triggers on_item_delete, which enqueues a re-push-to-Shopify job per
-    variant -- confirmed live to flood the job queue past its cap on a
-    large catalog. Raw DELETE bypasses that entirely.
+    fires Item doc_events per row (and cascades) -- confirmed live to flood
+    the job queue past its cap on a large catalog. Raw DELETE bypasses that.
     """
     shopify_item = "(SELECT name FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != '')"
 
@@ -290,25 +289,42 @@ def _update_existing_product(entity, node: dict) -> tuple:
     variants = node.get("variants", {}).get("nodes", [])
     images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
 
+    # If this product has a Listing, its ABSTRACTED fields (images, price)
+    # belong to the Listing -- a re-import must NOT overwrite the Item's
+    # marketplace-agnostic defaults (same rule the webhook update path
+    # follows). skip_abstracted keeps the Item writes off; we route images +
+    # prices to the Listing below. No Listing => keep the old Item behavior.
+    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+    has_listing = bool(listing_resolver.get_listing(template_name))
+
     has_variants = frappe.db.get_value("Item", template_name, "has_variants")
     if has_variants:
-        _apply_existing_template_content(template_name, node, images, settings)
+        _apply_existing_template_content(template_name, node, images, settings, skip_abstracted=has_listing)
         updated_skus = 0
         missing_skus = []
+        variant_prices = {}
         for variant in variants:
-            sku = (variant.get("sku") or "").strip()
-            if not sku or not frappe.db.exists("Item", sku):
-                missing_skus.append(sku or "(no sku)")
-                continue
-            _apply_existing_variant_content(sku, variant, settings, set_stock=False)
+            sku = _ensure_variant_exists_locally(template_name, variant, entity.external_id, settings)
+            _apply_existing_variant_content(sku, variant, settings, set_stock=False, skip_abstracted=has_listing)
+            price = flt(variant.get("price") or 0)
+            if price > 0:
+                variant_prices[sku] = price
             updated_skus += 1
+        if has_listing:
+            listing_resolver.sync_listing_variants(template_name)
+            listing_resolver.apply_inbound_from_shopify(
+                template_name, images=images, variant_prices=variant_prices)
         reason = f"updated (template + {updated_skus} variant(s))"
-        if missing_skus:
-            reason += f"; {len(missing_skus)} Shopify variant(s) not locally linked, needs manual re-link: {missing_skus[:5]}"
     else:
         variant = variants[0] if variants else {}
         _apply_existing_variant_content(
-            template_name, variant, settings, product_meta=node, images=images, set_stock=False)
+            template_name, variant, settings, product_meta=node, images=images,
+            set_stock=False, skip_abstracted=has_listing)
+        if has_listing:
+            price = flt(variant.get("price") or 0)
+            listing_resolver.apply_inbound_from_shopify(
+                template_name, images=images,
+                template_price=price if price > 0 else None)
         reason = "updated"
 
     entities.save(entity, external_fingerprint=new_fp)
@@ -316,6 +332,33 @@ def _update_existing_product(entity, node: dict) -> tuple:
 
 
 def _import_product(node: dict) -> tuple:
+    """
+    Import a single Shopify product, then make sure it has a manageable
+    Shopify Product Listing. A product linked/imported inbound must get a
+    Listing so it's manageable and so the outbound pipeline (which now reads
+    the Listing) sees it -- ensure_listing is idempotent, so re-imports and
+    updates never duplicate or clobber merchant edits.
+    """
+    created, reason = _import_product_inner(node)
+    product_id = str(node.get("legacyResourceId", ""))
+    if product_id:
+        try:
+            entity = entities.get_by_external_id("product", product_id)
+            if entity and entity.erpnext_name:
+                from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+                listing_resolver.ensure_listing(entity.erpnext_name)
+                # Re-imports can add variants to an existing product -- make
+                # sure any new variant gets a Listing Variant row too.
+                listing_resolver.sync_listing_variants(entity.erpnext_name)
+        except Exception:
+            frappe.log_error(
+                title=f"Shopify import: ensure_listing failed for product {product_id}",
+                message=frappe.get_traceback(),
+            )
+    return created, reason
+
+
+def _import_product_inner(node: dict) -> tuple:
     """
     Import a single Shopify product (template + variants) as Alaiy OS Item(s),
     or update it if already imported and Shopify's data has since changed.
@@ -392,7 +435,7 @@ def _import_product(node: dict) -> tuple:
         return False, "product has zero variants"
 
 
-def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None, set_stock: bool = True):
+def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None, set_stock: bool = True, skip_abstracted: bool = False):
     """
     Populate price/stock/cost/weight (and, for a genuinely standalone
     item, tags/category/SEO/images) on an Item that was auto-linked to
@@ -417,9 +460,14 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     item.save()
     frappe.db.commit()
 
-    price = flt(variant.get("price") or 0)
-    if price > 0:
-        _set_item_price(item_code, price, settings)
+    # selling PRICE is an abstracted (per-marketplace) field -- on the update
+    # path (skip_abstracted) it must NOT overwrite the Item's price default;
+    # the caller routes it to the Listing instead. compare-at, cost and weight
+    # stay Item-level either way.
+    if not skip_abstracted:
+        price = flt(variant.get("price") or 0)
+        if price > 0:
+            _set_item_price(item_code, price, settings)
     compare_at_price = flt(variant.get("compareAtPrice") or 0)
     if compare_at_price > 0:
         _set_item_compare_at_price(item_code, compare_at_price, settings)
@@ -430,16 +478,121 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
         if qty > 0:
             _set_opening_stock(item_code, qty, settings)
 
-    if images:
+    # IMAGES are abstracted too -- skip the Item write on the update path.
+    if images and not skip_abstracted:
         _set_item_image(item_code, images[0])
         if len(images) > 1:
             _set_item_slideshow(item_code, images, settings)
 
 
-def _apply_existing_template_content(template_name: str, product_meta: dict, images: list, settings):
+def _item_attr_map(item_code: str) -> dict:
+    return {
+        r.attribute: r.attribute_value
+        for r in frappe.get_all("Item Variant Attribute",
+            filters={"parent": item_code}, fields=["attribute", "attribute_value"])
+    }
+
+
+def _variant_attr_map(template_name: str, variant: dict) -> dict:
+    """Best-effort attribute map for an inbound Shopify variant node, same
+    resolution _ensure_variant_exists_locally itself uses (selectedOptions,
+    else REST option1/2/3 matched against the template's own attribute
+    order) -- so a sibling lookup compares apples to apples."""
+    selected_options = variant.get("selectedOptions")
+    if selected_options:
+        return {o["name"]: o["value"] for o in selected_options if o.get("name") and o.get("value")}
+    template_attrs = [r.attribute for r in (frappe.get_doc("Item", template_name).attributes or [])]
+    result = {}
+    for i, name in enumerate(template_attrs):
+        val = variant.get(f"option{i+1}") or (variant.get("title") if i == 0 else None)
+        if val:
+            result[name] = val
+    return result
+
+
+def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id: str, settings) -> str:
+    """Ensure a variant node from Shopify exists as an Item under template_name in ERPNext."""
+    sku = (variant.get("sku") or "").strip()
+    v_id = str(variant.get("legacyResourceId") or variant.get("id") or "")
+    if not sku:
+        opt_title = (variant.get("option1") or variant.get("title") or "").strip()
+        sku = f"{template_name}-{opt_title}" if opt_title else f"{template_name}-{v_id}"
+
+    if frappe.db.exists("Item", sku):
+        if v_id and not frappe.db.get_value("Item", sku, "sh_shopify_variant_id"):
+            frappe.db.set_value("Item", sku, "sh_shopify_variant_id", v_id)
+            frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
+        return sku
+
+    # A sibling variant with the SAME attribute values may already exist under
+    # a different code (e.g. an earlier run's generic "-v"/"-<id>" fallback
+    # name, before a real SKU/title was known) -- ERPNext's own
+    # validate_variant_attributes() rejects a second Item with an identical
+    # attribute combo, which would otherwise crash this whole webhook before
+    # it ever reaches the Listing save below. Relink that sibling instead of
+    # inserting a duplicate.
+    incoming_attrs = _variant_attr_map(template_name, variant)
+    if incoming_attrs:
+        for sibling in frappe.get_all("Item", filters={"variant_of": template_name}, pluck="name"):
+            if _item_attr_map(sibling) == incoming_attrs:
+                if v_id:
+                    frappe.db.set_value("Item", sibling, "sh_shopify_variant_id", v_id)
+                    frappe.db.set_value("Item", sibling, "sh_shopify_product_id", product_id)
+                return sibling
+
+    template = frappe.get_doc("Item", template_name)
+    v_item = frappe.new_doc("Item")
+    v_item.item_code = sku
+    v_item.item_name = f"{template.item_name} - {variant.get('title') or v_id}"
+    v_item.variant_of = template_name
+    v_item.item_group = template.item_group
+    v_item.brand = template.brand
+    v_item.description = template.description
+    v_item.stock_uom = template.stock_uom or "Nos"
+    v_item.is_stock_item = 1
+    v_item.include_item_in_selling = 1
+    v_item.include_item_in_buying = 1
+    v_item.sh_shopify_product_id = product_id
+    v_item.sh_shopify_variant_id = v_id
+    template = frappe.get_doc("Item", template_name)
+    template_attrs = [r.attribute for r in (template.attributes or [])]
+    selected_options = variant.get("selectedOptions")
+    if selected_options:
+        for opt in selected_options:
+            name = opt.get("name")
+            val = opt.get("value")
+            if name and val:
+                _ensure_item_attribute(name, [val])
+                v_item.append("attributes", {"attribute": name, "attribute_value": val})
+    else:
+        for i, name in enumerate(template_attrs):
+            opt_val = variant.get(f"option{i+1}") or (variant.get("title") if i == 0 else "Default")
+            if opt_val:
+                _ensure_item_attribute(name, [opt_val])
+                v_item.append("attributes", {"attribute": name, "attribute_value": opt_val})
+    if not v_item.attributes:
+        for name in (template_attrs or ["Title"]):
+            val = variant.get("title") or "Default"
+            _ensure_item_attribute(name, [val])
+            v_item.append("attributes", {"attribute": name, "attribute_value": val})
+
+    default_wh = _default_warehouse_row(settings)
+    if default_wh:
+        v_item.append("item_defaults", default_wh)
+
+    v_item.flags.from_shopify_sync = True
+    v_item.flags.ignore_permissions = True
+    v_item.insert()
+    frappe.db.commit()
+    return sku
+
+
+def _apply_existing_template_content(template_name: str, product_meta: dict, images: list, settings, skip_abstracted: bool = False):
     """Same idea as _apply_existing_variant_content but for the template
-    side of an auto-link -- tags/category/SEO/images describe the
-    product as a whole, so they land on the template, not the variant."""
+    side of an auto-link -- tags/category/SEO describe the product as a whole,
+    so they land on the template. IMAGES are abstracted: on the update path
+    (skip_abstracted) they must NOT overwrite the Item image -- the caller
+    routes them to the Listing instead."""
     template = frappe.get_doc("Item", template_name)
     _apply_product_meta(template, product_meta)
     _dedupe_item_uoms(template)
@@ -448,7 +601,7 @@ def _apply_existing_template_content(template_name: str, product_meta: dict, ima
     template.save()
     frappe.db.commit()
 
-    if images:
+    if images and not skip_abstracted:
         _set_item_image(template_name, images[0])
         if len(images) > 1:
             _set_item_slideshow(template_name, images, settings)
@@ -543,12 +696,10 @@ def _import_simple_product(
         _apply_product_meta(item, product_meta)
     _apply_variant_physical(item, variant)
 
-    # Without this flag, Item's after_insert hook (on_item_change) sees a
-    # freshly-linked item whose sync_to_shopify checkbox is still unchecked
-    # by default, and mistakes that for "flag was just turned off" --
-    # immediately re-archiving the product we just imported back on
-    # Shopify. Setting the flag makes on_item_change no-op for this insert,
-    # same as it does for inbound webhook updates.
+    # from_shopify_sync marks this as inbound so the Item after_insert hook
+    # (listing_hooks.sync_new_variant_to_listing) no-ops for it -- an imported
+    # product manages its own Listing via ensure_listing, and shouldn't be
+    # echoed back to Shopify. Same flag inbound webhook updates use.
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     item.insert()
@@ -721,9 +872,9 @@ def _import_product_with_variants(
         if product_meta:
             _apply_product_meta(template, product_meta)
 
-        # See matching comment in _import_simple_product: without this flag,
-        # the after_insert hook would immediately re-archive this template on
-        # Shopify because sync_to_shopify defaults unchecked on a fresh import.
+        # See matching comment in _import_simple_product: from_shopify_sync
+        # marks this inbound so the Item after_insert hook no-ops (imports own
+        # their Listing via ensure_listing, never echoed back to Shopify).
         template.flags.from_shopify_sync = True
         template.flags.ignore_permissions = True
         template.insert()

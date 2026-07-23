@@ -22,7 +22,6 @@ def sync_connector_registry():
     _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_vendor")
     _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_product_type")
     _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_images")
-    _ensure_list_view_column("Item", "sync_to_shopify", "Sync to Shopify")
     _ensure_list_view_column("Sales Order", "sh_shopify_order_name", "Shopify Order #")
     _ensure_list_view_column("Sales Order", "sh_fulfillment_status", "Shopify Fulfillment Status")
     _ensure_list_view_column("Sales Order", "sh_financial_status", "Shopify Financial Status")
@@ -183,21 +182,12 @@ def setup_custom_fields():
             "description": "Set by the connector when this variant is created on or imported from Shopify. Never hand-edited.",
         },
         {
-            "fieldname": "sync_to_shopify",
-            "label": "Sync to Shopify",
-            "fieldtype": "Check",
-            "default": "0",
-            "in_list_view": 1,
-            "insert_after": "disabled",
-            "description": "Push this Item to Shopify as a product/variant. Variants inherit this flag from their template -- checking/unchecking it on a variant itself has no effect. Unchecking on a template archives the product on Shopify (kept, hidden from sales channels); re-checking unarchives and re-syncs it.",
-        },
-        {
             "fieldname": "sh_shopify_status",
             "label": "Shopify Status",
             "fieldtype": "Select",
             "options": "Active\nDraft",
             "default": "Active",
-            "insert_after": "sync_to_shopify",
+            "insert_after": "disabled",
             "fetch_from": "variant_of.sh_shopify_status",
             "read_only_depends_on": "eval:doc.variant_of",
             "description": "Product visibility on Shopify. Active = live on sales channels; Draft = hidden from customers. Synced both directions. Archived is controlled separately by unchecking Sync to Shopify (or disabling the Item). Set on the template; variants inherit.",
