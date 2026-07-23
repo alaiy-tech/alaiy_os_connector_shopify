@@ -485,6 +485,31 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
             _set_item_slideshow(item_code, images, settings)
 
 
+def _item_attr_map(item_code: str) -> dict:
+    return {
+        r.attribute: r.attribute_value
+        for r in frappe.get_all("Item Variant Attribute",
+            filters={"parent": item_code}, fields=["attribute", "attribute_value"])
+    }
+
+
+def _variant_attr_map(template_name: str, variant: dict) -> dict:
+    """Best-effort attribute map for an inbound Shopify variant node, same
+    resolution _ensure_variant_exists_locally itself uses (selectedOptions,
+    else REST option1/2/3 matched against the template's own attribute
+    order) -- so a sibling lookup compares apples to apples."""
+    selected_options = variant.get("selectedOptions")
+    if selected_options:
+        return {o["name"]: o["value"] for o in selected_options if o.get("name") and o.get("value")}
+    template_attrs = [r.attribute for r in (frappe.get_doc("Item", template_name).attributes or [])]
+    result = {}
+    for i, name in enumerate(template_attrs):
+        val = variant.get(f"option{i+1}") or (variant.get("title") if i == 0 else None)
+        if val:
+            result[name] = val
+    return result
+
+
 def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id: str, settings) -> str:
     """Ensure a variant node from Shopify exists as an Item under template_name in ERPNext."""
     sku = (variant.get("sku") or "").strip()
@@ -498,6 +523,22 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", v_id)
             frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
         return sku
+
+    # A sibling variant with the SAME attribute values may already exist under
+    # a different code (e.g. an earlier run's generic "-v"/"-<id>" fallback
+    # name, before a real SKU/title was known) -- ERPNext's own
+    # validate_variant_attributes() rejects a second Item with an identical
+    # attribute combo, which would otherwise crash this whole webhook before
+    # it ever reaches the Listing save below. Relink that sibling instead of
+    # inserting a duplicate.
+    incoming_attrs = _variant_attr_map(template_name, variant)
+    if incoming_attrs:
+        for sibling in frappe.get_all("Item", filters={"variant_of": template_name}, pluck="name"):
+            if _item_attr_map(sibling) == incoming_attrs:
+                if v_id:
+                    frappe.db.set_value("Item", sibling, "sh_shopify_variant_id", v_id)
+                    frappe.db.set_value("Item", sibling, "sh_shopify_product_id", product_id)
+                return sibling
 
     template = frappe.get_doc("Item", template_name)
     v_item = frappe.new_doc("Item")
