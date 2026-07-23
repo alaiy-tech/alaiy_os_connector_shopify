@@ -217,7 +217,7 @@ def _handle_product_update(product_id: str, product: dict):
             entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
 
     frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
-
+ 
 
 def _update_item_from_shopify(item, product: dict):
     """
@@ -355,16 +355,11 @@ def _update_item_from_shopify(item, product: dict):
     )
     from alaiy_os_connector_shopify.shopify.product.masters import _ensure_uom
     from alaiy_os_connector_shopify.shopify.product.variants import _REST_WEIGHT_UNIT_TO_UOM
+    from alaiy_os_connector_shopify.shopify.product.importer import _ensure_variant_exists_locally
     for variant in (product.get("variants") or []):
-        sku = (variant.get("sku") or "").strip()
-        if not sku or not frappe.db.exists("Item", sku):
-            continue
+        sku = _ensure_variant_exists_locally(item.name, variant, entity.external_id, settings)
         price = flt(variant.get("price") or 0)
         if price > 0:
-            # Price is LISTING-scoped: a Shopify price edit lands on the
-            # matching Listing Variant row, not the Item's price list (the
-            # marketplace-agnostic default). Fall back to Item Price only when
-            # there's no Listing row for this variant.
             row = next((r for r in listing.variants if r.item_variant == sku), None) if listing else None
             if row:
                 if flt(row.variant_price) != price:

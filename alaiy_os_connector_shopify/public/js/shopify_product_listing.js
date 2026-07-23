@@ -42,13 +42,9 @@ function add_populate_button(frm) {
                 if (!r.message) {
                     return;
                 }
+                frm.clear_table("images");
                 (r.message.images || []).forEach((row) => {
-                    const exists = (frm.doc.images || []).some(
-                        (x) => x.image && row.image && x.image.trim() === row.image.trim()
-                    );
-                    if (!exists) {
-                        frm.add_child("images", row);
-                    }
+                    frm.add_child("images", row);
                 });
                 (r.message.variants || []).forEach((row) => {
                     const exists = (frm.doc.variants || []).some(
