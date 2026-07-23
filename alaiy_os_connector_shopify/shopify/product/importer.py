@@ -195,9 +195,8 @@ def _wipe_all_items():
     its own new opening-stock Stock Entry.
 
     Raw SQL throughout: going through frappe.delete_doc one Item at a time
-    triggers on_item_delete, which enqueues a re-push-to-Shopify job per
-    variant -- confirmed live to flood the job queue past its cap on a
-    large catalog. Raw DELETE bypasses that entirely.
+    fires Item doc_events per row (and cascades) -- confirmed live to flood
+    the job queue past its cap on a large catalog. Raw DELETE bypasses that.
     """
     shopify_item = "(SELECT name FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != '')"
 
@@ -570,12 +569,10 @@ def _import_simple_product(
         _apply_product_meta(item, product_meta)
     _apply_variant_physical(item, variant)
 
-    # Without this flag, Item's after_insert hook (on_item_change) sees a
-    # freshly-linked item whose sync_to_shopify checkbox is still unchecked
-    # by default, and mistakes that for "flag was just turned off" --
-    # immediately re-archiving the product we just imported back on
-    # Shopify. Setting the flag makes on_item_change no-op for this insert,
-    # same as it does for inbound webhook updates.
+    # from_shopify_sync marks this as inbound so the Item after_insert hook
+    # (listing_hooks.sync_new_variant_to_listing) no-ops for it -- an imported
+    # product manages its own Listing via ensure_listing, and shouldn't be
+    # echoed back to Shopify. Same flag inbound webhook updates use.
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     item.insert()
@@ -748,9 +745,9 @@ def _import_product_with_variants(
         if product_meta:
             _apply_product_meta(template, product_meta)
 
-        # See matching comment in _import_simple_product: without this flag,
-        # the after_insert hook would immediately re-archive this template on
-        # Shopify because sync_to_shopify defaults unchecked on a fresh import.
+        # See matching comment in _import_simple_product: from_shopify_sync
+        # marks this inbound so the Item after_insert hook no-ops (imports own
+        # their Listing via ensure_listing, never echoed back to Shopify).
         template.flags.from_shopify_sync = True
         template.flags.ignore_permissions = True
         template.insert()
