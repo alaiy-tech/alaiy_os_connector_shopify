@@ -241,7 +241,7 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
         filters=[["sh_shopify_variant_id", "is", "set"]],
         fields=["name", "sh_shopify_variant_id"],
     )
-    # #60: Listing Variant's copy wins where it has one -- bulk-resolved
+    # Listing Variant's copy wins where it has one -- bulk-resolved
     # (one query) rather than a per-item lookup, to keep this scan cheap.
     listing_ids = {
         r.item_variant: r.sh_shopify_variant_id

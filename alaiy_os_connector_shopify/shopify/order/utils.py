@@ -123,7 +123,7 @@ def _resolve_item_code(line_item):
 
     variant_id = str(line_item.get("variant_id") or "")
     if variant_id:
-        # #60: Listing Variant's copy first (owning row), Item as fallback --
+        # Listing Variant's copy first (owning row), Item as fallback --
         # same helper already used elsewhere for this exact reverse lookup.
         by_variant = listing_resolver.item_by_variant_id(variant_id)
         if by_variant:

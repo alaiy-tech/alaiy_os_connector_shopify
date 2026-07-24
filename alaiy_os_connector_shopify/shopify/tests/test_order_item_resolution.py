@@ -1,8 +1,8 @@
 """
-#60: order line-item -> Item resolution must agree whether the variant id
-lives on the Listing Variant row or (pre-migration) only on the Item --
-a wrong answer here means an order gets matched to the wrong SKU. No DB
-needed: frappe.db.get_value is mocked to simulate both states.
+Order line-item -> Item resolution must agree whether the variant id
+lives on the Listing Variant row or only on the Item -- a wrong answer
+here means an order gets matched to the wrong SKU. No DB needed:
+frappe.db.get_value is mocked to simulate both states.
 """
 
 import unittest
@@ -52,9 +52,9 @@ class TestResolveItemCode(unittest.TestCase):
                 "Shopify Listing Variant", {"sh_shopify_variant_id": "123"}, "item_variant"
             )
 
-    def test_variant_id_falls_back_to_item_and_agrees_with_pre_60_behavior(self):
-        # Pre-#60, this same line item resolved straight off Item -- the
-        # fallback path must still return the exact same SKU.
+    def test_variant_id_falls_back_to_item_when_listing_variant_lacks_it(self):
+        # A line item with no Listing Variant match must still resolve via
+        # the Item fallback path, returning the exact same SKU.
         with patch("frappe.db.exists", return_value=False), \
              patch("frappe.db.get_value", side_effect=[None, "SKU-FROM-ITEM"]):
             code = _resolve_item_code({"sku": "", "variant_id": "123"})

@@ -112,7 +112,7 @@ def push_order_create(sales_order: str):
     line_items = []
     skipped = []
     for item in so.items:
-        # #60: Listing Variant's copy first, Item as fallback.
+        # Listing Variant's copy first, Item as fallback.
         variant_id = listing_resolver.variant_id_of_item(item.item_code)
         if not variant_id:
             skipped.append(item.item_code)

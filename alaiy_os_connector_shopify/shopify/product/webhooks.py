@@ -341,9 +341,9 @@ def _update_item_from_shopify(item, product: dict):
         for row in listing.variants:
             if row.is_enabled and row.item_variant not in incoming_skus:
                 row.is_enabled = 0
-                # #60: clear the Listing Variant's own copy too, else a
-                # disabled row keeps a stale id that could later resolve to
-                # the wrong Shopify variant if this SKU gets re-added there.
+                # Clear the Listing Variant's own copy too, else a disabled
+                # row keeps a stale id that could later resolve to the
+                # wrong Shopify variant if this SKU gets re-added there.
                 row.sh_shopify_variant_id = None
                 frappe.db.set_value("Item", row.item_variant, "sh_shopify_variant_id", None)
                 frappe.db.set_value("Item", row.item_variant, "sh_shopify_product_id", None)
@@ -362,7 +362,6 @@ def _update_item_from_shopify(item, product: dict):
     from alaiy_os_connector_shopify.shopify.product.importer import _ensure_variant_exists_locally
     product_id = str(product.get("id", ""))
     if listing and not listing.sh_shopify_product_id and product_id:
-        # #60: real field now, not fetch_from -- copy explicitly if still blank.
         listing.sh_shopify_product_id = product_id
         listing_dirty = True
     for variant in (product.get("variants") or []):
@@ -383,7 +382,7 @@ def _update_item_from_shopify(item, product: dict):
                 })
                 listing_dirty = True
             elif v_id and row.sh_shopify_variant_id != v_id:
-                # #60: keep the Listing row's id in step (real field now).
+                # Keep the Listing row's id in step with the Item's.
                 row.sh_shopify_variant_id = v_id
                 listing_dirty = True
         price = flt(variant.get("price") or 0)
@@ -443,7 +442,7 @@ def _handle_product_delete(product_id: str, product: dict):
 
         # Disable the Listing too, or the hourly outbound reconciliation would
         # re-push (and recreate on Shopify) a product just deleted there.
-        # #60: the Listing's id field is a real column now (not fetch_from),
+        # the Listing's id field is a real column now (not fetch_from),
         # so it and every Listing Variant row's own id need clearing too, or
         # the Listing-first read sites would keep resolving to a dead id.
         if frappe.db.exists("Shopify Product Listing", item.name):

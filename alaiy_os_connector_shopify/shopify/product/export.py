@@ -226,7 +226,7 @@ def _push_product_unlocked(item):
     product_input = _product_set_input(item, variants, settings, listing, client)
 
     identifier = None
-    # #60: Listing's copy first (dual-written on every push below), Item as fallback.
+    # Listing's copy first (dual-written on every push below), Item as fallback.
     product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
     if product_id:
         identifier = {
@@ -274,7 +274,7 @@ def _push_product_unlocked(item):
                     SET sh_shopify_variant_id = NULL
                     WHERE sh_shopify_variant_id = %s
                 """, v_id)
-                # #60: clear the Listing Variant's copy too so the two don't drift.
+                # Clear the Listing Variant's copy too so the two don't drift.
                 frappe.db.sql("""
                     UPDATE `tabShopify Listing Variant`
                     SET sh_shopify_variant_id = NULL
@@ -306,10 +306,10 @@ def _push_product_unlocked(item):
     if item.sh_shopify_product_id != product_id:
         frappe.db.set_value("Item", item.name,
                             "sh_shopify_product_id", product_id)
-    # #60 transition: dual-write -- Item stays the id's ultimate owner until
-    # every read site has moved to the Listing-based lookups, but the Listing's
-    # own copy is now a real field (no longer fetch_from), so it must be kept
-    # in step here or it goes stale the moment fetch_from stops auto-copying.
+    # Dual-write -- Item stays the id's ultimate owner until every read site
+    # has moved to the Listing-based lookups, but the Listing's own copy is
+    # a real field (no longer fetch_from), so it must be kept in step here
+    # or it goes stale the moment fetch_from stops auto-copying.
     listing_resolver.set_product_id(item.name, product_id)
     frappe.db.set_value("Shopify Product Listing", listing.name,
                         "last_synced_at", frappe.utils.now_datetime())
