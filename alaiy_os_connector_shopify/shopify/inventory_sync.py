@@ -134,7 +134,15 @@ def _backfill_missing_default_warehouse(warehouse):
     for row in missing:
         try:
             item = frappe.get_doc("Item", row.name)
-            item.append("item_defaults", {"company": company, "default_warehouse": warehouse})
+            # ERPNext allows only ONE Item Default row per company -- if one
+            # already exists (with a different warehouse), update it in
+            # place instead of appending a second row for the same company,
+            # which validate_item_defaults rejects outright.
+            existing = next((d for d in item.item_defaults if d.company == company), None)
+            if existing:
+                existing.default_warehouse = warehouse
+            else:
+                item.append("item_defaults", {"company": company, "default_warehouse": warehouse})
             item.flags.ignore_permissions = True
             item.save()
         except Exception:
