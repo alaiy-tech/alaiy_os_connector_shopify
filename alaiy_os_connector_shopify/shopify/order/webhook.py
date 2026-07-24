@@ -39,6 +39,14 @@ def handle_order_webhook(topic, payload):
 def _cancel_order(order):
     order_id = str(order.get("id", ""))
     so_name = get_active_sales_order(order_id)
+    if so_name and not frappe.db.exists("Sales Order", so_name):
+        # Mapping points at a Sales Order that no longer exists locally
+        # (deleted directly, or the mapping otherwise went stale) -- nothing
+        # to cancel, and retrying frappe.get_doc would just raise.
+        frappe.logger().debug(
+            f"Shopify: order cancel webhook for {order_id} skipped, "
+            f"mapped Sales Order {so_name} no longer exists")
+        return
     if so_name:
         so = frappe.get_doc("Sales Order", so_name)
         if so.docstatus == 1:
