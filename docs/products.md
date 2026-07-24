@@ -10,8 +10,8 @@ Tags, Categories, Collections and Sales Channels are product-adjacent domains wi
 
 | Field | Type | Notes |
 |---|---|---|
-| `sh_shopify_product_id` | Data, read-only, indexed | Set on import/first push. Variants fetch it from their template. |
-| `sh_shopify_variant_id` | Data, read-only, indexed | Shopify variant id for this Item. |
+| `sh_shopify_product_id` | Data, read-only, indexed | Legacy copy; the Listing's own copy is now the primary lookup, this is the fallback (see below). |
+| `sh_shopify_variant_id` | Data, read-only, indexed | Legacy copy; same fallback relationship with the Listing Variant row's own copy. |
 | `sh_shopify_status` | Select (Active/Draft) | Product visibility; template-level, variants inherit. |
 | `sh_shopify_product_type` | Data | Shopify `productType`; kept separate from Item Group. |
 | `sh_shopify_category` | Link → Shopify Category | Standard Product Taxonomy node ([Categories](categories.md)). |
@@ -31,9 +31,9 @@ Scalar fields (`sh_shopify_product_type`, `sh_shopify_category`, `sh_shopify_sta
 
 **Item saves no longer push.** Editing an Item is inert for Shopify; only saving/enabling its Listing pushes. Category, brand, tags, and UOM stay Item-level (not part of the abstraction this phase).
 
-**IDs stay on Item (this phase), single source of truth.** `sh_shopify_product_id` / `sh_shopify_variant_id` physically live on Item and are the sole lookup source for order matching, inventory push, importer idempotency, and collections. The Listing's own id fields are **read-only `fetch_from` views** of the Item — displayed, never written independently, so there's no drifting mirror (contract rule 4). Relocating id *ownership* onto the Listing (and dropping the Item columns) is a separate, verification-gated phase.
+**IDs live on the Listing, Item is the fallback.** `Shopify Product Listing.sh_shopify_product_id` and `Shopify Listing Variant.sh_shopify_variant_id` are real, independently-writable columns (not `fetch_from`) — every read site (order matching, inventory push, importer idempotency, export write-back, collections) resolves the Listing's copy first via `listing.py`'s lookup helpers (`item_by_variant_id`, `template_by_product_id`, `variant_id_of_item`, `variant_shopify_id`), falling back to the Item's own copy only if the Listing's is blank. Every write path dual-writes both sides (`listing.set_product_id`/`set_variant_id`), so the two stay in step. The Item columns remain purely as a fallback safety net for now — dropping them entirely is a separate, deliberately deferred step, held back for a longer confidence window in production.
 
-A one-time patch (`patches/create_shopify_product_listings.py` → `listing.ensure_listing`) backfills a Listing for every already-linked Item; inbound imports call the same `ensure_listing` so every linked product stays manageable. UI is a placeholder for now: a **Shopify Listing** button on the template Item form (`public/js/item.js`).
+A one-time patch (`patches/create_shopify_product_listings.py` → `listing.ensure_listing`) backfills a Listing for every already-linked Item; a second patch (`patches/backfill_listing_ids.py`) fixes any Listing/Listing Variant row whose id field was still blank from before the dual-write existed. Inbound imports call `ensure_listing` so every linked product stays manageable. UI is a placeholder for now: a **Shopify Listing** button on the template Item form (`public/js/item.js`).
 
 ---
 
@@ -87,6 +87,13 @@ Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` 
 ### Product type & Item Group
 - `sh_shopify_product_type` ⇄ Shopify `productType`, always synced (no toggle).
 - **Item Group** follows the product's Shopify **category taxonomy** path — `_ensure_item_group_path` (`masters.py`) builds a nested Item Group tree from the category `fullName` ("Apparel & Accessories > Clothing > Shirts") and assigns the leaf; falls back to flat `productType` under "All Item Groups" only when a product has no category.
+
+### Metafields
+`shopify/product/metafields.py` — full fetch/push of Shopify product metafields (custom fields), stored on a `Shopify Product Metafield` child table on the Listing (namespace/key/type/value). Never on Item — metafields are marketplace-specific, same rule as every other Listing field.
+
+- **Import**: runs from `_import_product`'s single chokepoint (`_sync_product_metafields`), so it fires on every create/update/skip pass, not just new products. `_PRODUCTS_QUERY` fetches `metafields(first: 250)` inline per product; `all_metafields_of` follows pagination past that for the rare product with more than 250. Full replace each run (Shopify is the source of truth — a metafield deleted there disappears from the Listing too, not left stale).
+- **Export**: `push_listing_metafields` pushes every row on the Listing back via `metafieldsSet`, right after a successful `productSet` push. Best-effort — never fails the product push it rides on.
+- **Backfill for already-imported products**: `backfill_all_product_metafields()` (whitelisted, `bench execute`) fetches metafields directly for every Listing that already has a Shopify product id, without re-running the full import/diff machinery — a normal `Import Products` re-run also picks up metafields for existing products (the sync step isn't gated by "changed"), but this is the lighter targeted option.
 
 ### Status: Active / Draft / Archived
 - `sh_shopify_status` (Active/Draft) is pushed as the product `status` and is part of the fingerprint (so flipping it re-pushes). Imported back from `product.status`.

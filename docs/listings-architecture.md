@@ -36,7 +36,7 @@ Every connector's `<Connector> Product Listing` MUST have these, same names/mean
 | `listing_price` | Currency | Blank → inherits the connector's price-list rate |
 | `images` | Table → `<Connector> Listing Image` | Ordered; each row has `source` = Original / AI Enhanced + `generated_by_agent` |
 | `variants` | Table → `<Connector> Listing Variant` | Per-variant `is_enabled` + `variant_price` (blank inherits) |
-| `<external>_product_id` | Data, read-only | The marketplace's product id |
+| `<external>_product_id` | Data, read-only from the desk UI, connector-writable | The marketplace's product id — the listing's own copy, set by the connector on push/import |
 | `last_synced_at` | Datetime, read-only | Last successful push |
 
 **Child — Listing Variant:** `item_variant` (Link Item), `is_enabled`,
@@ -50,39 +50,45 @@ They never leak into the shared contract.
 
 ---
 
-## 3. The registry seam (how the agent finds the doctype)
+## 3. Per-marketplace agents, not a shared registry seam
 
-Each connector declares its listing doctype in `connector_meta`:
+Superseded design note: an earlier plan had a single connector-agnostic
+enrichment agent discover each connector's listing doctype via a
+`listing_doctype` pointer on the core `OS Connector Registry`, so one agent
+could write into any connector's listing doctype without connector-specific
+code. That plan was dropped — each marketplace instead gets its own custom
+agent (Shopify Agent, Amazon Agent, …), with its own doctype for
+generated/draft listings that can carry validation errors and be reviewed
+before pushing. The connector itself stays scoped to sync operations only
+(pull/push/reconcile); anything beyond that — draft generation, AI
+enrichment, review workflows — lives in the marketplace's own agent, not in
+a shared cross-connector layer.
 
-```python
-"listing_doctype": "Shopify Product Listing"   # Amazon: "Amazon Product Listing"
-```
-
-This upserts into **OS Connector Registry** (core `alaiy_os`). An enrichment
-agent reads the registry, learns "for connector X, write into doctype Y", and
-fills `listing_title` / `listing_description` / `images` there — **no
-connector-specific code in the agent**. Requires the `listing_doctype` field to
-exist on `OS Connector Registry` (core change, once).
+This doc's Section 2 field contract (Item vs Listing split, blank-inherits,
+per-marketplace enable) still holds — that's a per-connector pattern worth
+reusing, just not wired through a generic registry pointer anymore.
 
 ---
 
 ## 4. Division of responsibility
 
 ```
-Enrichment agent (shared, connector-agnostic)
+Marketplace agent (Shopify Agent, Amazon Agent, ... -- one per marketplace)
   reads Item + raw data -> writes enriched title/desc/images into
-  the connector's listing doctype (via registry pointer). Caches
-  expensive content per (product, variant); never caches price/stock.
+  that marketplace's own draft-listing doctype. Caches expensive
+  content per (product, variant); never caches price/stock.
 
-Each connector (owns its own push)
+The connector (owns its own sync only)
   reads its listing -> builds the marketplace payload -> submits.
   Shopify: productSet (forgiving, one call).
   Amazon:  SP-API + validate/reject/fix loop (strict), Excel fallback.
 ```
 
-The agent orchestrates *what* to enrich; the connector owns *how* to submit.
-Marketplace strictness (Amazon's reject-and-fix loop) stays inside that
-connector — it never becomes the agent's or another connector's problem.
+Each marketplace's agent owns *what* to enrich for that marketplace; the
+connector owns *how* to submit. Marketplace strictness (Amazon's
+reject-and-fix loop) stays inside that connector — it never becomes another
+connector's problem, and connectors stay scoped to credit/sync operations
+only.
 
 ---
 
@@ -92,8 +98,10 @@ connector — it never becomes the agent's or another connector's problem.
    (Shopify's old `Item.sync_to_shopify` was removed for this reason.)
 2. **Blank inherits, filled overrides** — everywhere, no exceptions.
 3. **Price/stock resolved live**, never cached, even with cached enriched content.
-4. **IDs owned by the listing** (or Item, if a connector defers that) — but one
-   source of truth, never a drifting mirror.
+4. **IDs owned by the listing.** Shopify's listing owns `sh_shopify_product_id`/
+   `sh_shopify_variant_id` as real writable fields; the Item's own copy is kept
+   only as a fallback (dual-written on every update) until it's eventually
+   dropped — never a drifting mirror in the meantime.
 5. **One listing per (product, connector)**, keyed to the template Item.
 6. **Fingerprint/idempotency on resolved values** so an inherited Item change
    still triggers a re-push, and redelivered work is a no-op.
