@@ -357,11 +357,16 @@ def _update_item_from_shopify(item, product: dict):
     from alaiy_os_connector_shopify.shopify.product.variants import _REST_WEIGHT_UNIT_TO_UOM
     from alaiy_os_connector_shopify.shopify.product.importer import _ensure_variant_exists_locally
     product_id = str(product.get("id", ""))
+    if listing and not listing.sh_shopify_product_id and product_id:
+        # #60: real field now, not fetch_from -- copy explicitly if still blank.
+        listing.sh_shopify_product_id = product_id
+        listing_dirty = True
     for variant in (product.get("variants") or []):
         sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings)
         row = None
         if listing:
             row = next((r for r in listing.variants if r.item_variant == sku), None)
+            v_id = str(variant.get("id") or variant.get("legacyResourceId") or "") or None
             if not row:
                 # Brand-new variant added on Shopify: _ensure_variant_exists_locally
                 # just created its Item, but with no Listing Variant row it would
@@ -369,7 +374,13 @@ def _update_item_from_shopify(item, product: dict):
                 # includes listed rows) until someone runs a full re-import. Add
                 # it here too, same as importer.sync_listing_variants does on
                 # the re-import path.
-                row = listing.append("variants", {"item_variant": sku, "is_enabled": 1})
+                row = listing.append("variants", {
+                    "item_variant": sku, "is_enabled": 1, "sh_shopify_variant_id": v_id,
+                })
+                listing_dirty = True
+            elif v_id and row.sh_shopify_variant_id != v_id:
+                # #60: keep the Listing row's id in step (real field now).
+                row.sh_shopify_variant_id = v_id
                 listing_dirty = True
         price = flt(variant.get("price") or 0)
         if price > 0:
