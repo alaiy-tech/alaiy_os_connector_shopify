@@ -20,7 +20,7 @@ def archive_item(item_code: str):
     item = frappe.get_doc("Item", item_code)
     if item.variant_of:
         return
-    # #60: prefer the Listing's copy of the id (dual-written on every push),
+    # Prefer the Listing's copy of the id (dual-written on every push),
     # fall back to Item's -- Item stays the ultimate owner until every read
     # site has moved, but reads now go through the Listing first.
     listing = listing_resolver.get_listing(item.name)

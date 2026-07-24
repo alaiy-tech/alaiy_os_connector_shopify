@@ -46,8 +46,8 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
     Shopify products are created, changed ones are updated, unchanged ones
     are skipped untouched -- no wipe, since re-wiping a live catalog on
     every click is both wasteful (redoes thousands of unchanged items) and
-    risky (this exact wipe is what emptied real stock data right before a
-    scheduler fired during the 20-07-2026 incident).
+    risky (this exact wipe emptied real stock data once when a scheduler
+    fired mid-wipe).
 
     Args:
         trigger: "manual", "scheduled", or "webhook"
@@ -226,7 +226,7 @@ def _wipe_all_items():
     frappe.db.sql(f"DELETE FROM `tabItem Default` WHERE parent IN {shopify_item}")
     frappe.db.sql(f"DELETE FROM `tabItem Variant Attribute` WHERE parent IN {shopify_item}")
     frappe.db.sql(f"DELETE FROM `tabItem Barcode` WHERE parent IN {shopify_item}")
-    # #60: Listing now owns the id too -- wipe its rows along with the Item,
+    # Listing now owns the id too -- wipe its rows along with the Item,
     # else a stale Listing carrying the old product/variant id survives the
     # wipe and confuses the next import's "does this already exist" checks.
     frappe.db.sql(f"DELETE FROM `tabShopify Listing Variant` WHERE parent IN {shopify_item}")
@@ -663,7 +663,7 @@ def _import_simple_product(
 
     # Check if Item with this SKU already exists
     if frappe.db.exists("Item", sku):
-        # #60: whether this Item is already linked to Shopify -- Listing's
+        # Whether this Item is already linked to Shopify -- Listing's
         # copy first (owning template if it's a variant), Item as fallback.
         existing_variant_of = frappe.db.get_value("Item", sku, "variant_of")
         existing_id = frappe.db.get_value(
@@ -874,7 +874,7 @@ def _import_product_with_variants(
         existing_parent = frappe.db.get_value("Item", v_sku, "variant_of")
         if not existing_parent:
             continue
-        # #60: Listing's copy first (owning template), Item as fallback.
+        # Listing's copy first (owning template), Item as fallback.
         existing_pid = frappe.db.get_value(
             "Shopify Product Listing", existing_parent, "sh_shopify_product_id"
         ) or frappe.db.get_value("Item", v_sku, "sh_shopify_product_id")
@@ -945,7 +945,7 @@ def _import_product_with_variants(
         # Check for SKU conflict
         if frappe.db.exists("Item", sku):
             existing_parent_of = frappe.db.get_value("Item", sku, "variant_of")
-            # #60: Listing's copy first (owning template), Item as fallback.
+            # Listing's copy first (owning template), Item as fallback.
             existing_id = frappe.db.get_value(
                 "Shopify Product Listing", existing_parent_of or template_name, "sh_shopify_product_id"
             ) or frappe.db.get_value("Item", sku, "sh_shopify_product_id")

@@ -33,7 +33,7 @@
       "label": "Variant Price"
     },
     {
-      "description": "Owning copy of the Shopify variant id (#60: relocated off Item). Set by the connector on push/import. Never hand-edited.",
+      "description": "Owning copy of the Shopify variant id. Set by the connector on push/import. Never hand-edited.",
       "fieldname": "sh_shopify_variant_id",
       "fieldtype": "Data",
       "label": "Shopify Variant ID",

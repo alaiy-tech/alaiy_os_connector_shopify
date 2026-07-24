@@ -16,10 +16,8 @@ from alaiy_os_connector_shopify.shopify.product import listing as listing_resolv
 
 def on_sales_order_update(doc, method=None):
     # Plain logger, not frappe.log_error -- these are routine trace/skip
-    # points, not failures. Confirmed live: leaving debug traces on
-    # log_error made Error Log indistinguishable from real crashes for
-    # anyone checking it (same mistake found in tags.py during the 21-07
-    # audit).
+    # points, not failures. Leaving debug traces on log_error makes Error
+    # Log indistinguishable from real crashes for anyone checking it.
     if doc.flags.from_shopify_sync:
         frappe.logger().debug(
             f"Shopify: on_sales_order_update {doc.name} skipped, from_shopify_sync flag set")
@@ -67,7 +65,7 @@ def on_sales_order_submit(doc, method=None):
         return
     if doc.get("sh_shopify_order_id"):
         return  # already a Shopify-origin order, nothing to push
-    # #60: Listing Variant's copy first, Item as fallback.
+    # Listing Variant's copy first, Item as fallback.
     if not any(
         listing_resolver.variant_id_of_item(item.item_code)
         for item in doc.items

@@ -5,20 +5,18 @@ variants push, at what price, is this product live" have exactly one
 definition instead of being recomputed (and drifting) across canonical.py,
 export.py, and variants.py.
 
-Design (per the 21-07 listings decision):
+Design:
 - A Listing is 1:1 with a TEMPLATE Item and is the sole gate for whether the
   product is live on Shopify (`is_enabled`), fully replacing Item.sync_to_shopify.
 - Listing content fields (title/description/price/images, and per-variant
   enable/price) are OVERRIDES: blank inherits the Item's current value at push
   time, so an un-diverged listing needs no copied data.
 
-#60 id relocation (in progress): the Listing's sh_shopify_product_id /
-Shopify Listing Variant's sh_shopify_variant_id are now real, independently
-writable fields (no longer a fetch_from view of Item). During the transition
-BOTH Item and Listing are kept in sync on every write -- callers are being
-switched over to the Listing-based lookups below one at a time (see
-tasks/id-relocation-impact-60.md for the order); Item stays the fallback
-until every read site has moved and a full sync cycle has verified it.
+The Listing's sh_shopify_product_id / Shopify Listing Variant's
+sh_shopify_variant_id are real, independently writable fields (not a
+fetch_from view of Item). Every read site resolves the Listing's copy
+first, falling back to Item's when blank -- both sides are kept in sync
+on every write so the two never drift.
 """
 
 import frappe
@@ -144,16 +142,15 @@ def variant_price(listing, variant_code: str, settings):
     return _variant_price(variant_code, settings)
 
 
-# ── ID ownership (#60) ───────────────────────────────────────────────────────
-# New Listing-based lookups, used ALONGSIDE the existing Item-based ones while
-# every caller is switched over one at a time (see id-relocation-impact-60.md
-# for the order). Item stays the fallback until every read site has moved.
+# ── ID ownership ──────────────────────────────────────────────────────────
+# Listing-based lookups, with the Item as fallback for any row that hasn't
+# been dual-written to yet.
 
 def item_by_variant_id(variant_id: str):
     """Shopify variant id -> the Alaiy OS variant Item code, via the Listing
-    Variant row. Falls back to the legacy Item-side lookup if the Listing
-    doesn't have it yet (e.g. a listing created before this phase, or a
-    variant whose row hasn't been dual-written to). None if neither has it."""
+    Variant row. Falls back to the Item-side lookup if the Listing doesn't
+    have it (e.g. a row that hasn't been dual-written to). None if neither
+    has it."""
     if not variant_id:
         return None
     row_parent = frappe.db.get_value(
@@ -165,7 +162,7 @@ def item_by_variant_id(variant_id: str):
 
 def template_by_product_id(product_id: str):
     """Shopify product id -> the Alaiy OS template Item code, via the Listing.
-    Falls back to the legacy Item-side lookup the same way."""
+    Falls back to the Item-side lookup the same way."""
     if not product_id:
         return None
     listing_item = frappe.db.get_value(
@@ -176,8 +173,7 @@ def template_by_product_id(product_id: str):
 
 
 def set_product_id(template_name: str, product_id):
-    """Dual-write during the transition: keep the Listing's copy in step with
-    the Item's (still the id's ultimate owner until #60 finishes). No-op if
+    """Dual-write: keep the Listing's copy in step with the Item's. No-op if
     there's no Listing for this template yet."""
     if frappe.db.exists("Shopify Product Listing", template_name):
         frappe.db.set_value("Shopify Product Listing", template_name,
@@ -249,9 +245,9 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     listing.item = tmpl.name
     listing.is_enabled = 1 if default_enabled else 0
     listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
-    # #60: sh_shopify_product_id is a real, independently-writable field now
-    # (was a fetch_from view) -- copy the Item's current value explicitly, or
-    # a freshly-created Listing would start with a blank id.
+    # sh_shopify_product_id is a real, independently-writable field (not a
+    # fetch_from view) -- copy the Item's current value explicitly, or a
+    # freshly-created Listing would start with a blank id.
     listing.sh_shopify_product_id = tmpl.sh_shopify_product_id or None
     # title/description/price left blank -> inherit from Item via the resolver.
     # Image/variant child rows are filled by the controller's before_insert
@@ -301,7 +297,7 @@ def sync_listing_variants(template_name):
     for v in frappe.get_all("Item", filters={"variant_of": template_name},
                              fields=["name", "sh_shopify_variant_id"]):
         if v.name not in listed:
-            # #60: copy the variant id explicitly (real field now, not fetch_from).
+            # Copy the variant id explicitly (real field now, not fetch_from).
             listing.append("variants", {
                 "item_variant": v.name, "is_enabled": 1,
                 "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
@@ -365,7 +361,7 @@ def fill_children_from_item(listing):
     if not tmpl:
         return
 
-    # #60: real field now, not fetch_from -- copy explicitly if still blank.
+    # Real field now, not fetch_from -- copy explicitly if still blank.
     if not listing.sh_shopify_product_id and tmpl.sh_shopify_product_id:
         listing.sh_shopify_product_id = tmpl.sh_shopify_product_id
 
