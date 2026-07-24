@@ -93,7 +93,7 @@
     },
     {
       "fieldname": "image_url",
-      "fieldtype": "Data",
+      "fieldtype": "Small Text",
       "label": "Image URL"
     },
     {
