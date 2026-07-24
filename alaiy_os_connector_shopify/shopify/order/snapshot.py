@@ -171,7 +171,7 @@ def _detect_added_items(doc) -> list:
         if (item.item_code, variant_id) in before_keys:
             continue
         if not variant_id:
-            # #60: Listing Variant's copy first, Item as fallback.
+            # Listing Variant's copy first, Item as fallback.
             variant_id = listing_resolver.variant_id_of_item(item.item_code)
         if not variant_id:
             continue

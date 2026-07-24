@@ -316,7 +316,7 @@ def get_collection_products(collection_name: str):
                 pid = str(n.get("legacyResourceId") or "")
                 item_code = None
                 if pid:
-                    # #60: Listing-based lookup first, falls back to Item.
+                    # Listing-based lookup first, falls back to Item.
                     item_code = listing_resolver.template_by_product_id(pid)
                 products.append({
                     "title": n.get("title"),

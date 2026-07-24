@@ -72,7 +72,7 @@
       "options": "Shopify Listing Variant"
     },
     {
-      "description": "Owning copy of the Shopify product id (#60: relocated off Item). Set by the connector on push/import. Never hand-edited.",
+      "description": "Owning copy of the Shopify product id. Set by the connector on push/import. Never hand-edited.",
       "fieldname": "sh_shopify_product_id",
       "fieldtype": "Data",
       "in_list_view": 1,

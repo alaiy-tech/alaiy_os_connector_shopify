@@ -1,15 +1,15 @@
 """
-#60: one-time backfill for Shopify Product Listing / Shopify Listing Variant
+One-time backfill for Shopify Product Listing / Shopify Listing Variant
 rows whose id fields are blank even though the matching Item already has one.
 
 Gap: sync_listing_variants only APPENDS a row for a variant that isn't
 listed yet -- it never backfills an id onto a row that already exists with
 a blank sh_shopify_variant_id. Any Listing (or Listing Variant row) created
-before the #60 dual-write went live can carry stale blanks. Since every
+before the dual-write went live can carry stale blanks. Since every
 read site now checks the Listing first and only falls back to Item when
 blank, a blank-but-existing Listing id is silently WRONG (looks final, but
 isn't) rather than falling through -- this backfill closes that gap before
-Item's copy is ever dropped (step 8).
+Item's copy is ever dropped.
 
 Idempotent: only touches rows that are actually blank; safe to re-run.
 """
