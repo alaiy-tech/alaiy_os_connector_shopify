@@ -73,11 +73,61 @@ query PullProducts($after: String) {
             }
           }
         }
+        metafields(first: 250) {
+          nodes {
+            namespace
+            key
+            value
+            type
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
       }
     }
     pageInfo {
       hasNextPage
       endCursor
+    }
+  }
+}
+"""
+
+# Continuation fetch for the rare product with more than 250 metafields --
+# _PRODUCTS_QUERY's inline metafields(first: 250) already covers the
+# overwhelming majority; this only runs when that page's hasNextPage is true.
+_PRODUCT_METAFIELDS_PAGE_QUERY = """
+query GetProductMetafieldsPage($id: ID!, $after: String) {
+  product(id: $id) {
+    metafields(first: 250, after: $after) {
+      nodes {
+        namespace
+        key
+        value
+        type
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+"""
+
+_METAFIELDS_SET_MUTATION = """
+mutation SetMetafields($metafields: [MetafieldsSetInput!]!) {
+  metafieldsSet(metafields: $metafields) {
+    metafields {
+      id
+      namespace
+      key
+    }
+    userErrors {
+      field
+      message
     }
   }
 }

@@ -336,6 +336,11 @@ def _push_product_unlocked(item):
     from alaiy_os_connector_shopify.shopify.product.collections import sync_item_collections
     sync_item_collections(item, product_id, client)
 
+    # Push every metafield row on the Listing back to Shopify -- best-effort,
+    # never fails the push it rides on.
+    from alaiy_os_connector_shopify.shopify.product.metafields import push_listing_metafields
+    push_listing_metafields(listing, f"gid://shopify/Product/{product_id}", client)
+
     entities.save(
         entity or entities.get_or_new(
             "product", "Item", item.name, product_id),

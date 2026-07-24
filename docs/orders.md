@@ -9,7 +9,7 @@ The Sales Order is the single authoritative business document — Shopify has no
 ## Custom fields
 
 **Sales Order:** `sh_shopify_order_id` (indexed), `sh_shopify_order_name`, `sh_financial_status`, `sh_fulfillment_status`, `sh_shopify_notes` (bidirectional notes, allow-on-submit).
-**Sales Order Item:** `sh_shopify_variant_id` (used for line-item reconciliation).
+**Sales Order Item:** `sh_shopify_variant_id` — a per-line snapshot captured straight from Shopify's line-item payload at pull/webhook time, used for line-item reconciliation. Distinct from the Item/Listing catalog id fields below: this one lives on the order line itself and isn't part of the Listing id-ownership model.
 **Delivery Note:** `sh_shopify_fulfillment_id` (one Delivery Note per Shopify fulfillment; prevents duplicates).
 
 Financial/Fulfillment status render as colored badges in the Sales Order list.
@@ -43,7 +43,7 @@ Financial/Fulfillment status render as colored badges in the Sales Order list.
 `_upsert_order` acquires a per-order MySQL advisory lock (`locking.py`, `GET_LOCK` shared between create + update paths) then `_upsert_order_unlocked`:
 1. Ensures a default **Address Template** exists (`address.py::ensure_default_address_template`) — a fresh site without one otherwise crashes Sales Order validate.
 2. Resolves/creates the **Customer** ([Customers](customers.md)) and the leaf **warehouse**.
-3. Builds line items: each mapped to an Item by SKU → variant id → title (`_resolve_item_code`). A line with no catalog match becomes a **custom line item** on a shared "Shopify Custom Item" placeholder (`charges.py::build_custom_line_item`) rather than being dropped. Qty uses `current_quantity` when present (post-edit truth).
+3. Builds line items: each mapped to an Item by SKU → variant id → title (`_resolve_item_code`; the variant-id lookup resolves via the Shopify Listing Variant row first, Item as fallback). A line with no catalog match becomes a **custom line item** on a shared "Shopify Custom Item" placeholder (`charges.py::build_custom_line_item`) rather than being dropped. `_merge_duplicate_item_rows` collapses multiple lines that land on the same item_code (e.g. two unmatched lines both falling on the shared placeholder) into one row before insert — qty summed, rate recomputed so the total stays exact — since Alaiy OS rejects the same item_code appearing twice on one order. Qty uses `current_quantity` when present (post-edit truth).
 4. Appends **tax** (`tax.py::_append_tax_lines`), **shipping charge** (`charges.py::append_shipping_charge`), and **order discount** (`charges.py::apply_order_discount`).
 5. Sets the **shipping address** (`address.py::sync_order_address`) as the SO's customer/shipping address.
 6. Sets `flags.from_shopify_sync` (so doc_events don't echo back), inserts, and submits — unless it's a **draft order** (name starts `#D`), which stays draft.

@@ -348,6 +348,7 @@ def _import_product(node: dict) -> tuple:
     created, reason = _import_product_inner(node)
     product_id = str(node.get("legacyResourceId", ""))
     if product_id:
+        entity = None
         try:
             entity = entities.get_by_external_id("product", product_id)
             if entity and entity.erpnext_name:
@@ -361,7 +362,37 @@ def _import_product(node: dict) -> tuple:
                 title=f"Shopify import: ensure_listing failed for product {product_id}",
                 message=frappe.get_traceback(),
             )
+        try:
+            _sync_product_metafields(entity.erpnext_name if entity else None, node, product_id)
+        except Exception:
+            frappe.log_error(
+                title=f"Shopify import: metafields sync failed for product {product_id}",
+                message=frappe.get_traceback(),
+            )
     return created, reason
+
+
+def _sync_product_metafields(template_name: str, node: dict, product_id: str):
+    """Fetch every metafield (all namespaces, all pages) and store them on
+    the Listing -- no-op if the product never got a Listing."""
+    if not template_name:
+        return
+    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+    listing = listing_resolver.get_listing(template_name)
+    if not listing:
+        return
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.product.metafields import (
+        all_metafields_of, sync_listing_metafields,
+    )
+    client = ShopifyGraphQLClient()
+    product_gid = f"gid://shopify/Product/{product_id}"
+    nodes = all_metafields_of(node, client, product_gid=product_gid)
+    sync_listing_metafields(listing, nodes)
+    listing.flags.from_shopify_sync = True
+    listing.flags.ignore_permissions = True
+    listing.save()
+    frappe.db.commit()
 
 
 def _import_product_inner(node: dict) -> tuple:
