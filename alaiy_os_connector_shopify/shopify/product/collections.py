@@ -18,6 +18,8 @@ Bidirectional, manual collections:
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+
 # ── GraphQL ──────────────────────────────────────────────────────────────────
 
 _COLLECTIONS_LIST_QUERY = """
@@ -314,7 +316,8 @@ def get_collection_products(collection_name: str):
                 pid = str(n.get("legacyResourceId") or "")
                 item_code = None
                 if pid:
-                    item_code = frappe.db.get_value("Item", {"sh_shopify_product_id": pid}, "name")
+                    # #60: Listing-based lookup first, falls back to Item.
+                    item_code = listing_resolver.template_by_product_id(pid)
                 products.append({
                     "title": n.get("title"),
                     "image": (n.get("featuredImage") or {}).get("url"),

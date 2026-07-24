@@ -341,6 +341,10 @@ def _update_item_from_shopify(item, product: dict):
         for row in listing.variants:
             if row.is_enabled and row.item_variant not in incoming_skus:
                 row.is_enabled = 0
+                # #60: clear the Listing Variant's own copy too, else a
+                # disabled row keeps a stale id that could later resolve to
+                # the wrong Shopify variant if this SKU gets re-added there.
+                row.sh_shopify_variant_id = None
                 frappe.db.set_value("Item", row.item_variant, "sh_shopify_variant_id", None)
                 frappe.db.set_value("Item", row.item_variant, "sh_shopify_product_id", None)
                 listing_dirty = True
@@ -357,11 +361,16 @@ def _update_item_from_shopify(item, product: dict):
     from alaiy_os_connector_shopify.shopify.product.variants import _REST_WEIGHT_UNIT_TO_UOM
     from alaiy_os_connector_shopify.shopify.product.importer import _ensure_variant_exists_locally
     product_id = str(product.get("id", ""))
+    if listing and not listing.sh_shopify_product_id and product_id:
+        # #60: real field now, not fetch_from -- copy explicitly if still blank.
+        listing.sh_shopify_product_id = product_id
+        listing_dirty = True
     for variant in (product.get("variants") or []):
         sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings)
         row = None
         if listing:
             row = next((r for r in listing.variants if r.item_variant == sku), None)
+            v_id = str(variant.get("id") or variant.get("legacyResourceId") or "") or None
             if not row:
                 # Brand-new variant added on Shopify: _ensure_variant_exists_locally
                 # just created its Item, but with no Listing Variant row it would
@@ -369,7 +378,13 @@ def _update_item_from_shopify(item, product: dict):
                 # includes listed rows) until someone runs a full re-import. Add
                 # it here too, same as importer.sync_listing_variants does on
                 # the re-import path.
-                row = listing.append("variants", {"item_variant": sku, "is_enabled": 1})
+                row = listing.append("variants", {
+                    "item_variant": sku, "is_enabled": 1, "sh_shopify_variant_id": v_id,
+                })
+                listing_dirty = True
+            elif v_id and row.sh_shopify_variant_id != v_id:
+                # #60: keep the Listing row's id in step (real field now).
+                row.sh_shopify_variant_id = v_id
                 listing_dirty = True
         price = flt(variant.get("price") or 0)
         if price > 0:
@@ -427,11 +442,17 @@ def _handle_product_delete(product_id: str, product: dict):
         frappe.db.set_value("Item", item.name, "sh_shopify_product_id", None)
 
         # Disable the Listing too, or the hourly outbound reconciliation would
-        # re-push (and recreate on Shopify) a product just deleted there. The
-        # id itself lives on the Item (cleared above); the Listing's id field
-        # is a fetch_from view, so only is_enabled needs writing here.
+        # re-push (and recreate on Shopify) a product just deleted there.
+        # #60: the Listing's id field is a real column now (not fetch_from),
+        # so it and every Listing Variant row's own id need clearing too, or
+        # the Listing-first read sites would keep resolving to a dead id.
         if frappe.db.exists("Shopify Product Listing", item.name):
-            frappe.db.set_value("Shopify Product Listing", item.name, "is_enabled", 0)
+            frappe.db.set_value("Shopify Product Listing", item.name,
+                                 {"is_enabled": 0, "sh_shopify_product_id": None})
+            frappe.db.sql(
+                "UPDATE `tabShopify Listing Variant` SET sh_shopify_variant_id = NULL WHERE parent = %s",
+                item.name,
+            )
 
         # A template's variants each carry their own copy of sh_shopify_product_id
         # (set at import time) -- leaving those in place after the template

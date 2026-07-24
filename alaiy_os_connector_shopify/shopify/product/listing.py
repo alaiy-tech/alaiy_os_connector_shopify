@@ -11,9 +11,14 @@ Design (per the 21-07 listings decision):
 - Listing content fields (title/description/price/images, and per-variant
   enable/price) are OVERRIDES: blank inherits the Item's current value at push
   time, so an un-diverged listing needs no copied data.
-- The Shopify product/variant ids still physically live on Item this phase
-  (relocating them is the separately-gated id-migration work) -- this module
-  deliberately does NOT touch them.
+
+#60 id relocation (in progress): the Listing's sh_shopify_product_id /
+Shopify Listing Variant's sh_shopify_variant_id are now real, independently
+writable fields (no longer a fetch_from view of Item). During the transition
+BOTH Item and Listing are kept in sync on every write -- callers are being
+switched over to the Listing-based lookups below one at a time (see
+tasks/id-relocation-impact-60.md for the order); Item stays the fallback
+until every read site has moved and a full sync cycle has verified it.
 """
 
 import frappe
@@ -139,6 +144,81 @@ def variant_price(listing, variant_code: str, settings):
     return _variant_price(variant_code, settings)
 
 
+# ── ID ownership (#60) ───────────────────────────────────────────────────────
+# New Listing-based lookups, used ALONGSIDE the existing Item-based ones while
+# every caller is switched over one at a time (see id-relocation-impact-60.md
+# for the order). Item stays the fallback until every read site has moved.
+
+def item_by_variant_id(variant_id: str):
+    """Shopify variant id -> the Alaiy OS variant Item code, via the Listing
+    Variant row. Falls back to the legacy Item-side lookup if the Listing
+    doesn't have it yet (e.g. a listing created before this phase, or a
+    variant whose row hasn't been dual-written to). None if neither has it."""
+    if not variant_id:
+        return None
+    row_parent = frappe.db.get_value(
+        "Shopify Listing Variant", {"sh_shopify_variant_id": variant_id}, "item_variant")
+    if row_parent:
+        return row_parent
+    return frappe.db.get_value("Item", {"sh_shopify_variant_id": variant_id}, "name")
+
+
+def template_by_product_id(product_id: str):
+    """Shopify product id -> the Alaiy OS template Item code, via the Listing.
+    Falls back to the legacy Item-side lookup the same way."""
+    if not product_id:
+        return None
+    listing_item = frappe.db.get_value(
+        "Shopify Product Listing", {"sh_shopify_product_id": product_id}, "item")
+    if listing_item:
+        return listing_item
+    return frappe.db.get_value("Item", {"sh_shopify_product_id": product_id}, "name")
+
+
+def set_product_id(template_name: str, product_id):
+    """Dual-write during the transition: keep the Listing's copy in step with
+    the Item's (still the id's ultimate owner until #60 finishes). No-op if
+    there's no Listing for this template yet."""
+    if frappe.db.exists("Shopify Product Listing", template_name):
+        frappe.db.set_value("Shopify Product Listing", template_name,
+                             "sh_shopify_product_id", product_id)
+
+
+def variant_id_of_item(variant_item_code: str):
+    """Shopify variant id for a variant Item code, Listing Variant row first,
+    Item as fallback -- same direction as variant_shopify_id but without
+    needing a Listing doc already loaded (order push callers only have the
+    item_code)."""
+    if not variant_item_code:
+        return None
+    row_id = frappe.db.get_value(
+        "Shopify Listing Variant", {"item_variant": variant_item_code}, "sh_shopify_variant_id")
+    if row_id:
+        return row_id
+    return frappe.db.get_value("Item", variant_item_code, "sh_shopify_variant_id")
+
+
+def variant_shopify_id(listing, variant_item_code: str):
+    """The Shopify variant id for a variant, Listing row first (real field
+    now), falling back to the Item's own copy."""
+    row = _variant_rows(listing).get(variant_item_code) if listing else None
+    if row and row.sh_shopify_variant_id:
+        return row.sh_shopify_variant_id
+    return frappe.db.get_value("Item", variant_item_code, "sh_shopify_variant_id")
+
+
+def set_variant_id(template_name: str, variant_item_code: str, variant_id):
+    """Dual-write during the transition: mirror a variant id onto its Listing
+    Variant row, if one exists. No-op otherwise (row gets it on next
+    sync_listing_variants / ensure_listing pass)."""
+    listing = get_listing(template_name)
+    if not listing:
+        return
+    row = next((r for r in listing.variants if r.item_variant == variant_item_code), None)
+    if row and row.sh_shopify_variant_id != variant_id:
+        frappe.db.set_value("Shopify Listing Variant", row.name, "sh_shopify_variant_id", variant_id)
+
+
 # ── Creation / upkeep ────────────────────────────────────────────────────────
 
 def ensure_listing(template_name: str, default_enabled: int = 0):
@@ -169,8 +249,10 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     listing.item = tmpl.name
     listing.is_enabled = 1 if default_enabled else 0
     listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
-    # sh_shopify_product_id / variant id are read-only fetch_from views of the
-    # Item (single source of truth) -- populated automatically, never set here.
+    # #60: sh_shopify_product_id is a real, independently-writable field now
+    # (was a fetch_from view) -- copy the Item's current value explicitly, or
+    # a freshly-created Listing would start with a blank id.
+    listing.sh_shopify_product_id = tmpl.sh_shopify_product_id or None
     # title/description/price left blank -> inherit from Item via the resolver.
     # Image/variant child rows are filled by the controller's before_insert
     # (fill_children_from_item) -- same path as a manually created listing.
@@ -195,8 +277,9 @@ def get_item_children(item):
     variants = []
     if tmpl.has_variants:
         variants = [
-            {"item_variant": v, "is_enabled": 1}
-            for v in frappe.get_all("Item", filters={"variant_of": tmpl.name}, pluck="name")
+            {"item_variant": v.name, "is_enabled": 1, "sh_shopify_variant_id": v.sh_shopify_variant_id or None}
+            for v in frappe.get_all("Item", filters={"variant_of": tmpl.name},
+                                     fields=["name", "sh_shopify_variant_id"])
         ]
     return {"images": images, "variants": variants}
 
@@ -215,9 +298,14 @@ def sync_listing_variants(template_name):
         return
     listed = {r.item_variant for r in listing.variants}
     added = False
-    for v in frappe.get_all("Item", filters={"variant_of": template_name}, pluck="name"):
-        if v not in listed:
-            listing.append("variants", {"item_variant": v, "is_enabled": 1})
+    for v in frappe.get_all("Item", filters={"variant_of": template_name},
+                             fields=["name", "sh_shopify_variant_id"]):
+        if v.name not in listed:
+            # #60: copy the variant id explicitly (real field now, not fetch_from).
+            listing.append("variants", {
+                "item_variant": v.name, "is_enabled": 1,
+                "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
+            })
             added = True
     if added:
         listing.flags.from_shopify_sync = True
@@ -272,17 +360,26 @@ def fill_children_from_item(listing):
     """
     if not listing.item:
         return
-    tmpl = frappe.db.get_value("Item", listing.item, ["name", "image", "has_variants"], as_dict=True)
+    tmpl = frappe.db.get_value(
+        "Item", listing.item, ["name", "image", "has_variants", "sh_shopify_product_id"], as_dict=True)
     if not tmpl:
         return
+
+    # #60: real field now, not fetch_from -- copy explicitly if still blank.
+    if not listing.sh_shopify_product_id and tmpl.sh_shopify_product_id:
+        listing.sh_shopify_product_id = tmpl.sh_shopify_product_id
 
     if not listing.images:
         for order, url in enumerate(_template_image_urls(tmpl)):
             listing.append("images", {"image": url, "source": "Original", "sort_order": order})
 
     if not listing.variants and tmpl.has_variants:
-        for v in frappe.get_all("Item", filters={"variant_of": tmpl.name}, pluck="name"):
-            listing.append("variants", {"item_variant": v, "is_enabled": 1})
+        for v in frappe.get_all("Item", filters={"variant_of": tmpl.name},
+                                 fields=["name", "sh_shopify_variant_id"]):
+            listing.append("variants", {
+                "item_variant": v.name, "is_enabled": 1,
+                "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
+            })
 
 
 def _template_image_urls(tmpl) -> list:

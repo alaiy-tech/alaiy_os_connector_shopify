@@ -134,7 +134,15 @@ def _backfill_missing_default_warehouse(warehouse):
     for row in missing:
         try:
             item = frappe.get_doc("Item", row.name)
-            item.append("item_defaults", {"company": company, "default_warehouse": warehouse})
+            # ERPNext allows only ONE Item Default row per company -- if one
+            # already exists (with a different warehouse), update it in
+            # place instead of appending a second row for the same company,
+            # which validate_item_defaults rejects outright.
+            existing = next((d for d in item.item_defaults if d.company == company), None)
+            if existing:
+                existing.default_warehouse = warehouse
+            else:
+                item.append("item_defaults", {"company": company, "default_warehouse": warehouse})
             item.flags.ignore_permissions = True
             item.save()
         except Exception:
@@ -233,6 +241,18 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
         filters=[["sh_shopify_variant_id", "is", "set"]],
         fields=["name", "sh_shopify_variant_id"],
     )
+    # #60: Listing Variant's copy wins where it has one -- bulk-resolved
+    # (one query) rather than a per-item lookup, to keep this scan cheap.
+    listing_ids = {
+        r.item_variant: r.sh_shopify_variant_id
+        for r in frappe.get_all(
+            "Shopify Listing Variant",
+            filters=[["sh_shopify_variant_id", "is", "set"]],
+            fields=["item_variant", "sh_shopify_variant_id"],
+        )
+    }
+    for item in items:
+        item.sh_shopify_variant_id = listing_ids.get(item.name) or item.sh_shopify_variant_id
 
     # Only push items whose stock changed since the last successful sync,
     # avoiding N+1 API calls on large, mostly-unchanged catalogs.

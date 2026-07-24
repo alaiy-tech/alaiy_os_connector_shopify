@@ -55,6 +55,7 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillmen
             si = make_sales_invoice(so_name)
             si.update_stock = 0
             _fill_item_accounts(si, settings)
+            _ensure_round_off_account(si.company)
             # Mirrors every other webhook-driven save in this connector: mark
             # it as Shopify-originated and bypass the Guest permission checks
             # the allow_guest webhook context would otherwise fail.
@@ -148,6 +149,61 @@ def _resolve_cost_center(company, configured):
         return company_default
     from alaiy_os_connector_shopify.shopify.product.masters import _ensure_cost_center
     return _ensure_cost_center(company)
+
+
+def _ensure_round_off_account(company):
+    """
+    Self-heal, same shape as _resolve_income_account/_resolve_cost_center:
+    ERPNext requires a Round Off Account on the Company to post the tiny
+    precision-loss GL entry a submitted invoice can carry -- confirmed live,
+    a Company with none configured crashes every auto Sales Invoice with
+    "Please mention Round Off Account". Reuse an existing one if the
+    Company (or the standard Chart of Accounts) already has it, else
+    create one, rather than requiring a manual Company settings edit
+    before Shopify orders can invoice at all.
+    """
+    if frappe.get_cached_value("Company", company, "round_off_account"):
+        return
+    existing = frappe.db.get_value(
+        "Account",
+        {"company": company, "account_name": ["like", "Round Off%"], "is_group": 0, "disabled": 0},
+        "name",
+    )
+    if not existing:
+        existing = frappe.db.get_value(
+            "Account",
+            {"company": company, "root_type": "Expense", "account_type": "Round Off", "is_group": 0},
+            "name",
+        )
+    if not existing:
+        abbr = frappe.db.get_value("Company", company, "abbr")
+        parent = frappe.db.get_value(
+            "Account", {"company": company, "is_group": 1, "root_type": "Expense",
+                        "account_name": ["like", "Indirect Expenses%"]}, "name"
+        ) or frappe.db.get_value("Account", {"company": company, "is_group": 1, "root_type": "Expense"}, "name")
+        if not parent:
+            frappe.log_error(
+                title=f"Shopify: no Expense group to create a Round Off account under for {company}",
+                message="Set a Round Off Account on the Company to enable auto Sales Invoice.",
+            )
+            return
+        try:
+            acc = frappe.new_doc("Account")
+            acc.account_name = "Round Off"
+            acc.parent_account = parent
+            acc.company = company
+            acc.account_type = "Round Off"
+            acc.is_group = 0
+            acc.insert(ignore_permissions=True)
+            existing = acc.name
+        except Exception:
+            frappe.log_error(
+                title=f"Shopify: failed to auto-create Round Off account for {company}",
+                message=frappe.get_traceback(),
+            )
+            return
+    frappe.db.set_value("Company", company, "round_off_account", existing)
+    frappe.db.commit()
 
 
 def _resolve_income_account(company):

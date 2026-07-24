@@ -11,6 +11,7 @@ import frappe
 from alaiy_os_connector_shopify.shopify.order.snapshot import (
     _items_before_cache_key, _detect_items_changed, _detect_removed_variant_ids, _detect_added_items,
 )
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 
 def on_sales_order_update(doc, method=None):
@@ -66,8 +67,9 @@ def on_sales_order_submit(doc, method=None):
         return
     if doc.get("sh_shopify_order_id"):
         return  # already a Shopify-origin order, nothing to push
+    # #60: Listing Variant's copy first, Item as fallback.
     if not any(
-        frappe.db.get_value("Item", item.item_code, "sh_shopify_variant_id")
+        listing_resolver.variant_id_of_item(item.item_code)
         for item in doc.items
     ):
         return

@@ -35,6 +35,7 @@ from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock,
 from alaiy_os_connector_shopify.shopify.product.media import _set_item_image, _set_item_slideshow
 from alaiy_os_connector_shopify.shopify.product.taxonomy import ensure_shopify_category
 from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _set_item_tags
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 
 def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None):
@@ -225,6 +226,11 @@ def _wipe_all_items():
     frappe.db.sql(f"DELETE FROM `tabItem Default` WHERE parent IN {shopify_item}")
     frappe.db.sql(f"DELETE FROM `tabItem Variant Attribute` WHERE parent IN {shopify_item}")
     frappe.db.sql(f"DELETE FROM `tabItem Barcode` WHERE parent IN {shopify_item}")
+    # #60: Listing now owns the id too -- wipe its rows along with the Item,
+    # else a stale Listing carrying the old product/variant id survives the
+    # wipe and confuses the next import's "does this already exist" checks.
+    frappe.db.sql(f"DELETE FROM `tabShopify Listing Variant` WHERE parent IN {shopify_item}")
+    frappe.db.sql(f"DELETE FROM `tabShopify Product Listing` WHERE name IN {shopify_item}")
     frappe.db.sql("DELETE FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''")
     frappe.db.commit()
 
@@ -522,6 +528,8 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
         if v_id and not frappe.db.get_value("Item", sku, "sh_shopify_variant_id"):
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", v_id)
             frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
+            listing_resolver.set_product_id(template_name, product_id)
+            listing_resolver.set_variant_id(template_name, sku, v_id)
         return sku
 
     # A sibling variant with the SAME attribute values may already exist under
@@ -538,6 +546,8 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
                 if v_id:
                     frappe.db.set_value("Item", sibling, "sh_shopify_variant_id", v_id)
                     frappe.db.set_value("Item", sibling, "sh_shopify_product_id", product_id)
+                    listing_resolver.set_product_id(template_name, product_id)
+                    listing_resolver.set_variant_id(template_name, sibling, v_id)
                 return sibling
 
     template = frappe.get_doc("Item", template_name)
@@ -584,6 +594,8 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
     v_item.flags.ignore_permissions = True
     v_item.insert()
     frappe.db.commit()
+    listing_resolver.set_product_id(template_name, product_id)
+    listing_resolver.set_variant_id(template_name, sku, v_id)
     return sku
 
 
@@ -620,7 +632,12 @@ def _import_simple_product(
 
     # Check if Item with this SKU already exists
     if frappe.db.exists("Item", sku):
-        existing_id = frappe.db.get_value("Item", sku, "sh_shopify_product_id")
+        # #60: whether this Item is already linked to Shopify -- Listing's
+        # copy first (owning template if it's a variant), Item as fallback.
+        existing_variant_of = frappe.db.get_value("Item", sku, "variant_of")
+        existing_id = frappe.db.get_value(
+            "Shopify Product Listing", existing_variant_of or sku, "sh_shopify_product_id"
+        ) or frappe.db.get_value("Item", sku, "sh_shopify_product_id")
         if not existing_id:
             # Auto-link the existing item -- e.g. one already created by
             # another connector (Cloudstore) importing the same product
@@ -632,6 +649,7 @@ def _import_simple_product(
             # belongs on the template, not this leaf variant.
             if variant_of:
                 frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
+                listing_resolver.set_product_id(variant_of, product_id)
                 if product_meta:
                     _apply_existing_template_content(variant_of, product_meta, images, settings)
                 entity = entities.get_or_new("product", "Item", variant_of, product_id)
@@ -640,6 +658,9 @@ def _import_simple_product(
             # Link the item itself
             frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
+            if not variant_of:
+                listing_resolver.set_product_id(sku, product_id)
+            listing_resolver.set_variant_id(variant_of or sku, sku, variant.get("legacyResourceId"))
 
             # Auto-linking only ever wrote the Shopify IDs -- without this,
             # an auto-linked item showed "synced" with none of Shopify's
@@ -819,15 +840,18 @@ def _import_product_with_variants(
         v_sku = (v.get("sku") or "").strip()
         if not v_sku or not frappe.db.exists("Item", v_sku):
             continue
-        existing_pid = frappe.db.get_value("Item", v_sku, "sh_shopify_product_id")
+        existing_parent = frappe.db.get_value("Item", v_sku, "variant_of")
+        if not existing_parent:
+            continue
+        # #60: Listing's copy first (owning template), Item as fallback.
+        existing_pid = frappe.db.get_value(
+            "Shopify Product Listing", existing_parent, "sh_shopify_product_id"
+        ) or frappe.db.get_value("Item", v_sku, "sh_shopify_product_id")
         # A variant already linked to THIS SAME product_id is a stale/
         # incomplete prior import (e.g. its Synced Entity row went
         # missing) -- still a valid reuse anchor. Only a different
         # product_id means it's genuinely claimed elsewhere.
         if existing_pid and existing_pid != product_id:
-            continue
-        existing_parent = frappe.db.get_value("Item", v_sku, "variant_of")
-        if not existing_parent:
             continue
         if reused_template_name and reused_template_name != existing_parent:
             frappe.log_error(
@@ -842,6 +866,7 @@ def _import_product_with_variants(
         template = frappe.get_doc("Item", template_name)
         if not template.sh_shopify_product_id:
             frappe.db.set_value("Item", template_name, "sh_shopify_product_id", product_id)
+            listing_resolver.set_product_id(template_name, product_id)
         if product_meta:
             _apply_existing_template_content(template_name, product_meta, images, settings)
         entity = entities.get_or_new("product", "Item", template_name, product_id)
@@ -888,16 +913,22 @@ def _import_product_with_variants(
 
         # Check for SKU conflict
         if frappe.db.exists("Item", sku):
-            existing_id = frappe.db.get_value("Item", sku, "sh_shopify_product_id")
+            existing_parent_of = frappe.db.get_value("Item", sku, "variant_of")
+            # #60: Listing's copy first (owning template), Item as fallback.
+            existing_id = frappe.db.get_value(
+                "Shopify Product Listing", existing_parent_of or template_name, "sh_shopify_product_id"
+            ) or frappe.db.get_value("Item", sku, "sh_shopify_product_id")
             if not existing_id:
                 # Auto-link the existing variant
-                variant_of = frappe.db.get_value("Item", sku, "variant_of") or template_name
+                variant_of = existing_parent_of or template_name
                 frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
                 frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
                 frappe.db.set_value("Item", sku, "variant_of", variant_of)
+                listing_resolver.set_variant_id(variant_of, sku, variant.get("legacyResourceId"))
 
                 # Also link its parent template to Shopify
                 frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
+                listing_resolver.set_product_id(variant_of, product_id)
 
                 # Auto-linking only ever wrote the Shopify IDs -- pull in
                 # this variant's own price/stock/weight the same as a

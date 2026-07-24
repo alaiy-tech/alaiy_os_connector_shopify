@@ -10,6 +10,7 @@ from alaiy_os_connector_shopify.shopify.order.queries import (
 )
 from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
 from alaiy_os_connector_shopify.shopify.order.push_line_items import _apply_shopify_line_item_changes
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 
 def push_order_update(order_id: str, sales_order: str, status: str, items_changed: bool = False, removed_variant_ids: list = None, added_items: list = None):
@@ -111,7 +112,8 @@ def push_order_create(sales_order: str):
     line_items = []
     skipped = []
     for item in so.items:
-        variant_id = frappe.db.get_value("Item", item.item_code, "sh_shopify_variant_id")
+        # #60: Listing Variant's copy first, Item as fallback.
+        variant_id = listing_resolver.variant_id_of_item(item.item_code)
         if not variant_id:
             skipped.append(item.item_code)
             continue

@@ -226,9 +226,11 @@ def _push_product_unlocked(item):
     product_input = _product_set_input(item, variants, settings, listing, client)
 
     identifier = None
-    if item.get("sh_shopify_product_id"):
+    # #60: Listing's copy first (dual-written on every push below), Item as fallback.
+    product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
+    if product_id:
         identifier = {
-            "id": f"gid://shopify/Product/{item.sh_shopify_product_id}"}
+            "id": f"gid://shopify/Product/{product_id}"}
         # productSet ignores status changes if product is currently ARCHIVED.
         # Ensure product is unarchived to ACTIVE/DRAFT via productUpdate mutation.
         target_status = "DRAFT" if (listing.sh_shopify_status == "Draft") else "ACTIVE"
@@ -272,6 +274,12 @@ def _push_product_unlocked(item):
                     SET sh_shopify_variant_id = NULL
                     WHERE sh_shopify_variant_id = %s
                 """, v_id)
+                # #60: clear the Listing Variant's copy too so the two don't drift.
+                frappe.db.sql("""
+                    UPDATE `tabShopify Listing Variant`
+                    SET sh_shopify_variant_id = NULL
+                    WHERE sh_shopify_variant_id = %s
+                """, v_id)
             frappe.db.commit()
 
             # Re-fetch item, rebuild variants list and payload, then retry the sync
@@ -298,9 +306,11 @@ def _push_product_unlocked(item):
     if item.sh_shopify_product_id != product_id:
         frappe.db.set_value("Item", item.name,
                             "sh_shopify_product_id", product_id)
-    # Item is the single source of truth for the id; the Listing's
-    # sh_shopify_product_id is a read-only fetch_from view of it (no separate
-    # write here -- avoids a drifting mirror, rule 4). Only stamp last_synced_at.
+    # #60 transition: dual-write -- Item stays the id's ultimate owner until
+    # every read site has moved to the Listing-based lookups, but the Listing's
+    # own copy is now a real field (no longer fetch_from), so it must be kept
+    # in step here or it goes stale the moment fetch_from stops auto-copying.
+    listing_resolver.set_product_id(item.name, product_id)
     frappe.db.set_value("Shopify Product Listing", listing.name,
                         "last_synced_at", frappe.utils.now_datetime())
 
@@ -318,6 +328,7 @@ def _push_product_unlocked(item):
         if variant_id and variant.get("sh_shopify_variant_id") != variant_id:
             frappe.db.set_value("Item", variant.name,
                                 "sh_shopify_variant_id", variant_id)
+            listing_resolver.set_variant_id(item.name, variant.name, variant_id)
 
     # Reconcile manual-collection membership after the product itself is set --
     # membership is product-level, driven by the template Item's collections

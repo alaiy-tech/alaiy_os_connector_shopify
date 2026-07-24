@@ -126,8 +126,10 @@ def _variant_set_payload(variant, settings, option_names: list, listing) -> dict
             f"Shopify: no local price for {variant.item_code}; skipping price push "
             "(no Item Price on the selling list)."
         )
-    if variant.get("sh_shopify_variant_id"):
-        payload["id"] = f"gid://shopify/ProductVariant/{variant.sh_shopify_variant_id}"
+    # #60: Listing row's id first (real field now), falls back to Item's.
+    shopify_variant_id = listing_resolver.variant_shopify_id(listing, variant.item_code)
+    if shopify_variant_id:
+        payload["id"] = f"gid://shopify/ProductVariant/{shopify_variant_id}"
     if variant.get("barcodes"):
         payload["barcode"] = variant.barcodes[0].barcode
     compare_at = _variant_compare_at_price(variant.item_code)
