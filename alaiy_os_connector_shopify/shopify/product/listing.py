@@ -184,6 +184,15 @@ def set_product_id(template_name: str, product_id):
                              "sh_shopify_product_id", product_id)
 
 
+def variant_shopify_id(listing, variant_item_code: str):
+    """The Shopify variant id for a variant, Listing row first (real field
+    now), falling back to the Item's own copy."""
+    row = _variant_rows(listing).get(variant_item_code) if listing else None
+    if row and row.sh_shopify_variant_id:
+        return row.sh_shopify_variant_id
+    return frappe.db.get_value("Item", variant_item_code, "sh_shopify_variant_id")
+
+
 def set_variant_id(template_name: str, variant_item_code: str, variant_id):
     """Dual-write during the transition: mirror a variant id onto its Listing
     Variant row, if one exists. No-op otherwise (row gets it on next
