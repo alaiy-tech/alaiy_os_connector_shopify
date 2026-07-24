@@ -13,6 +13,7 @@
     "listing_price",
     "images",
     "variants",
+    "metafields",
     "sh_shopify_product_id",
     "last_synced_at"
   ],
@@ -70,6 +71,13 @@
       "fieldtype": "Table",
       "label": "Variants",
       "options": "Shopify Listing Variant"
+    },
+    {
+      "description": "Shopify product metafields, fetched in full on import (all namespaces, all pages) and pushed back on export via metafieldsSet.",
+      "fieldname": "metafields",
+      "fieldtype": "Table",
+      "label": "Metafields",
+      "options": "Shopify Product Metafield"
     },
     {
       "description": "Owning copy of the Shopify product id (#60: relocated off Item). Set by the connector on push/import. Never hand-edited.",
