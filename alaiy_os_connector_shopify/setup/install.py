@@ -249,6 +249,41 @@ def setup_custom_fields():
             "read_only_depends_on": "eval:doc.variant_of",
             "description": "Manual Shopify collections this product belongs to, picked from the cached Shopify Collection list (run Sync Collections first). Membership syncs to Shopify on push. Copied from the template on variants -- edit on the template.",
         },
+        {
+            "fieldname": "sh_dimensions_section",
+            "label": "Dimensions",
+            "fieldtype": "Section Break",
+            "insert_after": "sh_shopify_collections",
+        },
+        {
+            "fieldname": "sh_width",
+            "label": "Width",
+            "fieldtype": "Float",
+            "insert_after": "sh_dimensions_section",
+            "description": "Physical width, expressed in the Dimension UOM.",
+        },
+        {
+            "fieldname": "sh_length",
+            "label": "Length",
+            "fieldtype": "Float",
+            "insert_after": "sh_width",
+            "description": "Physical length, expressed in the Dimension UOM.",
+        },
+        {
+            "fieldname": "sh_height",
+            "label": "Height",
+            "fieldtype": "Float",
+            "insert_after": "sh_length",
+            "description": "Physical height, expressed in the Dimension UOM.",
+        },
+        {
+            "fieldname": "sh_dimension_uom",
+            "label": "Dimension UOM",
+            "fieldtype": "Link",
+            "options": "UOM",
+            "insert_after": "sh_height",
+            "description": "Unit of measure for Width / Length / Height (e.g. Centimeter, Inch).",
+        },
     ]
     sales_order_fields = [
         {
