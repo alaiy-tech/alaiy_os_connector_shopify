@@ -5,6 +5,8 @@ order_push.py, unchanged.
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+
 
 def _items_before_cache_key(so_name: str) -> str:
     return f"shopify_items_before::{so_name}"
@@ -169,7 +171,8 @@ def _detect_added_items(doc) -> list:
         if (item.item_code, variant_id) in before_keys:
             continue
         if not variant_id:
-            variant_id = frappe.db.get_value("Item", item.item_code, "sh_shopify_variant_id")
+            # #60: Listing Variant's copy first, Item as fallback.
+            variant_id = listing_resolver.variant_id_of_item(item.item_code)
         if not variant_id:
             continue
         added.append({"variant_id": variant_id, "qty": item.qty})

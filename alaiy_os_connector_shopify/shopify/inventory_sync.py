@@ -233,6 +233,18 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
         filters=[["sh_shopify_variant_id", "is", "set"]],
         fields=["name", "sh_shopify_variant_id"],
     )
+    # #60: Listing Variant's copy wins where it has one -- bulk-resolved
+    # (one query) rather than a per-item lookup, to keep this scan cheap.
+    listing_ids = {
+        r.item_variant: r.sh_shopify_variant_id
+        for r in frappe.get_all(
+            "Shopify Listing Variant",
+            filters=[["sh_shopify_variant_id", "is", "set"]],
+            fields=["item_variant", "sh_shopify_variant_id"],
+        )
+    }
+    for item in items:
+        item.sh_shopify_variant_id = listing_ids.get(item.name) or item.sh_shopify_variant_id
 
     # Only push items whose stock changed since the last successful sync,
     # avoiding N+1 API calls on large, mostly-unchanged catalogs.

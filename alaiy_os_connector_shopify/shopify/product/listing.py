@@ -184,6 +184,20 @@ def set_product_id(template_name: str, product_id):
                              "sh_shopify_product_id", product_id)
 
 
+def variant_id_of_item(variant_item_code: str):
+    """Shopify variant id for a variant Item code, Listing Variant row first,
+    Item as fallback -- same direction as variant_shopify_id but without
+    needing a Listing doc already loaded (order push callers only have the
+    item_code)."""
+    if not variant_item_code:
+        return None
+    row_id = frappe.db.get_value(
+        "Shopify Listing Variant", {"item_variant": variant_item_code}, "sh_shopify_variant_id")
+    if row_id:
+        return row_id
+    return frappe.db.get_value("Item", variant_item_code, "sh_shopify_variant_id")
+
+
 def variant_shopify_id(listing, variant_item_code: str):
     """The Shopify variant id for a variant, Listing row first (real field
     now), falling back to the Item's own copy."""
