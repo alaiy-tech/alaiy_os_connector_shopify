@@ -31,6 +31,36 @@ def get_active_sales_order(order_id: str):
     )
 
 
+def _merge_duplicate_item_rows(line_items: list) -> list:
+    """
+    ERPNext rejects a Sales Order with the same item_code on two rows
+    (validate_for_duplicate_items) unless a global setting is flipped --
+    hit in practice when 2+ Shopify line items fail catalog matching and
+    all fall back to the single shared "Shopify Custom Item" placeholder.
+    Merge same-item_code rows into one instead: qty summed, rate set to
+    the combined amount / combined qty so the order total stays exact,
+    descriptions/titles concatenated so nothing gets silently dropped.
+    """
+    merged = {}
+    order = []
+    for row in line_items:
+        key = row["item_code"]
+        if key not in merged:
+            merged[key] = dict(row)
+            order.append(key)
+            continue
+        existing = merged[key]
+        existing_amount = flt(existing["qty"]) * flt(existing["rate"])
+        new_amount = flt(row["qty"]) * flt(row["rate"])
+        existing["qty"] = flt(existing["qty"]) + flt(row["qty"])
+        total_amount = existing_amount + new_amount
+        existing["rate"] = (total_amount / existing["qty"]) if existing["qty"] else 0
+        for field in ("item_name", "description"):
+            if row.get(field) and row[field] not in (existing.get(field) or ""):
+                existing[field] = f"{existing.get(field, '')}; {row[field]}".strip("; ")
+    return [merged[key] for key in order]
+
+
 def _upsert_order(order):
     """Acquires this order's lock, then defers to _upsert_order_unlocked."""
     order_id = str(order.get("id", ""))
@@ -94,6 +124,8 @@ def _upsert_order_unlocked(order, order_id):
             message=str(order.get("line_items")),
         )
         return False
+
+    line_items = _merge_duplicate_item_rows(line_items)
 
     company = settings.sh_company or frappe.defaults.get_global_default("company")
 
