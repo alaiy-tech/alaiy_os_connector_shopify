@@ -30,7 +30,8 @@ def _loose_group_names():
     rows = frappe.db.sql("""
         SELECT DISTINCT i.item_group
         FROM `tabItem` i
-        WHERE i.sh_shopify_product_id IS NOT NULL AND i.sh_shopify_product_id != ''
+        JOIN `tabShopify Product Listing` l ON l.item = i.name
+        WHERE l.sh_shopify_product_id IS NOT NULL AND l.sh_shopify_product_id != ''
           AND i.variant_of IS NULL
           AND i.item_group = i.sh_shopify_product_type
           AND i.item_group IS NOT NULL AND i.item_group != ''
