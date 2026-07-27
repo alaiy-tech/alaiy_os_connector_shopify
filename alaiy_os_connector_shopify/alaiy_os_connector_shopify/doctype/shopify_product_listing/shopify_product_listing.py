@@ -53,6 +53,10 @@ class ShopifyProductListing(Document):
                     _("Variant {0} is listed more than once.").format(row.item_variant)
                 )
             seen.add(row.item_variant)
+            if row.item_variant == self.item:
+                # A simple (non-variant) product's own self-referencing row --
+                # Shopify still gives it exactly one variant, this is that one.
+                continue
             variant_of = frappe.db.get_value("Item", row.item_variant, "variant_of")
             if variant_of != self.item:
                 frappe.throw(
