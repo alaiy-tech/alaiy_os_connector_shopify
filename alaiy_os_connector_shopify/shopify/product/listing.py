@@ -250,11 +250,20 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     # fetch_from view) -- copy the Item's current value explicitly, or a
     # freshly-created Listing would start with a blank id.
     listing.sh_shopify_product_id = tmpl.sh_shopify_product_id or None
-    # Copy title/description in explicitly so a disabled Listing doesn't look
-    # empty on the form -- the resolver falls back to these same Item fields
-    # anyway, so this is just making the already-inherited value visible.
+    # Copy title/description/price in explicitly so a disabled Listing
+    # doesn't look empty on the form -- the resolver falls back to these
+    # same Item fields (or the Item Price row) anyway, so this is just
+    # making the already-inherited value visible.
     listing.listing_title = tmpl.item_name
     listing.listing_description = tmpl.description or ""
+    if not tmpl.has_variants:
+        # listing_price is only ever read for a simple product (variant_price()'s
+        # override chain); a template's own price never applies, so there's
+        # nothing meaningful to prefill for one.
+        settings = frappe.get_single("Shopify Connector Settings")
+        price = _variant_price(template_name, settings)
+        if price is not None:
+            listing.listing_price = price
     # Image/variant child rows are filled by the controller's before_insert
     # (fill_children_from_item) -- same path as a manually created listing.
     # Data mirrored straight from trusted existing Items -- skip the push echo.
