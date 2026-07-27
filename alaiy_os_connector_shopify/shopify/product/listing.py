@@ -235,7 +235,8 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
         return existing
     tmpl = frappe.db.get_value(
         "Item", template_name,
-        ["name", "has_variants", "image", "sh_shopify_product_id", "sh_shopify_status"],
+        ["name", "item_name", "description", "has_variants", "image",
+         "sh_shopify_product_id", "sh_shopify_status"],
         as_dict=True,
     )
     if not tmpl:
@@ -249,7 +250,11 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     # fetch_from view) -- copy the Item's current value explicitly, or a
     # freshly-created Listing would start with a blank id.
     listing.sh_shopify_product_id = tmpl.sh_shopify_product_id or None
-    # title/description/price left blank -> inherit from Item via the resolver.
+    # Copy title/description in explicitly so a disabled Listing doesn't look
+    # empty on the form -- the resolver falls back to these same Item fields
+    # anyway, so this is just making the already-inherited value visible.
+    listing.listing_title = tmpl.item_name
+    listing.listing_description = tmpl.description or ""
     # Image/variant child rows are filled by the controller's before_insert
     # (fill_children_from_item) -- same path as a manually created listing.
     # Data mirrored straight from trusted existing Items -- skip the push echo.
