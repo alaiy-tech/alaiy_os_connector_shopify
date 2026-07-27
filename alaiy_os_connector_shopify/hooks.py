@@ -24,6 +24,18 @@ alaiy_os_sidebar_log_items = [
     }
 ]
 
+# Extra rows under this connector's own top-level sidebar section (Dashboard
+# is always added automatically by alaiy_os).
+alaiy_os_sidebar_connector_items = [
+    {
+        "connector_id": "shopify",
+        "link_type": "DocType",
+        "link_to": "Shopify Product Listing",
+        "label": "Listings",
+        "icon": "list",
+    }
+]
+
 scheduler_events = {
     "cron": {
         "* * * * *": [
