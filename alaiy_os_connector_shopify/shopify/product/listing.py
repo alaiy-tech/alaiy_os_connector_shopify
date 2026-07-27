@@ -217,6 +217,17 @@ def set_variant_id(template_name: str, variant_item_code: str, variant_id):
 
 # ── Creation / upkeep ────────────────────────────────────────────────────────
 
+def _template_variant_items(tmpl_name: str, has_variants) -> list:
+    """Every Item that represents one sellable Shopify variant of this
+    product: its child Items if it's a template, or itself if it's a simple
+    product. Shopify itself always gives a product at least one variant --
+    a simple product just never had a separate child Item for it, so this
+    is what gives that variant a real Listing Variant row instead of a
+    special case scattered through every id lookup."""
+    filters = {"variant_of": tmpl_name} if has_variants else {"name": tmpl_name}
+    return frappe.get_all("Item", filters=filters, fields=["name", "sh_shopify_variant_id"])
+
+
 def ensure_listing(template_name: str, default_enabled: int = 0):
     """
     Get-or-create the Listing for a template Item, built from the Item's
@@ -270,13 +281,10 @@ def get_item_children(item):
         {"image": url, "source": "Original", "sort_order": i}
         for i, url in enumerate(_template_image_urls(tmpl))
     ]
-    variants = []
-    if tmpl.has_variants:
-        variants = [
-            {"item_variant": v.name, "is_enabled": 1, "sh_shopify_variant_id": v.sh_shopify_variant_id or None}
-            for v in frappe.get_all("Item", filters={"variant_of": tmpl.name},
-                                     fields=["name", "sh_shopify_variant_id"])
-        ]
+    variants = [
+        {"item_variant": v.name, "is_enabled": 1, "sh_shopify_variant_id": v.sh_shopify_variant_id or None}
+        for v in _template_variant_items(tmpl.name, tmpl.has_variants)
+    ]
     return {"images": images, "variants": variants}
 
 
@@ -292,10 +300,10 @@ def sync_listing_variants(template_name):
     listing = get_listing(template_name)
     if not listing:
         return
+    has_variants = frappe.db.get_value("Item", template_name, "has_variants")
     listed = {r.item_variant for r in listing.variants}
     added = False
-    for v in frappe.get_all("Item", filters={"variant_of": template_name},
-                             fields=["name", "sh_shopify_variant_id"]):
+    for v in _template_variant_items(template_name, has_variants):
         if v.name not in listed:
             # Copy the variant id explicitly (real field now, not fetch_from).
             listing.append("variants", {
@@ -369,9 +377,8 @@ def fill_children_from_item(listing):
         for order, url in enumerate(_template_image_urls(tmpl)):
             listing.append("images", {"image": url, "source": "Original", "sort_order": order})
 
-    if not listing.variants and tmpl.has_variants:
-        for v in frappe.get_all("Item", filters={"variant_of": tmpl.name},
-                                 fields=["name", "sh_shopify_variant_id"]):
+    if not listing.variants:
+        for v in _template_variant_items(tmpl.name, tmpl.has_variants):
             listing.append("variants", {
                 "item_variant": v.name, "is_enabled": 1,
                 "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
