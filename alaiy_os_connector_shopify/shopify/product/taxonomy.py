@@ -27,11 +27,18 @@ def _safe_doc_name(path_name: str) -> str:
     return path_name[:130] + "-" + h
 
 
-def ensure_shopify_category(full_name: str) -> str:
+def ensure_shopify_category(full_name: str, skip_nsm: bool = False) -> str:
     """
     Ensure the nested parent-child Shopify Category tree exists for a full name path
     (e.g., 'Apparel & Accessories / Clothing / Activewear / Sweatshirts').
     Returns the leaf node document name.
+
+    skip_nsm=True skips NestedSet's per-insert lft/rgt maintenance (each
+    insert otherwise re-shifts every row past the insertion point -- fine
+    for a single ad-hoc category, but a full tree walk inserting thousands
+    of nodes turns that into a query that gets slower with every node and
+    eventually blows the job timeout outright). Callers doing a bulk
+    build must call frappe.utils.nestedset.rebuild_tree() once after.
     """
     # Replace '>' with '/' to comply with Frappe's naming restrictions against special characters '<' and '>'
     full_name_clean = full_name.replace(">", "/")
@@ -50,6 +57,8 @@ def ensure_shopify_category(full_name: str) -> str:
             doc.name = path_name
             if parent:
                 doc.parent_shopify_category = parent
+            if skip_nsm:
+                doc.flags.ignore_update_nsm = True
             doc.insert(ignore_permissions=True, set_name=path_name)
             parent = doc.name
         else:
@@ -114,8 +123,12 @@ def _save_taxonomy_node(node):
     import time
     for attempt in range(3):
         try:
-            # Re-use our robust nested tree builder to ensure parent-child linking and custom name format
-            path_name = ensure_shopify_category(full_name)
+            # Re-use our robust nested tree builder to ensure parent-child linking and
+            # custom name format. skip_nsm=True: this runs once per node across a
+            # multi-thousand-node tree walk -- NestedSet's per-insert lft/rgt shift
+            # gets slower as the tree grows and eventually blows the job timeout
+            # outright. fetch_shopify_taxonomy() rebuilds the tree once at the end.
+            path_name = ensure_shopify_category(full_name, skip_nsm=True)
             if not path_name:
                 return False
             # Root-level categories are shared ancestors of nearly every
@@ -204,6 +217,12 @@ def fetch_shopify_taxonomy():
     if not total:
         frappe.logger().warning("Shopify taxonomy returned no categories")
         return
+
+    # _save_taxonomy_node inserted every node with skip_nsm=True (no lft/rgt
+    # maintenance per row) -- fix the whole tree's lft/rgt in one pass here
+    # instead of paying that cost on every single one of thousands of inserts.
+    from frappe.utils.nestedset import rebuild_tree
+    rebuild_tree("Shopify Category", "parent_shopify_category")
 
     frappe.logger().info(
         f"Shopify taxonomy sync completed: processed {total} categories, saved {saved}"
