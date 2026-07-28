@@ -57,7 +57,8 @@
       "label": "Listing Description"
     },
     {
-      "description": "Simple/no-variant products. Blank inherits the Item Price on the connector's selling price list.",
+      "depends_on": "eval:!doc.variants || doc.variants.length <= 1",
+      "description": "Simple/no-variant products only (irrelevant, hidden, for real multi-variant products -- see each variant row's own Variant Price instead). Blank inherits the Item Price on the connector's selling price list.",
       "fieldname": "listing_price",
       "fieldtype": "Currency",
       "label": "Listing Price"
