@@ -156,10 +156,25 @@ def _save_taxonomy_node(node):
     return False
 
 
+def scheduled_fetch_shopify_taxonomy():
+    """
+    hooks.py's daily scheduler entry point. Frappe's own scheduled-job
+    runner enqueues the method it's given with ITS default timeout (300s
+    here) -- nowhere near enough for a tens-of-thousands-of-nodes tree walk,
+    confirmed live: aborted mid-node, leaving a transaction to roll back.
+    Re-enqueue the real work under our own explicit long timeout instead of
+    ever running it under the scheduler's own job wrapper.
+    """
+    frappe.enqueue(fetch_shopify_taxonomy, queue="long", timeout=3600)
+
+
 def fetch_shopify_taxonomy():
     """
     Fetch the full Shopify Standard Product Taxonomy tree and populate
-    the Shopify Category doctype. Called on demand or via scheduled job.
+    the Shopify Category doctype. Called on demand (see
+    api.sync.refresh_shopify_taxonomy) or via scheduled_fetch_shopify_taxonomy
+    -- both explicitly enqueue this with a generous timeout; never call it
+    directly from a scheduler/job wrapper using its own default timeout.
 
     taxonomy.categories() (the query this used before) only ever returns
     the 26 ROOT (level-1) nodes -- confirmed live via introspection, it is
