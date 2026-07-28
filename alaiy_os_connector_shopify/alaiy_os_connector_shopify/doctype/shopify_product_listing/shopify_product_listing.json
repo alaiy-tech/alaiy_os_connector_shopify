@@ -11,6 +11,8 @@
     "listing_title",
     "listing_description",
     "listing_price",
+    "listing_category",
+    "listing_product_type",
     "images",
     "variants",
     "metafields",
@@ -59,6 +61,19 @@
       "fieldname": "listing_price",
       "fieldtype": "Currency",
       "label": "Listing Price"
+    },
+    {
+      "description": "Blank inherits Item.sh_shopify_category at push time.",
+      "fieldname": "listing_category",
+      "fieldtype": "Link",
+      "label": "Listing Category",
+      "options": "Shopify Category"
+    },
+    {
+      "description": "Blank inherits Item.sh_shopify_product_type at push time.",
+      "fieldname": "listing_product_type",
+      "fieldtype": "Data",
+      "label": "Listing Product Type"
     },
     {
       "fieldname": "images",

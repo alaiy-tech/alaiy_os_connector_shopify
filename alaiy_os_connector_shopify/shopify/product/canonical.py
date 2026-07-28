@@ -25,7 +25,7 @@ def _product_canonical(item, variants, settings, listing) -> dict:
     canonical["status"] = "DRAFT" if (listing.sh_shopify_status == "Draft") else "ACTIVE"
     canonical["description"] = listing_resolver.effective_description(listing, item)
     canonical["vendor"] = item.brand or ""
-    canonical["product_type"] = item.get("sh_shopify_product_type") or ""
+    canonical["product_type"] = listing_resolver.effective_product_type(listing, item)
     canonical["images"] = listing_resolver.effective_images(listing, item, settings)
     canonical["tags"] = sorted(_item_tags(item))
     seo = _seo_values(item)
@@ -77,8 +77,9 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
     payload["descriptionHtml"] = listing_resolver.effective_description(listing, item)
     if item.brand:
         payload["vendor"] = item.brand
-    if item.get("sh_shopify_product_type"):
-        payload["productType"] = item.sh_shopify_product_type
+    product_type = listing_resolver.effective_product_type(listing, item)
+    if product_type:
+        payload["productType"] = product_type
     images = listing_resolver.effective_images(listing, item, settings)
     if images:
         payload["files"] = [
@@ -87,11 +88,10 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
     tags = _item_tags(item)
     if tags:
         payload["tags"] = sorted(tags)
-    if item.get("sh_shopify_category"):
-        # sh_shopify_category is now a Link to Shopify Category doctype
-        category_id = frappe.db.get_value(
-            "Shopify Category", item.sh_shopify_category, "shopify_category_id"
-        )
+    category = listing_resolver.effective_category(listing, item)
+    if category:
+        # sh_shopify_category / listing_category is a Link to Shopify Category doctype
+        category_id = frappe.db.get_value("Shopify Category", category, "shopify_category_id")
         if category_id:
             payload["category"] = category_id
     seo = {k: v for k, v in _seo_values(item).items() if v}

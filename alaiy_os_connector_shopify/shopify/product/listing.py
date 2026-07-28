@@ -89,6 +89,14 @@ def effective_description(listing, item) -> str:
     return listing.listing_description or item.description or ""
 
 
+def effective_category(listing, item) -> str:
+    return listing.listing_category or item.sh_shopify_category or ""
+
+
+def effective_product_type(listing, item) -> str:
+    return listing.listing_product_type or item.sh_shopify_product_type or ""
+
+
 def effective_images(listing, item, settings) -> list:
     """Listing image rows (by sort_order) as absolute URLs; fall back to the
     Item image/slideshow when the Listing has no image rows."""
