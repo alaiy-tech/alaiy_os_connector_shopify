@@ -9,9 +9,17 @@ Prerequisite: Shopify Category tree must be populated first --
 
 Matches each flat Item Group to a Shopify Category node by an EXACT name
 match only -- never guesses/fuzzy-matches, since a wrong parent silently
-misfiles every product under it. No match or more than one match (an
-ambiguous leaf name like "Bath" that exists under multiple Shopify root
-categories) is reported, not auto-fixed.
+misfiles every product under it.
+
+Confirmed live: a bare name can match BOTH a real nested taxonomy node
+(has a parent_shopify_category) AND a standalone root-level duplicate
+with no parent (an artifact of ensure_shopify_category having been called
+with just a leaf name somewhere, before the full path was known). When
+that's the only kind of duplicate, prefer the nested one -- it's not a
+real ambiguity, just noise from an earlier partial write. Only genuinely
+ambiguous (2+ REAL nested matches, e.g. the same leaf name under two
+different Shopify root categories) or truly unmatched names are reported,
+not auto-fixed.
 
 Reparents the EXISTING Item Group doc in place (only its parent_item_group
 changes) -- Items already pointing at it by name are unaffected, nothing
@@ -30,12 +38,17 @@ import frappe
 def _ancestor_chain(item_group_name):
     """Root -> leaf list of Shopify Category bare names for the node whose
     bare name exactly matches this Item Group. Returns (None, match_count)
-    if zero or more than one Shopify Category shares that bare name --
-    ambiguous/no match, never guess."""
+    if zero or more than one REAL (nested) Shopify Category shares that
+    bare name -- ambiguous/no match, never guess. A standalone root-level
+    duplicate with no parent is filtered out first if a real nested match
+    also exists (see module docstring) -- it's noise, not ambiguity."""
     matches = frappe.get_all(
         "Shopify Category", filters={"shopify_category_name": item_group_name},
         fields=["name", "shopify_category_name", "parent_shopify_category"],
     )
+    nested = [m for m in matches if m.parent_shopify_category]
+    if len(nested) == 1:
+        matches = nested
     if len(matches) != 1:
         return None, len(matches)
 

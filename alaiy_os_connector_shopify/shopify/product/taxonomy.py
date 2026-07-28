@@ -8,6 +8,7 @@ import frappe
 from alaiy_os_connector_shopify.shopify.product.queries import (
     _TAXONOMY_SEARCH_QUERY, _TAXONOMY_TREE_QUERY, _TAXONOMY_NODES_BY_ID_QUERY,
 )
+from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, close_log
 
 _NODES_PER_CALL = 250  # Shopify's node-by-id bulk lookup cap, same as any other connection page size here.
 
@@ -165,10 +166,10 @@ def scheduled_fetch_shopify_taxonomy():
     Re-enqueue the real work under our own explicit long timeout instead of
     ever running it under the scheduler's own job wrapper.
     """
-    frappe.enqueue(fetch_shopify_taxonomy, queue="long", timeout=3600)
+    frappe.enqueue(fetch_shopify_taxonomy, queue="long", timeout=3600, trigger="scheduled")
 
 
-def fetch_shopify_taxonomy():
+def fetch_shopify_taxonomy(trigger="manual", log_name=None):
     """
     Fetch the full Shopify Standard Product Taxonomy tree and populate
     the Shopify Category doctype. Called on demand (see
@@ -184,6 +185,11 @@ def fetch_shopify_taxonomy():
     each next level via Shopify's generic nodes(ids:) bulk lookup (up to
     250 ids per call) instead of one round trip per node.
     """
+    log = load_or_create_log("taxonomy", trigger, log_name)
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
+
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     client = ShopifyGraphQLClient()
@@ -227,10 +233,12 @@ def fetch_shopify_taxonomy():
             title="Shopify: failed to fetch taxonomy tree",
             message=frappe.get_traceback(),
         )
+        close_log(log, "failed", error=frappe.get_traceback()[:2000])
         return
 
     if not total:
         frappe.logger().warning("Shopify taxonomy returned no categories")
+        close_log(log, "failed", error="Shopify taxonomy returned no categories")
         return
 
     # _save_taxonomy_node inserted every node with skip_nsm=True (no lft/rgt
@@ -242,3 +250,4 @@ def fetch_shopify_taxonomy():
     frappe.logger().info(
         f"Shopify taxonomy sync completed: processed {total} categories, saved {saved}"
     )
+    close_log(log, "success", processed=total, created=saved)
