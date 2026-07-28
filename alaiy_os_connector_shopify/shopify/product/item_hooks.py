@@ -16,18 +16,25 @@ def resolve_shopify_category_gid(doc, method=None):
     """
     sh_shopify_category is a Link to Shopify Category, named by its human
     path string ("Home & Garden / Linens & Bedding / Towels / ..."), not
-    the Shopify taxonomy GID -- a bulk CSV upload (Data Import tool) that
-    puts a raw GID like "gid://shopify/TaxonomyCategory/ap-2-2-2-5" into
-    that column fails Link validation outright, since no Shopify Category
-    doc is literally named that GID. Resolve it to the real doc name here
-    before Frappe's own Link check runs.
+    the Shopify taxonomy GID. A raw GID can't go directly into that field
+    for a bulk CSV upload -- confirmed live: Frappe's Data Import tool
+    pre-validates Link field values against existing doc names BEFORE a
+    row ever reaches this validate hook, so the import fails outright
+    with "value does not exist" rather than ever giving this function a
+    chance to resolve it.
+
+    sh_shopify_category_gid is a plain Data field with no such check --
+    CSV uploads map their GID column there instead. Resolve it into the
+    real Link field here and clear the staging field.
     """
-    value = doc.sh_shopify_category
-    if value and value.startswith("gid://shopify/TaxonomyCategory/"):
-        resolved = frappe.db.get_value("Shopify Category", {"shopify_category_id": value}, "name")
-        if not resolved:
-            frappe.throw(f"No Shopify Category found for {value}")
-        doc.sh_shopify_category = resolved
+    value = doc.sh_shopify_category_gid
+    if not value:
+        return
+    resolved = frappe.db.get_value("Shopify Category", {"shopify_category_id": value}, "name")
+    if not resolved:
+        frappe.throw(f"No Shopify Category found for {value}")
+    doc.sh_shopify_category = resolved
+    doc.sh_shopify_category_gid = None
 
 
 def validate_item_uoms(doc, method=None):

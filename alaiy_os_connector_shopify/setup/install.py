@@ -215,6 +215,13 @@ def setup_custom_fields():
             "description": "Shopify's Standard Product Taxonomy category. Fetched from the template on variants -- edit on the template.",
         },
         {
+            "fieldname": "sh_shopify_category_gid",
+            "label": "Shopify Category GID",
+            "fieldtype": "Data",
+            "insert_after": "sh_shopify_category",
+            "description": "Staging field for bulk CSV import -- paste a Shopify taxonomy GID (gid://shopify/TaxonomyCategory/...) here instead of the category path. Frappe's Data Import tool pre-validates Link field values against existing doc names before a row ever reaches Item's validate hook, so a raw GID in Shopify Category itself fails import outright. This plain Data field has no such check -- resolve_shopify_category_gid reads it on save, resolves the GID to the real Shopify Category doc, and clears this field.",
+        },
+        {
             "fieldname": "sh_shopify_product_type",
             "label": "Shopify Product Type",
             "fieldtype": "Data",
