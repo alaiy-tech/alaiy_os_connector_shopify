@@ -115,7 +115,7 @@ def run(apply=False):
 
     if apply:
         from frappe.utils.nestedset import rebuild_tree
-        rebuild_tree("Item Group", "parent_item_group")
+        rebuild_tree("Item Group")
         frappe.db.commit()
 
     print(
