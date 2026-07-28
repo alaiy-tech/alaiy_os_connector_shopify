@@ -12,6 +12,24 @@ Item-level concern.
 import frappe
 
 
+def resolve_shopify_category_gid(doc, method=None):
+    """
+    sh_shopify_category is a Link to Shopify Category, named by its human
+    path string ("Home & Garden / Linens & Bedding / Towels / ..."), not
+    the Shopify taxonomy GID -- a bulk CSV upload (Data Import tool) that
+    puts a raw GID like "gid://shopify/TaxonomyCategory/ap-2-2-2-5" into
+    that column fails Link validation outright, since no Shopify Category
+    doc is literally named that GID. Resolve it to the real doc name here
+    before Frappe's own Link check runs.
+    """
+    value = doc.sh_shopify_category
+    if value and value.startswith("gid://shopify/TaxonomyCategory/"):
+        resolved = frappe.db.get_value("Shopify Category", {"shopify_category_id": value}, "name")
+        if not resolved:
+            frappe.throw(f"No Shopify Category found for {value}")
+        doc.sh_shopify_category = resolved
+
+
 def validate_item_uoms(doc, method=None):
     """
     Validation hook on Item before saving to automatically deduplicate

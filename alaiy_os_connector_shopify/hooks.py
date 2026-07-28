@@ -59,6 +59,7 @@ doc_events = {
         # is the push trigger and enable gate now (see product.listing_hooks).
         # Only tags/collections/UOM validation (Item-level concepts) stay here.
         "validate": [
+            "alaiy_os_connector_shopify.shopify.product_sync.resolve_shopify_category_gid",
             "alaiy_os_connector_shopify.shopify.product_sync.validate_item_uoms",
             "alaiy_os_connector_shopify.shopify.product_sync.copy_template_tags_to_variant",
             "alaiy_os_connector_shopify.shopify.product_sync.copy_template_collections_to_variant",
