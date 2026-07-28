@@ -80,6 +80,15 @@ def _variant_inventory_item_payload(variant) -> dict:
             payload["measurement"] = {
                 "weight": {"value": flt(variant.weight_per_unit), "unit": weight_unit}
             }
+    if variant.get("sh_harmonized_system_code"):
+        payload["harmonizedSystemCode"] = variant.sh_harmonized_system_code
+    if variant.get("sh_country_of_origin"):
+        # sh_country_of_origin is a Link to Country (full name); Shopify wants
+        # the ISO 3166-1 alpha-2 code, which the Country doctype stores in
+        # its own `code` field.
+        country_code = frappe.db.get_value("Country", variant.sh_country_of_origin, "code")
+        if country_code:
+            payload["countryCodeOfOrigin"] = country_code.upper()
     return payload
 
 
@@ -100,6 +109,9 @@ def _variant_canonical(variant, settings, listing) -> dict:
             for a in (variant.attributes or [])
         ],
         "barcode": variant.barcodes[0].barcode if variant.get("barcodes") else "",
+        "variant_image": listing_resolver.effective_variant_image(listing, variant.item_code) or "",
+        "harmonized_system_code": variant.get("sh_harmonized_system_code") or "",
+        "country_of_origin": variant.get("sh_country_of_origin") or "",
     }
 
 
@@ -138,4 +150,7 @@ def _variant_set_payload(variant, settings, option_names: list, listing) -> dict
     inventory_item = _variant_inventory_item_payload(variant)
     if inventory_item:
         payload["inventoryItem"] = inventory_item
+    variant_image = listing_resolver.effective_variant_image(listing, variant.item_code)
+    if variant_image:
+        payload["file"] = {"originalSource": variant_image, "contentType": "IMAGE"}
     return payload

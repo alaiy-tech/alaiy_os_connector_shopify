@@ -211,6 +211,18 @@ def variant_shopify_id(listing, variant_item_code: str):
     return frappe.db.get_value("Item", variant_item_code, "sh_shopify_variant_id")
 
 
+def effective_variant_image(listing, variant_item_code: str):
+    """Absolute URL for this variant's own image, or None. Shopify only
+    accepts one media file per variant (unlike the product-level image
+    set) -- no Item-level fallback exists since Items don't carry a
+    per-variant image field either; blank just means this variant shows
+    the product's shared images instead of its own."""
+    row = _variant_rows(listing).get(variant_item_code) if listing else None
+    if row and row.variant_image:
+        return _absolute_file_url(row.variant_image)
+    return None
+
+
 def set_variant_id(template_name: str, variant_item_code: str, variant_id):
     """Dual-write during the transition: mirror a variant id onto its Listing
     Variant row, if one exists. No-op otherwise (row gets it on next

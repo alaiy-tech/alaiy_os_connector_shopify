@@ -7,6 +7,7 @@
     "item_variant",
     "is_enabled",
     "variant_price",
+    "variant_image",
     "sh_shopify_variant_id"
   ],
   "fields": [
@@ -31,6 +32,12 @@
       "fieldtype": "Currency",
       "in_list_view": 1,
       "label": "Variant Price"
+    },
+    {
+      "description": "Shopify only supports one media file per variant. Blank pushes no variant-specific image (the variant shows the product's shared image set instead).",
+      "fieldname": "variant_image",
+      "fieldtype": "Attach Image",
+      "label": "Variant Image"
     },
     {
       "description": "Owning copy of the Shopify variant id. Set by the connector on push/import. Never hand-edited.",
