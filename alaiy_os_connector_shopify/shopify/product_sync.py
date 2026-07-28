@@ -65,6 +65,7 @@ from alaiy_os_connector_shopify.shopify.product.canonical import (
 from alaiy_os_connector_shopify.shopify.product.taxonomy import (
     _resolve_category_id,
     fetch_shopify_taxonomy,
+    scheduled_fetch_shopify_taxonomy,
 )
 from alaiy_os_connector_shopify.shopify.product.export import (
     LOCK_TIMEOUT_SECONDS,

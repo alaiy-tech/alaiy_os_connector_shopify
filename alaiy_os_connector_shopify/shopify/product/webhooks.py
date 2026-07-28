@@ -260,7 +260,8 @@ def _update_item_from_shopify(item, product: dict):
         else:
             item.description = product["body_html"]
     if product.get("vendor"):
-        item.brand = product["vendor"]
+        from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand
+        item.brand = _ensure_brand(product["vendor"])
     if product.get("product_type"):
         # sh_shopify_product_type, not item_group -- Item Group is a real
         # Link field with its own master data and validation, and mixing

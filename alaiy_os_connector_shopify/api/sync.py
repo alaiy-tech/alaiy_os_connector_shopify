@@ -99,12 +99,16 @@ def refresh_shopify_taxonomy():
     Fetches the full taxonomy from Shopify GraphQL and populates/updates
     the Shopify Category doctype (tree structure).
     """
-    frappe.enqueue(
+    return _enqueue_sync(
+        "taxonomy",
         "alaiy_os_connector_shopify.shopify.product_sync.fetch_shopify_taxonomy",
-        queue="long",
-        timeout=300,
+        # Shopify's full Standard Product Taxonomy is tens of thousands of
+        # nodes, walked in batches of 250 with a real GraphQL round trip
+        # each -- 300s was nowhere near enough and confirmed live to abort
+        # mid-node, leaving a transaction to roll back. An hour is generous
+        # headroom; the walk itself is idempotent/resumable via re-run.
+        timeout=3600,
     )
-    return {"queued": True}
 
 
 @frappe.whitelist()

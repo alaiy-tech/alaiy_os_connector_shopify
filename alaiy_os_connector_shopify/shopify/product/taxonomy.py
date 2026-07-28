@@ -8,6 +8,7 @@ import frappe
 from alaiy_os_connector_shopify.shopify.product.queries import (
     _TAXONOMY_SEARCH_QUERY, _TAXONOMY_TREE_QUERY, _TAXONOMY_NODES_BY_ID_QUERY,
 )
+from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, close_log
 
 _NODES_PER_CALL = 250  # Shopify's node-by-id bulk lookup cap, same as any other connection page size here.
 
@@ -27,11 +28,18 @@ def _safe_doc_name(path_name: str) -> str:
     return path_name[:130] + "-" + h
 
 
-def ensure_shopify_category(full_name: str) -> str:
+def ensure_shopify_category(full_name: str, skip_nsm: bool = False) -> str:
     """
     Ensure the nested parent-child Shopify Category tree exists for a full name path
     (e.g., 'Apparel & Accessories / Clothing / Activewear / Sweatshirts').
     Returns the leaf node document name.
+
+    skip_nsm=True skips NestedSet's per-insert lft/rgt maintenance (each
+    insert otherwise re-shifts every row past the insertion point -- fine
+    for a single ad-hoc category, but a full tree walk inserting thousands
+    of nodes turns that into a query that gets slower with every node and
+    eventually blows the job timeout outright). Callers doing a bulk
+    build must call frappe.utils.nestedset.rebuild_tree() once after.
     """
     # Replace '>' with '/' to comply with Frappe's naming restrictions against special characters '<' and '>'
     full_name_clean = full_name.replace(">", "/")
@@ -50,6 +58,8 @@ def ensure_shopify_category(full_name: str) -> str:
             doc.name = path_name
             if parent:
                 doc.parent_shopify_category = parent
+            if skip_nsm:
+                doc.flags.ignore_update_nsm = True
             doc.insert(ignore_permissions=True, set_name=path_name)
             parent = doc.name
         else:
@@ -114,8 +124,12 @@ def _save_taxonomy_node(node):
     import time
     for attempt in range(3):
         try:
-            # Re-use our robust nested tree builder to ensure parent-child linking and custom name format
-            path_name = ensure_shopify_category(full_name)
+            # Re-use our robust nested tree builder to ensure parent-child linking and
+            # custom name format. skip_nsm=True: this runs once per node across a
+            # multi-thousand-node tree walk -- NestedSet's per-insert lft/rgt shift
+            # gets slower as the tree grows and eventually blows the job timeout
+            # outright. fetch_shopify_taxonomy() rebuilds the tree once at the end.
+            path_name = ensure_shopify_category(full_name, skip_nsm=True)
             if not path_name:
                 return False
             # Root-level categories are shared ancestors of nearly every
@@ -143,10 +157,25 @@ def _save_taxonomy_node(node):
     return False
 
 
-def fetch_shopify_taxonomy():
+def scheduled_fetch_shopify_taxonomy():
+    """
+    hooks.py's daily scheduler entry point. Frappe's own scheduled-job
+    runner enqueues the method it's given with ITS default timeout (300s
+    here) -- nowhere near enough for a tens-of-thousands-of-nodes tree walk,
+    confirmed live: aborted mid-node, leaving a transaction to roll back.
+    Re-enqueue the real work under our own explicit long timeout instead of
+    ever running it under the scheduler's own job wrapper.
+    """
+    frappe.enqueue(fetch_shopify_taxonomy, queue="long", timeout=3600, trigger="scheduled")
+
+
+def fetch_shopify_taxonomy(trigger="manual", log_name=None):
     """
     Fetch the full Shopify Standard Product Taxonomy tree and populate
-    the Shopify Category doctype. Called on demand or via scheduled job.
+    the Shopify Category doctype. Called on demand (see
+    api.sync.refresh_shopify_taxonomy) or via scheduled_fetch_shopify_taxonomy
+    -- both explicitly enqueue this with a generous timeout; never call it
+    directly from a scheduler/job wrapper using its own default timeout.
 
     taxonomy.categories() (the query this used before) only ever returns
     the 26 ROOT (level-1) nodes -- confirmed live via introspection, it is
@@ -156,6 +185,11 @@ def fetch_shopify_taxonomy():
     each next level via Shopify's generic nodes(ids:) bulk lookup (up to
     250 ids per call) instead of one round trip per node.
     """
+    log = load_or_create_log("taxonomy", trigger, log_name)
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
+
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     client = ShopifyGraphQLClient()
@@ -199,12 +233,21 @@ def fetch_shopify_taxonomy():
             title="Shopify: failed to fetch taxonomy tree",
             message=frappe.get_traceback(),
         )
+        close_log(log, "failed", error=frappe.get_traceback()[:2000])
         return
 
     if not total:
         frappe.logger().warning("Shopify taxonomy returned no categories")
+        close_log(log, "failed", error="Shopify taxonomy returned no categories")
         return
+
+    # _save_taxonomy_node inserted every node with skip_nsm=True (no lft/rgt
+    # maintenance per row) -- fix the whole tree's lft/rgt in one pass here
+    # instead of paying that cost on every single one of thousands of inserts.
+    from frappe.utils.nestedset import rebuild_tree
+    rebuild_tree("Shopify Category")
 
     frappe.logger().info(
         f"Shopify taxonomy sync completed: processed {total} categories, saved {saved}"
     )
+    close_log(log, "success", processed=total, created=saved)
