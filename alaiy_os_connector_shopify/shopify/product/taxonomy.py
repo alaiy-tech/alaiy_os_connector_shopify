@@ -245,7 +245,7 @@ def fetch_shopify_taxonomy(trigger="manual", log_name=None):
     # maintenance per row) -- fix the whole tree's lft/rgt in one pass here
     # instead of paying that cost on every single one of thousands of inserts.
     from frappe.utils.nestedset import rebuild_tree
-    rebuild_tree("Shopify Category", "parent_shopify_category")
+    rebuild_tree("Shopify Category")
 
     frappe.logger().info(
         f"Shopify taxonomy sync completed: processed {total} categories, saved {saved}"
