@@ -21,6 +21,7 @@ from alaiy_os_connector_shopify.shopify.product.queries import (
 )
 from alaiy_os_connector_shopify.shopify.product.item_hooks import (
     validate_item_uoms,
+    resolve_shopify_category_gid,
 )
 from alaiy_os_connector_shopify.shopify.product.tags import (
     copy_template_tags_to_variant,

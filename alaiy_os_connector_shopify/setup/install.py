@@ -215,6 +215,13 @@ def setup_custom_fields():
             "description": "Shopify's Standard Product Taxonomy category. Fetched from the template on variants -- edit on the template.",
         },
         {
+            "fieldname": "sh_shopify_category_gid",
+            "label": "Shopify Category GID",
+            "fieldtype": "Data",
+            "insert_after": "sh_shopify_category",
+            "description": "Staging field for bulk CSV import -- paste a Shopify taxonomy GID (gid://shopify/TaxonomyCategory/...) here instead of the category path. Frappe's Data Import tool pre-validates Link field values against existing doc names before a row ever reaches Item's validate hook, so a raw GID in Shopify Category itself fails import outright. This plain Data field has no such check -- resolve_shopify_category_gid reads it on save, resolves the GID to the real Shopify Category doc, and clears this field.",
+        },
+        {
             "fieldname": "sh_shopify_product_type",
             "label": "Shopify Product Type",
             "fieldtype": "Data",
@@ -224,10 +231,25 @@ def setup_custom_fields():
             "description": "Shopify's product_type field, kept separate from Item Group so renaming/reorganizing Item Group locally never affects Shopify. Synced both directions. Fetched from the template on variants -- edit on the template.",
         },
         {
+            "fieldname": "sh_country_of_origin",
+            "label": "Country of Origin",
+            "fieldtype": "Link",
+            "options": "Country",
+            "insert_after": "sh_shopify_product_type",
+            "description": "Pushed as Shopify's inventoryItem.countryCodeOfOrigin (ISO 3166-1 alpha-2, read from the Country doctype's own code field).",
+        },
+        {
+            "fieldname": "sh_harmonized_system_code",
+            "label": "Harmonized System Code",
+            "fieldtype": "Data",
+            "insert_after": "sh_country_of_origin",
+            "description": "Pushed as Shopify's inventoryItem.harmonizedSystemCode -- required by some countries' customs for cross-border orders.",
+        },
+        {
             "fieldname": "sh_seo_title",
             "label": "Shopify SEO Title",
             "fieldtype": "Data",
-            "insert_after": "sh_shopify_product_type",
+            "insert_after": "sh_harmonized_system_code",
             "description": "Defaults to the Item Name if left blank.",
         },
         {

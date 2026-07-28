@@ -12,6 +12,62 @@ Item-level concern.
 import frappe
 
 
+def resolve_shopify_category_gid(doc, method=None):
+    """
+    sh_shopify_category is a Link to Shopify Category, named by its human
+    path string ("Home & Garden / Linens & Bedding / Towels / ..."), not
+    the Shopify taxonomy GID. A raw GID can't go directly into that field
+    for a bulk CSV upload -- confirmed live: Frappe's Data Import tool
+    pre-validates Link field values against existing doc names BEFORE a
+    row ever reaches this validate hook, so the import fails outright
+    with "value does not exist" rather than ever giving this function a
+    chance to resolve it.
+
+    sh_shopify_category_gid is a plain Data field with no such check --
+    CSV uploads map their category_id column there instead, and that
+    column can hold three different kinds of value depending on how the
+    supplier feed was built: a real GID, a bare leaf category name (e.g.
+    "Cat Toys"), or -- since a CSV can be hand-edited -- the exact Shopify
+    Category doc name (its full path string) already. Resolve whichever
+    one it turns out to be into the real Link field here and clear the
+    staging field.
+    """
+    value = (doc.sh_shopify_category_gid or "").strip()
+    if not value:
+        return
+
+    if frappe.db.exists("Shopify Category", value):
+        # Already the exact doc name (full path) -- no resolution needed.
+        resolved = value
+    elif value.startswith("gid://shopify/TaxonomyCategory/"):
+        resolved = frappe.db.get_value("Shopify Category", {"shopify_category_id": value}, "name")
+        if not resolved:
+            frappe.throw(f"No Shopify Category found for GID {value}")
+    else:
+        # Bare leaf name -- match the same way the one-time reparent script
+        # does: exact name match only, preferring a real nested node over a
+        # standalone no-parent duplicate (partial-import leftover noise),
+        # never guessing on a genuine ambiguity.
+        matches = frappe.get_all(
+            "Shopify Category", filters={"shopify_category_name": value},
+            fields=["name", "parent_shopify_category"],
+        )
+        nested = [m for m in matches if m.parent_shopify_category]
+        if len(nested) == 1:
+            matches = nested
+        if not matches:
+            frappe.throw(f"No Shopify Category found named {value!r}")
+        if len(matches) > 1:
+            frappe.throw(
+                f"{value!r} matches multiple Shopify Category nodes -- "
+                f"use the exact GID instead: {[m.name for m in matches]}"
+            )
+        resolved = matches[0].name
+
+    doc.sh_shopify_category = resolved
+    doc.sh_shopify_category_gid = None
+
+
 def validate_item_uoms(doc, method=None):
     """
     Validation hook on Item before saving to automatically deduplicate

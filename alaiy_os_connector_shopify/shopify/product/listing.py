@@ -89,6 +89,14 @@ def effective_description(listing, item) -> str:
     return listing.listing_description or item.description or ""
 
 
+def effective_category(listing, item) -> str:
+    return listing.listing_category or item.sh_shopify_category or ""
+
+
+def effective_product_type(listing, item) -> str:
+    return listing.listing_product_type or item.sh_shopify_product_type or ""
+
+
 def effective_images(listing, item, settings) -> list:
     """Listing image rows (by sort_order) as absolute URLs; fall back to the
     Item image/slideshow when the Listing has no image rows."""
@@ -201,6 +209,18 @@ def variant_shopify_id(listing, variant_item_code: str):
     if row and row.sh_shopify_variant_id:
         return row.sh_shopify_variant_id
     return frappe.db.get_value("Item", variant_item_code, "sh_shopify_variant_id")
+
+
+def effective_variant_image(listing, variant_item_code: str):
+    """Absolute URL for this variant's own image, or None. Shopify only
+    accepts one media file per variant (unlike the product-level image
+    set) -- no Item-level fallback exists since Items don't carry a
+    per-variant image field either; blank just means this variant shows
+    the product's shared images instead of its own."""
+    row = _variant_rows(listing).get(variant_item_code) if listing else None
+    if row and row.variant_image:
+        return _absolute_file_url(row.variant_image)
+    return None
 
 
 def set_variant_id(template_name: str, variant_item_code: str, variant_id):

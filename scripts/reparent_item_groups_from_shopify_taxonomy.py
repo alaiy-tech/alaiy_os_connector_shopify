@@ -94,23 +94,28 @@ def run(apply=False):
 
     fixed, no_match, ambiguous, already_correct = [], [], [], []
 
-    for row in root_groups:
+    for i, row in enumerate(root_groups, 1):
+        print(f"[{i}/{len(root_groups)}] checking {row.name!r} ...", flush=True)
         chain, match_count = _ancestor_chain(row.name)
         if chain is None:
+            bucket = "AMBIGUOUS" if match_count > 1 else "NO MATCH"
+            print(f"  -> {bucket}", flush=True)
             (ambiguous if match_count > 1 else no_match).append(row.name)
             continue
         if len(chain) <= 1:
             # This name IS a real Shopify top-level category -- correctly root-level.
+            print("  -> already correct (real top-level category)", flush=True)
             already_correct.append(row.name)
             continue
 
         ancestors = chain[:-1]  # exclude the leaf itself (that's row.name)
-        print(f"{row.name}  <-  {' > '.join(ancestors)}", flush=True)
+        print(f"  -> {row.name}  <-  {' > '.join(ancestors)}", flush=True)
         if apply:
             parent = "All Item Groups"
             for name in ancestors:
                 parent = _ensure_item_group(name, parent)
             frappe.db.set_value("Item Group", row.name, "parent_item_group", parent)
+            print(f"  -> reparented under {parent!r}", flush=True)
         fixed.append(row.name)
 
     if apply:

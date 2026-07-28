@@ -11,6 +11,8 @@
     "listing_title",
     "listing_description",
     "listing_price",
+    "listing_category",
+    "listing_product_type",
     "images",
     "variants",
     "metafields",
@@ -55,10 +57,24 @@
       "label": "Listing Description"
     },
     {
-      "description": "Simple/no-variant products. Blank inherits the Item Price on the connector's selling price list.",
+      "depends_on": "eval:!doc.variants || doc.variants.length <= 1",
+      "description": "Simple/no-variant products only (irrelevant, hidden, for real multi-variant products -- see each variant row's own Variant Price instead). Blank inherits the Item Price on the connector's selling price list.",
       "fieldname": "listing_price",
       "fieldtype": "Currency",
       "label": "Listing Price"
+    },
+    {
+      "description": "Blank inherits Item.sh_shopify_category at push time.",
+      "fieldname": "listing_category",
+      "fieldtype": "Link",
+      "label": "Listing Category",
+      "options": "Shopify Category"
+    },
+    {
+      "description": "Blank inherits Item.sh_shopify_product_type at push time.",
+      "fieldname": "listing_product_type",
+      "fieldtype": "Data",
+      "label": "Listing Product Type"
     },
     {
       "fieldname": "images",
