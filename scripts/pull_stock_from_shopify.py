@@ -34,11 +34,12 @@ def main(site, dry_run=True):
     warehouse, location_id = pairs[0]
     print(f"Pulling live Shopify qty for warehouse={warehouse} location={location_id}", flush=True)
 
-    items = frappe.get_all(
-        "Item",
-        filters=[["sh_shopify_variant_id", "is", "set"]],
-        fields=["name", "sh_shopify_variant_id", "disabled"],
-    )
+    items = frappe.db.sql("""
+        SELECT i.name, v.sh_shopify_variant_id, i.disabled
+        FROM `tabItem` i
+        JOIN `tabShopify Listing Variant` v ON v.item_variant = i.name
+        WHERE v.sh_shopify_variant_id IS NOT NULL AND v.sh_shopify_variant_id != ''
+    """, as_dict=True)
     total = len(items)
     print(f"TOTAL {total} items", flush=True)
 

@@ -25,11 +25,13 @@ import frappe
 
 
 def run_audit():
-    items = frappe.get_all(
-        "Item",
-        filters=[["sh_shopify_product_id", "is", "set"], ["variant_of", "is", "not set"]],
-        fields=["name", "item_name", "item_group", "sh_shopify_category", "sh_shopify_product_type"],
-    )
+    items = frappe.db.sql("""
+        SELECT i.name, i.item_name, i.item_group, i.sh_shopify_category, i.sh_shopify_product_type
+        FROM `tabItem` i
+        JOIN `tabShopify Product Listing` l ON l.item = i.name
+        WHERE l.sh_shopify_product_id IS NOT NULL AND l.sh_shopify_product_id != ''
+          AND (i.variant_of IS NULL OR i.variant_of = '')
+    """, as_dict=True)
     total = len(items)
     print(f"TOTAL {total} products to audit", flush=True)
 
