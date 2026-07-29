@@ -25,7 +25,7 @@ import frappe
 
 
 def main(site, dry_run=True):
-    frappe.init(site=site)
+    frappe.init(site=site, sites_path="sites")
     frappe.connect()
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
