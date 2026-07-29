@@ -89,10 +89,26 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
         listing_resolver.effective_variant_image(listing, v.item_code) for v in variants
     ]
     all_images = list(dict.fromkeys(images + [u for u in variant_images if u]))
+    if len(all_images) > 250:
+        # Shopify's own hard cap on productSet's files array -- confirmed
+        # live ("input array size of 385 is greater than the maximum
+        # allowed of 250"). Keep product-level images first, then as many
+        # variant images as fit; variants past the cut simply push without
+        # their own distinct image rather than failing the whole product.
+        frappe.logger().warning(
+            f"Shopify: {item.name} has {len(all_images)} distinct images, "
+            "trimming to 250 (productSet files array limit)."
+        )
+        all_images = all_images[:250]
     if all_images:
         payload["files"] = [
             {"originalSource": url, "contentType": "IMAGE"} for url in all_images
         ]
+        allowed = set(all_images)
+        for v_payload in payload["variants"]:
+            f = v_payload.get("file")
+            if f and f.get("originalSource") not in allowed:
+                del v_payload["file"]
     tags = _item_tags(item)
     if tags:
         payload["tags"] = sorted(tags)

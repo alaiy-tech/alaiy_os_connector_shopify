@@ -323,7 +323,12 @@ def _push_product_unlocked(item):
     product = result.get("product") or {}
     product_id = product.get("legacyResourceId")
     if not product_id:
-        return
+        # No userErrors AND no product id back -- Shopify accepted the
+        # mutation but returned nothing usable (seen live: happens
+        # silently on some pushes with a large/slow media batch). Surface
+        # the raw response instead of a bare no-op so it shows up
+        # somewhere other than a re-guessed mystery next time.
+        raise RuntimeError(f"Shopify productSet returned no product id; raw result={result}")
 
     if item.sh_shopify_product_id != product_id:
         frappe.db.set_value("Item", item.name,
