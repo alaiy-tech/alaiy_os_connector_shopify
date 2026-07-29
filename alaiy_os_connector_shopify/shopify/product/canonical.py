@@ -81,9 +81,17 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
     if product_type:
         payload["productType"] = product_type
     images = listing_resolver.effective_images(listing, item, settings)
-    if images:
+    # Shopify's productSet resolves each variant's "file" input by matching
+    # its originalSource against this top-level files list -- a variant
+    # image not also listed here fails with "File original source missing
+    # from the product files input" even though the URL itself is valid.
+    variant_images = [
+        listing_resolver.effective_variant_image(listing, v.item_code) for v in variants
+    ]
+    all_images = list(dict.fromkeys(images + [u for u in variant_images if u]))
+    if all_images:
         payload["files"] = [
-            {"originalSource": url, "contentType": "IMAGE"} for url in images
+            {"originalSource": url, "contentType": "IMAGE"} for url in all_images
         ]
     tags = _item_tags(item)
     if tags:
