@@ -25,11 +25,13 @@ Scalar fields (`sh_shopify_product_type`, `sh_shopify_category`, `sh_shopify_sta
 
 ## Product Listings (per-marketplace)
 
-`Shopify Product Listing` (`shopify/product/listing.py`, `listing_hooks.py`) is the per-marketplace abstraction over Item. One Listing per **template** Item holds the fields that can differ per sales channel — `listing_title`, `listing_description`, `listing_price`, `images` (child `Shopify Listing Image`, incl. AI-enhanced), and `variants` (child `Shopify Listing Variant`: per-variant `is_enabled` + `variant_price`) — plus `is_enabled`, which is now the **sole gate** for whether the product is live on Shopify (it replaces `Item.sync_to_shopify` as the switch).
+`Shopify Product Listing` (`shopify/product/listing.py`, `listing_hooks.py`) is the per-marketplace abstraction over Item. One Listing per **template** Item holds the fields that can differ per sales channel — `listing_title`, `listing_description`, `listing_price`, `listing_category`, `listing_product_type`, `images` (child `Shopify Listing Image`, incl. AI-enhanced), and `variants` (child `Shopify Listing Variant`: per-variant `is_enabled` + `variant_price` + `variant_image`) — plus `is_enabled`, which is now the **sole gate** for whether the product is live on Shopify (it replaces `Item.sync_to_shopify` as the switch).
 
-**Blank = inherit.** A blank Listing field falls back to the Item's current value at push time (`listing.effective_title/description/price/images`), so an un-diverged listing stores no duplicate data. The resolver is the single place every export read routes through, and the fingerprint hashes the **resolved** (post-fallback) values — so an Item-level change a blank Listing is inheriting still re-pushes.
+**Blank = inherit.** A blank Listing field falls back to the Item's current value at push time (`listing.effective_title/description/price/category/product_type/images/variant_image`), so an un-diverged listing stores no duplicate data. The resolver is the single place every export read routes through, and the fingerprint hashes the **resolved** (post-fallback) values — so an Item-level change a blank Listing is inheriting still re-pushes.
 
-**Item saves no longer push.** Editing an Item is inert for Shopify; only saving/enabling its Listing pushes. Category, brand, tags, and UOM stay Item-level (not part of the abstraction this phase).
+`listing_price` is documented simple/no-variant-products-only and is hidden (`depends_on`) on a Listing with more than one variant row, where it's meaningless — each variant's own `variant_price` is the real per-variant price. Shows a real backfilled number for genuinely simple products instead of Frappe's Currency-field blank-as-0.00 display.
+
+**Item saves no longer push.** Editing an Item is inert for Shopify; only saving/enabling its Listing pushes. Brand, tags, and UOM stay Item-level (not part of the abstraction this phase) — category and product type moved into the Listing abstraction (see below).
 
 **IDs live on the Listing, Item is the fallback.** `Shopify Product Listing.sh_shopify_product_id` and `Shopify Listing Variant.sh_shopify_variant_id` are real, independently-writable columns (not `fetch_from`) — every read site (order matching, inventory push, importer idempotency, export write-back, collections) resolves the Listing's copy first via `listing.py`'s lookup helpers (`item_by_variant_id`, `template_by_product_id`, `variant_id_of_item`, `variant_shopify_id`), falling back to the Item's own copy only if the Listing's is blank. Every write path dual-writes both sides (`listing.set_product_id`/`set_variant_id`), so the two stay in step. The Item columns remain purely as a fallback safety net for now — dropping them entirely is a separate, deliberately deferred step, held back for a longer confidence window in production.
 
@@ -85,8 +87,15 @@ Concurrency is guarded by a lock on the Settings Single and a `has_active_sync` 
 `shopify/product/seo.py` — `sh_seo_title` / `sh_seo_description`, defaulting to item name / (stripped) description when blank.
 
 ### Product type & Item Group
-- `sh_shopify_product_type` ⇄ Shopify `productType`, always synced (no toggle).
-- **Item Group** follows the product's Shopify **category taxonomy** path — `_ensure_item_group_path` (`masters.py`) builds a nested Item Group tree from the category `fullName` ("Apparel & Accessories > Clothing > Shirts") and assigns the leaf; falls back to flat `productType` under "All Item Groups" only when a product has no category.
+- `sh_shopify_product_type` ⇄ Shopify `productType`. Listing has its own `listing_product_type` override (blank inherits the Item's), same fallback pattern as `listing_title`/`listing_description`/`listing_price` — `listing_resolver.effective_product_type(listing, item)` is what the push payload actually reads, not the Item field directly.
+- **Item Group** follows the product's Shopify **category taxonomy** path — `_ensure_item_group_path` (`masters.py`) builds a nested Item Group tree from the category `fullName` ("Apparel & Accessories > Clothing > Shirts") and assigns the leaf; falls back to flat `productType` under "All Item Groups" only when a product has no category. See [Categories → Ancestor Item Groups must stay is_group=1](categories.md) for a real bug this hit.
+- Category itself has the same Listing-override pattern: `listing_category` (blank inherits `sh_shopify_category`), read via `effective_category(listing, item)`. See [Categories doc](categories.md) for the CSV bulk-import GID/leaf-name resolver and the junk-node problem it fixes.
+
+### Variant image
+Shopify only accepts one media file per variant (separate from the product-level shared image set above) — `Shopify Listing Variant.variant_image` (Attach Image), read via `effective_variant_image(listing, variant_item_code)`, wired into `_variant_set_payload`'s `file` key and `_variant_canonical`'s fingerprint (`variants.py`). No Item-level fallback exists (Items don't carry a per-variant image field) — blank just means the variant shows the product's shared images instead of its own.
+
+### Country of origin & HS code
+`sh_country_of_origin` (Link to Country) and `sh_harmonized_system_code` (Data), both on Item — pushed as `inventoryItem.countryCodeOfOrigin` (resolved to the Country doctype's own ISO 3166-1 alpha-2 `code` field) and `inventoryItem.harmonizedSystemCode` respectively (`_variant_inventory_item_payload`, `variants.py`). Neither existed anywhere in the export path before a full field-by-field audit against Shopify's API found the gap.
 
 ### Metafields
 `shopify/product/metafields.py` — full fetch/push of Shopify product metafields (custom fields), stored on a `Shopify Product Metafield` child table on the Listing (namespace/key/type/value). Never on Item — metafields are marketplace-specific, same rule as every other Listing field.
