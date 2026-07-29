@@ -66,7 +66,12 @@ doc_events = {
         ],
         # Data-upkeep only (never a direct push): keep a desk-added/deleted
         # variant in sync with its template's Listing, which then pushes.
-        "after_insert": "alaiy_os_connector_shopify.shopify.product.listing_hooks.sync_new_variant_to_listing",
+        # ensure_listing_for_new_item gives every new TEMPLATE Item a
+        # disabled Listing straight away (no-op for a variant).
+        "after_insert": [
+            "alaiy_os_connector_shopify.shopify.product_sync.ensure_listing_for_new_item",
+            "alaiy_os_connector_shopify.shopify.product.listing_hooks.sync_new_variant_to_listing",
+        ],
         "on_trash": "alaiy_os_connector_shopify.shopify.product.listing_hooks.remove_variant_from_listing",
     },
     "Shopify Product Listing": {
