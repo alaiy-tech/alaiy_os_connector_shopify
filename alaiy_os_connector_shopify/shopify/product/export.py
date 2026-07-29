@@ -111,6 +111,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
                 log.items_processed = processed
                 log.items_created = created
                 log.items_failed = failed
+                _append_export_log(log, f"...{processed}/{len(candidates)} processed so far ({created} created, {failed} failed)")
                 log.save(ignore_permissions=True)
                 frappe.db.commit()
             processed += 1

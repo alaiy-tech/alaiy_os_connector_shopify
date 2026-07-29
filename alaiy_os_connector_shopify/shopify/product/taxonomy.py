@@ -8,7 +8,9 @@ import frappe
 from alaiy_os_connector_shopify.shopify.product.queries import (
     _TAXONOMY_SEARCH_QUERY, _TAXONOMY_TREE_QUERY, _TAXONOMY_NODES_BY_ID_QUERY,
 )
-from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, close_log, is_cancel_requested
+from alaiy_os_connector_shopify.shopify.sync_guard import (
+    load_or_create_log, close_log, is_cancel_requested, append_log as _append_log,
+)
 
 _NODES_PER_CALL = 250  # Shopify's node-by-id bulk lookup cap, same as any other connection page size here.
 
@@ -241,9 +243,14 @@ def fetch_shopify_taxonomy(trigger="manual", log_name=None):
                 # Flush real progress after every batch, not just at the
                 # end -- same gap already found and fixed for the other
                 # sync jobs; this walk alone can run for a long time on
-                # the full ~25,000-node tree.
+                # the full ~25,000-node tree. items_processed/created alone
+                # updated fine here from the start -- log_messages stayed
+                # empty the whole run since nothing ever called append_log
+                # for a readable progress line, confirmed live (the other
+                # jobs all print one line per batch, this one printed none).
                 log.items_processed = total
                 log.items_created = saved
+                _append_log(log, f"...{total} categories processed so far ({saved} saved, {len(next_queue)} queued for next level)")
                 log.save(ignore_permissions=True)
                 frappe.db.commit()
             if cancelled:

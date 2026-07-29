@@ -251,7 +251,7 @@ def sync_shopify_collections(trigger="manual", log_name=None):
     "collections") so the run shows up in the dashboard like every other sync.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, is_cancel_requested
+    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, is_cancel_requested, append_log as _append_log
 
     log = load_or_create_log("collections", trigger, log_name)
     log.status = "running"
@@ -271,6 +271,7 @@ def sync_shopify_collections(trigger="manual", log_name=None):
                 total += 1
             log.items_processed = total
             log.items_created = total
+            _append_log(log, f"...{total} collections cached so far")
             log.save(ignore_permissions=True)
             frappe.db.commit()
     except Exception:

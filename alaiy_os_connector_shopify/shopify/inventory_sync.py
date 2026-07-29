@@ -293,6 +293,8 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
             log.items_processed = totals["processed"]
             log.items_created = totals["updated"]
             log.items_failed = totals["failed"]
+            _append_log(log, f"[{warehouse}] ...{totals['processed']}/{len(items)} processed so far "
+                              f"({totals['updated']} pushed, {totals['unchanged']} unchanged, {totals['failed']} failed)")
             log.save(ignore_permissions=True)
             frappe.db.commit()
         totals["processed"] += 1
