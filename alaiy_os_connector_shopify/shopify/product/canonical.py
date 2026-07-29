@@ -26,6 +26,7 @@ def _product_canonical(item, variants, settings, listing) -> dict:
     canonical["description"] = listing_resolver.effective_description(listing, item)
     canonical["vendor"] = item.brand or ""
     canonical["product_type"] = listing_resolver.effective_product_type(listing, item)
+    canonical["category"] = listing_resolver.effective_category(listing, item) or ""
     canonical["images"] = listing_resolver.effective_images(listing, item, settings)
     canonical["tags"] = sorted(_item_tags(item))
     seo = _seo_values(item)
