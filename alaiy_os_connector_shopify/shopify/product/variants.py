@@ -12,6 +12,7 @@ from alaiy_os_connector_shopify.shopify.product.pricing import (
 )
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_uom
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+from alaiy_os_connector_shopify.shopify.product.media import _absolute_file_url
 
 # Shopify's GraphQL WeightUnit enum <-> a plain Alaiy OS UOM name. Alaiy OS's
 # weight_uom is a Link to UOM with no fixed seeded names, so these are
@@ -152,5 +153,5 @@ def _variant_set_payload(variant, settings, option_names: list, listing) -> dict
         payload["inventoryItem"] = inventory_item
     variant_image = listing_resolver.effective_variant_image(listing, variant.item_code)
     if variant_image:
-        payload["file"] = {"originalSource": variant_image, "contentType": "IMAGE"}
+        payload["file"] = {"originalSource": _absolute_file_url(variant_image), "contentType": "IMAGE"}
     return payload
