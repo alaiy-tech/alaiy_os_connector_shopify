@@ -7,7 +7,7 @@ import frappe
 from frappe.utils import now_datetime
 
 from alaiy_os_connector_shopify.shopify.sync_guard import (
-    has_active_sync, load_or_create_log, append_log as _append_log,
+    has_active_sync, load_or_create_log, append_log as _append_log, is_cancel_requested,
 )
 from alaiy_os_connector_shopify.shopify.order.queries import _ORDERS_COUNT_QUERY, _ORDERS_QUERY
 from alaiy_os_connector_shopify.shopify.order.utils import _order_node_to_rest_shape
@@ -54,7 +54,12 @@ def _run_orders_pull(log, query_string, skip_existing=False):
         variables = {"after": None, "queryString": query_string}
 
         processed = created = failed = skipped_existing = pages = 0
+        cancelled = False
         for page_nodes in client.execute_paginated(_ORDERS_QUERY, variables, ["orders"]):
+            if is_cancel_requested(log.name):
+                cancelled = True
+                _append_log(log, f"Stopped by user after {processed} orders ({pages} pages).")
+                break
             pages += 1
             for node in page_nodes:
                 order = _order_node_to_rest_shape(node)
@@ -87,7 +92,7 @@ def _run_orders_pull(log, query_string, skip_existing=False):
             log.save(ignore_permissions=True)
             frappe.db.commit()
 
-        log.status = "success"
+        log.status = "cancelled" if cancelled else "success"
         log.items_processed = processed
         log.items_created = created
         log.items_failed = failed
@@ -164,6 +169,7 @@ def import_existing_orders(date_from=None, date_to=None):
     return {
         "status": "queued",
         "message": remaining_message,
+        "log_name": log.name,
     }
 
 

@@ -251,7 +251,7 @@ def sync_shopify_collections(trigger="manual", log_name=None):
     "collections") so the run shows up in the dashboard like every other sync.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
+    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, is_cancel_requested
 
     log = load_or_create_log("collections", trigger, log_name)
     log.status = "running"
@@ -260,11 +260,18 @@ def sync_shopify_collections(trigger="manual", log_name=None):
 
     client = ShopifyGraphQLClient()
     total = 0
+    cancelled = False
     try:
         for page_nodes in client.execute_paginated(_COLLECTIONS_LIST_QUERY, {"after": None}, ["collections"]):
+            if is_cancel_requested(log.name):
+                cancelled = True
+                break
             for node in page_nodes:
                 _upsert_collection_cache(node)
                 total += 1
+            log.items_processed = total
+            log.items_created = total
+            log.save(ignore_permissions=True)
             frappe.db.commit()
     except Exception:
         log.status = "failed"
@@ -278,15 +285,16 @@ def sync_shopify_collections(trigger="manual", log_name=None):
         )
         return {"status": "failed"}
 
-    log.status = "success"
+    log.status = "cancelled" if cancelled else "success"
     log.items_processed = total
     log.items_created = total
     log.finished_at = frappe.utils.now_datetime()
     log.save(ignore_permissions=True)
     frappe.db.commit()
 
-    frappe.logger().info(f"Shopify collections sync completed: {total} collections")
-    return {"status": "ok", "total": total}
+    frappe.logger().info(f"Shopify collections sync completed: {total} collections"
+                          + (" (stopped early by user)" if cancelled else ""))
+    return {"status": "cancelled" if cancelled else "ok", "total": total}
 
 
 # ── Item membership field (mirror of tags) ────────────────────────────────────

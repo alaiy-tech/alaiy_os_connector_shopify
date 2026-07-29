@@ -22,7 +22,7 @@ import frappe
 from frappe.utils import now_datetime, flt
 
 from alaiy_os_connector_shopify.shopify.sync_guard import (
-    load_or_create_log, has_active_sync, append_log as _append_log,
+    load_or_create_log, has_active_sync, append_log as _append_log, is_cancel_requested,
 )
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
@@ -101,8 +101,13 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
         processed = created = updated = skipped = failed = pages = 0
         skip_reason_counts = Counter()
         skip_examples = []  # capped list of "title: reason" strings for the log
+        cancelled = False
 
         for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, variables, ["products"]):
+            if is_cancel_requested(log.name):
+                cancelled = True
+                _append_log(log, f"Stopped by user after {processed} products ({pages} pages).")
+                break
             pages += 1
             for node in page_nodes:
                 processed += 1
@@ -143,7 +148,7 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
             log.save(ignore_permissions=True)
             frappe.db.commit()
 
-        log.status = "success"
+        log.status = "cancelled" if cancelled else "success"
         log.items_processed = processed
         log.items_created = created
         log.items_failed = failed
@@ -156,6 +161,8 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
             summary += f"; {skipped} skipped"
         if failed:
             summary += f"; {failed} failed"
+        if cancelled:
+            summary += " (stopped early by user)"
         _append_log(log, summary)
         if skip_reason_counts:
             _append_log(log, "Skip reasons: " + ", ".join(

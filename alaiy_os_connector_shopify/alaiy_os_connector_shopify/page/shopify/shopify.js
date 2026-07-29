@@ -58,6 +58,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						<button id="import-orders-btn" class="shopify-btn shopify-btn-primary">
 							<i class="fa fa-cloud-download"></i> Import Orders from Shopify
 						</button>
+						<button id="import-orders-stop-btn" class="shopify-btn shopify-btn-danger" style="display:none;">
+							<i class="fa fa-stop"></i> Stop
+						</button>
 						<div id="orders-log" class="shopify-sync-log"></div>
 					</div>
 				</div>
@@ -80,6 +83,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						</div>
 						<button id="sync-inventory-btn" class="shopify-btn shopify-btn-primary">
 							<i class="fa fa-refresh"></i> Sync Inventory
+						</button>
+						<button id="sync-inventory-stop-btn" class="shopify-btn shopify-btn-danger" style="display:none;">
+							<i class="fa fa-stop"></i> Stop
 						</button>
 						<div id="inventory-log" class="shopify-sync-log"></div>
 					</div>
@@ -108,6 +114,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 								<button id="import-products-btn" class="shopify-btn shopify-btn-primary">
 									Import Products from Shopify
 								</button>
+								<button id="import-products-stop-btn" class="shopify-btn shopify-btn-danger" style="display:none;">
+									<i class="fa fa-stop"></i> Stop
+								</button>
 								<div id="products-log" class="shopify-sync-log"></div>
 							</div>
 							<div class="shopify-sync-box">
@@ -115,6 +124,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 								<p class="shopify-text-muted">Push local (not-yet-linked) products to Shopify.</p>
 								<button id="export-products-btn" class="shopify-btn shopify-btn-outline-primary">
 									Export Products to Shopify
+								</button>
+								<button id="export-products-stop-btn" class="shopify-btn shopify-btn-danger" style="display:none;">
+									<i class="fa fa-stop"></i> Stop
 								</button>
 								<div id="products-export-log" class="shopify-sync-log"></div>
 							</div>
@@ -215,6 +227,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		}
 
 		var btn = document.getElementById('import-orders-btn');
+		var stop_btn = document.getElementById('import-orders-stop-btn');
 		var log_container = document.getElementById('orders-log');
 		btn.disabled = true;
 		log_container.classList.add('shopify-active');
@@ -226,10 +239,14 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 				? {date_from: date_from, date_to: date_to}
 				: {},
 			callback: function(r) {
-				btn.disabled = false;
-				if (r.message) {
-					log_container.innerHTML = '<div class="shopify-log-entry">' + (r.message.message || 'Import queued') + '</div>';
+				if (r.message && r.message.log_name) {
+					log_container.innerHTML = '<div class="shopify-log-status-running">' + (r.message.message || 'Importing...') + '<span class="shopify-spinner"></span></div>';
+					stop_btn.onclick = function() { stop_sync(r.message.log_name, stop_btn); };
+					poll_import_progress(r.message.log_name, log_container, btn, stop_btn);
 					setTimeout(refresh_logs, 1000);
+				} else {
+					btn.disabled = false;
+					if (r.message) log_container.innerHTML = '<div class="shopify-log-entry">' + (r.message.message || 'Nothing to import') + '</div>';
 				}
 			},
 			error: function() {
@@ -240,15 +257,27 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function sync_inventory() {
+		var btn = document.getElementById('sync-inventory-btn');
+		var stop_btn = document.getElementById('sync-inventory-stop-btn');
 		var log_container = document.getElementById('inventory-log');
+		btn.disabled = true;
+		log_container.classList.add('shopify-active');
+		log_container.innerHTML = '<div class="shopify-log-status-running">Starting inventory sync...<span class="shopify-spinner"></span></div>';
+
 		frappe.call({
 			method: 'alaiy_os_connector_shopify.api.sync.trigger_inventory_push',
 			callback: function(r) {
 				if (r.message && r.message.log_name) {
-					log_container.classList.add('shopify-active');
-					log_container.innerHTML = '<div class="shopify-log-entry">Inventory sync queued. Log: ' + r.message.log_name + '</div>';
+					stop_btn.onclick = function() { stop_sync(r.message.log_name, stop_btn); };
+					poll_import_progress(r.message.log_name, log_container, btn, stop_btn);
 					setTimeout(refresh_logs, 1000);
+				} else {
+					btn.disabled = false;
 				}
+			},
+			error: function() {
+				btn.disabled = false;
+				log_container.innerHTML = '<div class="shopify-log-entry shopify-alert-warning">Failed to start inventory sync</div>';
 			}
 		});
 	}
@@ -258,6 +287,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 			'This will import products from Shopify: new products are created, changed products are updated, unchanged ones are left alone. On the very first run only, any stray unlinked product data is wiped first as a safety net.<br><br>Continue?',
 			function() {
 				var btn = document.getElementById('import-products-btn');
+				var stop_btn = document.getElementById('import-products-stop-btn');
 				var log_container = document.getElementById('products-log');
 				btn.disabled = true;
 
@@ -267,10 +297,12 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						if (r.message && r.message.log_name) {
 							log_container.classList.add('shopify-active');
 							log_container.innerHTML = '<div class="shopify-log-status-running">Importing...<span class="shopify-spinner"></span></div>';
-							poll_import_progress(r.message.log_name, log_container, btn);
+							stop_btn.onclick = function() { stop_sync(r.message.log_name, stop_btn); };
+							poll_import_progress(r.message.log_name, log_container, btn, stop_btn);
 							setTimeout(refresh_logs, 2000);
+						} else {
+							btn.disabled = false;
 						}
-						btn.disabled = false;
 					},
 					error: function() {
 						btn.disabled = false;
@@ -286,6 +318,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 			'Export all local (not-yet-linked) products to Shopify?',
 			function() {
 				var btn = document.getElementById('export-products-btn');
+				var stop_btn = document.getElementById('export-products-stop-btn');
 				var log_container = document.getElementById('products-export-log');
 				btn.disabled = true;
 
@@ -295,10 +328,12 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						if (r.message && r.message.log_name) {
 							log_container.classList.add('shopify-active');
 							log_container.innerHTML = '<div class="shopify-log-status-running">Exporting...<span class="shopify-spinner"></span></div>';
-							poll_import_progress(r.message.log_name, log_container, btn);
+							stop_btn.onclick = function() { stop_sync(r.message.log_name, stop_btn); };
+							poll_import_progress(r.message.log_name, log_container, btn, stop_btn);
 							setTimeout(refresh_logs, 2000);
+						} else {
+							btn.disabled = false;
 						}
-						btn.disabled = false;
 					},
 					error: function() {
 						btn.disabled = false;
@@ -353,26 +388,49 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		});
 	}
 
-	function poll_import_progress(log_name, log_container, btn) {
+	function poll_import_progress(log_name, log_container, btn, stop_btn) {
 		frappe.call({
 			method: 'frappe.client.get',
 			args: {doctype: 'Shopify Sync Log', name: log_name},
 			callback: function(r) {
 				if (r.message) {
 					var log = r.message;
+					var is_active = (log.status === 'running' || log.status === 'queued');
 					var html = '<div class="shopify-log-status shopify-log-status-' + log.status + '">' + log.status.toUpperCase() + '</div>';
-					if (log.items_processed) html += '<div class="shopify-log-entry">Processed: ' + log.items_processed + '</div>';
+					if (log.items_processed) {
+						var total = log.pages_total ? (' / ' + log.pages_total) : '';
+						html += '<div class="shopify-log-entry">Processed: ' + log.items_processed + total + '</div>';
+					}
 					if (log.items_created) html += '<div class="shopify-log-entry">Created: ' + log.items_created + '</div>';
 					if (log.items_failed) html += '<div class="shopify-log-entry">Failed: ' + log.items_failed + '</div>';
 					if (log.error_message) html += '<div class="shopify-log-entry shopify-alert-warning"><strong>Error:</strong> ' + log.error_message + '</div>';
 
 					log_container.innerHTML = html;
 
-					if (log.status === 'running' || log.status === 'queued') {
-						setTimeout(function() { poll_import_progress(log_name, log_container, btn); }, 2000);
+					if (stop_btn) stop_btn.style.display = is_active ? 'inline-block' : 'none';
+
+					if (is_active) {
+						setTimeout(function() { poll_import_progress(log_name, log_container, btn, stop_btn); }, 2000);
 					} else {
 						btn.disabled = false;
 					}
+				}
+			}
+		});
+	}
+
+	function stop_sync(log_name, stop_btn) {
+		if (!log_name) return;
+		stop_btn.disabled = true;
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.shopify.sync_guard.request_cancel',
+			args: {log_name: log_name},
+			callback: function(r) {
+				stop_btn.disabled = false;
+				if (r.message && r.message.cancelled) {
+					frappe.show_alert({message: 'Stopping... this may take a few seconds to finish the current item.', indicator: 'orange'}, 5);
+				} else if (r.message) {
+					frappe.show_alert({message: r.message.reason || 'Could not stop -- job already finished.', indicator: 'grey'}, 5);
 				}
 			}
 		});

@@ -64,7 +64,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
     Scoped to templates and simple items only (skips variants -- pushing a
     template already pushes its full current variant set in one call).
     """
-    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync
+    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync, is_cancel_requested
 
     log = load_or_create_log("product_export", trigger, log_name)
 
@@ -90,10 +90,29 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
             },
             pluck="name",
         )
+        log.pages_total = len(candidates)
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
 
         processed = created = failed = 0
+        cancelled = False
 
-        for item_code in candidates:
+        for i, item_code in enumerate(candidates):
+            if i % 10 == 0:
+                if is_cancel_requested(log.name):
+                    cancelled = True
+                    _append_export_log(log, f"Stopped by user after {processed}/{len(candidates)} items.")
+                    break
+                # Flush real progress to the DB periodically, not just at the
+                # end -- without this, both live visibility (what's happening
+                # RIGHT NOW while it's still running) and crash survival
+                # (what actually got done before a kill/timeout) were both
+                # lost, same gap already found and fixed for the import job.
+                log.items_processed = processed
+                log.items_created = created
+                log.items_failed = failed
+                log.save(ignore_permissions=True)
+                frappe.db.commit()
             processed += 1
             try:
                 # Give each candidate an enabled Listing (all variant rows on)
@@ -125,7 +144,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
                     message=frappe.get_traceback(),
                 )
 
-        log.status = "success"
+        log.status = "cancelled" if cancelled else "success"
         log.items_processed = processed
         log.items_created = created
         log.items_failed = failed
@@ -133,6 +152,8 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
         summary = f"Exported {created} products to Shopify"
         if failed:
             summary += f"; {failed} failed"
+        if cancelled:
+            summary += " (stopped early by user)"
         _append_export_log(log, summary)
         log.save(ignore_permissions=True)
         frappe.db.commit()
