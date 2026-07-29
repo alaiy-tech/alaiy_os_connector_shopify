@@ -74,7 +74,13 @@ def _ensure_item_group(name, parent_name):
     if frappe.db.exists("Item Group", name):
         # Already exists -- an ancestor level that also happens to already be
         # a real Item Group. Leave its parent alone here; only the final
-        # leaf reparent below is this script's actual fix.
+        # leaf reparent below is this script's actual fix. It DOES need to
+        # become a group though -- confirmed live: an existing leaf-only
+        # Item Group (is_group=0, from some other product's own category
+        # path) silently never showed its new child in the Desk tree
+        # otherwise, since a non-group node can't display children at all.
+        if not frappe.db.get_value("Item Group", name, "is_group"):
+            frappe.db.set_value("Item Group", name, "is_group", 1)
         return name
     frappe.get_doc({
         "doctype": "Item Group", "item_group_name": name,
