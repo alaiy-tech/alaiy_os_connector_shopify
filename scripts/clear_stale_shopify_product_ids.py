@@ -19,13 +19,15 @@ Run backgrounded, dry-run first:
 Then apply:
     nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/clear_stale_shopify_product_ids.py <site_name> --apply > ~/clear_stale_apply.log 2>&1 &
 """
+import os
 import sys
 
 import frappe
 
 
 def main(site, dry_run=True):
-    frappe.init(site=site, sites_path="sites")
+    sites_path = os.path.join(os.getcwd(), "sites")
+    frappe.init(site=site, sites_path=sites_path)
     frappe.connect()
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
