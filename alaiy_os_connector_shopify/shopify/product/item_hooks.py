@@ -68,6 +68,27 @@ def resolve_shopify_category_gid(doc, method=None):
     doc.sh_shopify_category_gid = None
 
 
+def ensure_listing_for_new_item(doc, method=None):
+    """
+    Item after_insert hook: give every new TEMPLATE Item (has_variants=1, or
+    a standalone simple product with no variant_of) a Shopify Product
+    Listing straight away, disabled by default (ensure_listing's own
+    default_enabled=0 -- never auto-pushes). Without this, a merchant-
+    created product with no prior Shopify import/push activity could sit
+    indefinitely with no Listing at all, silently unable to ever push
+    until something else happened to trigger ensure_listing() first (an
+    import cycle, or manually opening the Listing list) -- a real gap
+    found in a full feature audit of the Listing abstraction.
+
+    A variant Item (doc.variant_of set) never gets its own Listing --
+    Listing is 1:1 with the template, per listing.py's own design note.
+    """
+    if doc.variant_of:
+        return
+    from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
+    ensure_listing(doc.name, default_enabled=0)
+
+
 def validate_item_uoms(doc, method=None):
     """
     Validation hook on Item before saving to automatically deduplicate

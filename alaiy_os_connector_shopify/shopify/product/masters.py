@@ -109,7 +109,7 @@ def _ensure_item_group(name: str) -> str:
         return "All Item Groups"
 
 
-def _ensure_item_group_path(full_name: str) -> str:
+def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str:
     """
     Build a nested Item Group hierarchy from a Shopify taxonomy fullName
     ("Apparel & Accessories > Clothing > Shirts") and return the leaf group
@@ -122,6 +122,19 @@ def _ensure_item_group_path(full_name: str) -> str:
     falls back to the deepest group created so far (or None to let the caller
     fall back to productType).
 
+    ancestors_only=True: every segment passed, INCLUDING the last one, is
+    forced to is_group=1 -- use this when full_name is only the ANCESTOR
+    chain (the caller attaches the real leaf itself afterward, e.g. a
+    reparent script passing chain[:-1]). Without this, a caller passing
+    ancestors-only left the last ancestor stuck at is_group=0 (a real leaf
+    from some OTHER product's path) whenever it already existed, so the
+    node it was about to parent silently never showed up in the Desk tree
+    -- confirmed live on commerce.os.alaiy.com ("Components" stayed a leaf
+    after "Converters" was reparented under it). Default False preserves
+    the real-leaf-assignment behavior importer.py relies on when it passes
+    the FULL path (leaf included) and assigns the returned name directly
+    to an Item.
+
     NOTE: Alaiy OS Item Group names are globally unique, so a leaf name that
     repeats across branches (e.g. "Shirts" under both Men and Women) resolves
     to a single shared group -- an Alaiy OS constraint, not a bug here.
@@ -133,16 +146,17 @@ def _ensure_item_group_path(full_name: str) -> str:
     leaf = None
     for i, name in enumerate(parts):
         is_last = i == len(parts) - 1
+        is_group = 1 if (not is_last or ancestors_only) else 0
         if frappe.db.exists("Item Group", name):
             # A node that now needs children must be a group.
-            if not is_last and not frappe.db.get_value("Item Group", name, "is_group"):
+            if is_group and not frappe.db.get_value("Item Group", name, "is_group"):
                 frappe.db.set_value("Item Group", name, "is_group", 1)
         else:
             try:
                 doc = frappe.new_doc("Item Group")
                 doc.item_group_name = name
                 doc.parent_item_group = parent
-                doc.is_group = 0 if is_last else 1
+                doc.is_group = is_group
                 doc.flags.ignore_permissions = True
                 doc.insert()
             except Exception:
