@@ -503,13 +503,27 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		if (running) setTimeout(refresh_logs, 3000);
 	}
 
+	function render_stat_group(title, cards) {
+		var html = '<div class="shopify-stat-group-title">' + title + '</div><div class="shopify-stats-grid">';
+		cards.forEach(function(c) {
+			html += '<div class="shopify-stat-tile"><div class="shopify-stat-value">' + c.value + '</div><div class="shopify-stat-label">' + c.label + '</div></div>';
+		});
+		html += '</div>';
+		return html;
+	}
+
 	function load_stats() {
+		var grid = document.getElementById('shopify-stats-grid');
+		grid.innerHTML = render_stat_group('Alaiy OS (local)', [
+			{label: 'Product templates', value: '...'},
+		]);
+
 		frappe.call({
 			method: 'alaiy_os_connector_shopify.api.sync.get_dashboard_stats',
 			callback: function(r) {
 				var s = r.message;
 				if (!s) return;
-				var cards = [
+				grid.innerHTML = render_stat_group('Alaiy OS (local)', [
 					{label: 'Product templates', value: s.templates_total},
 					{label: 'Pushed to Shopify', value: s.templates_pushed},
 					{label: 'Pending export', value: s.templates_pending},
@@ -517,12 +531,24 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					{label: 'Variants pushed', value: s.variants_pushed},
 					{label: 'Listings (enabled / total)', value: s.listings_enabled + ' / ' + s.listings_total},
 					{label: 'Orders synced', value: s.orders_synced},
-				];
-				var html = '';
-				cards.forEach(function(c) {
-					html += '<div class="shopify-stat-tile"><div class="shopify-stat-value">' + c.value + '</div><div class="shopify-stat-label">' + c.label + '</div></div>';
+				]) + '<div id="shopify-side-stats"><div class="shopify-stat-group-title">Loading Shopify-side counts...</div></div>';
+
+				frappe.call({
+					method: 'alaiy_os_connector_shopify.api.sync.get_shopify_side_stats',
+					callback: function(r2) {
+						var ss = r2.message;
+						var target = document.getElementById('shopify-side-stats');
+						if (!ss || !target) return;
+						target.innerHTML = render_stat_group('Shopify (live)', [
+							{label: 'Products in store', value: ss.shopify_products},
+							{label: 'Orders in store', value: ss.shopify_orders},
+						]);
+					},
+					error: function() {
+						var target = document.getElementById('shopify-side-stats');
+						if (target) target.innerHTML = '<div class="shopify-stat-group-title">Shopify (live) -- failed to load</div>';
+					}
 				});
-				document.getElementById('shopify-stats-grid').innerHTML = html;
 			}
 		});
 	}

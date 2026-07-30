@@ -140,6 +140,28 @@ def get_dashboard_stats():
 
 
 @frappe.whitelist()
+def get_shopify_side_stats():
+    """
+    Real counts from Shopify itself -- separate call from
+    get_dashboard_stats since this hits the live API (slower, and pointless
+    to block the fast local-DB numbers on). Lets the desk page show both
+    sides side by side instead of only ever trusting our own DB, which is
+    exactly what caused the "298 vs 23k" confusion investigated 29-07 --
+    stale local ids made our own counts look right when the store itself
+    didn't match.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    products = client.execute("query { productsCount { count } }")
+    orders = client.execute("query { ordersCount { count } }")
+    return {
+        "shopify_products": (products.get("productsCount") or {}).get("count"),
+        "shopify_orders": (orders.get("ordersCount") or {}).get("count"),
+    }
+
+
+@frappe.whitelist()
 def refresh_shopify_taxonomy():
     """
     Manually trigger a refresh of Shopify's Standard Product Taxonomy tree.

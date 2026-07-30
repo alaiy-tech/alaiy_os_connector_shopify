@@ -444,6 +444,19 @@
 	100% { transform: rotate(360deg); }
 }
 
+.shopify-stat-group-title {
+	font-size: 12px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	color: var(--text-muted);
+	margin: 14px 0 8px;
+}
+
+.shopify-stat-group-title:first-child {
+	margin-top: 0;
+}
+
 .shopify-stats-grid {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
