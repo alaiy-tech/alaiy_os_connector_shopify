@@ -8,6 +8,9 @@ import frappe
 from alaiy_os_connector_shopify.shopify.order.queries import (
     _ORDER_UPDATE_MUTATION, _ORDER_CREATE_MUTATION, _ORDER_CANCEL_MUTATION, _ORDER_TAGS_QUERY,
 )
+from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
+from alaiy_os_connector_shopify.shopify.order.push_line_items import _apply_shopify_line_item_changes
+from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 _STATUS_TAG_PREFIX = "alaiy-os-status:"
 
@@ -32,29 +35,55 @@ def _merge_status_tag(client, gid: str, status: str) -> list:
         current = []
     kept = [t for t in current if not t.startswith(_STATUS_TAG_PREFIX)]
     return kept + [f"{_STATUS_TAG_PREFIX}{status}"]
-from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
-from alaiy_os_connector_shopify.shopify.order.push_line_items import _apply_shopify_line_item_changes
-from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 
-def push_order_update(order_id: str, sales_order: str, status: str, items_changed: bool = False, removed_variant_ids: list = None, added_items: list = None):
+def _address_to_shopify_input(address_fields: dict, customer_name: str = "") -> dict:
     """
-    Pushes order status updates to Shopify. If line items changed on the SO,
-    check state guard: if Delivery Notes exist (shipment started), reject the
-    update and log a clear error since the Shopify order can't be modified at
-    that point anyway. Otherwise, if any of the changed rows were outright
-    added or removed (not just a qty/rate edit on a surviving row), push
-    that via Shopify's Order Editing API. Pure qty/rate edits on an
-    existing row still have no Shopify-side equivalent (orderUpdate
-    doesn't support them) and fall back to the manual-edit warning.
+    Maps Alaiy OS's Address fields to Shopify's MailingAddressInput shape.
+    Confirmed live: Shopify rejects the mutation outright without a last
+    name ("Enter a last name") -- Alaiy OS's Address doctype has no
+    person-name fields of its own, so split the Sales Order's customer
+    name instead. A single-word name (e.g. a company name used as the
+    customer) still needs SOME lastName value or Shopify rejects it, so
+    it's used for both first and last in that case.
+    """
+    parts = (customer_name or "Customer").split(None, 1)
+    first_name = parts[0]
+    last_name = parts[1] if len(parts) > 1 else parts[0]
+    return {
+        "firstName": first_name,
+        "lastName": last_name,
+        "address1": address_fields.get("address_line1") or "",
+        "address2": address_fields.get("address_line2") or "",
+        "city": address_fields.get("city") or "",
+        "province": address_fields.get("state") or "",
+        "zip": address_fields.get("pincode") or "",
+        "country": address_fields.get("country") or "",
+        "phone": address_fields.get("phone") or "",
+    }
+
+
+def push_order_update(order_id: str, sales_order: str, status: str, items_changed: bool = False, removed_variant_ids: list = None, added_items: list = None, changed_quantities: list = None, shipping_address: dict = None):
+    """
+    Pushes order status/note/tags/shipping-address updates to Shopify, and
+    (if line items changed) adds/removes/quantity edits via Shopify's Order
+    Editing API in one session. If Delivery Notes exist (shipment started),
+    item changes are rejected -- the Shopify order can't be modified at that
+    point anyway -- but status/note/tags/address still push regardless,
+    since those aren't blocked by a started shipment. Rate-only edits on a
+    surviving row (no qty change) still have no Shopify-side equivalent and
+    fall back to the manual-edit warning, same as anything the Order
+    Editing API call itself fails to apply cleanly.
     """
     removed_variant_ids = removed_variant_ids or []
     added_items = added_items or []
+    changed_quantities = changed_quantities or []
     frappe.log_error(
         title=f"Shopify DEBUG: push_order_update {sales_order}",
         message=(
             f"items_changed={items_changed} removed_variant_ids={removed_variant_ids!r} "
-            f"added_items={added_items!r}"
+            f"added_items={added_items!r} changed_quantities={changed_quantities!r} "
+            f"shipping_address_changed={shipping_address is not None}"
         ),
     )
 
@@ -70,27 +99,23 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
                     "Line items are locked. Create a follow-up order for additional items."
                 ),
             )
-            return
-
-        if (removed_variant_ids or added_items) and _apply_shopify_line_item_changes(
-            order_id, removed_variant_ids, added_items, sales_order
+        elif (removed_variant_ids or added_items or changed_quantities) and _apply_shopify_line_item_changes(
+            order_id, removed_variant_ids, added_items, sales_order, changed_quantities
         ):
-            return
+            pass  # line item edit committed cleanly -- status/note/tags/address below still run
+        else:
+            # Items changed but either nothing was add/removed/qty-changed
+            # or the push itself failed -- warn user that Shopify needs
+            # manual edit. Status/note/tags/address below still run.
+            frappe.log_error(
+                title=f"Shopify: line items changed for {sales_order}, manual edit needed",
+                message=(
+                    f"Items were added/removed/changed in {sales_order}, but Shopify's "
+                    "orderUpdate API doesn't support line-item changes. "
+                    "Please manually adjust the order in Shopify admin or create a follow-up order."
+                ),
+            )
 
-        # Items changed but no shipment yet, and either nothing was
-        # add/removed (just a qty/rate edit) or the push itself failed --
-        # warn user that Shopify needs manual edit
-        frappe.log_error(
-            title=f"Shopify: line items changed for {sales_order}, manual edit needed",
-            message=(
-                f"Items were added/removed/changed in {sales_order}, but Shopify's "
-                "orderUpdate API doesn't support line-item changes. "
-                "Please manually adjust the order in Shopify admin or create a follow-up order."
-            ),
-        )
-        return
-
-    # No item changes - proceed with status push
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     # Status used to also overwrite Shopify's note field with an
@@ -103,13 +128,15 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
         client = ShopifyGraphQLClient()
         gid = _to_gid(order_id)
         merged_tags = _merge_status_tag(client, gid, status)
-        data = client.execute(_ORDER_UPDATE_MUTATION, {
-            "input": {
-                "id": gid,
-                "note": notes,
-                "tags": merged_tags,
-            },
-        })
+        order_input = {
+            "id": gid,
+            "note": notes,
+            "tags": merged_tags,
+        }
+        if shipping_address:
+            customer = frappe.db.get_value("Sales Order", sales_order, "customer_name")
+            order_input["shippingAddress"] = _address_to_shopify_input(shipping_address, customer)
+        data = client.execute(_ORDER_UPDATE_MUTATION, {"input": order_input})
         errors = (data.get("orderUpdate") or {}).get("userErrors") or []
         if errors:
             frappe.log_error(
