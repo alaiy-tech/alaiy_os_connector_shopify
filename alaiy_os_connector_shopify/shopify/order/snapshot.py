@@ -12,6 +12,56 @@ def _items_before_cache_key(so_name: str) -> str:
     return f"shopify_items_before::{so_name}"
 
 
+def _address_before_cache_key(so_name: str) -> str:
+    return f"shopify_address_before::{so_name}"
+
+
+_ADDRESS_FIELDS = ["address_line1", "address_line2", "city", "state", "pincode", "country", "phone"]
+
+
+def _address_fields(address_name):
+    if not address_name:
+        return None
+    return frappe.db.get_value("Address", address_name, _ADDRESS_FIELDS, as_dict=True)
+
+
+def _snapshot_address_before(doc):
+    """Same idea as the items snapshot -- capture the shipping address'
+    current field values before this save's changes land, so a later
+    diff can tell whether the address actually changed (either a
+    different Address linked, or the same Address edited in place).
+
+    Reads the pre-save address name straight from the DB (like the items
+    snapshot's frappe.get_all), NOT doc.get("shipping_address_name") --
+    by the time on_sales_order_validate runs, `doc` already holds the
+    NEW in-memory value about to be saved, so reading it off `doc` would
+    always compare the new value against itself and never see a change.
+    """
+    if doc.is_new():
+        return
+    cache_key = _address_before_cache_key(doc.name)
+    if frappe.cache().get_value(cache_key) is not None:
+        return
+    current_address_name = frappe.db.get_value("Sales Order", doc.name, "shipping_address_name")
+    frappe.cache().set_value(
+        cache_key, _address_fields(current_address_name), expires_in_sec=1800)
+
+
+def _detect_shipping_address_changed(doc) -> dict:
+    """
+    Returns the new address field dict if the shipping address genuinely
+    changed since before this save (either a different Address linked, or
+    the same Address's own fields edited), else None.
+    """
+    cache_key = _address_before_cache_key(doc.name)
+    before = frappe.cache().get_value(cache_key)
+    frappe.cache().delete_value(cache_key)
+    after = _address_fields(doc.get("shipping_address_name"))
+    if before == after:
+        return None
+    return after
+
+
 def snapshot_before_update_child_qty_rate():
     """
     before_request hook: for Alaiy OS's "Update Items" quick-edit grid
@@ -72,17 +122,17 @@ def on_sales_order_validate(doc, method=None):
     if doc.is_new():
         return
     cache_key = _items_before_cache_key(doc.name)
-    if frappe.cache().get_value(cache_key) is not None:
-        return
-    snapshot = frappe.get_all(
-        "Sales Order Item",
-        filters={"parent": doc.name},
-        fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
-    )
-    frappe.cache().set_value(cache_key, snapshot, expires_in_sec=1800)
-    # Plain logger, not frappe.log_error -- see snapshot_before_update_child_qty_rate's
-    # matching comment.
-    frappe.logger().debug(f"Shopify: validate snapshot for {doc.name}: {snapshot!r}")
+    if frappe.cache().get_value(cache_key) is None:
+        snapshot = frappe.get_all(
+            "Sales Order Item",
+            filters={"parent": doc.name},
+            fields=["item_code", "qty", "rate", "sh_shopify_variant_id"],
+        )
+        frappe.cache().set_value(cache_key, snapshot, expires_in_sec=1800)
+        # Plain logger, not frappe.log_error -- see snapshot_before_update_child_qty_rate's
+        # matching comment.
+        frappe.logger().debug(f"Shopify: validate snapshot for {doc.name}: {snapshot!r}")
+    _snapshot_address_before(doc)
 
 
 def _detect_items_changed(doc) -> bool:
