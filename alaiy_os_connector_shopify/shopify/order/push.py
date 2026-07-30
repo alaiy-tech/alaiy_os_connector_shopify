@@ -37,9 +37,22 @@ def _merge_status_tag(client, gid: str, status: str) -> list:
     return kept + [f"{_STATUS_TAG_PREFIX}{status}"]
 
 
-def _address_to_shopify_input(address_fields: dict) -> dict:
-    """Maps Alaiy OS's Address fields to Shopify's MailingAddressInput shape."""
+def _address_to_shopify_input(address_fields: dict, customer_name: str = "") -> dict:
+    """
+    Maps Alaiy OS's Address fields to Shopify's MailingAddressInput shape.
+    Confirmed live: Shopify rejects the mutation outright without a last
+    name ("Enter a last name") -- Alaiy OS's Address doctype has no
+    person-name fields of its own, so split the Sales Order's customer
+    name instead. A single-word name (e.g. a company name used as the
+    customer) still needs SOME lastName value or Shopify rejects it, so
+    it's used for both first and last in that case.
+    """
+    parts = (customer_name or "Customer").split(None, 1)
+    first_name = parts[0]
+    last_name = parts[1] if len(parts) > 1 else parts[0]
     return {
+        "firstName": first_name,
+        "lastName": last_name,
         "address1": address_fields.get("address_line1") or "",
         "address2": address_fields.get("address_line2") or "",
         "city": address_fields.get("city") or "",
@@ -121,7 +134,8 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
             "tags": merged_tags,
         }
         if shipping_address:
-            order_input["shippingAddress"] = _address_to_shopify_input(shipping_address)
+            customer = frappe.db.get_value("Sales Order", sales_order, "customer_name")
+            order_input["shippingAddress"] = _address_to_shopify_input(shipping_address, customer)
         data = client.execute(_ORDER_UPDATE_MUTATION, {"input": order_input})
         errors = (data.get("orderUpdate") or {}).get("userErrors") or []
         if errors:
