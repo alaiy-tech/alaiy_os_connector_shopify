@@ -10,6 +10,7 @@ import frappe
 
 from alaiy_os_connector_shopify.shopify.order.snapshot import (
     _items_before_cache_key, _detect_items_changed, _detect_removed_variant_ids, _detect_added_items,
+    _detect_changed_quantities,
 )
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
@@ -32,10 +33,11 @@ def on_sales_order_update(doc, method=None):
     items_changed = _detect_items_changed(doc)
     removed_variant_ids = _detect_removed_variant_ids(doc) if items_changed else []
     added_items = _detect_added_items(doc) if items_changed else []
+    changed_quantities = _detect_changed_quantities(doc) if items_changed else []
     frappe.logger().debug(
         f"Shopify: on_sales_order_update {doc.name} before_snapshot={before_rows!r} "
         f"items_changed={items_changed} removed_variant_ids={removed_variant_ids!r} "
-        f"added_items={added_items!r}")
+        f"added_items={added_items!r} changed_quantities={changed_quantities!r}")
     # Consumed -- clear so a later, genuinely separate edit within the 120s
     # expiry window doesn't accidentally diff against this stale snapshot.
     frappe.cache().delete_value(_items_before_cache_key(doc.name))
@@ -50,6 +52,7 @@ def on_sales_order_update(doc, method=None):
         items_changed=items_changed,
         removed_variant_ids=removed_variant_ids,
         added_items=added_items,
+        changed_quantities=changed_quantities,
     )
 
 

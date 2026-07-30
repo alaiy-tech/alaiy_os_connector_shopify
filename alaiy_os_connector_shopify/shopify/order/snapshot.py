@@ -141,6 +141,33 @@ def _detect_removed_variant_ids(doc) -> list:
     return [variant_id for (_, variant_id) in removed if variant_id]
 
 
+def _detect_changed_quantities(doc) -> list:
+    """
+    Rows present both before and after this save (same item_code + variant
+    id -- a real edit, not an add/remove) whose qty changed. This is the
+    one case push_order_update used to have no real path for: the qty/
+    rate-edit-on-a-surviving-row scenario always fell through to a manual-
+    edit warning even though orderEditSetQuantity (already used for
+    removals, just always with quantity=0) supports pushing any quantity.
+    """
+    before_rows = frappe.cache().get_value(_items_before_cache_key(doc.name))
+    if not before_rows:
+        return []
+    before_by_key = {
+        (row["item_code"], row["sh_shopify_variant_id"]): row["qty"]
+        for row in before_rows if row["sh_shopify_variant_id"]
+    }
+    changed = []
+    for item in (doc.items or []):
+        variant_id = item.get("sh_shopify_variant_id")
+        if not variant_id:
+            continue
+        key = (item.item_code, variant_id)
+        if key in before_by_key and before_by_key[key] != item.qty:
+            changed.append({"variant_id": variant_id, "qty": item.qty})
+    return changed
+
+
 def _detect_added_items(doc) -> list:
     """
     Line item ROWS present after this save but missing before -- genuinely

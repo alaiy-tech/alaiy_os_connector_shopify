@@ -13,24 +13,25 @@ from alaiy_os_connector_shopify.shopify.order.push_line_items import _apply_shop
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 
-def push_order_update(order_id: str, sales_order: str, status: str, items_changed: bool = False, removed_variant_ids: list = None, added_items: list = None):
+def push_order_update(order_id: str, sales_order: str, status: str, items_changed: bool = False, removed_variant_ids: list = None, added_items: list = None, changed_quantities: list = None):
     """
     Pushes order status updates to Shopify. If line items changed on the SO,
     check state guard: if Delivery Notes exist (shipment started), reject the
     update and log a clear error since the Shopify order can't be modified at
-    that point anyway. Otherwise, if any of the changed rows were outright
-    added or removed (not just a qty/rate edit on a surviving row), push
-    that via Shopify's Order Editing API. Pure qty/rate edits on an
-    existing row still have no Shopify-side equivalent (orderUpdate
-    doesn't support them) and fall back to the manual-edit warning.
+    that point anyway. Otherwise pushes adds/removes/quantity edits via
+    Shopify's Order Editing API in one session. Rate-only edits on a
+    surviving row (no qty change) still have no Shopify-side equivalent
+    and fall back to the manual-edit warning, same as anything the Order
+    Editing API call itself fails to apply cleanly.
     """
     removed_variant_ids = removed_variant_ids or []
     added_items = added_items or []
+    changed_quantities = changed_quantities or []
     frappe.log_error(
         title=f"Shopify DEBUG: push_order_update {sales_order}",
         message=(
             f"items_changed={items_changed} removed_variant_ids={removed_variant_ids!r} "
-            f"added_items={added_items!r}"
+            f"added_items={added_items!r} changed_quantities={changed_quantities!r}"
         ),
     )
 
@@ -48,13 +49,13 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
             )
             return
 
-        if (removed_variant_ids or added_items) and _apply_shopify_line_item_changes(
-            order_id, removed_variant_ids, added_items, sales_order
+        if (removed_variant_ids or added_items or changed_quantities) and _apply_shopify_line_item_changes(
+            order_id, removed_variant_ids, added_items, sales_order, changed_quantities
         ):
             return
 
         # Items changed but no shipment yet, and either nothing was
-        # add/removed (just a qty/rate edit) or the push itself failed --
+        # add/removed/qty-changed or the push itself failed --
         # warn user that Shopify needs manual edit
         frappe.log_error(
             title=f"Shopify: line items changed for {sales_order}, manual edit needed",

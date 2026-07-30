@@ -14,26 +14,27 @@ from alaiy_os_connector_shopify.shopify.order.queries import (
 from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
 
 
-def _apply_shopify_line_item_changes(order_id: str, removed_variant_ids: list, added_items: list, sales_order: str) -> bool:
+def _apply_shopify_line_item_changes(order_id: str, removed_variant_ids: list, added_items: list, sales_order: str, changed_quantities: list = None) -> bool:
     """
-    Adds/removes line items on a live Shopify order via the Order Editing
-    API (orderUpdate has no line-item support at all) -- one begin/commit
-    session covering both, since running two separate edit sessions
-    back-to-back on the same order is asking for the same kind of races
-    already fought elsewhere in this file today.
+    Adds/removes/quantity-edits line items on a live Shopify order via the
+    Order Editing API (orderUpdate has no line-item support at all) -- one
+    begin/commit session covering all three, since running separate edit
+    sessions back-to-back on the same order is asking for the same kind of
+    races already fought elsewhere in this file today.
 
-    Removed rows are matched to the calculated order's existing line items
-    by variant ID -- the one identifier both sides share, since Shopify's
-    own line item IDs are order-scoped and never stored on the Alaiy OS
-    side. Added rows are pushed via orderEditAddVariant directly (no
-    matching needed, they're new).
+    Removed and quantity-changed rows are both matched to the calculated
+    order's existing line items by variant ID -- the one identifier both
+    sides share, since Shopify's own line item IDs are order-scoped and
+    never stored on the Alaiy OS side. Added rows are pushed via
+    orderEditAddVariant directly (no matching needed, they're new).
 
-    Returns True only if every removed row was matched and the whole edit
-    committed cleanly -- any mismatch/failure falls back to the existing
-    manual-edit warning rather than silently reporting success.
+    Returns True only if every removed/changed row was matched and the
+    whole edit committed cleanly -- any mismatch/failure falls back to the
+    existing manual-edit warning rather than silently reporting success.
     """
     removed_variant_ids = removed_variant_ids or []
     added_items = added_items or []
+    changed_quantities = changed_quantities or []
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     client = ShopifyGraphQLClient()
     try:
@@ -84,6 +85,31 @@ def _apply_shopify_line_item_changes(order_id: str, removed_variant_ids: list, a
                 )
                 return False
 
+        matched_qty_changes = []
+        for change in changed_quantities:
+            variant_id = change.get("variant_id")
+            line_item_id = variant_to_line_id.get(str(variant_id))
+            if not line_item_id:
+                frappe.log_error(
+                    title=f"Shopify: changed-quantity variant {variant_id} not found on order {sales_order}",
+                    message=f"Order ID {order_id}, known variants: {list(variant_to_line_id.keys())}",
+                )
+                continue
+            qty_data = client.execute(_ORDER_EDIT_SET_QUANTITY_MUTATION, {
+                "id": calc_id, "lineItemId": line_item_id, "quantity": int(change["qty"]),
+            })
+            qty_errors = (qty_data.get("orderEditSetQuantity") or {}).get("userErrors") or []
+            if qty_errors:
+                frappe.log_error(
+                    title=f"Shopify: orderEditSetQuantity (qty change) failed for {sales_order}",
+                    message=str(qty_errors),
+                )
+                return False
+            matched_qty_changes.append(variant_id)
+
+        if changed_quantities and not matched_qty_changes:
+            return False
+
         added_variant_ids = []
         for item in added_items:
             variant_id = item.get("variant_id")
@@ -118,8 +144,9 @@ def _apply_shopify_line_item_changes(order_id: str, removed_variant_ids: list, a
         frappe.log_error(
             title=f"Shopify DEBUG: applied line item changes for {sales_order}",
             message=(
-                f"Committed removal of {matched_line_ids!r} and addition of "
-                f"{added_variant_ids!r} on Shopify order {order_id}"
+                f"Committed removal of {matched_line_ids!r}, addition of "
+                f"{added_variant_ids!r}, and quantity change of "
+                f"{matched_qty_changes!r} on Shopify order {order_id}"
             ),
         )
         return True
