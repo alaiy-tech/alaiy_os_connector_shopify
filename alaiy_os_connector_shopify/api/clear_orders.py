@@ -63,7 +63,7 @@ def run():
         "Sales Order", filters={"sh_shopify_order_id": ["is", "set"]}, pluck="name")
     print(f"[clear_orders] to clear: {len(so_names)}")
 
-    frappe.flags.in_test = True
+    frappe.in_test = True
     done = 0
     try:
         for so_name in so_names:
@@ -79,7 +79,7 @@ def run():
                 frappe.db.commit()
                 print(f"[clear_orders] progress: {done}/{len(so_names)}")
     finally:
-        frappe.flags.in_test = False
+        frappe.in_test = False
 
     frappe.db.commit()
     remaining = frappe.db.count("Sales Order", {"sh_shopify_order_id": ["is", "set"]})
