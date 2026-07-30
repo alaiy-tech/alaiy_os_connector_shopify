@@ -58,6 +58,12 @@ def _merge_duplicate_item_rows(line_items: list) -> list:
         for field in ("item_name", "description"):
             if row.get(field) and row[field] not in (existing.get(field) or ""):
                 existing[field] = f"{existing.get(field, '')}; {row[field]}".strip("; ")
+        # item_name is a Data field capped at 140 chars in the DB -- unbounded
+        # concatenation of multiple real product names (confirmed live: two
+        # long names alone exceeded it) crashed the whole order insert.
+        # description has no such length limit, left untouched.
+        if existing.get("item_name") and len(existing["item_name"]) > 140:
+            existing["item_name"] = existing["item_name"][:137] + "..."
     return [merged[key] for key in order]
 
 
