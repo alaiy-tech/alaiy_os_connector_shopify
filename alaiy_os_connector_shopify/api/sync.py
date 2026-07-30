@@ -163,11 +163,35 @@ def get_shopify_side_stats():
     client = ShopifyGraphQLClient()
     products = client.execute("query { productsCount { count } }")
     orders = client.execute("query { ordersCount { count } }")
-    variants = client.execute("query { productVariantsCount { count } }")
+
+    # productVariantsCount caps/estimates at 10,000 for larger stores --
+    # confirmed live: reported 10,000 while a full walk found 16,550 real
+    # variants. Sum each product's own variantsCount instead (cheap
+    # per-product aggregate, no need to list every variant id) -- accurate
+    # regardless of total size.
+    variant_total = 0
+    cursor = None
+    query = """
+    query($cursor: String) {
+      products(first: 100, after: $cursor) {
+        edges { node { variantsCount { count } } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    while True:
+        data = client.execute(query, {"cursor": cursor})
+        conn = data["products"]
+        for edge in conn["edges"]:
+            variant_total += (edge["node"].get("variantsCount") or {}).get("count") or 0
+        if not conn["pageInfo"]["hasNextPage"]:
+            break
+        cursor = conn["pageInfo"]["endCursor"]
+
     return {
         "shopify_products": (products.get("productsCount") or {}).get("count"),
         "shopify_orders": (orders.get("ordersCount") or {}).get("count"),
-        "shopify_variants": (variants.get("productVariantsCount") or {}).get("count"),
+        "shopify_variants": variant_total,
     }
 
 
