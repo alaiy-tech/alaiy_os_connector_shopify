@@ -125,10 +125,16 @@ def _fill_item_accounts(si, settings):
     """
     income = _resolve_income_account(si.company)
     cost_center = _resolve_cost_center(si.company, settings.sh_cost_center)
+
+    def _is_group_cost_center(value):
+        return bool(value) and bool(frappe.db.get_value("Cost Center", value, "is_group"))
+
+    if cost_center and _is_group_cost_center(si.cost_center):
+        si.cost_center = cost_center
     for row in si.items:
         if income and not row.income_account:
             row.income_account = income
-        if cost_center and not row.cost_center:
+        if cost_center and (not row.cost_center or _is_group_cost_center(row.cost_center)):
             row.cost_center = cost_center
 
 
