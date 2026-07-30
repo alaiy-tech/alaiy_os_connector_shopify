@@ -527,6 +527,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 				var s = r.message;
 				if (!s) return;
 				grid.innerHTML = render_stat_group('Alaiy OS (local)', [
+					{label: 'Total items (all)', value: s.items_total},
 					{label: 'Product templates', value: s.templates_total},
 					{label: 'Pushed to Shopify', value: s.templates_pushed},
 					{label: 'Pending export', value: s.templates_pending},

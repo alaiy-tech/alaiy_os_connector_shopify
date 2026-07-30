@@ -98,6 +98,7 @@ def get_dashboard_stats():
     Stat cards for the Shopify desk page -- plain counts, no Shopify API
     calls, so this stays fast even with the catalog at 20k+ items.
     """
+    items_total = frappe.db.count("Item")
     templates_total = frappe.db.count("Item", {"variant_of": ["in", ["", None]]})
     templates_pushed = frappe.db.count("Item", {
         "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["is", "set"]})
@@ -127,6 +128,7 @@ def get_dashboard_stats():
         latest_by_type.setdefault(row.sync_type, row)
 
     return {
+        "items_total": items_total,
         "templates_total": templates_total,
         "templates_pushed": templates_pushed,
         "templates_pending": templates_pending,
