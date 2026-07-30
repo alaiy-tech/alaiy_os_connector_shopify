@@ -219,7 +219,7 @@ def _handle_product_update(product_id: str, product: dict):
     frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
  
 
-def _update_item_from_shopify(item, product: dict):
+def _update_item_from_shopify(item, product: dict, _retried=False):
     """
     Update Alaiy OS Item from Shopify product (inbound sync).
 
@@ -232,6 +232,9 @@ def _update_item_from_shopify(item, product: dict):
     Shopify's REST webhook payload doesn't carry these the same way the
     GraphQL-based one-time import/pull does. Also NOT updated: stock
     levels (separate feature), variant structure (add/remove variants).
+
+    _retried is internal only -- see the TimestampMismatchError handling
+    at the bottom of this function.
     """
     settings = frappe.get_single("Shopify Connector Settings")
 
@@ -304,8 +307,24 @@ def _update_item_from_shopify(item, product: dict):
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     from alaiy_os_connector_shopify.shopify.order_sync import _as_administrator
-    with _as_administrator():
-        item.save()
+    try:
+        with _as_administrator():
+            item.save()
+    except frappe.TimestampMismatchError:
+        # Confirmed live: this Item got saved by something else (our own
+        # outbound push, a sibling-variant cascade, another webhook for
+        # the same product) in the same second this function loaded it --
+        # the whole update just crashed instead of applying, silently
+        # dropping a real inbound product change. This function rebuilds
+        # every field fresh from `product` each call (nothing incremental
+        # kept from the stale `item`), so it's safe to just reload a
+        # current copy and replay the whole update once rather than lose
+        # it entirely.
+        if _retried:
+            raise
+        frappe.db.rollback()
+        fresh_item = frappe.get_doc("Item", item.name)
+        return _update_item_from_shopify(fresh_item, product, _retried=True)
     frappe.db.commit()
 
     # Images are LISTING-scoped too. With a Listing, route Shopify's images
