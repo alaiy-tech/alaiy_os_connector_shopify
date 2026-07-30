@@ -33,6 +33,15 @@ def _create_delivery_note_if_needed(so_name):
         with _as_administrator():
             dn = make_delivery_note(so_name)
             _force_valid_warehouse(dn)
+            # Self-heal, same shape as the invoice's income-account/cost-center
+            # fixes: a Shopify item with no incoming stock/valuation rate ever
+            # recorded locally (dropshipped, no purchase receipt in Alaiy OS)
+            # crashes the stock ledger post with "Valuation Rate ... is
+            # required" -- confirmed live. These items carry no real local
+            # stock value to account for, so zero valuation is correct, not a
+            # workaround.
+            for row in dn.items:
+                row.allow_zero_valuation_rate = 1
             dn.flags.ignore_permissions = True
             dn.insert()
             dn.submit()
@@ -112,6 +121,8 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
                 return
 
             dn.sh_shopify_fulfillment_id = fulfillment_id
+            for row in dn.items:
+                row.allow_zero_valuation_rate = 1
             dn.flags.ignore_permissions = True
             dn.insert()
             dn.submit()
