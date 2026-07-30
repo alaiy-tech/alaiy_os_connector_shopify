@@ -54,6 +54,12 @@ function add_populate_button(frm) {
                         frm.add_child("variants", row);
                     }
                 });
+                if (r.message.listing_category) {
+                    frm.set_value("listing_category", r.message.listing_category);
+                }
+                if (r.message.listing_product_type) {
+                    frm.set_value("listing_product_type", r.message.listing_product_type);
+                }
                 frm.refresh_field("images");
                 frm.refresh_field("variants");
                 frappe.show_alert({ message: __("Pulled from Item"), indicator: "green" });

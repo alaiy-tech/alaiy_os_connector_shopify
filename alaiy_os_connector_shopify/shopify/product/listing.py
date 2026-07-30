@@ -245,7 +245,7 @@ def _template_variant_items(tmpl_name: str, has_variants) -> list:
     is what gives that variant a real Listing Variant row instead of a
     special case scattered through every id lookup."""
     filters = {"variant_of": tmpl_name} if has_variants else {"name": tmpl_name}
-    return frappe.get_all("Item", filters=filters, fields=["name", "sh_shopify_variant_id"])
+    return frappe.get_all("Item", filters=filters, fields=["name", "sh_shopify_variant_id", "image"])
 
 
 def ensure_listing(template_name: str, default_enabled: int = 0):
@@ -307,8 +307,19 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
 def get_item_children(item):
     """Return a template Item's images + variant rows for the form's
     'Populate from Item' button (client fills the grids so they're visible
-    before save). Mirrors fill_children_from_item, for the UI path."""
-    tmpl = frappe.db.get_value("Item", item, ["name", "image", "has_variants"], as_dict=True)
+    before save). Mirrors fill_children_from_item, for the UI path.
+
+    Also returns the Item's current category/product_type as explicit
+    override values (not left blank-to-inherit) -- team decision: the
+    button is meant to snapshot the Item's current state onto the
+    Listing, same as it does for images/variants. A later Item category
+    change won't auto-propagate to a Listing whose override got filled
+    this way; clear the override field by hand if that's ever wanted.
+    """
+    tmpl = frappe.db.get_value(
+        "Item", item,
+        ["name", "image", "has_variants", "sh_shopify_category", "sh_shopify_product_type"],
+        as_dict=True)
     if not tmpl:
         return {"images": [], "variants": []}
     images = [
@@ -316,10 +327,19 @@ def get_item_children(item):
         for i, url in enumerate(_template_image_urls(tmpl))
     ]
     variants = [
-        {"item_variant": v.name, "is_enabled": 1, "sh_shopify_variant_id": v.sh_shopify_variant_id or None}
+        {
+            "item_variant": v.name, "is_enabled": 1,
+            "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
+            "variant_image": v.image or None,
+        }
         for v in _template_variant_items(tmpl.name, tmpl.has_variants)
     ]
-    return {"images": images, "variants": variants}
+    return {
+        "images": images,
+        "variants": variants,
+        "listing_category": tmpl.sh_shopify_category or None,
+        "listing_product_type": tmpl.sh_shopify_product_type or None,
+    }
 
 
 def sync_listing_variants(template_name):
@@ -343,6 +363,7 @@ def sync_listing_variants(template_name):
             listing.append("variants", {
                 "item_variant": v.name, "is_enabled": 1,
                 "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
+                "variant_image": v.image or None,
             })
             added = True
     if added:
@@ -416,6 +437,7 @@ def fill_children_from_item(listing):
             listing.append("variants", {
                 "item_variant": v.name, "is_enabled": 1,
                 "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
+                "variant_image": v.image or None,
             })
 
 
