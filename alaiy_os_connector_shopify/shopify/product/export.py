@@ -348,6 +348,13 @@ def _push_product_unlocked(item):
             frappe.db.delete("Shopify Synced Entity", {
                 "entity_type": "product", "erpnext_doctype": "Item", "erpnext_name": item.name})
             frappe.db.commit()
+            # entity (fetched earlier, before the delete above) is now a
+            # stale in-memory reference to a row that no longer exists --
+            # confirmed live: entities.save() further down reused it and
+            # crashed with DocumentDoesNotExistError. Clear it so the save
+            # further down calls get_or_new() and creates a fresh row
+            # instead of trying to update a deleted one.
+            entity = None
 
             item = frappe.get_doc("Item", item.name)
             listing = listing_resolver.get_listing(item.name)
