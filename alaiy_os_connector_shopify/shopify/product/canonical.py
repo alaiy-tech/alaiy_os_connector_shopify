@@ -98,6 +98,7 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
             _variant_set_payload(v, settings, option_names, listing) for v in variants
         ],
     }
+    metafields = []
     if overflow_names:
         # Attributes beyond Shopify's 3-option cap don't disappear -- kept
         # as a per-variant metafield instead of failing the whole push.
@@ -110,12 +111,33 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
             if extra:
                 overflow_by_sku[v.item_code] = extra
         if overflow_by_sku:
-            payload["metafields"] = [{
+            metafields.append({
                 "namespace": "custom",
                 "key": "extra_variant_attributes",
                 "type": "json",
                 "value": json.dumps(overflow_by_sku),
-            }]
+            })
+
+    # length/width/height have no dedicated Shopify product/variant field
+    # (only weight has one, via inventoryItem.measurement) -- confirmed
+    # live via schema introspection. Pushed as a per-variant metafield,
+    # same shape as the overflow-attributes one above, so this data isn't
+    # silently stuck in Alaiy OS with no way to reach Shopify at all.
+    dims_by_sku = {}
+    for v in variants:
+        dims = {k: v.get(k) for k in ("length", "width", "height") if v.get(k)}
+        if dims:
+            dims_by_sku[v.item_code] = dims
+    if dims_by_sku:
+        metafields.append({
+            "namespace": "custom",
+            "key": "dimensions",
+            "type": "json",
+            "value": json.dumps(dims_by_sku),
+        })
+
+    if metafields:
+        payload["metafields"] = metafields
 
     payload["descriptionHtml"] = listing_resolver.effective_description(listing, item)
     if item.brand:
