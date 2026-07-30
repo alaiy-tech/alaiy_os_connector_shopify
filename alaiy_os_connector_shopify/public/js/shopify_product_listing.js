@@ -42,16 +42,32 @@ function add_populate_button(frm) {
                 if (!r.message) {
                     return;
                 }
-                frm.clear_table("images");
+                // Never clear -- merge only. The Listing's own images can
+                // hold more than the Item ever knows about (upload.py
+                // populates the Listing directly with every parent image
+                // URL, not just the one the Item itself stores), so
+                // rebuilding this table from the Item's more limited view
+                // was silently dropping real images that only ever lived
+                // here. Same reasoning already applied to variants below.
                 (r.message.images || []).forEach((row) => {
-                    frm.add_child("images", row);
-                });
-                (r.message.variants || []).forEach((row) => {
-                    const exists = (frm.doc.variants || []).some(
-                        (x) => x.item_variant && row.item_variant && x.item_variant.trim() === row.item_variant.trim()
+                    const exists = (frm.doc.images || []).some(
+                        (x) => x.image && row.image && x.image.trim() === row.image.trim()
                     );
                     if (!exists) {
+                        frm.add_child("images", row);
+                    }
+                });
+                (r.message.variants || []).forEach((row) => {
+                    const existing_row = (frm.doc.variants || []).find(
+                        (x) => x.item_variant && row.item_variant && x.item_variant.trim() === row.item_variant.trim()
+                    );
+                    if (!existing_row) {
                         frm.add_child("variants", row);
+                    } else if (!existing_row.variant_image && row.variant_image) {
+                        // Fill in a missing variant image without touching
+                        // an existing one -- same never-remove, never-
+                        // clobber principle as the rest of this button.
+                        frappe.model.set_value(existing_row.doctype, existing_row.name, "variant_image", row.variant_image);
                     }
                 });
                 if (r.message.listing_category) {
