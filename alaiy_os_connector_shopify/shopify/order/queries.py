@@ -107,6 +107,14 @@ mutation OrderMarkAsPaid($input: OrderMarkAsPaidInput!) {
 }
 """
 
+_ORDER_TAGS_QUERY = """
+query GetOrderTags($id: ID!) {
+  order(id: $id) {
+    tags
+  }
+}
+"""
+
 _ORDER_UPDATE_MUTATION = """
 mutation PushOrderUpdate($input: OrderInput!) {
   orderUpdate(input: $input) {
