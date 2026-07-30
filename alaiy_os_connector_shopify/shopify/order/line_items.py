@@ -160,6 +160,14 @@ def _sync_order_line_items(so_name: str, order: dict):
     amended = frappe.copy_doc(so)
     amended.amended_from = so.name
     _apply_line_item_diff(amended, order, warehouse)
+    if not amended.items:
+        # Confirmed live: a fully cancelled/refunded Shopify order zeroes
+        # out every line -- amended.insert() then crashed with
+        # MandatoryError (a Sales Order needs at least one item), even
+        # though `so` was already correctly cancelled just above. Nothing
+        # left to amend into; the cancelled original IS the right end
+        # state here, so stop instead of trying to insert an empty one.
+        return
     amended.flags.ignore_permissions = True
     amended.flags.from_shopify_sync = True
     amended.insert()
