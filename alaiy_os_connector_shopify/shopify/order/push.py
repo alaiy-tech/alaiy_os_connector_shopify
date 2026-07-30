@@ -6,8 +6,32 @@ verbatim from order_push.py, unchanged.
 import frappe
 
 from alaiy_os_connector_shopify.shopify.order.queries import (
-    _ORDER_UPDATE_MUTATION, _ORDER_CREATE_MUTATION, _ORDER_CANCEL_MUTATION,
+    _ORDER_UPDATE_MUTATION, _ORDER_CREATE_MUTATION, _ORDER_CANCEL_MUTATION, _ORDER_TAGS_QUERY,
 )
+
+_STATUS_TAG_PREFIX = "alaiy-os-status:"
+
+
+def _merge_status_tag(client, gid: str, status: str) -> list:
+    """
+    orderUpdate's `tags` input is a full replace, not additive -- confirmed
+    live, every status push was silently wiping any real tag a human (or
+    another app) had put on the Shopify order, leaving only our own status
+    tag. Read the order's current tags first and merge in just our status
+    tag (replacing any previous alaiy-os-status:* entry), so everything
+    else survives.
+    """
+    try:
+        data = client.execute(_ORDER_TAGS_QUERY, {"id": gid})
+        current = (data.get("order") or {}).get("tags") or []
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: failed to read current tags for {gid}",
+            message=frappe.get_traceback(),
+        )
+        current = []
+    kept = [t for t in current if not t.startswith(_STATUS_TAG_PREFIX)]
+    return kept + [f"{_STATUS_TAG_PREFIX}{status}"]
 from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
 from alaiy_os_connector_shopify.shopify.order.push_line_items import _apply_shopify_line_item_changes
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
@@ -77,11 +101,13 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
 
     try:
         client = ShopifyGraphQLClient()
+        gid = _to_gid(order_id)
+        merged_tags = _merge_status_tag(client, gid, status)
         data = client.execute(_ORDER_UPDATE_MUTATION, {
             "input": {
-                "id": _to_gid(order_id),
+                "id": gid,
                 "note": notes,
-                "tags": [f"alaiy-os-status:{status}"],
+                "tags": merged_tags,
             },
         })
         errors = (data.get("orderUpdate") or {}).get("userErrors") or []
