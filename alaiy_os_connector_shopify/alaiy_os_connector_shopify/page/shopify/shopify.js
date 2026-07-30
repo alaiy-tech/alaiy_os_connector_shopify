@@ -515,11 +515,21 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		return html;
 	}
 
+	function render_skeleton_group(title, count) {
+		var html = '<div class="shopify-stat-group-title">' + title + '</div><div class="shopify-stats-grid">';
+		for (var i = 0; i < count; i++) {
+			html += '<div class="shopify-stat-tile shopify-stat-skeleton">' +
+				'<div class="shopify-skeleton-bar shopify-skeleton-value"></div>' +
+				'<div class="shopify-skeleton-bar shopify-skeleton-label"></div>' +
+				'</div>';
+		}
+		html += '</div>';
+		return html;
+	}
+
 	function load_stats() {
 		var grid = document.getElementById('shopify-stats-grid');
-		grid.innerHTML = render_stat_group('Alaiy OS (local)', [
-			{label: 'Product templates', value: '...'},
-		]);
+		grid.innerHTML = render_skeleton_group('Alaiy OS (local)', 8);
 
 		frappe.call({
 			method: 'alaiy_os_connector_shopify.api.sync.get_dashboard_stats',
@@ -535,7 +545,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					{label: 'Variants pushed', value: s.variants_pushed},
 					{label: 'Listings (enabled / total)', value: s.listings_enabled + ' / ' + s.listings_total},
 					{label: 'Orders synced', value: s.orders_synced},
-				], 'local') + '<div id="shopify-side-stats"><div class="shopify-stat-group-title">Loading Shopify-side counts...</div></div>';
+				], 'local') + '<div id="shopify-side-stats">' + render_skeleton_group('Shopify (live)', 3) + '</div>';
 
 				frappe.call({
 					method: 'alaiy_os_connector_shopify.api.sync.get_shopify_side_stats',
