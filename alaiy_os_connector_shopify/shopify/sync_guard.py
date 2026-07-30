@@ -100,12 +100,29 @@ def request_cancel(log_name: str):
 
 
 def close_log(log, status, processed=0, created=0, failed=0, error=""):
-    log.status = status
-    log.finished_at = now_datetime()
-    log.items_processed = processed
-    log.items_created = created
-    log.items_failed = failed
+    """
+    Confirmed live: a long-running job (taxonomy fetch, hours long) holds
+    its `log` doc in memory the entire run -- anything else touching the
+    same Shopify Sync Log row in between (a progress flush from a second
+    concurrent run, a manual edit) makes this final save crash with
+    TimestampMismatchError right at the finish line, so a job that
+    actually completed its real work never got its final status recorded
+    at all. Fall back to a raw field update (bypasses the doc version
+    check entirely) instead of losing the close-out.
+    """
+    fields = {
+        "status": status,
+        "finished_at": now_datetime(),
+        "items_processed": processed,
+        "items_created": created,
+        "items_failed": failed,
+    }
     if error:
-        log.error_message = (error or "")[:500]
-    log.save(ignore_permissions=True)
+        fields["error_message"] = (error or "")[:500]
+    try:
+        log.update(fields)
+        log.save(ignore_permissions=True)
+    except frappe.TimestampMismatchError:
+        frappe.db.rollback()
+        frappe.db.set_value("Shopify Sync Log", log.name, fields, update_modified=True)
     frappe.db.commit()
