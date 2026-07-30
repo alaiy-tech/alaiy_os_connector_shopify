@@ -73,6 +73,32 @@ def append_log(log, message: str):
     log.log_messages = (existing + "\n" + message).strip()
 
 
+def is_cancel_requested(log_name: str) -> bool:
+    """
+    Cheap poll for a running job's own loop to check whether the Stop
+    button in the Shopify dashboard was clicked. A plain column read, not
+    the killable-job mechanism -- a long export/import loop cooperatively
+    checks this every N items and stops itself cleanly (partial progress
+    already flushed to the log stays), rather than the job being killed
+    from outside mid-write.
+    """
+    return bool(frappe.db.get_value("Shopify Sync Log", log_name, "cancel_requested"))
+
+
+@frappe.whitelist()
+def request_cancel(log_name: str):
+    """Flip cancel_requested on a running/queued Sync Log -- the job itself
+    checks this and stops cleanly on its next poll, see is_cancel_requested.
+    No effect on a log that's already finished (success/failed/skipped/
+    cancelled), so a stale UI click after the job ended is harmless."""
+    status = frappe.db.get_value("Shopify Sync Log", log_name, "status")
+    if status not in ("queued", "running"):
+        return {"cancelled": False, "reason": f"Job already {status}"}
+    frappe.db.set_value("Shopify Sync Log", log_name, "cancel_requested", 1)
+    frappe.db.commit()
+    return {"cancelled": True}
+
+
 def close_log(log, status, processed=0, created=0, failed=0, error=""):
     log.status = status
     log.finished_at = now_datetime()

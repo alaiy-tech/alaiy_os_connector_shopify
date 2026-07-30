@@ -64,7 +64,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
     Scoped to templates and simple items only (skips variants -- pushing a
     template already pushes its full current variant set in one call).
     """
-    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync
+    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync, is_cancel_requested
 
     log = load_or_create_log("product_export", trigger, log_name)
 
@@ -90,10 +90,30 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
             },
             pluck="name",
         )
+        log.pages_total = len(candidates)
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
 
         processed = created = failed = 0
+        cancelled = False
 
-        for item_code in candidates:
+        for i, item_code in enumerate(candidates):
+            if i % 10 == 0:
+                if is_cancel_requested(log.name):
+                    cancelled = True
+                    _append_export_log(log, f"Stopped by user after {processed}/{len(candidates)} items.")
+                    break
+                # Flush real progress to the DB periodically, not just at the
+                # end -- without this, both live visibility (what's happening
+                # RIGHT NOW while it's still running) and crash survival
+                # (what actually got done before a kill/timeout) were both
+                # lost, same gap already found and fixed for the import job.
+                log.items_processed = processed
+                log.items_created = created
+                log.items_failed = failed
+                _append_export_log(log, f"...{processed}/{len(candidates)} processed so far ({created} created, {failed} failed)")
+                log.save(ignore_permissions=True)
+                frappe.db.commit()
             processed += 1
             try:
                 # Give each candidate an enabled Listing (all variant rows on)
@@ -125,7 +145,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
                     message=frappe.get_traceback(),
                 )
 
-        log.status = "success"
+        log.status = "cancelled" if cancelled else "success"
         log.items_processed = processed
         log.items_created = created
         log.items_failed = failed
@@ -133,6 +153,8 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None):
         summary = f"Exported {created} products to Shopify"
         if failed:
             summary += f"; {failed} failed"
+        if cancelled:
+            summary += " (stopped early by user)"
         _append_export_log(log, summary)
         log.save(ignore_permissions=True)
         frappe.db.commit()
@@ -301,7 +323,12 @@ def _push_product_unlocked(item):
     product = result.get("product") or {}
     product_id = product.get("legacyResourceId")
     if not product_id:
-        return
+        # No userErrors AND no product id back -- Shopify accepted the
+        # mutation but returned nothing usable (seen live: happens
+        # silently on some pushes with a large/slow media batch). Surface
+        # the raw response instead of a bare no-op so it shows up
+        # somewhere other than a re-guessed mystery next time.
+        raise RuntimeError(f"Shopify productSet returned no product id; raw result={result}")
 
     if item.sh_shopify_product_id != product_id:
         frappe.db.set_value("Item", item.name,

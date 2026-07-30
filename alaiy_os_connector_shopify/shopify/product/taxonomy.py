@@ -8,7 +8,9 @@ import frappe
 from alaiy_os_connector_shopify.shopify.product.queries import (
     _TAXONOMY_SEARCH_QUERY, _TAXONOMY_TREE_QUERY, _TAXONOMY_NODES_BY_ID_QUERY,
 )
-from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, close_log
+from alaiy_os_connector_shopify.shopify.sync_guard import (
+    load_or_create_log, close_log, is_cancel_requested, append_log as _append_log,
+)
 
 _NODES_PER_CALL = 250  # Shopify's node-by-id bulk lookup cap, same as any other connection page size here.
 
@@ -184,6 +186,14 @@ def fetch_shopify_taxonomy(trigger="manual", log_name=None):
     walking each node's childrenIds recursively (BFS here), batch-fetching
     each next level via Shopify's generic nodes(ids:) bulk lookup (up to
     250 ids per call) instead of one round trip per node.
+
+    The Stop button (Sync Log's cancel_requested) is checked once per
+    batch during the walk and stops it cleanly, skipping rebuild_tree()
+    entirely -- confirmed live, rebuild_tree() itself is a single opaque
+    call into Frappe's own nested-set code with no hook point to check
+    cancellation partway through, and it's the slow part on a ~25,000-node
+    tree (one UPDATE per node, hours not minutes) -- once that phase
+    starts, it can't be interrupted, only the walk before it can.
     """
     log = load_or_create_log("taxonomy", trigger, log_name)
     log.status = "running"
@@ -211,9 +221,13 @@ def fetch_shopify_taxonomy(trigger="manual", log_name=None):
         # BFS: fetch each level's full node data (name/fullName/childrenIds/
         # isLeaf) in one bulk call per _NODES_PER_CALL ids, save it, queue
         # its children for the next round. One fetch per node, not two.
+        cancelled = False
         while queue:
             next_queue = []
             for i in range(0, len(queue), _NODES_PER_CALL):
+                if is_cancel_requested(log.name):
+                    cancelled = True
+                    break
                 batch = queue[i:i + _NODES_PER_CALL]
                 data = client.execute(_TAXONOMY_NODES_BY_ID_QUERY, {"ids": batch})
                 nodes = [n for n in (data.get("nodes") or []) if n]
@@ -226,8 +240,30 @@ def fetch_shopify_taxonomy(trigger="manual", log_name=None):
                             if child_id not in seen_ids:
                                 seen_ids.add(child_id)
                                 next_queue.append(child_id)
+                # Flush real progress after every batch, not just at the
+                # end -- same gap already found and fixed for the other
+                # sync jobs; this walk alone can run for a long time on
+                # the full ~25,000-node tree. items_processed/created alone
+                # updated fine here from the start -- log_messages stayed
+                # empty the whole run since nothing ever called append_log
+                # for a readable progress line, confirmed live (the other
+                # jobs all print one line per batch, this one printed none).
+                log.items_processed = total
+                log.items_created = saved
+                _append_log(log, f"...{total} categories processed so far ({saved} saved, {len(next_queue)} queued for next level)")
+                log.save(ignore_permissions=True)
                 frappe.db.commit()
+            if cancelled:
+                break
             queue = next_queue
+
+        if cancelled:
+            frappe.logger().info(f"Shopify taxonomy fetch stopped by user after {total} categories.")
+            close_log(log, "cancelled", processed=total, created=saved,
+                      error="Stopped by user before the walk finished -- "
+                            "the tree is only partially synced; rebuild_tree() was NOT run "
+                            "(it only runs after a full, uninterrupted walk).")
+            return
     except Exception:
         frappe.log_error(
             title="Shopify: failed to fetch taxonomy tree",

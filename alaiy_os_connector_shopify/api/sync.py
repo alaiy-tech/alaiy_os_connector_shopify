@@ -93,6 +93,85 @@ def get_sync_status(sync_type=None):
 
 
 @frappe.whitelist()
+def get_dashboard_stats():
+    """
+    Stat cards for the Shopify desk page -- plain counts, no Shopify API
+    calls, so this stays fast even with the catalog at 20k+ items.
+    """
+    items_total = frappe.db.count("Item")
+    templates_total = frappe.db.count("Item", {"variant_of": ["in", ["", None]]})
+    templates_pushed = frappe.db.count("Item", {
+        "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["is", "set"]})
+    templates_pending = frappe.db.count("Item", {
+        "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["in", ["", None]], "disabled": 0})
+
+    # Variants aren't always separate Item docs -- some sites never use
+    # ERPNext's real Item.variant_of at all and track every variant purely
+    # as a Shopify Listing Variant child row instead (confirmed live:
+    # variant_of count was 0 despite 3300+ real variants existing). The
+    # Listing Variant row is the actual source of truth for "how many
+    # variants we're tracking", regardless of which pattern a given site
+    # uses underneath.
+    variants_total = frappe.db.count("Shopify Listing Variant")
+    variants_pushed = frappe.db.count("Shopify Listing Variant", {"sh_shopify_variant_id": ["is", "set"]})
+
+    listings_total = frappe.db.count("Shopify Product Listing")
+    listings_enabled = frappe.db.count("Shopify Product Listing", {"is_enabled": 1})
+
+    # Push and pull both stamp the same sh_shopify_order_id field -- nothing
+    # in the schema distinguishes which direction created the link, so this
+    # is "synced with Shopify" overall, not split by direction.
+    orders_synced = frappe.db.count("Sales Order", {"sh_shopify_order_id": ["is", "set"]})
+
+    last_runs = frappe.get_all(
+        "Shopify Sync Log",
+        fields=["sync_type", "status", "started_at"],
+        order_by="started_at desc",
+        limit=50,
+    )
+    latest_by_type = {}
+    for row in last_runs:
+        latest_by_type.setdefault(row.sync_type, row)
+
+    return {
+        "items_total": items_total,
+        "templates_total": templates_total,
+        "templates_pushed": templates_pushed,
+        "templates_pending": templates_pending,
+        "variants_total": variants_total,
+        "variants_pushed": variants_pushed,
+        "listings_total": listings_total,
+        "listings_enabled": listings_enabled,
+        "orders_synced": orders_synced,
+        "last_runs": latest_by_type,
+    }
+
+
+@frappe.whitelist()
+def get_shopify_side_stats():
+    """
+    Real counts from Shopify itself -- separate call from
+    get_dashboard_stats since this hits the live API (slower, and pointless
+    to block the fast local-DB numbers on). Lets the desk page show both
+    sides side by side instead of only ever trusting our own DB, which is
+    exactly what caused the "298 vs 23k" confusion investigated 29-07 --
+    stale local ids made our own counts look right when the store itself
+    didn't match.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    products = client.execute("query { productsCount { count } }")
+    orders = client.execute("query { ordersCount { count } }")
+    variants = client.execute("query { productVariantsCount { count } }")
+    return {
+        "shopify_products": (products.get("productsCount") or {}).get("count"),
+        "shopify_orders": (orders.get("ordersCount") or {}).get("count"),
+        "shopify_variants": (variants.get("productVariantsCount") or {}).get("count"),
+    }
+
+
+@frappe.whitelist()
 def refresh_shopify_taxonomy():
     """
     Manually trigger a refresh of Shopify's Standard Product Taxonomy tree.

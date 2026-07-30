@@ -2,7 +2,7 @@ import frappe
 from frappe.utils import flt, now_datetime
 
 from alaiy_os_connector_shopify.shopify.sync_guard import (
-    has_active_sync, load_or_create_log,
+    has_active_sync, load_or_create_log, is_cancel_requested,
     append_log as _append_log, close_log as _close_log,
 )
 
@@ -191,16 +191,24 @@ def run_inventory_push(trigger="manual", log_name=None):
         )
 
         totals = {"processed": 0, "updated": 0, "failed": 0, "unchanged": 0}
+        cancelled = False
         for warehouse, location_id in pairs:
+            if is_cancel_requested(log.name):
+                cancelled = True
+                _append_log(log, "Stopped by user before finishing all location(s).")
+                break
             _backfill_missing_default_warehouse(warehouse)
-            _push_warehouse_to_location(
+            cancelled = _push_warehouse_to_location(
                 client, warehouse, location_id, last_success_time, log, totals)
+            if cancelled:
+                break
 
         _append_log(
             log,
             f"{totals['updated']} pushed, {totals['unchanged']} already in sync, "
-            f"{totals['failed']} failed across {len(pairs)} location(s).")
-        _close_log(log, "success", processed=totals["processed"],
+            f"{totals['failed']} failed across {len(pairs)} location(s)."
+            + (" (stopped early by user)" if cancelled else ""))
+        _close_log(log, "cancelled" if cancelled else "success", processed=totals["processed"],
                    created=totals["updated"], failed=totals["failed"])
     except Exception:
         _close_log(log, "failed", error=frappe.get_traceback())
@@ -275,7 +283,20 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
         items = [i for i in items if i.name in changed]
         _append_log(log, f"[{warehouse}] first run, checking {len(items)} items changed in last 24h")
 
-    for item in items:
+    for i, item in enumerate(items):
+        if i % 25 == 0:
+            if is_cancel_requested(log.name):
+                _append_log(log, f"[{warehouse}] stopped by user after {totals['processed']}/{len(items)} items.")
+                return True
+            # Flush progress periodically, not just at the end -- same gap
+            # already found and fixed for the product import/export jobs.
+            log.items_processed = totals["processed"]
+            log.items_created = totals["updated"]
+            log.items_failed = totals["failed"]
+            _append_log(log, f"[{warehouse}] ...{totals['processed']}/{len(items)} processed so far "
+                              f"({totals['updated']} pushed, {totals['unchanged']} unchanged, {totals['failed']} failed)")
+            log.save(ignore_permissions=True)
+            frappe.db.commit()
         totals["processed"] += 1
         try:
             # A missing Bin means "no stock data recorded for this item/
@@ -337,6 +358,7 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
                 title=f"Shopify inventory push failed for {item.name}",
                 message=frappe.get_traceback(),
             )
+    return False
 
 
 def _get_primary_location_id(client):
