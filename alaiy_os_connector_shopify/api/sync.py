@@ -93,6 +93,53 @@ def get_sync_status(sync_type=None):
 
 
 @frappe.whitelist()
+def get_dashboard_stats():
+    """
+    Stat cards for the Shopify desk page -- plain counts, no Shopify API
+    calls, so this stays fast even with the catalog at 20k+ items.
+    """
+    templates_total = frappe.db.count("Item", {"variant_of": ["in", ["", None]]})
+    templates_pushed = frappe.db.count("Item", {
+        "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["is", "set"]})
+    templates_pending = frappe.db.count("Item", {
+        "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["in", ["", None]], "disabled": 0})
+
+    variants_total = frappe.db.count("Item", {"variant_of": ["not in", ["", None]]})
+    variants_pushed = frappe.db.count("Item", {
+        "variant_of": ["not in", ["", None]], "sh_shopify_variant_id": ["is", "set"]})
+
+    listings_total = frappe.db.count("Shopify Product Listing")
+    listings_enabled = frappe.db.count("Shopify Product Listing", {"is_enabled": 1})
+
+    # Push and pull both stamp the same sh_shopify_order_id field -- nothing
+    # in the schema distinguishes which direction created the link, so this
+    # is "synced with Shopify" overall, not split by direction.
+    orders_synced = frappe.db.count("Sales Order", {"sh_shopify_order_id": ["is", "set"]})
+
+    last_runs = frappe.get_all(
+        "Shopify Sync Log",
+        fields=["sync_type", "status", "started_at"],
+        order_by="started_at desc",
+        limit=50,
+    )
+    latest_by_type = {}
+    for row in last_runs:
+        latest_by_type.setdefault(row.sync_type, row)
+
+    return {
+        "templates_total": templates_total,
+        "templates_pushed": templates_pushed,
+        "templates_pending": templates_pending,
+        "variants_total": variants_total,
+        "variants_pushed": variants_pushed,
+        "listings_total": listings_total,
+        "listings_enabled": listings_enabled,
+        "orders_synced": orders_synced,
+        "last_runs": latest_by_type,
+    }
+
+
+@frappe.whitelist()
 def refresh_shopify_taxonomy():
     """
     Manually trigger a refresh of Shopify's Standard Product Taxonomy tree.

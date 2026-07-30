@@ -19,6 +19,20 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					</div>
 				</div>
 
+				<!-- Stats -->
+				<div class="shopify-card">
+					<div class="shopify-card-header">
+						<span class="shopify-icon-badge"><i class="fa fa-bar-chart"></i></span>
+						<div class="shopify-card-header-text">
+							<h5>Overview</h5>
+							<p>Current catalog and sync state.</p>
+						</div>
+					</div>
+					<div class="shopify-card-body">
+						<div id="shopify-stats-grid" class="shopify-stats-grid"></div>
+					</div>
+				</div>
+
 				<!-- Orders -->
 				<div class="shopify-card">
 					<div class="shopify-card-header">
@@ -489,7 +503,32 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		if (running) setTimeout(refresh_logs, 3000);
 	}
 
+	function load_stats() {
+		frappe.call({
+			method: 'alaiy_os_connector_shopify.api.sync.get_dashboard_stats',
+			callback: function(r) {
+				var s = r.message;
+				if (!s) return;
+				var cards = [
+					{label: 'Product templates', value: s.templates_total},
+					{label: 'Pushed to Shopify', value: s.templates_pushed},
+					{label: 'Pending export', value: s.templates_pending},
+					{label: 'Variants (total)', value: s.variants_total},
+					{label: 'Variants pushed', value: s.variants_pushed},
+					{label: 'Listings (enabled / total)', value: s.listings_enabled + ' / ' + s.listings_total},
+					{label: 'Orders synced', value: s.orders_synced},
+				];
+				var html = '';
+				cards.forEach(function(c) {
+					html += '<div class="shopify-stat-tile"><div class="shopify-stat-value">' + c.value + '</div><div class="shopify-stat-label">' + c.label + '</div></div>';
+				});
+				document.getElementById('shopify-stats-grid').innerHTML = html;
+			}
+		});
+	}
+
 	check_connection();
+	load_stats();
 	refresh_logs();
 	toggle_order_date_fields();
 

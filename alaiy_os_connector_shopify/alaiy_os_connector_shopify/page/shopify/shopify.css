@@ -443,3 +443,29 @@
 	0% { transform: rotate(0deg); }
 	100% { transform: rotate(360deg); }
 }
+
+.shopify-stats-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+	gap: 12px;
+}
+
+.shopify-stat-tile {
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius, 8px);
+	padding: 14px;
+	text-align: center;
+	background-color: var(--subtle-fg, var(--fg-color));
+}
+
+.shopify-stat-value {
+	font-size: 22px;
+	font-weight: 700;
+	color: var(--text-color);
+}
+
+.shopify-stat-label {
+	font-size: 12px;
+	color: var(--text-muted);
+	margin-top: 4px;
+}
