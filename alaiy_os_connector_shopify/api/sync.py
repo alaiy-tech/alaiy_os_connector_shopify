@@ -155,9 +155,11 @@ def get_shopify_side_stats():
     client = ShopifyGraphQLClient()
     products = client.execute("query { productsCount { count } }")
     orders = client.execute("query { ordersCount { count } }")
+    variants = client.execute("query { productVariantsCount { count } }")
     return {
         "shopify_products": (products.get("productsCount") or {}).get("count"),
         "shopify_orders": (orders.get("ordersCount") or {}).get("count"),
+        "shopify_variants": (variants.get("productVariantsCount") or {}).get("count"),
     }
 
 

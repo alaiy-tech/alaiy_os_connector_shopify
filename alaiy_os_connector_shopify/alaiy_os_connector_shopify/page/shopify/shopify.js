@@ -503,10 +503,13 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		if (running) setTimeout(refresh_logs, 3000);
 	}
 
-	function render_stat_group(title, cards) {
+	function render_stat_group(title, cards, accent) {
 		var html = '<div class="shopify-stat-group-title">' + title + '</div><div class="shopify-stats-grid">';
 		cards.forEach(function(c) {
-			html += '<div class="shopify-stat-tile"><div class="shopify-stat-value">' + c.value + '</div><div class="shopify-stat-label">' + c.label + '</div></div>';
+			html += '<div class="shopify-stat-tile shopify-stat-accent-' + accent + '">' +
+				'<div class="shopify-stat-value">' + c.value + '</div>' +
+				'<div class="shopify-stat-label">' + c.label + '</div>' +
+				'</div>';
 		});
 		html += '</div>';
 		return html;
@@ -531,7 +534,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					{label: 'Variants pushed', value: s.variants_pushed},
 					{label: 'Listings (enabled / total)', value: s.listings_enabled + ' / ' + s.listings_total},
 					{label: 'Orders synced', value: s.orders_synced},
-				]) + '<div id="shopify-side-stats"><div class="shopify-stat-group-title">Loading Shopify-side counts...</div></div>';
+				], 'local') + '<div id="shopify-side-stats"><div class="shopify-stat-group-title">Loading Shopify-side counts...</div></div>';
 
 				frappe.call({
 					method: 'alaiy_os_connector_shopify.api.sync.get_shopify_side_stats',
@@ -541,8 +544,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						if (!ss || !target) return;
 						target.innerHTML = render_stat_group('Shopify (live)', [
 							{label: 'Products in store', value: ss.shopify_products},
+							{label: 'Variants in store', value: ss.shopify_variants},
 							{label: 'Orders in store', value: ss.shopify_orders},
-						]);
+						], 'shopify');
 					},
 					error: function() {
 						var target = document.getElementById('shopify-side-stats');

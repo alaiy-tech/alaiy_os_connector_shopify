@@ -445,12 +445,12 @@
 }
 
 .shopify-stat-group-title {
-	font-size: 12px;
-	font-weight: 600;
+	font-size: 11px;
+	font-weight: 700;
 	text-transform: uppercase;
-	letter-spacing: 0.03em;
+	letter-spacing: 0.06em;
 	color: var(--text-muted);
-	margin: 14px 0 8px;
+	margin: 20px 0 10px;
 }
 
 .shopify-stat-group-title:first-child {
@@ -459,21 +459,47 @@
 
 .shopify-stats-grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-	gap: 12px;
+	grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+	gap: 10px;
 }
 
 .shopify-stat-tile {
+	position: relative;
 	border: 1px solid var(--border-color);
-	border-radius: var(--border-radius, 8px);
-	padding: 14px;
-	text-align: center;
-	background-color: var(--subtle-fg, var(--fg-color));
+	border-radius: var(--border-radius-md, 8px);
+	padding: 16px 14px 14px;
+	text-align: left;
+	background-color: var(--fg-color);
+	overflow: hidden;
+	transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.shopify-stat-tile:hover {
+	transform: translateY(-1px);
+	box-shadow: 0 4px 10px rgba(0, 0, 0, 0.06);
+}
+
+.shopify-stat-tile::before {
+	content: "";
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 3px;
+}
+
+.shopify-stat-accent-local::before {
+	background-color: var(--blue-500, #2490ef);
+}
+
+.shopify-stat-accent-shopify::before {
+	background-color: var(--green-500, #29a745);
 }
 
 .shopify-stat-value {
-	font-size: 22px;
+	font-size: 24px;
 	font-weight: 700;
+	line-height: 1.2;
 	color: var(--text-color);
 }
 
@@ -481,4 +507,7 @@
 	font-size: 12px;
 	color: var(--text-muted);
 	margin-top: 4px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
