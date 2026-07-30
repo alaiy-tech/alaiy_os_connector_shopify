@@ -63,11 +63,16 @@ function add_populate_button(frm) {
                     );
                     if (!existing_row) {
                         frm.add_child("variants", row);
-                    } else if (!existing_row.variant_image && row.variant_image) {
-                        // Fill in a missing variant image without touching
-                        // an existing one -- same never-remove, never-
-                        // clobber principle as the rest of this button.
-                        frappe.model.set_value(existing_row.doctype, existing_row.name, "variant_image", row.variant_image);
+                    } else {
+                        // Fill in missing fields without touching one
+                        // that's already set -- same never-remove,
+                        // never-clobber principle as the rest of this button.
+                        if (!existing_row.variant_image && row.variant_image) {
+                            frappe.model.set_value(existing_row.doctype, existing_row.name, "variant_image", row.variant_image);
+                        }
+                        if (!existing_row.variant_price && row.variant_price) {
+                            frappe.model.set_value(existing_row.doctype, existing_row.name, "variant_price", row.variant_price);
+                        }
                     }
                 });
                 if (r.message.listing_category) {

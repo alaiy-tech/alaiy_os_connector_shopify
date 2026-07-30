@@ -322,6 +322,7 @@ def get_item_children(item):
         as_dict=True)
     if not tmpl:
         return {"images": [], "variants": []}
+    settings = frappe.get_single("Shopify Connector Settings")
     images = [
         {"image": url, "source": "Original", "sort_order": i}
         for i, url in enumerate(_template_image_urls(tmpl))
@@ -331,6 +332,12 @@ def get_item_children(item):
             "item_variant": v.name, "is_enabled": 1,
             "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
             "variant_image": v.image or None,
+            # Snapshot the REAL resolved Item Price here instead of leaving
+            # variant_price blank -- a blank override just displays as a
+            # confusing "0.00" in the grid even though push-time logic
+            # correctly ignores it. Showing the real number the push would
+            # actually use is clearer than an empty-looking override field.
+            "variant_price": _variant_price(v.name, settings),
         }
         for v in _template_variant_items(tmpl.name, tmpl.has_variants)
     ]
