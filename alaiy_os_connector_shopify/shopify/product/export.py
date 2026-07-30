@@ -317,6 +317,58 @@ def _push_product_unlocked(item):
             result = data.get("productSet") or {}
             errors = result.get("userErrors") or []
 
+    if errors and identifier:
+        # Self-heal: the identifier itself (the whole product, not just a
+        # variant) can go stale the same way -- confirmed live on
+        # commerce.os.alaiy.com: 78 products' ids drifted out of sync with
+        # the real store (deleted/recreated there, or leftover from a
+        # store swap) and every update attempt failed with "Resource
+        # matching the identifier was not found" until someone manually
+        # cleared the id and re-ran export. Do that automatically instead:
+        # clear the stale id (Item + Listing + the fingerprint cache that
+        # would otherwise still think this is "already synced, unchanged")
+        # and retry once as a fresh create.
+        # Scoped to field == ["input"] specifically -- the same message text
+        # can also appear scoped to a single variant's own stale id
+        # (field ["input", "variants", N, "id"]), which needs a different
+        # fix (clear that one variant, keep the product identifier), not
+        # this whole-product retry.
+        not_found = any(
+            e.get("field") == ["input"]
+            and "Resource matching the identifier was not found" in (e.get("message") or "")
+            for e in errors
+        )
+        if not_found:
+            frappe.logger().warning(
+                f"Shopify push: {item.name}'s product id {product_id} no longer exists on "
+                "the store. Clearing it and retrying as a fresh create..."
+            )
+            frappe.db.set_value("Item", item.name, "sh_shopify_product_id", "")
+            frappe.db.set_value("Shopify Product Listing", listing.name, "sh_shopify_product_id", "")
+            frappe.db.delete("Shopify Synced Entity", {
+                "entity_type": "product", "erpnext_doctype": "Item", "erpnext_name": item.name})
+            frappe.db.commit()
+            # entity (fetched earlier, before the delete above) is now a
+            # stale in-memory reference to a row that no longer exists --
+            # confirmed live: entities.save() further down reused it and
+            # crashed with DocumentDoesNotExistError. Clear it so the save
+            # further down calls get_or_new() and creates a fresh row
+            # instead of trying to update a deleted one.
+            entity = None
+
+            item = frappe.get_doc("Item", item.name)
+            listing = listing_resolver.get_listing(item.name)
+            variants = _variants_of(item)
+            product_input = _product_set_input(item, variants, settings, listing, client)
+
+            data = client.execute(_PRODUCT_SET_MUTATION, {
+                "input": product_input,
+                "identifier": None,
+                "synchronous": True,
+            })
+            result = data.get("productSet") or {}
+            errors = result.get("userErrors") or []
+
     if errors:
         raise RuntimeError(f"Shopify productSet userErrors: {errors}")
 

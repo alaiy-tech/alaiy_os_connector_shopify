@@ -3,6 +3,8 @@ Canonical/fingerprint form and Shopify productSet payload builders --
 moved verbatim from product_sync.py, unchanged.
 """
 
+import json
+
 import frappe
 
 from alaiy_os_connector_shopify.shopify.product.variants import (
@@ -50,19 +52,40 @@ def _product_options_payload(option_names: list, variants: list) -> list:
     return options
 
 
+_PRIORITY_OPTION_NAMES = ["size", "color", "colour", "style"]
+
+
+def _split_options_over_limit(option_names: list) -> tuple:
+    """
+    Shopify hard-caps productOptions at 3 -- confirmed live, real products
+    rejected outright with "Can only specify a maximum of 3 options".
+    Team decision: keep Size/Color/Style as the real Shopify options when
+    present, push anything beyond that into a metafield instead of failing
+    the whole product. Returns (kept, overflow).
+    """
+    if len(option_names) <= 3:
+        return option_names, []
+    priority = [n for n in option_names if n.lower() in _PRIORITY_OPTION_NAMES]
+    rest = [n for n in option_names if n not in priority]
+    kept = (priority + rest)[:3]
+    overflow = [n for n in option_names if n not in kept]
+    return kept, overflow
+
+
 def _product_set_input(item, variants: list, settings, listing, client=None) -> dict:
     """Shared by templates (variants = real children) and simple items
     (variants = [item] itself, standing in as its own only variant). Always
     the full desired state, never a partial patch -- used for both a normal
     push and an archive (see archive_item), so it doesn't matter whether
     productSet treats omitted fields as "leave alone" or "clear"."""
-    option_names = []
+    all_option_names = []
     for v in variants:
         for a in (v.attributes or []):
-            if a.attribute not in option_names:
-                option_names.append(a.attribute)
-    if not option_names:
-        option_names = ["Title"]
+            if a.attribute not in all_option_names:
+                all_option_names.append(a.attribute)
+    if not all_option_names:
+        all_option_names = ["Title"]
+    option_names, overflow_names = _split_options_over_limit(all_option_names)
 
     payload = {
         "title": listing_resolver.effective_title(listing, item),
@@ -75,6 +98,25 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
             _variant_set_payload(v, settings, option_names, listing) for v in variants
         ],
     }
+    if overflow_names:
+        # Attributes beyond Shopify's 3-option cap don't disappear -- kept
+        # as a per-variant metafield instead of failing the whole push.
+        # Team decision (30-07-2026): Size/Color/Style stay real options,
+        # anything past that goes here.
+        overflow_by_sku = {}
+        for v in variants:
+            attrs = {a.attribute: a.attribute_value for a in (v.attributes or [])}
+            extra = {name: attrs[name] for name in overflow_names if name in attrs}
+            if extra:
+                overflow_by_sku[v.item_code] = extra
+        if overflow_by_sku:
+            payload["metafields"] = [{
+                "namespace": "custom",
+                "key": "extra_variant_attributes",
+                "type": "json",
+                "value": json.dumps(overflow_by_sku),
+            }]
+
     payload["descriptionHtml"] = listing_resolver.effective_description(listing, item)
     if item.brand:
         payload["vendor"] = item.brand
