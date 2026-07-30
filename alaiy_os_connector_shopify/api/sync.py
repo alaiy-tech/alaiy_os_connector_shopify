@@ -105,9 +105,15 @@ def get_dashboard_stats():
     templates_pending = frappe.db.count("Item", {
         "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["in", ["", None]], "disabled": 0})
 
-    variants_total = frappe.db.count("Item", {"variant_of": ["not in", ["", None]]})
-    variants_pushed = frappe.db.count("Item", {
-        "variant_of": ["not in", ["", None]], "sh_shopify_variant_id": ["is", "set"]})
+    # Variants aren't always separate Item docs -- some sites never use
+    # ERPNext's real Item.variant_of at all and track every variant purely
+    # as a Shopify Listing Variant child row instead (confirmed live:
+    # variant_of count was 0 despite 3300+ real variants existing). The
+    # Listing Variant row is the actual source of truth for "how many
+    # variants we're tracking", regardless of which pattern a given site
+    # uses underneath.
+    variants_total = frappe.db.count("Shopify Listing Variant")
+    variants_pushed = frappe.db.count("Shopify Listing Variant", {"sh_shopify_variant_id": ["is", "set"]})
 
     listings_total = frappe.db.count("Shopify Product Listing")
     listings_enabled = frappe.db.count("Shopify Product Listing", {"is_enabled": 1})

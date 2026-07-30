@@ -29,7 +29,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						</div>
 					</div>
 					<div class="shopify-card-body">
-						<div id="shopify-stats-grid" class="shopify-stats-grid"></div>
+						<div id="shopify-stats-grid"></div>
 					</div>
 				</div>
 
