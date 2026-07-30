@@ -105,6 +105,9 @@ def _variant_canonical(variant, settings, listing) -> dict:
         "cost": _variant_cost(variant.item_code) or 0,
         "weight_per_unit": flt(variant.get("weight_per_unit") or 0),
         "weight_uom": variant.get("weight_uom") or "",
+        "length": flt(variant.get("length") or 0),
+        "width": flt(variant.get("width") or 0),
+        "height": flt(variant.get("height") or 0),
         "attributes": [
             {"attribute": a.attribute, "value": a.attribute_value}
             for a in (variant.attributes or [])
