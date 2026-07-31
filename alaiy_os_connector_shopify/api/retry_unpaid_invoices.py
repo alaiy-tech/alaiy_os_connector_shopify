@@ -31,6 +31,10 @@ def run(dry_run=True):
         where si.docstatus = 1
           and si.status != 'Paid'
           and so.sh_shopify_order_id is not null and so.sh_shopify_order_id != ''
+          -- Only re-attempt orders Shopify STILL says are paid right now, not
+          -- just at invoice-creation time -- a refund/partial-refund after
+          -- invoicing must stay Unpaid, this script must never force that.
+          and so.sh_financial_status = 'paid'
         group by si.name
     """, as_dict=True)
 
