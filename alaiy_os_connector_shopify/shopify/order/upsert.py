@@ -94,6 +94,15 @@ def _upsert_order_unlocked(order, order_id):
     # customer's address during Sales Order validate -- ensure one exists first.
     from alaiy_os_connector_shopify.shopify.order.address import ensure_default_address_template
     ensure_default_address_template()
+
+    # Real Shopify order date, not the date this pull/webhook happens to run
+    # on -- computed here (not just on the parent so.transaction_date below)
+    # because each Sales Order Item row also carries its own delivery_date,
+    # and ERPNext's own validate() resyncs the PARENT delivery_date from the
+    # child rows -- confirmed live: setting only so.delivery_date further
+    # down still showed today's date after insert, because every row here
+    # was hardcoded to frappe.utils.today() and won by that resync.
+    order_date = frappe.utils.getdate(order.get("created_at")) if order.get("created_at") else frappe.utils.today()
     customer_name = _get_or_create_customer(
         order.get("customer") or {}, settings)
     warehouse = _resolve_default_warehouse(settings)
@@ -120,7 +129,7 @@ def _upsert_order_unlocked(order, order_id):
             "qty": qty,
             "rate": flt(li.get("price", 0)),
             "warehouse": warehouse,
-            "delivery_date": frappe.utils.today(),
+            "delivery_date": order_date,
             "sh_shopify_variant_id": str(li.get("variant_id", "")),
         })
 
@@ -142,14 +151,6 @@ def _upsert_order_unlocked(order, order_id):
     company_currency = frappe.get_cached_value("Company", company, "default_currency")
     if order_currency != company_currency:
         ensure_customer_currency_account(customer_name, company, order_currency)
-
-    # Real Shopify order date, not the date this pull/webhook happens to run
-    # on -- confirmed live: a historical import always stamped every order
-    # with today's date regardless of when the customer actually ordered,
-    # making transaction_date meaningless for any date-range reporting on
-    # backfilled orders. created_at is only absent for a malformed payload;
-    # today is a safe fallback for that edge case only.
-    order_date = frappe.utils.getdate(order.get("created_at")) if order.get("created_at") else frappe.utils.today()
 
     so = frappe.new_doc("Sales Order")
     so.customer = customer_name
