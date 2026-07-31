@@ -53,6 +53,14 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillmen
         from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
         with _as_administrator():
             si = make_sales_invoice(so_name)
+            # make_sales_invoice defaults posting_date/due_date to today --
+            # same real-order-date bug already fixed on the Sales Order side.
+            # Reuse the Sales Order's own transaction_date (already the real
+            # Shopify order date) instead of a second separate today() stamp.
+            order_date = frappe.db.get_value("Sales Order", so_name, "transaction_date")
+            if order_date:
+                si.posting_date = order_date
+                si.due_date = order_date
             si.update_stock = 0
             _fill_item_accounts(si, settings)
             _ensure_round_off_account(si.company)
@@ -99,7 +107,11 @@ def _mark_invoice_paid(si, settings, _retried=False):
         pe = get_payment_entry("Sales Invoice", si.name)
         pe.paid_to = paid_to
         pe.reference_no = si.name
-        pe.reference_date = frappe.utils.today()
+        # get_payment_entry defaults posting_date/reference_date to today --
+        # same real-order-date bug as the Sales Order/Invoice, now fixed here
+        # too: si.posting_date is already the real Shopify order date.
+        pe.posting_date = si.posting_date
+        pe.reference_date = si.posting_date
         pe.flags.from_shopify_sync = True
         pe.flags.ignore_permissions = True
         pe.insert()
