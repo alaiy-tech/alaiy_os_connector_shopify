@@ -117,7 +117,7 @@ def _upsert_order_unlocked(order, order_id):
         if not item_code:
             # No catalog match -- keep it as a custom line item rather than
             # silently dropping it (Shopify allows one-off/custom products).
-            custom = build_custom_line_item(li, warehouse)
+            custom = build_custom_line_item(li, warehouse, delivery_date=order_date)
             if custom:
                 line_items.append(custom)
             continue
