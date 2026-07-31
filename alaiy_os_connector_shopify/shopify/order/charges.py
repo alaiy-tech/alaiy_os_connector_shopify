@@ -45,7 +45,7 @@ def apply_order_discount(so, order):
     so.discount_amount = disc
 
 
-def build_custom_line_item(li, warehouse):
+def build_custom_line_item(li, warehouse, delivery_date=None):
     """
     A Shopify line item that maps to no Alaiy OS Item (custom/one-off product) --
     represent it with a single shared placeholder Item ("Shopify Custom Item"),
@@ -66,7 +66,10 @@ def build_custom_line_item(li, warehouse):
         "qty": qty,
         "rate": flt(li.get("price", 0)),
         "warehouse": warehouse,
-        "delivery_date": frappe.utils.today(),
+        # Real getdate() object, not frappe.utils.today()'s string -- mixing
+        # a str and a datetime.date across line item rows crashed ERPNext's
+        # own validate_delivery_date() (max() can't compare str to date).
+        "delivery_date": delivery_date or frappe.utils.getdate(),
     }
 
 

@@ -27,7 +27,7 @@ def execute():
           )
     """, as_dict=True)
 
-    for r in rows:
+    for i, r in enumerate(rows):
         listing = frappe.get_doc("Shopify Product Listing", r.listing)
         listing.append("variants", {
             "item_variant": r.listing, "is_enabled": 1,
@@ -35,6 +35,8 @@ def execute():
         })
         listing.flags.from_shopify_sync = True
         listing.save(ignore_permissions=True)
+        if (i + 1) % 200 == 0:
+            frappe.db.commit()
 
     if rows:
         frappe.db.commit()

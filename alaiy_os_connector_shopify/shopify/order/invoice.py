@@ -53,6 +53,20 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillmen
         from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
         with _as_administrator():
             si = make_sales_invoice(so_name)
+            # make_sales_invoice defaults posting_date/due_date to today --
+            # same real-order-date bug already fixed on the Sales Order side.
+            # Reuse the Sales Order's own transaction_date (already the real
+            # Shopify order date) instead of a second separate today() stamp.
+            order_date = frappe.db.get_value("Sales Order", so_name, "transaction_date")
+            if order_date:
+                si.posting_date = order_date
+                si.due_date = order_date
+                # ERPNext's validate_auto_set_posting_time() silently resets
+                # posting_date back to today unless this is explicitly set --
+                # confirmed live: without it, posting_date got reset to today
+                # while due_date stayed the real (past) order date, tripping
+                # "Due Date cannot be before Posting Date".
+                si.set_posting_time = 1
             si.update_stock = 0
             _fill_item_accounts(si, settings)
             _ensure_round_off_account(si.company)
@@ -74,10 +88,18 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillmen
         )
 
 
-def _mark_invoice_paid(si, settings):
+def _mark_invoice_paid(si, settings, _retried=False):
     """
     Full-payment Payment Entry against the invoice, so it reads Paid. Best-effort:
     the invoice still stands (as Unpaid) if payment booking fails.
+
+    Retries once on a transient DB error (deadlock/lock timeout) instead of
+    giving up immediately -- confirmed live: a large bulk historical import
+    (thousands of concurrent Sales Order/Invoice writes) left hundreds of
+    invoices genuinely Unpaid with ZERO error logged anywhere, meaning this
+    step silently never got a clean shot at the DB the first time. Calling
+    it again standalone afterward always worked -- this makes that retry
+    automatic at import time instead of needing a manual follow-up sweep.
     """
     try:
         from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
@@ -91,11 +113,25 @@ def _mark_invoice_paid(si, settings):
         pe = get_payment_entry("Sales Invoice", si.name)
         pe.paid_to = paid_to
         pe.reference_no = si.name
-        pe.reference_date = frappe.utils.today()
+        # get_payment_entry defaults posting_date/reference_date to today --
+        # same real-order-date bug as the Sales Order/Invoice, now fixed here
+        # too: si.posting_date is already the real Shopify order date.
+        pe.posting_date = si.posting_date
+        pe.reference_date = si.posting_date
         pe.flags.from_shopify_sync = True
         pe.flags.ignore_permissions = True
         pe.insert()
         pe.submit()
+    except (frappe.QueryDeadlockError, frappe.QueryTimeoutError, frappe.TimestampMismatchError):
+        if _retried:
+            frappe.log_error(
+                title=f"Shopify: failed to mark invoice {si.name} paid",
+                message=frappe.get_traceback(),
+            )
+            return
+        frappe.db.rollback()
+        fresh = frappe.get_doc("Sales Invoice", si.name)
+        _mark_invoice_paid(fresh, settings, _retried=True)
     except Exception:
         frappe.log_error(
             title=f"Shopify: failed to mark invoice {si.name} paid",
@@ -125,10 +161,16 @@ def _fill_item_accounts(si, settings):
     """
     income = _resolve_income_account(si.company)
     cost_center = _resolve_cost_center(si.company, settings.sh_cost_center)
+
+    def _is_group_cost_center(value):
+        return bool(value) and bool(frappe.db.get_value("Cost Center", value, "is_group"))
+
+    if cost_center and _is_group_cost_center(si.cost_center):
+        si.cost_center = cost_center
     for row in si.items:
         if income and not row.income_account:
             row.income_account = income
-        if cost_center and not row.cost_center:
+        if cost_center and (not row.cost_center or _is_group_cost_center(row.cost_center)):
             row.cost_center = cost_center
 
 

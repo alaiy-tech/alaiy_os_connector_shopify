@@ -28,6 +28,30 @@ def run_orders_sync(trigger="manual", log_name=None):
     return _run_orders_pull(log, query_string)
 
 
+def _save_log_resilient(log, fields):
+    """
+    log.save() as used throughout a long-running pull, retrying once against
+    a freshly-reloaded doc on TimestampMismatchError instead of crashing the
+    whole job. Confirmed live: an admin action that touches this same log
+    row externally (e.g. setting cancel_requested, or a manual status fix
+    while assuming the job was already dead) bumps `modified` out from
+    under the job's in-memory copy, and the job's own very next progress
+    save then crashed uncaught -- killing the worker process along with it.
+    Same shape as webhooks.py's retry-once-on-TimestampMismatchError and
+    sync_guard.py's close_log fallback.
+    """
+    try:
+        log.save(ignore_permissions=True)
+    except frappe.TimestampMismatchError:
+        frappe.db.rollback()
+        fresh = frappe.get_doc("Shopify Sync Log", log.name)
+        for key, value in fields.items():
+            fresh.set(key, value)
+        fresh.save(ignore_permissions=True)
+        return fresh
+    return log
+
+
 def _run_orders_pull(log, query_string, skip_existing=False):
     """
     Shared pull loop for both the routine sync (run_orders_sync, filtered)
@@ -89,7 +113,10 @@ def _run_orders_pull(log, query_string, skip_existing=False):
             log.items_created = created
             log.items_failed = failed
             log.pages_done = pages
-            log.save(ignore_permissions=True)
+            log = _save_log_resilient(log, {
+                "items_processed": processed, "items_created": created,
+                "items_failed": failed, "pages_done": pages,
+            })
             frappe.db.commit()
 
         log.status = "cancelled" if cancelled else "success"

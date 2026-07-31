@@ -58,6 +58,12 @@ def _merge_duplicate_item_rows(line_items: list) -> list:
         for field in ("item_name", "description"):
             if row.get(field) and row[field] not in (existing.get(field) or ""):
                 existing[field] = f"{existing.get(field, '')}; {row[field]}".strip("; ")
+        # item_name is a Data field capped at 140 chars in the DB -- unbounded
+        # concatenation of multiple real product names (confirmed live: two
+        # long names alone exceeded it) crashed the whole order insert.
+        # description has no such length limit, left untouched.
+        if existing.get("item_name") and len(existing["item_name"]) > 140:
+            existing["item_name"] = existing["item_name"][:137] + "..."
     return [merged[key] for key in order]
 
 
@@ -88,6 +94,15 @@ def _upsert_order_unlocked(order, order_id):
     # customer's address during Sales Order validate -- ensure one exists first.
     from alaiy_os_connector_shopify.shopify.order.address import ensure_default_address_template
     ensure_default_address_template()
+
+    # Real Shopify order date, not the date this pull/webhook happens to run
+    # on -- computed here (not just on the parent so.transaction_date below)
+    # because each Sales Order Item row also carries its own delivery_date,
+    # and ERPNext's own validate() resyncs the PARENT delivery_date from the
+    # child rows -- confirmed live: setting only so.delivery_date further
+    # down still showed today's date after insert, because every row here
+    # was hardcoded to frappe.utils.today() and won by that resync.
+    order_date = frappe.utils.getdate(order.get("created_at")) if order.get("created_at") else frappe.utils.today()
     customer_name = _get_or_create_customer(
         order.get("customer") or {}, settings)
     warehouse = _resolve_default_warehouse(settings)
@@ -102,7 +117,7 @@ def _upsert_order_unlocked(order, order_id):
         if not item_code:
             # No catalog match -- keep it as a custom line item rather than
             # silently dropping it (Shopify allows one-off/custom products).
-            custom = build_custom_line_item(li, warehouse)
+            custom = build_custom_line_item(li, warehouse, delivery_date=order_date)
             if custom:
                 line_items.append(custom)
             continue
@@ -114,7 +129,7 @@ def _upsert_order_unlocked(order, order_id):
             "qty": qty,
             "rate": flt(li.get("price", 0)),
             "warehouse": warehouse,
-            "delivery_date": frappe.utils.today(),
+            "delivery_date": order_date,
             "sh_shopify_variant_id": str(li.get("variant_id", "")),
         })
 
@@ -141,9 +156,9 @@ def _upsert_order_unlocked(order, order_id):
     so.customer = customer_name
     so.company = company
     so.currency = order_currency
-    so.conversion_rate = get_order_exchange_rate(order_currency, company_currency, frappe.utils.today())
-    so.transaction_date = frappe.utils.today()
-    so.delivery_date = frappe.utils.today()
+    so.conversion_rate = get_order_exchange_rate(order_currency, company_currency, order_date)
+    so.transaction_date = order_date
+    so.delivery_date = order_date
     so.selling_price_list = settings.sh_selling_price_list or "Standard Selling"
     so.set_warehouse = warehouse
     if settings.sh_cost_center:

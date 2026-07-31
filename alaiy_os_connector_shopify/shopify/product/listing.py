@@ -245,7 +245,7 @@ def _template_variant_items(tmpl_name: str, has_variants) -> list:
     is what gives that variant a real Listing Variant row instead of a
     special case scattered through every id lookup."""
     filters = {"variant_of": tmpl_name} if has_variants else {"name": tmpl_name}
-    return frappe.get_all("Item", filters=filters, fields=["name", "sh_shopify_variant_id"])
+    return frappe.get_all("Item", filters=filters, fields=["name", "sh_shopify_variant_id", "image"])
 
 
 def ensure_listing(template_name: str, default_enabled: int = 0):
@@ -307,19 +307,46 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
 def get_item_children(item):
     """Return a template Item's images + variant rows for the form's
     'Populate from Item' button (client fills the grids so they're visible
-    before save). Mirrors fill_children_from_item, for the UI path."""
-    tmpl = frappe.db.get_value("Item", item, ["name", "image", "has_variants"], as_dict=True)
+    before save). Mirrors fill_children_from_item, for the UI path.
+
+    Also returns the Item's current category/product_type as explicit
+    override values (not left blank-to-inherit) -- team decision: the
+    button is meant to snapshot the Item's current state onto the
+    Listing, same as it does for images/variants. A later Item category
+    change won't auto-propagate to a Listing whose override got filled
+    this way; clear the override field by hand if that's ever wanted.
+    """
+    tmpl = frappe.db.get_value(
+        "Item", item,
+        ["name", "image", "has_variants", "sh_shopify_category", "sh_shopify_product_type"],
+        as_dict=True)
     if not tmpl:
         return {"images": [], "variants": []}
+    settings = frappe.get_single("Shopify Connector Settings")
     images = [
         {"image": url, "source": "Original", "sort_order": i}
         for i, url in enumerate(_template_image_urls(tmpl))
     ]
     variants = [
-        {"item_variant": v.name, "is_enabled": 1, "sh_shopify_variant_id": v.sh_shopify_variant_id or None}
+        {
+            "item_variant": v.name, "is_enabled": 1,
+            "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
+            "variant_image": v.image or None,
+            # Snapshot the REAL resolved Item Price here instead of leaving
+            # variant_price blank -- a blank override just displays as a
+            # confusing "0.00" in the grid even though push-time logic
+            # correctly ignores it. Showing the real number the push would
+            # actually use is clearer than an empty-looking override field.
+            "variant_price": _variant_price(v.name, settings),
+        }
         for v in _template_variant_items(tmpl.name, tmpl.has_variants)
     ]
-    return {"images": images, "variants": variants}
+    return {
+        "images": images,
+        "variants": variants,
+        "listing_category": tmpl.sh_shopify_category or None,
+        "listing_product_type": tmpl.sh_shopify_product_type or None,
+    }
 
 
 def sync_listing_variants(template_name):
@@ -343,6 +370,7 @@ def sync_listing_variants(template_name):
             listing.append("variants", {
                 "item_variant": v.name, "is_enabled": 1,
                 "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
+                "variant_image": v.image or None,
             })
             added = True
     if added:
@@ -391,15 +419,21 @@ def apply_inbound_from_shopify(template_name, images=None, variant_prices=None, 
 
 def fill_children_from_item(listing):
     """
-    Populate a listing's Images and Variants tables from its Item when they're
-    empty -- so both a manually created listing (pick a template -> save) and
-    an imported/backfilled one end up with the same rows. No-op for rows that
-    already exist (won't clobber merchant edits or re-add on every save).
+    Populate a listing's Images, Variants, category/product_type, and
+    variant prices from its Item when they're empty -- so both a manually
+    created listing (pick a template -> save) and an imported/backfilled
+    one end up fully populated automatically, without needing anyone to
+    click the separate "Populate from Item" button by hand. No-op for
+    anything that already exists (won't clobber merchant edits or an
+    explicit override, and won't re-add on every save).
     """
     if not listing.item:
         return
     tmpl = frappe.db.get_value(
-        "Item", listing.item, ["name", "image", "has_variants", "sh_shopify_product_id"], as_dict=True)
+        "Item", listing.item,
+        ["name", "image", "has_variants", "sh_shopify_product_id",
+         "sh_shopify_category", "sh_shopify_product_type"],
+        as_dict=True)
     if not tmpl:
         return
 
@@ -407,15 +441,23 @@ def fill_children_from_item(listing):
     if not listing.sh_shopify_product_id and tmpl.sh_shopify_product_id:
         listing.sh_shopify_product_id = tmpl.sh_shopify_product_id
 
+    if not listing.listing_category and tmpl.sh_shopify_category:
+        listing.listing_category = tmpl.sh_shopify_category
+    if not listing.listing_product_type and tmpl.sh_shopify_product_type:
+        listing.listing_product_type = tmpl.sh_shopify_product_type
+
     if not listing.images:
         for order, url in enumerate(_template_image_urls(tmpl)):
             listing.append("images", {"image": url, "source": "Original", "sort_order": order})
 
     if not listing.variants:
+        settings = frappe.get_single("Shopify Connector Settings")
         for v in _template_variant_items(tmpl.name, tmpl.has_variants):
             listing.append("variants", {
                 "item_variant": v.name, "is_enabled": 1,
                 "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
+                "variant_image": v.image or None,
+                "variant_price": _variant_price(v.name, settings),
             })
 
 
