@@ -143,13 +143,21 @@ def _upsert_order_unlocked(order, order_id):
     if order_currency != company_currency:
         ensure_customer_currency_account(customer_name, company, order_currency)
 
+    # Real Shopify order date, not the date this pull/webhook happens to run
+    # on -- confirmed live: a historical import always stamped every order
+    # with today's date regardless of when the customer actually ordered,
+    # making transaction_date meaningless for any date-range reporting on
+    # backfilled orders. created_at is only absent for a malformed payload;
+    # today is a safe fallback for that edge case only.
+    order_date = frappe.utils.getdate(order.get("created_at")) if order.get("created_at") else frappe.utils.today()
+
     so = frappe.new_doc("Sales Order")
     so.customer = customer_name
     so.company = company
     so.currency = order_currency
-    so.conversion_rate = get_order_exchange_rate(order_currency, company_currency, frappe.utils.today())
-    so.transaction_date = frappe.utils.today()
-    so.delivery_date = frappe.utils.today()
+    so.conversion_rate = get_order_exchange_rate(order_currency, company_currency, order_date)
+    so.transaction_date = order_date
+    so.delivery_date = order_date
     so.selling_price_list = settings.sh_selling_price_list or "Standard Selling"
     so.set_warehouse = warehouse
     if settings.sh_cost_center:
