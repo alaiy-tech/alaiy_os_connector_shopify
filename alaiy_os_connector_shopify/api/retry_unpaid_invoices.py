@@ -1,13 +1,12 @@
 """
-One-off: retry the local mark-as-paid Payment Entry for every submitted
-Sales Invoice created from an already-paid Shopify order that's still
-showing Unpaid.
+One-off backlog cleanup: retry the local mark-as-paid Payment Entry for
+every submitted Sales Invoice created from an already-paid Shopify order
+that's still showing Unpaid.
 
-Confirmed live: the underlying logic (_mark_invoice_paid) is correct and
-succeeds when called directly -- these are transient failures from a large
-bulk import (lock contention amid thousands of concurrent writes), not a
-code bug. Zero Error Log entries exist for the failures, ruling out the
-"no bank/cash account" and Payment Entry validation paths.
+This is a ONE-TIME sweep for invoices created BEFORE _mark_invoice_paid got
+its own automatic retry-once (see invoice.py) -- that fix now handles this
+at import time going forward, so this script should only ever need running
+once against the existing backlog, not on a recurring schedule.
 
 Only touches invoices linked to a Sales Order with a Shopify order id
 (sh_shopify_order_id set) -- leaves manually-created/non-Shopify invoices

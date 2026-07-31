@@ -74,10 +74,18 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillmen
         )
 
 
-def _mark_invoice_paid(si, settings):
+def _mark_invoice_paid(si, settings, _retried=False):
     """
     Full-payment Payment Entry against the invoice, so it reads Paid. Best-effort:
     the invoice still stands (as Unpaid) if payment booking fails.
+
+    Retries once on a transient DB error (deadlock/lock timeout) instead of
+    giving up immediately -- confirmed live: a large bulk historical import
+    (thousands of concurrent Sales Order/Invoice writes) left hundreds of
+    invoices genuinely Unpaid with ZERO error logged anywhere, meaning this
+    step silently never got a clean shot at the DB the first time. Calling
+    it again standalone afterward always worked -- this makes that retry
+    automatic at import time instead of needing a manual follow-up sweep.
     """
     try:
         from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
@@ -96,6 +104,16 @@ def _mark_invoice_paid(si, settings):
         pe.flags.ignore_permissions = True
         pe.insert()
         pe.submit()
+    except (frappe.QueryDeadlockError, frappe.QueryTimeoutError, frappe.TimestampMismatchError):
+        if _retried:
+            frappe.log_error(
+                title=f"Shopify: failed to mark invoice {si.name} paid",
+                message=frappe.get_traceback(),
+            )
+            return
+        frappe.db.rollback()
+        fresh = frappe.get_doc("Sales Invoice", si.name)
+        _mark_invoice_paid(fresh, settings, _retried=True)
     except Exception:
         frappe.log_error(
             title=f"Shopify: failed to mark invoice {si.name} paid",
