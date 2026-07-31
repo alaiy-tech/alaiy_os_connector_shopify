@@ -61,6 +61,12 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillmen
             if order_date:
                 si.posting_date = order_date
                 si.due_date = order_date
+                # ERPNext's validate_auto_set_posting_time() silently resets
+                # posting_date back to today unless this is explicitly set --
+                # confirmed live: without it, posting_date got reset to today
+                # while due_date stayed the real (past) order date, tripping
+                # "Due Date cannot be before Posting Date".
+                si.set_posting_time = 1
             si.update_stock = 0
             _fill_item_accounts(si, settings)
             _ensure_round_off_account(si.company)
