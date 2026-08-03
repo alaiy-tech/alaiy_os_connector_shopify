@@ -46,6 +46,33 @@ def _apply_variant_physical(doc, variant: dict):
         doc.weight_per_unit = flt(weight["value"])
         doc.weight_uom = _ensure_uom(_WEIGHT_UNIT_TO_UOM.get(weight.get("unit"), "Kg"))
 
+    # Read-only mirrors of Shopify-side variant settings. Stored because each one
+    # changes how a number from Shopify should be read: CONTINUE means stock can
+    # go negative there, tracked=0 means an inventory push to this variant does
+    # nothing at all, and requiresShipping=0 marks a digital product that should
+    # never appear in a delivery.
+    if variant.get("barcode"):
+        doc.sh_barcode = variant["barcode"]
+    if variant.get("inventoryPolicy"):
+        doc.sh_inventory_policy = variant["inventoryPolicy"]
+    if "tracked" in inv:
+        doc.sh_tracked = 1 if inv.get("tracked") else 0
+    if "requiresShipping" in inv:
+        doc.sh_requires_shipping = 1 if inv.get("requiresShipping") else 0
+    if "taxable" in variant:
+        doc.sh_taxable = 1 if variant.get("taxable") else 0
+
+    # These two already had custom fields and were PUSHED, but nothing ever read
+    # them back -- the same one-directional gap as the status field. Only filled
+    # when Shopify has a value, so a local edit is not wiped by a blank.
+    if inv.get("harmonizedSystemCode"):
+        doc.sh_harmonized_system_code = inv["harmonizedSystemCode"]
+    country_code = inv.get("countryCodeOfOrigin")
+    if country_code:
+        country = frappe.db.get_value("Country", {"code": str(country_code).lower()}, "name")
+        if country:
+            doc.sh_country_of_origin = country
+
 
 def _set_item_variant_cost(item_code: str, variant: dict, settings):
     cost = flt(((variant.get("inventoryItem") or {}).get("unitCost") or {}).get("amount") or 0)

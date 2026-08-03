@@ -44,7 +44,7 @@
    "fieldname": "sh_shopify_status",
    "fieldtype": "Select",
    "label": "Shopify Status",
-   "options": "Active\nDraft"
+   "options": "Active\nDraft\nArchived"
   },
   {
    "description": "Blank inherits Item.item_name at push time.",

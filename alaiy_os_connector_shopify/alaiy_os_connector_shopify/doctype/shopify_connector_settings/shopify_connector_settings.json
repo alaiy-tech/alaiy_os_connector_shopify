@@ -1,236 +1,292 @@
 {
-  "creation": "2026-07-02 00:00:00.000000",
-  "docstatus": 0,
-  "doctype": "DocType",
-  "editable_grid": 1,
-  "engine": "InnoDB",
-  "field_order": [
-    "is_enabled",
-    "sb_connection",
-    "sh_shop_url",
-    "sh_client_id",
-    "sh_client_secret",
-    "sh_access_token",
-    "sh_token_refreshed_at",
-    "sh_token_expires_at",
-    "sh_webhook_secret",
-    "sb_defaults",
-    "sh_company",
-    "sh_default_warehouse",
-    "sh_customer_group",
-    "sh_default_territory",
-    "sh_selling_price_list",
-    "sh_cost_center",
-    "sh_tax_account",
-    "sh_auto_sales_invoice",
-    "sh_invoice_trigger",
-    "sb_locations",
-    "sh_location_map",
-    "sb_sync",
-    "sh_order_status_filter",
-    "sh_inventory_sync_interval",
-    "sh_token_refresh_interval"
-  ],
-  "fields": [
-    {
-      "default": "0",
-      "fieldname": "is_enabled",
-      "fieldtype": "Check",
-      "label": "Enable Shopify"
-    },
-    {
-      "fieldname": "sb_connection",
-      "fieldtype": "Section Break",
-      "label": "API Connection"
-    },
-    {
-      "description": "Your Shopify store domain, e.g. myshop.myshopify.com",
-      "fieldname": "sh_shop_url",
-      "fieldtype": "Data",
-      "label": "Shop URL",
-      "reqd": 1
-    },
-    {
-      "description": "Client ID from your Shopify custom app (Developer Dashboard)",
-      "fieldname": "sh_client_id",
-      "fieldtype": "Data",
-      "label": "Client ID",
-      "reqd": 1
-    },
-    {
-      "description": "Client Secret from your Shopify custom app",
-      "fieldname": "sh_client_secret",
-      "fieldtype": "Password",
-      "label": "Client Secret",
-      "reqd": 1
-    },
-    {
-      "description": "Access token (auto-managed by Test Connection)",
-      "fieldname": "sh_access_token",
-      "fieldtype": "Password",
-      "hidden": 1,
-      "label": "Access Token"
-    },
-    {
-      "description": "When the current access token was last minted.",
-      "fieldname": "sh_token_refreshed_at",
-      "fieldtype": "Datetime",
-      "label": "Token Refreshed At",
-      "read_only": 1
-    },
-    {
-      "description": "When the current access token expires, per Shopify's own expires_in. Client credentials tokens are short-lived (observed ~24h) — the scheduled refresh below keeps this from ever being hit.",
-      "fieldname": "sh_token_expires_at",
-      "fieldtype": "Datetime",
-      "label": "Token Expires At",
-      "read_only": 1
-    },
-    {
-      "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions. Required: webhooks are rejected outright if this isn't set, rather than silently accepted unverified.",
-      "fieldname": "sh_webhook_secret",
-      "fieldtype": "Password",
-      "label": "Webhook Secret",
-      "reqd": 1
-    },
-    {
-      "fieldname": "sb_defaults",
-      "fieldtype": "Section Break",
-      "label": "Alaiy OS Defaults"
-    },
-    {
-      "fieldname": "sh_company",
-      "fieldtype": "Link",
-      "label": "Company",
-      "options": "Company",
-      "reqd": 1
-    },
-    {
-      "description": "Warehouse for fulfilling Shopify orders",
-      "fieldname": "sh_default_warehouse",
-      "fieldtype": "Link",
-      "label": "Default Warehouse",
-      "options": "Warehouse",
-      "reqd": 1
-    },
-    {
-      "fieldname": "sh_customer_group",
-      "fieldtype": "Link",
-      "label": "Default Customer Group",
-      "options": "Customer Group",
-      "reqd": 1
-    },
-    {
-      "description": "Territory assigned to Customers auto-created from Shopify orders. Falls back to any existing Territory if left blank -- there's no guarantee a site has one named 'All Territories'.",
-      "fieldname": "sh_default_territory",
-      "fieldtype": "Link",
-      "label": "Default Territory",
-      "options": "Territory"
-    },
-    {
-      "fieldname": "sh_selling_price_list",
-      "fieldtype": "Link",
-      "label": "Selling Price List",
-      "options": "Price List",
-      "reqd": 1
-    },
-    {
-      "fieldname": "sh_cost_center",
-      "fieldtype": "Link",
-      "label": "Cost Center",
-      "options": "Cost Center",
-      "reqd": 1
-    },
-    {
-      "description": "Account that tax lines pulled from Shopify orders (e.g. CGST, SGST, VAT) are booked against. Leave blank to auto-resolve/create a 'Shopify Tax' account under the company.",
-      "fieldname": "sh_tax_account",
-      "fieldtype": "Link",
-      "label": "Tax Account",
-      "options": "Account"
-    },
-    {
-      "default": "1",
-      "description": "Auto-create + submit a Sales Invoice for Shopify orders. Submitting that invoice in Alaiy OS also marks the order Paid on Shopify.",
-      "fieldname": "sh_auto_sales_invoice",
-      "fieldtype": "Check",
-      "label": "Auto-create Sales Invoice"
-    },
-    {
-      "default": "Paid and Fulfilled",
-      "depends_on": "sh_auto_sales_invoice",
-      "description": "When to generate the invoice. 'Paid and Fulfilled' (recommended) waits for both payment and shipment -- correct for Cash on Delivery, where payment lands only on delivery. 'Paid' invoices as soon as the order is paid.",
-      "fieldname": "sh_invoice_trigger",
-      "fieldtype": "Select",
-      "label": "Generate Invoice When",
-      "options": "Paid and Fulfilled\nPaid"
-    },
-    {
-      "fieldname": "sb_locations",
-      "fieldtype": "Section Break",
-      "label": "Inventory Locations"
-    },
-    {
-      "description": "Map Alaiy OS warehouses to Shopify locations for multi-location inventory sync. Run 'Sync Locations' first to load Shopify locations. Leave empty to push only the Default Warehouse to Shopify's primary location (single-location mode).",
-      "fieldname": "sh_location_map",
-      "fieldtype": "Table",
-      "label": "Warehouse to Location Map",
-      "options": "Shopify Location Map"
-    },
-    {
-      "fieldname": "sb_sync",
-      "fieldtype": "Section Break",
-      "label": "Sync Settings"
-    },
-    {
-      "default": "Any",
-      "description": "Filter for which orders to pull from Shopify",
-      "fieldname": "sh_order_status_filter",
-      "fieldtype": "Select",
-      "label": "Sync Orders With Status",
-      "options": "Open\nAny\nClosed\nCancelled",
-      "reqd": 1
-    },
-    {
-      "default": "30 min",
-      "description": "How often to push Alaiy OS stock levels to Shopify",
-      "fieldname": "sh_inventory_sync_interval",
-      "fieldtype": "Select",
-      "label": "Inventory Sync Interval",
-      "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
-      "reqd": 1
-    },
-    {
-      "default": "12 hours",
-      "description": "How often to proactively mint a fresh access token, so a sync never has to hit an expired-token error first. Shopify's client_credentials tokens for this app were observed to last ~24h.",
-      "fieldname": "sh_token_refresh_interval",
-      "fieldtype": "Select",
-      "label": "Token Refresh Interval",
-      "options": "Disabled\n6 hours\n12 hours\n24 hours",
-      "reqd": 1
-    }
-  ],
-  "is_single": 1,
-  "links": [],
-  "modified": "2026-07-02 00:00:00.000000",
-  "modified_by": "Administrator",
-  "module": "Alaiy OS Connector Shopify",
-  "name": "Shopify Connector Settings",
-  "owner": "Administrator",
-  "permissions": [
-    {
-      "create": 1,
-      "delete": 1,
-      "email": 1,
-      "export": 1,
-      "print": 1,
-      "read": 1,
-      "report": 1,
-      "role": "System Manager",
-      "share": 1,
-      "write": 1
-    }
-  ],
-  "sort_field": "modified",
-  "sort_order": "DESC",
-  "states": [],
-  "track_changes": 0
+ "creation": "2026-07-02 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "is_enabled",
+  "sb_connection",
+  "sh_shop_url",
+  "sh_client_id",
+  "sh_client_secret",
+  "sh_access_token",
+  "sh_token_refreshed_at",
+  "sh_token_expires_at",
+  "sh_webhook_secret",
+  "sb_defaults",
+  "sh_company",
+  "sh_default_warehouse",
+  "sh_customer_group",
+  "sh_default_territory",
+  "sh_selling_price_list",
+  "sh_cost_center",
+  "sh_tax_account",
+  "sh_auto_sales_invoice",
+  "sh_invoice_trigger",
+  "sb_locations",
+  "sh_location_map",
+  "sb_sync",
+  "sh_order_status_filter",
+  "sh_inventory_sync_interval",
+  "sh_token_refresh_interval",
+  "sb_product_status",
+  "sh_import_status_active",
+  "sh_import_status_draft",
+  "sh_import_status_archived",
+  "cb_product_status",
+  "sh_export_status_active",
+  "sh_export_status_draft",
+  "sh_export_status_archived"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "is_enabled",
+   "fieldtype": "Check",
+   "label": "Enable Shopify"
+  },
+  {
+   "fieldname": "sb_connection",
+   "fieldtype": "Section Break",
+   "label": "API Connection"
+  },
+  {
+   "description": "Your Shopify store domain, e.g. myshop.myshopify.com",
+   "fieldname": "sh_shop_url",
+   "fieldtype": "Data",
+   "label": "Shop URL",
+   "reqd": 1
+  },
+  {
+   "description": "Client ID from your Shopify custom app (Developer Dashboard)",
+   "fieldname": "sh_client_id",
+   "fieldtype": "Data",
+   "label": "Client ID",
+   "reqd": 1
+  },
+  {
+   "description": "Client Secret from your Shopify custom app",
+   "fieldname": "sh_client_secret",
+   "fieldtype": "Password",
+   "label": "Client Secret",
+   "reqd": 1
+  },
+  {
+   "description": "Access token (auto-managed by Test Connection)",
+   "fieldname": "sh_access_token",
+   "fieldtype": "Password",
+   "hidden": 1,
+   "label": "Access Token"
+  },
+  {
+   "description": "When the current access token was last minted.",
+   "fieldname": "sh_token_refreshed_at",
+   "fieldtype": "Datetime",
+   "label": "Token Refreshed At",
+   "read_only": 1
+  },
+  {
+   "description": "When the current access token expires, per Shopify's own expires_in. Client credentials tokens are short-lived (observed ~24h) — the scheduled refresh below keeps this from ever being hit.",
+   "fieldname": "sh_token_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Token Expires At",
+   "read_only": 1
+  },
+  {
+   "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions. Required: webhooks are rejected outright if this isn't set, rather than silently accepted unverified.",
+   "fieldname": "sh_webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sb_defaults",
+   "fieldtype": "Section Break",
+   "label": "Alaiy OS Defaults"
+  },
+  {
+   "fieldname": "sh_company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "description": "Warehouse for fulfilling Shopify orders",
+   "fieldname": "sh_default_warehouse",
+   "fieldtype": "Link",
+   "label": "Default Warehouse",
+   "options": "Warehouse",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sh_customer_group",
+   "fieldtype": "Link",
+   "label": "Default Customer Group",
+   "options": "Customer Group",
+   "reqd": 1
+  },
+  {
+   "description": "Territory assigned to Customers auto-created from Shopify orders. Falls back to any existing Territory if left blank -- there's no guarantee a site has one named 'All Territories'.",
+   "fieldname": "sh_default_territory",
+   "fieldtype": "Link",
+   "label": "Default Territory",
+   "options": "Territory"
+  },
+  {
+   "fieldname": "sh_selling_price_list",
+   "fieldtype": "Link",
+   "label": "Selling Price List",
+   "options": "Price List",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sh_cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center",
+   "reqd": 1
+  },
+  {
+   "description": "Account that tax lines pulled from Shopify orders (e.g. CGST, SGST, VAT) are booked against. Leave blank to auto-resolve/create a 'Shopify Tax' account under the company.",
+   "fieldname": "sh_tax_account",
+   "fieldtype": "Link",
+   "label": "Tax Account",
+   "options": "Account"
+  },
+  {
+   "default": "1",
+   "description": "Auto-create + submit a Sales Invoice for Shopify orders. Submitting that invoice in Alaiy OS also marks the order Paid on Shopify.",
+   "fieldname": "sh_auto_sales_invoice",
+   "fieldtype": "Check",
+   "label": "Auto-create Sales Invoice"
+  },
+  {
+   "default": "Paid and Fulfilled",
+   "depends_on": "sh_auto_sales_invoice",
+   "description": "When to generate the invoice. 'Paid and Fulfilled' (recommended) waits for both payment and shipment -- correct for Cash on Delivery, where payment lands only on delivery. 'Paid' invoices as soon as the order is paid.",
+   "fieldname": "sh_invoice_trigger",
+   "fieldtype": "Select",
+   "label": "Generate Invoice When",
+   "options": "Paid and Fulfilled\nPaid"
+  },
+  {
+   "fieldname": "sb_locations",
+   "fieldtype": "Section Break",
+   "label": "Inventory Locations"
+  },
+  {
+   "description": "Map Alaiy OS warehouses to Shopify locations for multi-location inventory sync. Run 'Sync Locations' first to load Shopify locations. Leave empty to push only the Default Warehouse to Shopify's primary location (single-location mode).",
+   "fieldname": "sh_location_map",
+   "fieldtype": "Table",
+   "label": "Warehouse to Location Map",
+   "options": "Shopify Location Map"
+  },
+  {
+   "fieldname": "sb_sync",
+   "fieldtype": "Section Break",
+   "label": "Sync Settings"
+  },
+  {
+   "default": "Any",
+   "description": "Filter for which orders to pull from Shopify",
+   "fieldname": "sh_order_status_filter",
+   "fieldtype": "Select",
+   "label": "Sync Orders With Status",
+   "options": "Open\nAny\nClosed\nCancelled",
+   "reqd": 1
+  },
+  {
+   "default": "30 min",
+   "description": "How often to push Alaiy OS stock levels to Shopify",
+   "fieldname": "sh_inventory_sync_interval",
+   "fieldtype": "Select",
+   "label": "Inventory Sync Interval",
+   "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
+   "reqd": 1
+  },
+  {
+   "default": "12 hours",
+   "description": "How often to proactively mint a fresh access token, so a sync never has to hit an expired-token error first. Shopify's client_credentials tokens for this app were observed to last ~24h.",
+   "fieldname": "sh_token_refresh_interval",
+   "fieldtype": "Select",
+   "label": "Token Refresh Interval",
+   "options": "Disabled\n6 hours\n12 hours\n24 hours",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sb_product_status",
+   "fieldtype": "Section Break",
+   "label": "Product Status Filter"
+  },
+  {
+   "default": "1",
+   "description": "Unticking a status excludes it from Import Products entirely -- those products are counted as skipped, not created.",
+   "fieldname": "sh_import_status_active",
+   "fieldtype": "Check",
+   "label": "Import Active products"
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_import_status_draft",
+   "fieldtype": "Check",
+   "label": "Import Draft products"
+  },
+  {
+   "default": "1",
+   "description": "Archived products are hidden from Shopify's sales channels but keep their order history.",
+   "fieldname": "sh_import_status_archived",
+   "fieldtype": "Check",
+   "label": "Import Archived products"
+  },
+  {
+   "fieldname": "cb_product_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_export_status_active",
+   "fieldtype": "Check",
+   "label": "Export Active products"
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_export_status_draft",
+   "fieldtype": "Check",
+   "label": "Export Draft products"
+  },
+  {
+   "default": "1",
+   "description": "Pushing an archived product unarchives it to Draft for the update, then archives it again.",
+   "fieldname": "sh_export_status_archived",
+   "fieldtype": "Check",
+   "label": "Export Archived products"
+  }
+ ],
+ "is_single": 1,
+ "links": [],
+ "modified": "2026-07-02 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Alaiy OS Connector Shopify",
+ "name": "Shopify Connector Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
 }
