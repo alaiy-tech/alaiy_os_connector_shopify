@@ -40,15 +40,17 @@ from alaiy_os_connector_shopify.shopify.product import listing as listing_resolv
 LOCK_TIMEOUT_SECONDS = 30
 
 
-def push_item(item_code: str):
+def push_item(item_code: str, allowed_statuses=None):
     item = frappe.get_doc("Item", item_code)
     # The Shopify Product Listing's is_enabled is the sole live gate now
     # (replaces Item.sync_to_shopify) -- no enabled Listing, nothing pushes.
     if not listing_resolver.is_enabled(item):
         return
 
+    # allowed_statuses is the dashboard's per-run choice; None means fall back to
+    # the settings checkboxes, which is what a doc_event-driven push does.
     listing = listing_resolver.get_listing(item.variant_of or item.name)
-    if listing and not status_map.export_allows(listing.sh_shopify_status):
+    if listing and not status_map.export_allows(listing.sh_shopify_status, allowed_statuses):
         return
 
     if item.variant_of:
@@ -98,8 +100,9 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
         log.save(ignore_permissions=True)
         frappe.db.commit()
 
-        processed = created = failed = 0
+        processed = created = failed = skipped_status = 0
         cancelled = False
+        allowed_statuses = status_map.parse_statuses(statuses)
 
         for i, item_code in enumerate(candidates):
             if i % 10 == 0:
@@ -119,6 +122,14 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
                 log.save(ignore_permissions=True)
                 frappe.db.commit()
             processed += 1
+            # Checked before the Listing is created and enabled: enabling one for
+            # a product this run is not going to push would leave it enabled with
+            # nothing sent, which reads as a failed push rather than a skip.
+            if allowed_statuses is not None:
+                current = frappe.db.get_value("Item", item_code, "sh_shopify_status")
+                if not status_map.export_allows(current, allowed_statuses):
+                    skipped_status += 1
+                    continue
             try:
                 # Give each candidate an enabled Listing (all variant rows on)
                 # and push it -- the Listing is the enable gate now, so a bulk
@@ -131,7 +142,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
                     listing.is_enabled = 1
                     listing.flags.from_shopify_sync = True  # push explicitly below, not via echo
                     listing.save(ignore_permissions=True)
-                push_item(item_code)
+                push_item(item_code, allowed_statuses)
                 # A real Shopify id landing on this Item is the only
                 # reliable signal the push actually created something --
                 # push_item silently no-ops on an unchanged/already-synced
@@ -155,6 +166,8 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
         log.items_failed = failed
         log.finished_at = frappe.utils.now_datetime()
         summary = f"Exported {created} products to Shopify"
+        if skipped_status:
+            summary += f"; {skipped_status} skipped by the status filter"
         if failed:
             summary += f"; {failed} failed"
         if cancelled:
