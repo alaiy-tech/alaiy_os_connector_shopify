@@ -8,7 +8,7 @@ One-directional stock push: Alaiy OS bin quantities → Shopify inventory levels
 
 | DocType | Kind | Fields |
 |---|---|---|
-| `Shopify Location` | Cache (autoname hash) | `location_name`, `is_active`, `sh_location_id`, `sh_location_gid`, `last_synced`. |
+| `Shopify Location` | Cache (autoname hash) | `location_name`, `is_active`, `sh_location_id`, `sh_location_gid`, `fulfillment_service_name`, `fulfillment_service_handle`, `fulfillment_service_type`, `sh_fulfillment_service_gid`, `last_synced`. |
 | `Shopify Location Map` | Child table on Settings (`sh_location_map`) | `warehouse` (Link Warehouse), `shopify_location` (Link Shopify Location). |
 
 ---
@@ -16,6 +16,24 @@ One-directional stock push: Alaiy OS bin quantities → Shopify inventory levels
 ## Sync locations
 
 `sync_shopify_locations()` (dashboard → **Sync Locations**, or `api.sync.refresh_shopify_locations`) fetches every Shopify location (`_LOCATIONS_QUERY`, cursor-paginated at 250/page via `pageInfo.hasNextPage`/`endCursor` — a store with more than 50 locations used to have the rest silently dropped by a flat `first: 50` fetch) and caches it as a `Shopify Location` doc — the list the warehouse→location map picks from. Writes a `Shopify Sync Log` (sync_type `locations`).
+
+### Fulfillment services
+
+The same run also reads `shop.fulfillmentServices` (`_FULFILLMENT_SERVICES_QUERY`) and stores each location's service name, handle and type on its `Shopify Location`. A location's identity does not say who ships from it — a third-party warehouse (`type` `GATEWAY`) has to be routed differently from one the merchant packs (`MANUAL`), and Shopify exposes that only here.
+
+Three things about this that are not obvious from the schema:
+
+- **`fulfillmentServices` hangs off `shop`, not off `Location`**, and each service names the one location it serves. So the mapping is built service-first (`_fulfillment_services_by_location`) and looked up per location, not fetched per location.
+- **No pagination.** Shopify returns the shop's services as a plain list, not a connection — there is no cursor to follow.
+- **Failure is not emptiness.** The helper returns `(mapping, available)`. On a failed query — missing scope, older API version, network — `available` is `False` and the sync leaves each location's stored service *untouched*, because blanking it would erase routing data that is still correct. When the query succeeds and a location genuinely has no service, the fields are cleared, so a service detached on Shopify stops being trusted here.
+
+If two services ever name the same location, the first is kept and the second is noted in the sync log rather than silently overwriting it.
+
+`check_fulfillment_service_mapping()` covers the mapping rules with no API or DB access:
+
+```
+bench --site <site> execute alaiy_os_connector_shopify.shopify.inventory_sync.check_fulfillment_service_mapping
+```
 
 ---
 
