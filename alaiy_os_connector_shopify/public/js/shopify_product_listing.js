@@ -16,6 +16,7 @@ frappe.ui.form.on("Shopify Product Listing", {
 
     refresh(frm) {
         add_populate_button(frm);
+        show_effective_values(frm);
     },
 
     item(frm) {
@@ -86,5 +87,51 @@ function add_populate_button(frm) {
                 frappe.show_alert({ message: __("Pulled from Item"), indicator: "green" });
             },
         });
+    });
+}
+
+
+// A blank override field reads as "nothing will be sent" when it actually means
+// "inherited from the Item". Show the resolved value under each field instead of
+// writing it in: filling the field would freeze the value and stop it tracking a
+// later change to the Item's own title or description.
+function show_effective_values(frm) {
+    if (frm.is_new() || !frm.doc.item) {
+        return;
+    }
+    frappe.call({
+        method: "alaiy_os_connector_shopify.shopify.product.listing.effective_values",
+        args: { listing_name: frm.doc.name },
+        callback(r) {
+            const eff = r.message;
+            if (!eff) {
+                return;
+            }
+            const pairs = [
+                ["listing_title", eff.title],
+                ["listing_description", eff.description],
+                ["listing_product_type", eff.product_type],
+                ["listing_category", eff.category],
+                ["listing_seo_title", eff.seo_title],
+                ["listing_seo_description", eff.seo_description],
+            ];
+            pairs.forEach(([fieldname, value]) => {
+                const field = frm.get_field(fieldname);
+                if (!field || !value) {
+                    return;
+                }
+                const inherited = !frm.doc[fieldname];
+                const shown = frappe.utils.escape_html(String(value)).slice(0, 300);
+                field.set_new_description(
+                    inherited
+                        ? `<b>Inherited, this is what will be sent:</b> ${shown}`
+                        : `<b>Overridden.</b> Clear the field to inherit instead.`
+                );
+            });
+            frm.dashboard.clear_headline();
+            frm.dashboard.set_headline(
+                `Push would send ${eff.image_count} image(s).`
+            );
+        },
     });
 }
