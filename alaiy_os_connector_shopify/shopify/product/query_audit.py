@@ -140,3 +140,48 @@ def run(show_descriptions=False):
     print("  A product exceeding one of these caps loses the remainder with no error.")
 
     return summary
+
+
+def probe():
+    """Which fields exist on the types the product query uses.
+
+    Introspects the live schema and prints each type's field names, so a candidate
+    can be checked before it goes into the query. GraphQL validates a document as a
+    whole, so ONE bad field name fails the entire product import rather than
+    degrading -- confirmed live, `giftCard` on Product does not exist in this API
+    version and took the whole query down with it.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.query_audit.probe
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import (
+        ShopifyGraphQLClient, SHOPIFY_API_VERSION,
+    )
+    from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
+
+    client = ShopifyGraphQLClient()
+    print(f"[probe] API version {SHOPIFY_API_VERSION}\n")
+
+    out = {}
+    for type_name in _TYPES:
+        data = client.execute(_INTROSPECT, {"name": type_name})
+        fields = (data.get("__type") or {}).get("fields") or []
+        names = sorted(f["name"] for f in fields)
+        out[type_name] = names
+        print(f"=== {type_name} -- {len(names)} field(s)")
+        for i in range(0, len(names), 4):
+            print("   " + "".join(f"{n:<32}" for n in names[i:i + 4]).rstrip())
+        print()
+
+    # The only check that actually matters: does the query we ship validate? The
+    # field lists above are advisory, since a name can exist on one type and not
+    # the one it is selected under.
+    print("[probe] running the real product query...")
+    try:
+        client.execute(_PRODUCTS_QUERY, {"after": None})
+        print("[probe] query is valid against this API version")
+        out["query_valid"] = True
+    except Exception as exc:
+        print(f"[probe] QUERY IS INVALID -- the product import would fail:\n  {exc}")
+        out["query_valid"] = False
+    return out

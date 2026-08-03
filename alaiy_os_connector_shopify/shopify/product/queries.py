@@ -22,7 +22,6 @@ query PullProducts($after: String) {
         publishedAt
         createdAt
         updatedAt
-        giftCard
         hasOnlyDefaultVariant
         tracksInventory
         totalInventory
