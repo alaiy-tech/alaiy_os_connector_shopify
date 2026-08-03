@@ -26,6 +26,11 @@ alaiy_os_sidebar_log_items = [
 
 # Extra rows under this connector's own top-level sidebar section (Dashboard
 # is always added automatically by alaiy_os).
+#
+# Listings points at a DocType this app does not ship yet. alaiy_os drops any row
+# whose target is missing (_connector_extra_sidebar_items), so the row stays
+# hidden until that DocType arrives and then appears on the next migrate with no
+# change here.
 alaiy_os_sidebar_connector_items = [
     {
         "connector_id": "shopify",
@@ -33,7 +38,35 @@ alaiy_os_sidebar_connector_items = [
         "link_to": "Shopify Product Listing",
         "label": "Listings",
         "icon": "list",
-    }
+    },
+    {
+        "connector_id": "shopify",
+        "link_type": "DocType",
+        "link_to": "Shopify Category",
+        "label": "Categories",
+        "icon": "layers",
+    },
+    {
+        "connector_id": "shopify",
+        "link_type": "DocType",
+        "link_to": "Shopify Collection",
+        "label": "Collections",
+        "icon": "folder",
+    },
+    {
+        "connector_id": "shopify",
+        "link_type": "DocType",
+        "link_to": "Shopify Location",
+        "label": "Locations",
+        "icon": "map-pin",
+    },
+    {
+        "connector_id": "shopify",
+        "link_type": "DocType",
+        "link_to": "Shopify Tag",
+        "label": "Tags",
+        "icon": "tag",
+    },
 ]
 
 scheduler_events = {
