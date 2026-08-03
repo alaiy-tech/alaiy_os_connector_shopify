@@ -57,6 +57,10 @@ def check_status_mapping():
     # The case this whole module exists for: an unmodelled status must NOT come
     # back as Active.
     assert to_local("UNLISTED") is None
+    # ...and it must not be excluded from import either. No checkbox covers it,
+    # so nobody chose to skip it; dropping the product would be silent data loss.
+    assert import_allows("UNLISTED") is True
+    assert import_allows("UNLISTED", {"Active"}) is True
     assert to_local("") is None
     assert to_local(None) is None
 
@@ -94,9 +98,11 @@ def _selected(field_map, local_status):
 
     field = field_map.get(local_status)
     if not field:
-        # A status we do not model has no checkbox, so there is nothing to
-        # consent to. Excluded rather than assumed wanted.
-        return False
+        # Unreachable by design -- import_allows returns early for an unmodelled
+        # status and export_allows substitutes DEFAULT_LOCAL for a blank one. Kept
+        # as a guard, and permissive: a status with no checkbox is one nobody
+        # chose to exclude.
+        return True
     value = frappe.db.get_single_value("Shopify Connector Settings", field)
     # A field added to the settings after the single row already existed reads
     # back as None, not its declared default -- Frappe only applies a default
@@ -128,10 +134,17 @@ def import_allows(shopify_status, allowed=None):
     allowed -- an explicit set from parse_statuses (a per-run choice on the
     dashboard). When given it wins outright; the settings checkboxes are the
     default for a scheduled run, not an extra gate on top of a deliberate one.
+
+    A status we do not model is IMPORTED, not skipped. There is no checkbox for
+    it, so no one has chosen to exclude it, and dropping a product because we do
+    not recognise a field value is worse than importing it with its status field
+    left unset -- which _apply_product_meta logs. A real store returned UNLISTED
+    on 39 products; excluding those would have been a silent data loss dressed up
+    as a filter.
     """
     local = to_local(shopify_status)
     if local is None:
-        return False
+        return True
     if allowed is not None:
         return local in allowed
     return _selected(_IMPORT_FIELD, local)
