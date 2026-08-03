@@ -272,7 +272,12 @@ def _shopify_node_fingerprint(node: dict) -> str:
     ]
     canonical = {
         "title": node.get("title"),
-        "descriptionHtml": node.get("descriptionHtml"),
+        # Key deliberately still "bodyHtml" while the value comes from
+        # descriptionHtml. This dict is only hash input, and renaming a key
+        # changes every product's fingerprint -- which would make the next import
+        # treat the entire catalogue as changed and re-update thousands of
+        # unchanged products for nothing. Same content, same hash.
+        "bodyHtml": node.get("descriptionHtml"),
         "vendor": node.get("vendor"),
         "productType": node.get("productType"),
         "status": node.get("status"),
