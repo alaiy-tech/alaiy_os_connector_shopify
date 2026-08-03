@@ -29,9 +29,11 @@ _INTROSPECT = """
 query IntrospectType($name: String!) {
   __type(name: $name) {
     name
-    fields(includeDeprecated: false) {
+    fields(includeDeprecated: true) {
       name
       description
+      isDeprecated
+      deprecationReason
       type {
         kind
         name
@@ -172,6 +174,23 @@ def probe():
         for i in range(0, len(names), 4):
             print("   " + "".join(f"{n:<32}" for n in names[i:i + 4]).rstrip())
         print()
+
+    # Deprecated-but-still-working fields are the real hazard: they pass
+    # validation today and vanish on an API bump, taking the whole query with
+    # them. Anything we select that is already deprecated is borrowed time.
+    print("[probe] deprecated fields our query still selects:")
+    selected = _selected_field_names(_PRODUCTS_QUERY)
+    found_any = False
+    for type_name in _TYPES:
+        data = client.execute(_INTROSPECT, {"name": type_name})
+        for field in ((data.get("__type") or {}).get("fields") or []):
+            if field.get("isDeprecated") and field["name"] in selected:
+                found_any = True
+                reason = (field.get("deprecationReason") or "").splitlines()[0][:100]
+                print(f"    {type_name}.{field['name']}: {reason}")
+    if not found_any:
+        print("    none")
+    print()
 
     # The only check that actually matters: does the query we ship validate? The
     # field lists above are advisory, since a name can exist on one type and not
