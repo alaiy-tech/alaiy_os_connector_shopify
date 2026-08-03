@@ -21,7 +21,7 @@ All under module `Alaiy OS Connector Shopify`. Five are child tables.
 | 9 | `Shopify Category` | | 6 | tree (`is_tree`, nested set) |
 | 10 | `Shopify Collection` | | 13 | `hash` |
 | 11 | `Shopify Tag` | | 1 | `field:tag_name` |
-| 12 | `Shopify Location` | | 5 | `hash` |
+| 12 | `Shopify Location` | | 9 | `hash` |
 | 13 | `Shopify Location Map` | yes | 2 | — |
 | 14 | `Item Shopify Tag` | yes | 1 | — |
 | 15 | `Item Shopify Collection` | yes | 1 | — |

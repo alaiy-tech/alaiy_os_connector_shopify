@@ -23,6 +23,73 @@ query GetLocations($after: String) {
 }
 """
 
+# fulfillmentServices hangs off shop, not off Location, and each service names the
+# one location it serves -- so the mapping has to be built service-first and then
+# looked up per location. There is no cursor here: Shopify returns the shop's
+# services as a plain list, not a connection.
+_FULFILLMENT_SERVICES_QUERY = """
+query GetFulfillmentServices {
+  shop {
+    fulfillmentServices {
+      id
+      serviceName
+      handle
+      type
+      location {
+        id
+        legacyResourceId
+      }
+    }
+  }
+}
+"""
+
+
+def _fulfillment_services_by_location(client, log=None):
+    """({location legacyResourceId: service dict}, available) for the shop's services.
+
+    A location's identity does not say who ships from it: a third-party warehouse
+    (type GATEWAY) has to be routed differently from one the merchant packs
+    (MANUAL). Shopify exposes that only through shop.fulfillmentServices.
+
+    Best-effort on purpose -- a store whose API user lacks the scope for this
+    field, or an older API version, must not break location caching, which is
+    what the warehouse map depends on.
+
+    The second return value separates "asked and the shop has none" from "could
+    not ask at all". The caller must not blank a location's stored service on the
+    second: a transient scope or network failure would otherwise erase routing
+    data that is still correct.
+    """
+    try:
+        data = client.execute(_FULFILLMENT_SERVICES_QUERY, {})
+    except Exception:
+        frappe.log_error(
+            title="Shopify: could not read shop.fulfillmentServices",
+            message=frappe.get_traceback(),
+        )
+        if log:
+            _append_log(log, "fulfillment services unavailable; locations cached without them")
+        return {}, False
+
+    by_location = {}
+    for service in ((data.get("shop") or {}).get("fulfillmentServices") or []):
+        location = service.get("location") or {}
+        legacy = str(location.get("legacyResourceId") or "")
+        if not legacy:
+            continue
+        # Shopify gives a service exactly one location, but nothing in the schema
+        # forbids two services naming the same one. Keep the first and say so
+        # rather than letting the last silently win.
+        if legacy in by_location:
+            if log:
+                _append_log(log, f"location {legacy} has more than one fulfillment service; "
+                                 f"keeping {by_location[legacy].get('serviceName')!r}, "
+                                 f"ignoring {service.get('serviceName')!r}")
+            continue
+        by_location[legacy] = service
+    return by_location, True
+
 
 @frappe.whitelist()
 def sync_shopify_locations(trigger="manual", log_name=None):
@@ -39,6 +106,7 @@ def sync_shopify_locations(trigger="manual", log_name=None):
 
     try:
         client = ShopifyGraphQLClient()
+        services, services_available = _fulfillment_services_by_location(client, log)
         has_next_page = True
         after_cursor = None
         total = 0
@@ -59,6 +127,18 @@ def sync_shopify_locations(trigger="manual", log_name=None):
                     "sh_location_gid": loc.get("id") or "",
                     "last_synced": now_datetime(),
                 }
+                if services_available:
+                    # Blanks are written too: a service detached on Shopify has to
+                    # clear here, or routing keeps trusting one that no longer
+                    # ships from this location. Skipped entirely when the services
+                    # query failed, so a transient error never erases good data.
+                    service = services.get(legacy) or {}
+                    values.update({
+                        "fulfillment_service_name": service.get("serviceName") or "",
+                        "fulfillment_service_handle": service.get("handle") or "",
+                        "fulfillment_service_type": service.get("type") or "",
+                        "sh_fulfillment_service_gid": service.get("id") or "",
+                    })
                 name = frappe.db.get_value("Shopify Location", {"sh_location_id": legacy}, "name")
                 if name:
                     doc = frappe.get_doc("Shopify Location", name)
@@ -389,3 +469,58 @@ def _get_inventory_item_state(client, variant_id, location_id):
     return inventory_item_id, (current_qty or 0)
 
 
+
+
+def check_fulfillment_service_mapping():
+    """Self-check for the fulfillment-service mapping. No API calls, no DB access.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.inventory_sync.check_fulfillment_service_mapping
+    """
+    class _Client:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def execute(self, query, variables=None):
+            if isinstance(self.payload, Exception):
+                raise self.payload
+            return self.payload
+
+    def services(*entries):
+        return {"shop": {"fulfillmentServices": list(entries)}}
+
+    manual = {"id": "gid://shopify/FulfillmentService/1", "serviceName": "Manual",
+              "handle": "manual", "type": "MANUAL",
+              "location": {"id": "gid://shopify/Location/9", "legacyResourceId": "9"}}
+    gateway = {"id": "gid://shopify/FulfillmentService/2", "serviceName": "ShipBob",
+               "handle": "shipbob", "type": "GATEWAY",
+               "location": {"id": "gid://shopify/Location/8", "legacyResourceId": "8"}}
+
+    mapped, available = _fulfillment_services_by_location(_Client(services(manual, gateway)))
+    assert available
+    assert set(mapped) == {"9", "8"}, mapped
+    assert mapped["8"]["type"] == "GATEWAY"
+
+    # A shop with no services is not the same as a failed query: the first lets
+    # the caller clear stale values, the second must leave them untouched.
+    mapped, available = _fulfillment_services_by_location(_Client(services()))
+    assert mapped == {} and available is True
+    mapped, available = _fulfillment_services_by_location(_Client(RuntimeError("403")))
+    assert mapped == {} and available is False
+
+    # A service with no location cannot be attached to one.
+    orphan = dict(manual, location=None)
+    mapped, _ = _fulfillment_services_by_location(_Client(services(orphan)))
+    assert mapped == {}, mapped
+
+    # Two services on one location: first wins, second is dropped, not overwritten.
+    second = dict(gateway, serviceName="Other",
+                  location={"id": "gid://shopify/Location/9", "legacyResourceId": "9"})
+    mapped, _ = _fulfillment_services_by_location(_Client(services(manual, second)))
+    assert mapped["9"]["serviceName"] == "Manual", mapped["9"]
+
+    # A missing shop key must not raise.
+    mapped, available = _fulfillment_services_by_location(_Client({}))
+    assert mapped == {} and available is True
+
+    print("fulfillment service mapping self-check passed")

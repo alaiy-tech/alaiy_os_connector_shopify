@@ -10,6 +10,10 @@
     "is_active",
     "sh_location_id",
     "sh_location_gid",
+    "fulfillment_service_name",
+    "fulfillment_service_handle",
+    "fulfillment_service_type",
+    "sh_fulfillment_service_gid",
     "last_synced"
   ],
   "fields": [
@@ -39,6 +43,34 @@
       "fieldname": "sh_location_gid",
       "fieldtype": "Data",
       "label": "Shopify Location GID",
+      "read_only": 1
+    },
+    {
+      "description": "Who fulfills orders assigned to this location. Blank means Shopify reports no fulfillment service for it.",
+      "fieldname": "fulfillment_service_name",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Fulfillment Service",
+      "read_only": 1
+    },
+    {
+      "fieldname": "fulfillment_service_handle",
+      "fieldtype": "Data",
+      "label": "Fulfillment Service Handle",
+      "read_only": 1
+    },
+    {
+      "description": "MANUAL means the merchant packs orders here themselves; GATEWAY means a third party does.",
+      "fieldname": "fulfillment_service_type",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Fulfillment Service Type",
+      "read_only": 1
+    },
+    {
+      "fieldname": "sh_fulfillment_service_gid",
+      "fieldtype": "Data",
+      "label": "Fulfillment Service GID",
       "read_only": 1
     },
     {
