@@ -33,7 +33,35 @@ alaiy_os_sidebar_connector_items = [
         "link_to": "Shopify Product Listing",
         "label": "Listings",
         "icon": "list",
-    }
+    },
+    {
+        "connector_id": "shopify",
+        "link_type": "DocType",
+        "link_to": "Shopify Category",
+        "label": "Categories",
+        "icon": "layers",
+    },
+    {
+        "connector_id": "shopify",
+        "link_type": "DocType",
+        "link_to": "Shopify Collection",
+        "label": "Collections",
+        "icon": "folder",
+    },
+    {
+        "connector_id": "shopify",
+        "link_type": "DocType",
+        "link_to": "Shopify Location",
+        "label": "Locations",
+        "icon": "map-pin",
+    },
+    {
+        "connector_id": "shopify",
+        "link_type": "DocType",
+        "link_to": "Shopify Tag",
+        "label": "Tags",
+        "icon": "tag",
+    },
 ]
 
 scheduler_events = {
