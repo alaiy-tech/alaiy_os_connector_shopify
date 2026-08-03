@@ -57,7 +57,7 @@ def push_item(item_code: str):
         _push_product(item)
 
 
-def run_bulk_export_to_shopify(trigger="manual", log_name=None):
+def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
     """
     One-off bulk push of every local (not-yet-linked) product to Shopify --
     for manually-created Alaiy OS Items that predate any Shopify connection,

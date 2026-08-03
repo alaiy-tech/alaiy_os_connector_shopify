@@ -106,14 +106,40 @@ def _selected(field_map, local_status):
     return True if value is None else bool(value)
 
 
-def import_allows(shopify_status):
-    """True when a product with this Shopify status should be imported."""
+def parse_statuses(statuses):
+    """A caller-supplied status list -> set of local values, or None.
+
+    Accepts a list or a comma-separated string, since a value arriving from a
+    desk dialog is JSON-encoded by the time it reaches Python. None or empty
+    means "no explicit choice", and the settings checkboxes decide instead.
+    """
+    if statuses is None or statuses == "":
+        return None
+    if isinstance(statuses, str):
+        statuses = [p for p in statuses.replace("[", "").replace("]", "")
+                    .replace('"', "").split(",") if p.strip()]
+    chosen = {to_local(s) or str(s).strip().title() for s in statuses}
+    return {c for c in chosen if c in LOCAL_VALUES} or None
+
+
+def import_allows(shopify_status, allowed=None):
+    """True when a product with this Shopify status should be imported.
+
+    allowed -- an explicit set from parse_statuses (a per-run choice on the
+    dashboard). When given it wins outright; the settings checkboxes are the
+    default for a scheduled run, not an extra gate on top of a deliberate one.
+    """
     local = to_local(shopify_status)
     if local is None:
         return False
+    if allowed is not None:
+        return local in allowed
     return _selected(_IMPORT_FIELD, local)
 
 
-def export_allows(local_status):
+def export_allows(local_status, allowed=None):
     """True when a Listing holding this local status should be pushed."""
-    return _selected(_EXPORT_FIELD, (local_status or "").strip() or DEFAULT_LOCAL)
+    local = (local_status or "").strip() or DEFAULT_LOCAL
+    if allowed is not None:
+        return local in allowed
+    return _selected(_EXPORT_FIELD, local)

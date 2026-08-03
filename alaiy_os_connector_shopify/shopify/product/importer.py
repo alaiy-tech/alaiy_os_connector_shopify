@@ -38,7 +38,8 @@ from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _se
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 
-def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None):
+def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
+                            statuses=None):
     """
     Import products from Shopify into Alaiy OS. First run (no product ever
     imported yet) wipes first as a safety net against duplicates, then
@@ -59,6 +60,8 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
     Returns:
         Log name (for tracking progress)
     """
+    allowed_statuses = status_map.parse_statuses(statuses)
+
     if wipe_existing is None:
         wipe_existing = not frappe.db.exists("Shopify Synced Entity", {"entity_type": "product"})
 
@@ -111,7 +114,7 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
             pages += 1
             for node in page_nodes:
                 processed += 1
-                if not status_map.import_allows(node.get("status")):
+                if not status_map.import_allows(node.get("status"), allowed_statuses):
                     skipped += 1
                     reason = f"status {node.get('status')} not selected for import"
                     skip_reason_counts[reason] += 1
