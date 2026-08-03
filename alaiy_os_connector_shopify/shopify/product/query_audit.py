@@ -204,3 +204,61 @@ def probe():
         print(f"[probe] QUERY IS INVALID -- the product import would fail:\n  {exc}")
         out["query_valid"] = False
     return out
+
+
+def sample(count=3):
+    """Print the newly-added fields for the first few products, with real values.
+
+    Read-only. Confirms the query returns what the mapping code expects -- a field
+    can be valid and still come back null for every product, which is
+    indistinguishable from a mapping bug when looking only at the Item afterwards.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.query_audit.sample
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
+
+    data = ShopifyGraphQLClient().execute(_PRODUCTS_QUERY, {"after": None})
+    edges = (data.get("products") or {}).get("edges") or []
+
+    for edge in edges[:int(count)]:
+        node = edge["node"]
+        variants = (node.get("variants") or {}).get("nodes") or []
+        variant = variants[0] if variants else {}
+        inv = variant.get("inventoryItem") or {}
+        description = node.get("descriptionHtml") or ""
+
+        print(f"=== {node.get('title')}  (id {node.get('legacyResourceId')})")
+        print(f"  status            {node.get('status')}")
+        print(f"  handle            {node.get('handle')}")
+        print(f"  publishedAt       {node.get('publishedAt')}")
+        print(f"  createdAt         {node.get('createdAt')}")
+        print(f"  isGiftCard        {node.get('isGiftCard')}")
+        print(f"  tracksInventory   {node.get('tracksInventory')}")
+        print(f"  totalInventory    {node.get('totalInventory')}")
+        print(f"  variantsCount     {(node.get('variantsCount') or {}).get('count')}"
+              f"   (query returned {len(variants)})")
+        print(f"  mediaCount        {(node.get('mediaCount') or {}).get('count')}"
+              f"   (query returned {len((node.get('images') or {}).get('nodes') or [])} image(s))")
+        print(f"  descriptionHtml   {len(description)} char(s): {description[:60]!r}")
+        print(f"  -- first variant {variant.get('sku')!r}")
+        print(f"     barcode            {variant.get('barcode')}")
+        print(f"     position           {variant.get('position')}")
+        print(f"     taxable            {variant.get('taxable')}")
+        print(f"     availableForSale   {variant.get('availableForSale')}")
+        print(f"     inventoryPolicy    {variant.get('inventoryPolicy')}")
+        print(f"     inventoryQuantity  {variant.get('inventoryQuantity')}")
+        print(f"     tracked            {inv.get('tracked')}")
+        print(f"     requiresShipping   {inv.get('requiresShipping')}")
+        print(f"     countryOfOrigin    {inv.get('countryCodeOfOrigin')}")
+        print(f"     hsCode             {inv.get('harmonizedSystemCode')}")
+        print(f"     duplicateSkuCount  {inv.get('duplicateSkuCount')}")
+        print()
+
+    if not edges:
+        print("[sample] the store returned no products")
+    else:
+        print(f"[sample] descriptionHtml empty on "
+              f"{sum(1 for e in edges if not (e['node'].get('descriptionHtml') or ''))}"
+              f" of {len(edges)} product(s) on this page")
