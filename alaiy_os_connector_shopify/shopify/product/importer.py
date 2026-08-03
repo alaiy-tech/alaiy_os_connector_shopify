@@ -1096,6 +1096,14 @@ def _apply_product_meta(item, node: dict):
             message=f"{item.name}: Shopify reported status {node.get('status')!r}, "
                     f"which has no sh_shopify_status equivalent. Field left unchanged.",
         )
+    # Product-level mirrors. handle is the storefront slug (the only way to build
+    # a product's public URL from here); publishedAt distinguishes "never
+    # published" from "published and later hidden", which status alone does not.
+    if node.get("handle"):
+        item.sh_shopify_handle = node["handle"]
+    if node.get("publishedAt"):
+        item.sh_published_at = frappe.utils.get_datetime(node["publishedAt"]).replace(tzinfo=None)
+
     tags = _normalize_tags(node.get("tags"))
     if tags:
         _set_item_tags(item, tags)
