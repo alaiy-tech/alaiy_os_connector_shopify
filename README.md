@@ -54,6 +54,7 @@ Detailed, per-domain documentation lives in [`docs/`](docs/):
 - **[Customers](docs/customers.md)** — customer/territory/address creation and matching.
 - **[Inventory](docs/inventory.md)** — stock push, single vs multi-location, location map.
 - **[Architecture & Sync Engine](docs/architecture.md)** — GraphQL client, auth/token, pagination, throttling, fingerprint dedup, per-record locks, retry queue, sync logs, scheduler, webhook HMAC.
+- **[Data Model](docs/data-model.md)** — the 15 DocTypes this connector creates, the 20 custom fields it adds, and every pre-existing Frappe/ERPNext DocType it writes into, field by field.
 
 ## License
 
