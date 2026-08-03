@@ -269,7 +269,7 @@ def _shopify_node_fingerprint(node: dict) -> str:
     ]
     canonical = {
         "title": node.get("title"),
-        "bodyHtml": node.get("bodyHtml"),
+        "descriptionHtml": node.get("descriptionHtml"),
         "vendor": node.get("vendor"),
         "productType": node.get("productType"),
         "status": node.get("status"),
@@ -351,6 +351,39 @@ def _update_existing_product(entity, node: dict) -> tuple:
     return True, reason
 
 
+def _warn_if_truncated(node: dict):
+    """Log when a product has more variants or images than the query asked for.
+
+    The query caps variants at 100 and images at 10 with no pagination, so a
+    product past either cap loses the remainder and Shopify reports no error --
+    the import looks entirely successful. variantsCount and mediaCount are the
+    store's own totals, so comparing them against what arrived turns a silent
+    partial import into something findable in the Error Log.
+
+    Reported, not fixed: following those cursors is a separate change.
+    """
+    product = node.get("title") or node.get("legacyResourceId") or "unknown product"
+
+    total_variants = (node.get("variantsCount") or {}).get("count")
+    got_variants = len((node.get("variants") or {}).get("nodes") or [])
+    if total_variants and got_variants and total_variants > got_variants:
+        frappe.log_error(
+            title="Shopify import: variants truncated",
+            message=f"{product}: Shopify reports {total_variants} variants, the query "
+                    f"returned {got_variants}. The remainder was not imported.",
+        )
+
+    total_media = (node.get("mediaCount") or {}).get("count")
+    got_images = len((node.get("images") or {}).get("nodes") or [])
+    if total_media and got_images and total_media > got_images:
+        frappe.log_error(
+            title="Shopify import: images truncated",
+            message=f"{product}: Shopify reports {total_media} media item(s), the query "
+                    f"returned {got_images} image(s). Note mediaCount includes video and "
+                    f"3D models, which this connector does not import at all.",
+        )
+
+
 def _import_product(node: dict) -> tuple:
     """
     Import a single Shopify product, then make sure it has a manageable
@@ -359,6 +392,7 @@ def _import_product(node: dict) -> tuple:
     the Listing) sees it -- ensure_listing is idempotent, so re-imports and
     updates never duplicate or clobber merchant edits.
     """
+    _warn_if_truncated(node)
     created, reason = _import_product_inner(node)
     product_id = str(node.get("legacyResourceId", ""))
     if product_id:
@@ -443,7 +477,7 @@ def _import_product_inner(node: dict) -> tuple:
 
     settings = frappe.get_single("Shopify Connector Settings")
     title = node.get("title", f"Product {product_id}").strip()
-    description = node.get("bodyHtml", "")
+    description = node.get("descriptionHtml", "")
     vendor = node.get("vendor", "")
     # Item Group follows Shopify's category taxonomy tree (nested, matching how
     # cloudstore builds Item Groups); productType is only the flat fallback when
@@ -1124,7 +1158,7 @@ def _apply_product_meta(item, node: dict):
 
     desc_val = seo.get("description")
     if not desc_val:
-        desc_val = node.get("bodyHtml") or item.description or ""
+        desc_val = node.get("descriptionHtml") or item.description or ""
         if desc_val and "<" in desc_val:
             from frappe.utils import strip_html_tags
             desc_val = strip_html_tags(desc_val)

@@ -65,7 +65,7 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
     """
     Adapt a REST-shaped webhook product payload (id, body_html, product_type,
     variants: [...], images: [...]) into the GraphQL node shape that
-    product_import._import_product() expects (legacyResourceId, bodyHtml,
+    product_import._import_product() expects (legacyResourceId, descriptionHtml,
     productType, variants.nodes, images.nodes) -- so webhook-triggered
     creates reuse the same, already-tested import logic instead of a second
     parallel implementation.
@@ -105,7 +105,7 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
     return {
         "legacyResourceId": str(product.get("id", "")),
         "title": product.get("title", ""),
-        "bodyHtml": product.get("body_html", ""),
+        "descriptionHtml": product.get("body_html", ""),
         "vendor": product.get("vendor", ""),
         "productType": product.get("product_type", ""),
         "status": product.get("status", ""),

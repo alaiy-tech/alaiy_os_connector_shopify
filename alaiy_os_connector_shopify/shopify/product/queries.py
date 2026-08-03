@@ -15,7 +15,7 @@ query PullProducts($after: String) {
         legacyResourceId
         handle
         title
-        bodyHtml
+        descriptionHtml
         vendor
         productType
         status
@@ -23,6 +23,9 @@ query PullProducts($after: String) {
         createdAt
         updatedAt
         hasOnlyDefaultVariant
+        isGiftCard
+        variantsCount { count }
+        mediaCount { count }
         tracksInventory
         totalInventory
         tags
@@ -59,12 +62,12 @@ query PullProducts($after: String) {
             compareAtPrice
             position
             taxable
-            taxCode
             availableForSale
             inventoryPolicy
             inventoryQuantity
             inventoryItem {
               tracked
+              duplicateSkuCount
               requiresShipping
               countryCodeOfOrigin
               harmonizedSystemCode
