@@ -82,8 +82,22 @@ def ensure_listing_for_new_item(doc, method=None):
 
     A variant Item (doc.variant_of set) never gets its own Listing --
     Listing is 1:1 with the template, per listing.py's own design note.
+
+    Skipped entirely while the connector is disabled. This hook fires on EVERY
+    new Item on the site, including items another connector imported, so on a
+    tenant that does not sell through Shopify it produced one dead Listing per
+    item -- confirmed live: a catalogue import from another connector created
+    5,929 of them on a site where Shopify was never configured. Nothing reached
+    Shopify (they are created disabled, and there was no store to reach), but
+    each one cost an extra document insert during the import.
+
+    Enabling the connector later is covered: backfill_missing_listings() runs on
+    the settings save that switches it on, so the gap this hook exists to close
+    stays closed.
     """
     if doc.variant_of:
+        return
+    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
         return
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
     ensure_listing(doc.name, default_enabled=0)
@@ -134,3 +148,120 @@ def validate_item_uoms(doc, method=None):
                 DELETE FROM `tabUOM Conversion Detail`
                 WHERE parent = %s AND uom = %s AND name != %s
             """, (name, dup.uom, dup.keep_name))
+
+
+def backfill_missing_listings(batch=None):
+    """Create a disabled Listing for every template Item that has none.
+
+    ensure_listing_for_new_item only fires while the connector is enabled, so a
+    site that imports its catalogue first and connects Shopify afterwards would
+    otherwise have thousands of Items with no Listing and no way to push them.
+    This runs on the settings save that enables the connector, and can be called
+    by hand at any time -- it is idempotent, an Item that already has a Listing
+    is left untouched.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_missing_listings
+    """
+    from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
+
+    # "is set" rather than ["not in", ["", None]] -- SQL `NOT IN (…, NULL)` is
+    # never true, so that filter silently matches zero rows.
+    templates = frappe.get_all(
+        "Item", filters={"variant_of": ["in", ["", None]]},
+        pluck="name", limit_page_length=int(batch) if batch else 0)
+
+    created = skipped = failed = 0
+    for name in templates:
+        if frappe.db.exists("Shopify Product Listing", name):
+            skipped += 1
+            continue
+        try:
+            ensure_listing(name, default_enabled=0)
+            created += 1
+        except Exception:
+            failed += 1
+            frappe.log_error(
+                title=f"Shopify: listing backfill failed for {name}",
+                message=frappe.get_traceback(),
+            )
+        if created and created % 200 == 0:
+            frappe.db.commit()
+
+    frappe.db.commit()
+    print(f"[listings] created {created}, already present {skipped}, failed {failed}")
+    return {"created": created, "skipped": skipped, "failed": failed}
+
+
+def backfill_listings_on_enable(doc, method=None):
+    """Shopify Connector Settings on_update: backfill Listings when switched on.
+
+    Only acts on the save that flips is_enabled from off to on -- comparing
+    against the pre-save value, so re-saving an already-enabled settings doc does
+    not walk the whole Item table again.
+    """
+    if not doc.is_enabled:
+        return
+    before = doc.get_doc_before_save()
+    if before and before.is_enabled:
+        return
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_missing_listings",
+        queue="long", timeout=3600,
+    )
+
+
+def check_listing_gating():
+    """Self-check for the enable gating. No DB access.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.item_hooks.check_listing_gating
+    """
+    class _Doc(dict):
+        def __init__(self, before=None, **kw):
+            super().__init__(**kw)
+            self.__dict__.update(kw)
+            self._before = before
+
+        def get_doc_before_save(self):
+            return self._before
+
+    created = []
+    enqueued = []
+
+    real_get_single_value = frappe.db.get_single_value
+    real_enqueue = frappe.enqueue
+    enabled = {"value": 0}
+    frappe.db.get_single_value = lambda dt, f: enabled["value"]
+    frappe.enqueue = lambda method, **kw: enqueued.append(method)
+
+    import sys
+    module = sys.modules[__name__]
+    real_ensure = None
+    try:
+        # A variant never gets a Listing, enabled or not.
+        ensure_listing_for_new_item(_Doc(variant_of="TEMPLATE", name="V1"))
+        assert created == [], created
+
+        # Connector off: a template gets nothing. This is the whole fix -- a
+        # catalogue import on a non-Shopify tenant must not leave a Listing per
+        # item behind.
+        enabled["value"] = 0
+        ensure_listing_for_new_item(_Doc(variant_of=None, name="T1"))
+        assert created == [], created
+
+        # Switching the connector on backfills, but only on the transition.
+        backfill_listings_on_enable(_Doc(is_enabled=0))
+        assert enqueued == [], enqueued
+        backfill_listings_on_enable(_Doc(is_enabled=1, before=_Doc(is_enabled=1)))
+        assert enqueued == [], enqueued
+        backfill_listings_on_enable(_Doc(is_enabled=1, before=_Doc(is_enabled=0)))
+        assert len(enqueued) == 1, enqueued
+        # First-ever save of the settings doc has no before-image.
+        backfill_listings_on_enable(_Doc(is_enabled=1, before=None))
+        assert len(enqueued) == 2, enqueued
+    finally:
+        frappe.db.get_single_value = real_get_single_value
+        frappe.enqueue = real_enqueue
+
+    print("listing gating self-check passed")

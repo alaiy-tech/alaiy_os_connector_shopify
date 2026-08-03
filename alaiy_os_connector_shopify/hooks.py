@@ -102,6 +102,11 @@ doc_events = {
         ],
         "on_trash": "alaiy_os_connector_shopify.shopify.product.listing_hooks.remove_variant_from_listing",
     },
+    # Enabling the connector has to backfill the Listings that
+    # ensure_listing_for_new_item skipped while it was off.
+    "Shopify Connector Settings": {
+        "on_update": "alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_listings_on_enable",
+    },
     "Shopify Product Listing": {
         "on_update": "alaiy_os_connector_shopify.shopify.product.listing_hooks.on_listing_update",
         "on_trash": "alaiy_os_connector_shopify.shopify.product.listing_hooks.on_listing_trash",
