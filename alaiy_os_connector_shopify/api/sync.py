@@ -38,7 +38,7 @@ def trigger_inventory_push():
 
 
 @frappe.whitelist()
-def trigger_product_import():
+def trigger_product_import(statuses=None):
     """
     Import products from Shopify. First run (nothing imported yet) wipes
     first as a safety net, then imports everything. Every run after that
@@ -53,11 +53,12 @@ def trigger_product_import():
         # Category) makes an extra taxonomy-search API call, confirmed live
         # to blow the old ceiling partway through a ~3000-item catalog.
         timeout=14400,  # 4 hours
+        statuses=statuses,
     )
 
 
 @frappe.whitelist()
-def trigger_product_export():
+def trigger_product_export(statuses=None):
     """
     Bulk push every local (not-yet-linked) product to Shopify in one go --
     for manually-created Alaiy OS Items that predate any Shopify connection.
@@ -67,6 +68,7 @@ def trigger_product_export():
         "product_export",
         "alaiy_os_connector_shopify.shopify.product_sync.run_bulk_export_to_shopify",
         timeout=1800,
+        statuses=statuses,
     )
 
 

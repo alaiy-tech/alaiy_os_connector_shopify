@@ -13,11 +13,21 @@ query PullProducts($after: String) {
     edges {
       node {
         legacyResourceId
+        handle
         title
-        bodyHtml
+        descriptionHtml
         vendor
         productType
         status
+        publishedAt
+        createdAt
+        updatedAt
+        hasOnlyDefaultVariant
+        isGiftCard
+        variantsCount { count }
+        mediaCount { count }
+        tracksInventory
+        totalInventory
         tags
         category {
           name
@@ -46,10 +56,21 @@ query PullProducts($after: String) {
           nodes {
             legacyResourceId
             sku
+            barcode
             title
             price
             compareAtPrice
+            position
+            taxable
+            availableForSale
+            inventoryPolicy
+            inventoryQuantity
             inventoryItem {
+              tracked
+              duplicateSkuCount
+              requiresShipping
+              countryCodeOfOrigin
+              harmonizedSystemCode
               unitCost {
                 amount
               }

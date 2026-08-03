@@ -296,10 +296,43 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		});
 	}
 
+	// Status picker shared by import and export. All three ticked by default --
+	// the common case is "everything", and a merchant who wants a subset is
+	// making a deliberate choice per run rather than editing settings first.
+	function ask_statuses(title, blurb, primary_label, on_confirm) {
+		var d = new frappe.ui.Dialog({
+			title: title,
+			fields: [
+				{ fieldtype: 'HTML', options: '<p>' + blurb + '</p>' },
+				{ fieldtype: 'Section Break', label: 'Product status' },
+				{ fieldname: 'st_active', fieldtype: 'Check', label: 'Active', default: 1 },
+				{ fieldname: 'st_draft', fieldtype: 'Check', label: 'Draft', default: 1 },
+				{ fieldname: 'st_archived', fieldtype: 'Check', label: 'Archived', default: 1,
+				  description: 'Archived products are hidden from Shopify sales channels but keep their order history.' }
+			],
+			primary_action_label: primary_label,
+			primary_action: function(values) {
+				var statuses = [];
+				if (values.st_active) statuses.push('Active');
+				if (values.st_draft) statuses.push('Draft');
+				if (values.st_archived) statuses.push('Archived');
+				if (!statuses.length) {
+					frappe.msgprint('Pick at least one status.');
+					return;
+				}
+				d.hide();
+				on_confirm(statuses);
+			}
+		});
+		d.show();
+	}
+
 	function import_products() {
-		frappe.confirm(
-			'This will import products from Shopify: new products are created, changed products are updated, unchanged ones are left alone. On the very first run only, any stray unlinked product data is wiped first as a safety net.<br><br>Continue?',
-			function() {
+		ask_statuses(
+			'Import Products from Shopify',
+			'New products are created, changed products are updated, unchanged ones are left alone. On the very first run only, any stray unlinked product data is wiped first as a safety net.',
+			'Import',
+			function(statuses) {
 				var btn = document.getElementById('import-products-btn');
 				var stop_btn = document.getElementById('import-products-stop-btn');
 				var log_container = document.getElementById('products-log');
@@ -307,6 +340,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 
 				frappe.call({
 					method: 'alaiy_os_connector_shopify.api.sync.trigger_product_import',
+					args: { statuses: statuses },
 					callback: function(r) {
 						if (r.message && r.message.log_name) {
 							log_container.classList.add('shopify-active');
@@ -328,9 +362,11 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function export_products() {
-		frappe.confirm(
-			'Export all local (not-yet-linked) products to Shopify?',
-			function() {
+		ask_statuses(
+			'Export Products to Shopify',
+			'Pushes every local product that is not yet linked to Shopify. Only listings whose status is ticked below are sent.',
+			'Export',
+			function(statuses) {
 				var btn = document.getElementById('export-products-btn');
 				var stop_btn = document.getElementById('export-products-stop-btn');
 				var log_container = document.getElementById('products-export-log');
@@ -338,6 +374,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 
 				frappe.call({
 					method: 'alaiy_os_connector_shopify.api.sync.trigger_product_export',
+					args: { statuses: statuses },
 					callback: function(r) {
 						if (r.message && r.message.log_name) {
 							log_container.classList.add('shopify-active');

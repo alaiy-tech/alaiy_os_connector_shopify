@@ -38,7 +38,8 @@ from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _se
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 
-def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None):
+def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
+                            statuses=None):
     """
     Import products from Shopify into Alaiy OS. First run (no product ever
     imported yet) wipes first as a safety net against duplicates, then
@@ -59,6 +60,8 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
     Returns:
         Log name (for tracking progress)
     """
+    allowed_statuses = status_map.parse_statuses(statuses)
+
     if wipe_existing is None:
         wipe_existing = not frappe.db.exists("Shopify Synced Entity", {"entity_type": "product"})
 
@@ -111,6 +114,13 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
             pages += 1
             for node in page_nodes:
                 processed += 1
+                if not status_map.import_allows(node.get("status"), allowed_statuses):
+                    skipped += 1
+                    reason = f"status {node.get('status')} not selected for import"
+                    skip_reason_counts[reason] += 1
+                    if len(skip_examples) < 30:
+                        skip_examples.append(f"{node.get('title', 'Unknown')}: {reason}")
+                    continue
                 try:
                     was_created, reason = _import_product(node)
                     if was_created and reason.startswith("updated"):
@@ -262,7 +272,12 @@ def _shopify_node_fingerprint(node: dict) -> str:
     ]
     canonical = {
         "title": node.get("title"),
-        "bodyHtml": node.get("bodyHtml"),
+        # Key deliberately still "bodyHtml" while the value comes from
+        # descriptionHtml. This dict is only hash input, and renaming a key
+        # changes every product's fingerprint -- which would make the next import
+        # treat the entire catalogue as changed and re-update thousands of
+        # unchanged products for nothing. Same content, same hash.
+        "bodyHtml": node.get("descriptionHtml"),
         "vendor": node.get("vendor"),
         "productType": node.get("productType"),
         "status": node.get("status"),
@@ -344,6 +359,39 @@ def _update_existing_product(entity, node: dict) -> tuple:
     return True, reason
 
 
+def _warn_if_truncated(node: dict):
+    """Log when a product has more variants or images than the query asked for.
+
+    The query caps variants at 100 and images at 10 with no pagination, so a
+    product past either cap loses the remainder and Shopify reports no error --
+    the import looks entirely successful. variantsCount and mediaCount are the
+    store's own totals, so comparing them against what arrived turns a silent
+    partial import into something findable in the Error Log.
+
+    Reported, not fixed: following those cursors is a separate change.
+    """
+    product = node.get("title") or node.get("legacyResourceId") or "unknown product"
+
+    total_variants = (node.get("variantsCount") or {}).get("count")
+    got_variants = len((node.get("variants") or {}).get("nodes") or [])
+    if total_variants and got_variants and total_variants > got_variants:
+        frappe.log_error(
+            title="Shopify import: variants truncated",
+            message=f"{product}: Shopify reports {total_variants} variants, the query "
+                    f"returned {got_variants}. The remainder was not imported.",
+        )
+
+    total_media = (node.get("mediaCount") or {}).get("count")
+    got_images = len((node.get("images") or {}).get("nodes") or [])
+    if total_media and got_images and total_media > got_images:
+        frappe.log_error(
+            title="Shopify import: images truncated",
+            message=f"{product}: Shopify reports {total_media} media item(s), the query "
+                    f"returned {got_images} image(s). Note mediaCount includes video and "
+                    f"3D models, which this connector does not import at all.",
+        )
+
+
 def _import_product(node: dict) -> tuple:
     """
     Import a single Shopify product, then make sure it has a manageable
@@ -352,6 +400,7 @@ def _import_product(node: dict) -> tuple:
     the Listing) sees it -- ensure_listing is idempotent, so re-imports and
     updates never duplicate or clobber merchant edits.
     """
+    _warn_if_truncated(node)
     created, reason = _import_product_inner(node)
     product_id = str(node.get("legacyResourceId", ""))
     if product_id:
@@ -436,7 +485,7 @@ def _import_product_inner(node: dict) -> tuple:
 
     settings = frappe.get_single("Shopify Connector Settings")
     title = node.get("title", f"Product {product_id}").strip()
-    description = node.get("bodyHtml", "")
+    description = node.get("descriptionHtml", "")
     vendor = node.get("vendor", "")
     # Item Group follows Shopify's category taxonomy tree (nested, matching how
     # cloudstore builds Item Groups); productType is only the flat fallback when
@@ -1075,9 +1124,28 @@ def _import_product_with_variants(
 
 def _apply_product_meta(item, node: dict):
     """Apply product meta to Item -- status, tags, category, collections, SEO."""
-    status = (node.get("status") or "").upper()
-    if status in ("ACTIVE", "DRAFT"):
-        item.sh_shopify_status = "Draft" if status == "DRAFT" else "Active"
+    from alaiy_os_connector_shopify.shopify.product import status as status_map
+    local_status = status_map.to_local(node.get("status"))
+    if local_status:
+        item.sh_shopify_status = local_status
+    elif node.get("status"):
+        # An unmodelled status (a real store returned UNLISTED) leaves the field
+        # alone and says so. The old code whitelisted ACTIVE and DRAFT, so
+        # ARCHIVED fell through to no branch at all and a new Item kept its
+        # default of Active -- 8,408 archived products read Active on one site.
+        frappe.log_error(
+            title="Shopify: unmapped product status",
+            message=f"{item.name}: Shopify reported status {node.get('status')!r}, "
+                    f"which has no sh_shopify_status equivalent. Field left unchanged.",
+        )
+    # Product-level mirrors. handle is the storefront slug (the only way to build
+    # a product's public URL from here); publishedAt distinguishes "never
+    # published" from "published and later hidden", which status alone does not.
+    if node.get("handle"):
+        item.sh_shopify_handle = node["handle"]
+    if node.get("publishedAt"):
+        item.sh_published_at = frappe.utils.get_datetime(node["publishedAt"]).replace(tzinfo=None)
+
     tags = _normalize_tags(node.get("tags"))
     if tags:
         _set_item_tags(item, tags)
@@ -1098,7 +1166,7 @@ def _apply_product_meta(item, node: dict):
 
     desc_val = seo.get("description")
     if not desc_val:
-        desc_val = node.get("bodyHtml") or item.description or ""
+        desc_val = node.get("descriptionHtml") or item.description or ""
         if desc_val and "<" in desc_val:
             from frappe.utils import strip_html_tags
             desc_val = strip_html_tags(desc_val)

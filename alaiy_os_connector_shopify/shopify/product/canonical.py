@@ -13,6 +13,7 @@ from alaiy_os_connector_shopify.shopify.product.variants import (
 from alaiy_os_connector_shopify.shopify.product.tags import _item_tags
 from alaiy_os_connector_shopify.shopify.product.seo import _seo_values
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+from alaiy_os_connector_shopify.shopify.product import status as status_map
 
 
 def _product_canonical(item, variants, settings, listing) -> dict:
@@ -24,7 +25,7 @@ def _product_canonical(item, variants, settings, listing) -> dict:
         "variants": [_variant_canonical(v, settings, listing) for v in variants],
     }
     # Status now lives on the Listing; keep flipping Active<->Draft re-pushing.
-    canonical["status"] = "DRAFT" if (listing.sh_shopify_status == "Draft") else "ACTIVE"
+    canonical["status"] = status_map.to_shopify(listing.sh_shopify_status)
     canonical["description"] = listing_resolver.effective_description(listing, item)
     canonical["vendor"] = item.brand or ""
     canonical["product_type"] = listing_resolver.effective_product_type(listing, item)
@@ -92,7 +93,7 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
         # Active vs Draft comes from the Listing's sh_shopify_status; pushing
         # never leaves ARCHIVED (re-enabling a product unarchives it) --
         # archive_item() overrides this back to ARCHIVED explicitly.
-        "status": "DRAFT" if (listing.sh_shopify_status == "Draft") else "ACTIVE",
+        "status": status_map.to_shopify(listing.sh_shopify_status),
         "productOptions": _product_options_payload(option_names, variants),
         "variants": [
             _variant_set_payload(v, settings, option_names, listing) for v in variants
