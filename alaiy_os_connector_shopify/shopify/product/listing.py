@@ -97,6 +97,29 @@ def effective_product_type(listing, item) -> str:
     return listing.listing_product_type or item.sh_shopify_product_type or ""
 
 
+def effective_seo(listing, item) -> dict:
+    """{"title", "description"} for the push, Listing override winning.
+
+    Three levels, each a real fallback rather than a blank:
+      1. the Listing's own per-channel override
+      2. the Item's sh_seo_* fields
+      3. the same defaults Shopify's admin shows -- the product title, and the
+         description as plain text capped at 320 characters
+
+    Kept here beside the other effective_* resolvers so the Listing override is
+    applied in one place. The 320-character cap and the HTML stripping live in
+    seo.py, which this defers to for levels 2 and 3.
+    """
+    from alaiy_os_connector_shopify.shopify.product.seo import _seo_values
+
+    base = _seo_values(item)
+    if not listing:
+        return base
+    title = (listing.listing_seo_title or "").strip() or base["title"]
+    description = (listing.listing_seo_description or "").strip() or base["description"]
+    return {"title": title, "description": description[:320]}
+
+
 def effective_images(listing, item, settings) -> list:
     """Listing image rows (by sort_order) as absolute URLs; fall back to the
     Item image/slideshow when the Listing has no image rows."""
@@ -473,3 +496,55 @@ def _template_image_urls(tmpl) -> list:
             if row.image and row.image not in urls:
                 urls.append(row.image)
     return urls
+
+
+def check_effective_seo():
+    """Self-check for the SEO override chain. No DB, no API.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.listing.check_effective_seo
+    """
+    class _Obj(dict):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.__dict__.update(kw)
+
+        def get(self, key, default=None):
+            return self.__dict__.get(key, default)
+
+    item = _Obj(item_name="Blue Polo", description="<p>A <b>soft</b> polo.</p>",
+                sh_seo_title="", sh_seo_description="")
+
+    # No Listing at all -- Item/Shopify defaults, HTML stripped.
+    base = effective_seo(None, item)
+    assert base["title"] == "Blue Polo", base
+    assert base["description"] == "A soft polo.", base
+
+    # A blank Listing changes nothing.
+    assert effective_seo(_Obj(listing_seo_title="", listing_seo_description=""), item) == base
+
+    # The Listing override wins over both the Item and the default.
+    over = effective_seo(_Obj(listing_seo_title="Polo | Buy Online",
+                              listing_seo_description="Soft cotton polo, free shipping."), item)
+    assert over == {"title": "Polo | Buy Online",
+                    "description": "Soft cotton polo, free shipping."}, over
+
+    # The Item's own field beats the default but loses to the Listing.
+    item_set = _Obj(item_name="Blue Polo", description="<p>x</p>",
+                    sh_seo_title="Item SEO", sh_seo_description="Item description")
+    assert effective_seo(None, item_set)["title"] == "Item SEO"
+    assert effective_seo(_Obj(listing_seo_title="Listing SEO",
+                              listing_seo_description=""), item_set) == {
+        "title": "Listing SEO", "description": "Item description"}
+
+    # Shopify's admin caps the meta description at 320 characters; an override
+    # must be capped too, not just the fallback.
+    long_desc = "x" * 400
+    capped = effective_seo(_Obj(listing_seo_title="", listing_seo_description=long_desc), item)
+    assert len(capped["description"]) == 320, len(capped["description"])
+
+    # Whitespace-only is not an override.
+    assert effective_seo(_Obj(listing_seo_title="   ",
+                              listing_seo_description="  "), item) == base
+
+    print("effective_seo self-check passed")

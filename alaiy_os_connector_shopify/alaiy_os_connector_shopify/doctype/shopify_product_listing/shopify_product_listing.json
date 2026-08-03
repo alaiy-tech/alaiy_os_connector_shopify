@@ -13,6 +13,8 @@
   "listing_price",
   "listing_category",
   "listing_product_type",
+  "listing_seo_title",
+  "listing_seo_description",
   "images",
   "variants",
   "metafields",
@@ -109,6 +111,18 @@
    "fieldtype": "Datetime",
    "label": "Last Synced At",
    "read_only": 1
+  },
+  {
+   "description": "Overrides the Item's Shopify SEO Title for this channel. Blank falls back to the Item, then to the listing title -- the same default Shopify's own admin shows.",
+   "fieldname": "listing_seo_title",
+   "fieldtype": "Data",
+   "label": "SEO Title"
+  },
+  {
+   "description": "Overrides the Item's Shopify SEO Description. Blank falls back to the Item, then to the description as plain text, capped at 320 characters as Shopify's admin does.",
+   "fieldname": "listing_seo_description",
+   "fieldtype": "Small Text",
+   "label": "SEO Description"
   }
  ],
  "index_web_pages_for_search": 1,

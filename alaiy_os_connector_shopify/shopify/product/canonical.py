@@ -11,7 +11,6 @@ from alaiy_os_connector_shopify.shopify.product.variants import (
     _variant_canonical, _variant_set_payload,
 )
 from alaiy_os_connector_shopify.shopify.product.tags import _item_tags
-from alaiy_os_connector_shopify.shopify.product.seo import _seo_values
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 from alaiy_os_connector_shopify.shopify.product import status as status_map
 
@@ -32,7 +31,7 @@ def _product_canonical(item, variants, settings, listing) -> dict:
     canonical["category"] = listing_resolver.effective_category(listing, item) or ""
     canonical["images"] = listing_resolver.effective_images(listing, item, settings)
     canonical["tags"] = sorted(_item_tags(item))
-    seo = _seo_values(item)
+    seo = listing_resolver.effective_seo(listing, item)
     canonical["seo_title"] = seo["title"]
     canonical["seo_description"] = seo["description"]
     return canonical
@@ -184,7 +183,7 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
         category_id = frappe.db.get_value("Shopify Category", category, "shopify_category_id")
         if category_id:
             payload["category"] = category_id
-    seo = {k: v for k, v in _seo_values(item).items() if v}
+    seo = {k: v for k, v in listing_resolver.effective_seo(listing, item).items() if v}
     if seo:
         payload["seo"] = seo
     return payload
