@@ -26,11 +26,6 @@ alaiy_os_sidebar_log_items = [
 
 # Extra rows under this connector's own top-level sidebar section (Dashboard
 # is always added automatically by alaiy_os).
-#
-# Listings points at a DocType this app does not ship yet. alaiy_os drops any row
-# whose target is missing (_connector_extra_sidebar_items), so the row stays
-# hidden until that DocType arrives and then appears on the next migrate with no
-# change here.
 alaiy_os_sidebar_connector_items = [
     {
         "connector_id": "shopify",
