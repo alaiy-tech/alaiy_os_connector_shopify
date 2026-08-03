@@ -185,7 +185,7 @@ def setup_custom_fields():
             "fieldname": "sh_shopify_status",
             "label": "Shopify Status",
             "fieldtype": "Select",
-            "options": "Active\nDraft",
+            "options": "Active\nDraft\nArchived",
             "default": "Active",
             "insert_after": "disabled",
             "fetch_from": "variant_of.sh_shopify_status",

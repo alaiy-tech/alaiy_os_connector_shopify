@@ -47,6 +47,10 @@ def push_item(item_code: str):
     if not listing_resolver.is_enabled(item):
         return
 
+    listing = listing_resolver.get_listing(item.variant_of or item.name)
+    if listing and not status_map.export_allows(listing.sh_shopify_status):
+        return
+
     if item.variant_of:
         _push_product(frappe.get_doc("Item", item.variant_of))
     else:
@@ -253,13 +257,18 @@ def _push_product_unlocked(item):
     if product_id:
         identifier = {
             "id": f"gid://shopify/Product/{product_id}"}
-        # productSet ignores status changes if product is currently ARCHIVED.
-        # Ensure product is unarchived to ACTIVE/DRAFT via productUpdate mutation.
-        target_status = "DRAFT" if (listing.sh_shopify_status == "Draft") else "ACTIVE"
+        # productSet ignores status changes while a product is ARCHIVED, so an
+        # archived product has to be unarchived before it will accept anything
+        # else. Where the Listing itself wants ARCHIVED, that means unarchiving to
+        # DRAFT for the duration of the productSet and archiving again once it
+        # lands (re_archive below) -- DRAFT rather than ACTIVE so the product is
+        # never briefly visible on the storefront mid-push.
+        target_status = status_map.to_shopify(listing.sh_shopify_status)
+        re_archive = target_status == "ARCHIVED"
         client.execute(_PRODUCT_UPDATE_MUTATION, {
             "input": {
                 "id": identifier["id"],
-                "status": target_status,
+                "status": "DRAFT" if re_archive else target_status,
             }
         })
 
@@ -371,6 +380,14 @@ def _push_product_unlocked(item):
 
     if errors:
         raise RuntimeError(f"Shopify productSet userErrors: {errors}")
+
+    if re_archive:
+        # Put it back where the Listing says it belongs. Done after the
+        # productSet rather than before, because Shopify ignores everything else
+        # in the payload while a product is archived.
+        client.execute(_PRODUCT_UPDATE_MUTATION, {
+            "input": {"id": identifier["id"], "status": "ARCHIVED"}
+        })
 
     product = result.get("product") or {}
     product_id = product.get("legacyResourceId")

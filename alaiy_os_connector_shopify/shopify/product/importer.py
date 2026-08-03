@@ -111,6 +111,13 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None)
             pages += 1
             for node in page_nodes:
                 processed += 1
+                if not status_map.import_allows(node.get("status")):
+                    skipped += 1
+                    reason = f"status {node.get('status')} not selected for import"
+                    skip_reason_counts[reason] += 1
+                    if len(skip_examples) < 30:
+                        skip_examples.append(f"{node.get('title', 'Unknown')}: {reason}")
+                    continue
                 try:
                     was_created, reason = _import_product(node)
                     if was_created and reason.startswith("updated"):
@@ -1075,9 +1082,20 @@ def _import_product_with_variants(
 
 def _apply_product_meta(item, node: dict):
     """Apply product meta to Item -- status, tags, category, collections, SEO."""
-    status = (node.get("status") or "").upper()
-    if status in ("ACTIVE", "DRAFT"):
-        item.sh_shopify_status = "Draft" if status == "DRAFT" else "Active"
+    from alaiy_os_connector_shopify.shopify.product import status as status_map
+    local_status = status_map.to_local(node.get("status"))
+    if local_status:
+        item.sh_shopify_status = local_status
+    elif node.get("status"):
+        # An unmodelled status (a real store returned UNLISTED) leaves the field
+        # alone and says so. The old code whitelisted ACTIVE and DRAFT, so
+        # ARCHIVED fell through to no branch at all and a new Item kept its
+        # default of Active -- 8,408 archived products read Active on one site.
+        frappe.log_error(
+            title="Shopify: unmapped product status",
+            message=f"{item.name}: Shopify reported status {node.get('status')!r}, "
+                    f"which has no sh_shopify_status equivalent. Field left unchanged.",
+        )
     tags = _normalize_tags(node.get("tags"))
     if tags:
         _set_item_tags(item, tags)
