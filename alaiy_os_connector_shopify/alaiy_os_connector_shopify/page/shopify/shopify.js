@@ -150,13 +150,6 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 								<button id="manage-listings-btn" class="shopify-btn shopify-btn-outline-primary">
 									Manage Listings
 								</button>
-								<button id="enable-listings-btn" class="shopify-btn shopify-btn-outline-primary">
-									Enable Listings by Status
-								</button>
-								<button id="enable-listings-stop-btn" class="shopify-btn shopify-btn-danger" style="display:none;">
-									<i class="fa fa-stop"></i> Stop
-								</button>
-								<div id="enable-listings-log" class="shopify-sync-log"></div>
 							</div>
 						</div>
 					</div>
@@ -396,40 +389,6 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					error: function() {
 						btn.disabled = false;
 						frappe.msgprint('Failed to start product export');
-					}
-				});
-			}
-		);
-	}
-
-	function enable_listings_by_status() {
-		ask_statuses(
-			'Enable Listings by Status',
-			'Enables every currently-disabled Listing whose status matches what you tick below -- each save fires its normal push, same as ticking one enabled by hand.',
-			'Enable',
-			function(statuses) {
-				var btn = document.getElementById('enable-listings-btn');
-				var stop_btn = document.getElementById('enable-listings-stop-btn');
-				var log_container = document.getElementById('enable-listings-log');
-				btn.disabled = true;
-
-				frappe.call({
-					method: 'alaiy_os_connector_shopify.api.sync.enable_listings_by_status',
-					args: { statuses: statuses },
-					callback: function(r) {
-						if (r.message && r.message.log_name) {
-							log_container.classList.add('shopify-active');
-							log_container.innerHTML = '<div class="shopify-log-status-running">Enabling...<span class="shopify-spinner"></span></div>';
-							stop_btn.onclick = function() { stop_sync(r.message.log_name, stop_btn); };
-							poll_import_progress(r.message.log_name, log_container, btn, stop_btn);
-							setTimeout(refresh_logs, 2000);
-						} else {
-							btn.disabled = false;
-						}
-					},
-					error: function() {
-						btn.disabled = false;
-						frappe.msgprint('Failed to start bulk enable');
 					}
 				});
 			}
@@ -688,7 +647,6 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	$(page.body).on('click', '#shopify-stats-grid .shopify-stat-clickable', function() {
 		frappe.set_route('List', 'Shopify Product Listing', { sh_shopify_status: $(this).data('status') });
 	});
-	document.getElementById('enable-listings-btn').addEventListener('click', enable_listings_by_status);
 	document.getElementById('manage-listings-btn').addEventListener('click', function() {
 		frappe.set_route('List', 'Shopify Product Listing');
 	});
