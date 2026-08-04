@@ -199,7 +199,14 @@ def _ensure_item_attribute(attribute_name: str, values: list):
         doc.attribute_name = attribute_name
 
     existing_values = {row.attribute_value for row in (doc.item_attribute_values or [])}
-    existing_abbrs = {row.abbr for row in (doc.item_attribute_values or [])}
+    # Uppercased on purpose: _make_attribute_abbr always generates an
+    # uppercase candidate, but a legacy row can carry a lowercase abbr
+    # (confirmed live -- attribute_value "ideal" stored with abbr "ideal").
+    # A case-sensitive check here would let a new "IDEAL" through as
+    # "not a collision", but ERPNext's own Item Attribute validation
+    # compares abbreviations case-insensitively and rejects the save
+    # once both exist.
+    existing_abbrs = {row.abbr.upper() for row in (doc.item_attribute_values or [])}
     changed = False
     for value in values:
         if not value or value in existing_values:
@@ -207,7 +214,7 @@ def _ensure_item_attribute(attribute_name: str, values: list):
         abbr = _make_attribute_abbr(value, existing_abbrs)
         doc.append("item_attribute_values", {"attribute_value": value, "abbr": abbr})
         existing_values.add(value)
-        existing_abbrs.add(abbr)
+        existing_abbrs.add(abbr.upper())
         changed = True
 
     if doc.is_new():
