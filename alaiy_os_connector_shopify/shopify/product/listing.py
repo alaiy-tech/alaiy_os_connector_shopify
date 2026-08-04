@@ -548,3 +548,32 @@ def check_effective_seo():
                               listing_seo_description="  "), item) == base
 
     print("effective_seo self-check passed")
+
+
+@frappe.whitelist()
+def effective_values(listing_name: str) -> dict:
+    """What a push would actually send for this Listing, overrides resolved.
+
+    The form shows blank override fields, which reads as "nothing will be sent"
+    when it really means "inherited from the Item". This returns the resolved
+    values so the form can show what Shopify will receive without writing
+    anything into the fields -- filling them would freeze the value and stop it
+    tracking a later change to the Item.
+    """
+    if not frappe.db.exists("Shopify Product Listing", listing_name):
+        return {}
+    listing = frappe.get_doc("Shopify Product Listing", listing_name)
+    if not listing.item or not frappe.db.exists("Item", listing.item):
+        return {}
+    item = frappe.get_doc("Item", listing.item)
+    settings = frappe.get_single("Shopify Connector Settings")
+    seo = effective_seo(listing, item)
+    return {
+        "title": effective_title(listing, item),
+        "description": effective_description(listing, item),
+        "product_type": effective_product_type(listing, item),
+        "category": effective_category(listing, item),
+        "seo_title": seo["title"],
+        "seo_description": seo["description"],
+        "image_count": len(effective_images(listing, item, settings)),
+    }
