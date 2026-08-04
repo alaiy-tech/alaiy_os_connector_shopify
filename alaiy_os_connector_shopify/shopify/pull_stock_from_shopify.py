@@ -102,11 +102,18 @@ def run(dry_run=True, slice_index=None, slices=None):
     print(f"{len(pairs)} warehouse/location pair(s) mapped", flush=True)
     warehouse_of_location = {location_gid: warehouse for warehouse, location_gid in pairs}
 
+    # Scoped to Active templates -- run status_audit.fix_statuses first so
+    # sh_shopify_status actually reflects Shopify (it doesn't until that's
+    # run: an import predating the Archived mapping left archived products
+    # reading Active). A draft/archived product's stock isn't sellable
+    # inventory the storefront needs corrected right now.
     items = frappe.db.sql("""
         SELECT i.name, v.sh_shopify_variant_id, i.disabled
         FROM `tabItem` i
         JOIN `tabShopify Listing Variant` v ON v.item_variant = i.name
+        JOIN `tabItem` tmpl ON tmpl.name = coalesce(i.variant_of, i.name)
         WHERE v.sh_shopify_variant_id IS NOT NULL AND v.sh_shopify_variant_id != ''
+          AND tmpl.sh_shopify_status = 'Active'
     """, as_dict=True)
     # Slice for parallel runs. Partitioned by position, not by a range, so each
     # session gets an even mix rather than one taking every slow item -- and the
