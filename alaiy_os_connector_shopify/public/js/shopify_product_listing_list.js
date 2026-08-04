@@ -13,15 +13,15 @@ function render_shopify_status_banner(listview) {
 			if (!s) return;
 			var disabled = s.listings_total - s.listings_enabled;
 			var pills = [
-				{ label: "Enabled", value: s.listings_enabled, filter: { is_enabled: 1 } },
-				{ label: "Disabled", value: disabled, filter: { is_enabled: 0 } },
-				{ label: "Total", value: s.listings_total, filter: {} },
+				{ label: "En", value: s.listings_enabled, filter: { is_enabled: 1 } },
+				{ label: "Dis", value: disabled, filter: { is_enabled: 0 } },
+				{ label: "Tot", value: s.listings_total, filter: {} },
 			].map(function (c) {
-				return '<span class="shopify-listing-status-pill filterable" data-filter=\'' + JSON.stringify(c.filter) +
-					"\" style=\"cursor:pointer;\">" + __(c.label) + ": <b>" + c.value + "</b></span>";
+				return '<span class="shopify-listing-status-pill filterable" style="cursor:pointer;" data-filter=\'' +
+					JSON.stringify(c.filter) + "'>" + __(c.label) + ": <b>" + c.value + "</b></span>";
 			}).join(" ");
 			listview.page.add_inner_message(
-				'<div class="shopify-listing-status-banner" style="display:flex;gap:10px;">' + pills + "</div>"
+				'<div class="shopify-listing-status-banner" style="display:flex;gap:8px;white-space:nowrap;">' + pills + "</div>"
 			);
 			listview.page.wrapper.find(".shopify-listing-status-pill").off("click").on("click", function () {
 				frappe.set_route("List", "Shopify Product Listing", JSON.parse($(this).attr("data-filter")));
