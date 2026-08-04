@@ -1,7 +1,8 @@
-// Small status banner above the standard list view -- Active/Draft/Archived
-// counts of the underlying templates, clicking one filters the list to that
-// status. Refetched on every onload/refresh so it never needs a page reload
-// to catch up with a bulk-enable or an import just having run.
+// Small banner above the standard list view -- Enabled/Disabled/Total counts
+// of the Listings themselves (is_enabled, the actual push gate), clicking one
+// filters the list to that state. Refetched on every onload/refresh so it
+// never needs a page reload to catch up with a bulk-enable or an import just
+// having run.
 frappe.listview_settings["Shopify Product Listing"] = frappe.listview_settings["Shopify Product Listing"] || {};
 
 function render_shopify_status_banner(listview) {
@@ -10,19 +11,20 @@ function render_shopify_status_banner(listview) {
 		callback: function (r) {
 			var s = r.message;
 			if (!s) return;
+			var disabled = s.listings_total - s.listings_enabled;
 			var pills = [
-				{ label: "Active", value: s.templates_active, status: "Active" },
-				{ label: "Draft", value: s.templates_draft, status: "Draft" },
-				{ label: "Archived", value: s.templates_archived, status: "Archived" },
+				{ label: "Enabled", value: s.listings_enabled, filter: { is_enabled: 1 } },
+				{ label: "Disabled", value: disabled, filter: { is_enabled: 0 } },
+				{ label: "Total", value: s.listings_total, filter: {} },
 			].map(function (c) {
-				return '<span class="shopify-listing-status-pill filterable" data-status="' + c.status +
-					'" style="cursor:pointer;">' + __(c.label) + ": <b>" + c.value + "</b></span>";
-			}).join("");
+				return '<span class="shopify-listing-status-pill filterable" data-filter=\'' + JSON.stringify(c.filter) +
+					"\" style=\"cursor:pointer;\">" + __(c.label) + ": <b>" + c.value + "</b></span>";
+			}).join(" ");
 			listview.page.add_inner_message(
-				'<div class="shopify-listing-status-banner" style="display:flex;gap:14px;">' + pills + "</div>"
+				'<div class="shopify-listing-status-banner" style="display:flex;gap:10px;">' + pills + "</div>"
 			);
 			listview.page.wrapper.find(".shopify-listing-status-pill").off("click").on("click", function () {
-				frappe.set_route("List", "Shopify Product Listing", { sh_shopify_status: $(this).data("status") });
+				frappe.set_route("List", "Shopify Product Listing", JSON.parse($(this).attr("data-filter")));
 			});
 		},
 	});
@@ -37,9 +39,12 @@ function open_enable_by_status_dialog(listview) {
 				fieldname: "help",
 				options: "<p class='text-muted'>Enables every currently-disabled Listing whose status matches what you tick below -- each save fires its normal push, same as ticking one enabled by hand.</p>",
 			},
-			{ fieldtype: "Check", fieldname: "Active", label: "Active", default: 1 },
-			{ fieldtype: "Check", fieldname: "Draft", label: "Draft", default: 1 },
-			{ fieldtype: "Check", fieldname: "Archived", label: "Archived", default: 1 },
+			{ fieldtype: "Check", fieldname: "Active", label: "Active", default: 1,
+				description: "Visible and purchasable on Shopify's storefront." },
+			{ fieldtype: "Check", fieldname: "Draft", label: "Draft", default: 1,
+				description: "Hidden from customers -- not yet published." },
+			{ fieldtype: "Check", fieldname: "Archived", label: "Archived", default: 1,
+				description: "Taken off sale, but order history is kept." },
 		],
 		primary_action_label: "Enable",
 		primary_action: function (values) {
