@@ -138,3 +138,69 @@ def run(show=5):
         "only_local": len(only_local),
         "only_remote": len(only_remote),
     }
+
+
+def fix_statuses(dry_run=True):
+    """Correct Item.sh_shopify_status / Listing.sh_shopify_status to match
+    Shopify's real status, for every template whose status disagrees.
+
+    Uses frappe.db.set_value, not .save() -- a save() would fire the
+    doc_events push hook and touch `modified`, which is exactly what must NOT
+    happen here: this is a correction to match Shopify, not a change to push
+    to it. A status Shopify reports that we don't model (e.g. UNLISTED) is
+    left alone, same as the import's own behaviour -- see status.to_local().
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.status_audit.fix_statuses
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.status_audit.fix_statuses \
+        --kwargs "{'dry_run': False}"
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.product.status import to_local
+
+    if isinstance(dry_run, str):
+        dry_run = dry_run.strip().lower() not in ("0", "false", "no", "")
+
+    live, _ = _live_statuses(ShopifyGraphQLClient())
+
+    rows = frappe.db.sql("""
+        select it.name, it.sh_shopify_product_id as pid, it.sh_shopify_status as item_status,
+               l.name as listing, l.sh_shopify_status as listing_status
+          from `tabItem` it
+          left join `tabShopify Product Listing` l on l.item = it.name
+         where it.variant_of is null and it.sh_shopify_product_id is not null
+           and it.sh_shopify_product_id != ''
+    """, as_dict=True)
+
+    fixed = collections.Counter()
+    skipped_unmapped = 0
+    for row in rows:
+        remote = live.get(str(row.pid))
+        if remote is None:
+            continue
+        local = to_local(remote)
+        if local is None:
+            skipped_unmapped += 1
+            continue
+        if row.item_status != local:
+            fixed[f"Item -> {local}"] += 1
+            if not dry_run:
+                frappe.db.set_value("Item", row.name, "sh_shopify_status", local, update_modified=False)
+        if row.listing and row.listing_status != local:
+            fixed[f"Listing -> {local}"] += 1
+            if not dry_run:
+                frappe.db.set_value("Shopify Product Listing", row.listing, "sh_shopify_status",
+                                     local, update_modified=False)
+
+    if not dry_run:
+        frappe.db.commit()
+
+    print(f"\n{'WOULD FIX' if dry_run else 'FIXED'}:")
+    for key, count in fixed.most_common():
+        print(f"  {key:<20} {count}")
+    print(f"  skipped (unmapped Shopify status, e.g. UNLISTED): {skipped_unmapped}")
+    if dry_run:
+        print("\nDRY RUN -- nothing written. Re-run with dry_run=False to apply.")
+
+    return {"fixed": dict(fixed), "skipped_unmapped": skipped_unmapped, "dry_run": dry_run}
