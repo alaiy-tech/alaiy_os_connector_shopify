@@ -36,6 +36,7 @@ from alaiy_os_connector_shopify.shopify.sync_engine import entities
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_SET_MUTATION, _PRODUCT_UPDATE_MUTATION
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical, _product_set_input
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+from alaiy_os_connector_shopify.shopify.product import status as status_map
 
 LOCK_TIMEOUT_SECONDS = 30
 
