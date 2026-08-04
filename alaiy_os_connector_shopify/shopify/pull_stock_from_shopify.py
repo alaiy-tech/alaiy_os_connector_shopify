@@ -9,14 +9,14 @@ paths, DB connection), and on this environment that setup diverged from
 what frappe.init() alone provides and failed on a log file path.
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.scripts.pull_stock_from_shopify.run
+        alaiy_os_connector_shopify.shopify.pull_stock_from_shopify.run
 
 One API call per item, so a large catalogue takes hours in a single process.
 slice/slices splits the work across parallel tmux sessions:
 
     for i in 0 1 2; do
       tmux new -d -s stock$i "cd ~/alaiy_os_bench && bench --site <site> execute \
-        alaiy_os_connector_shopify.scripts.pull_stock_from_shopify.run \
+        alaiy_os_connector_shopify.shopify.pull_stock_from_shopify.run \
         --kwargs \"{'slice_index': $i, 'slices': 3}\" 2>&1 | tee ~/pull_stock$i.log"
     done
 
@@ -25,11 +25,11 @@ cannot be built across processes -- so a 3-way run produces 3 documents.
 
 Dry run first:
     bench --site <site> execute \
-        alaiy_os_connector_shopify.scripts.pull_stock_from_shopify.run
+        alaiy_os_connector_shopify.shopify.pull_stock_from_shopify.run
 
 Then, once the dry run's mismatch list looks right, apply for real:
     bench --site <site> execute \
-        alaiy_os_connector_shopify.scripts.pull_stock_from_shopify.run \
+        alaiy_os_connector_shopify.shopify.pull_stock_from_shopify.run \
         --kwargs "{'dry_run': False}"
 """
 
