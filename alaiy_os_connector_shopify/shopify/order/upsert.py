@@ -163,6 +163,11 @@ def _upsert_order_unlocked(order, order_id):
     so.set_warehouse = warehouse
     if settings.sh_cost_center:
         so.cost_center = settings.sh_cost_center
+    # Generic cross-connector field (alaiy_os core) -- answers "which channel
+    # did this order come from" the same way regardless of which connector
+    # is installed, so a site running Shopify + Amazon + Unicommerce can
+    # filter/report on Sales Order.sales_channel uniformly.
+    so.sales_channel = "Shopify"
     so.sh_shopify_order_id = order_id
     so.sh_shopify_order_name = order.get("name", "")
     so.sh_financial_status = order.get("financial_status", "")
