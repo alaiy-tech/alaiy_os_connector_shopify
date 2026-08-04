@@ -56,15 +56,19 @@ def run(dry_run=True, slice_index=None, slices=None):
     if not pairs:
         print("No warehouse/location pair resolved -- aborting.", flush=True)
         return {"aborted": "no_location_pair"}
-    warehouse, location_id = pairs[0]
-    print(f"Pulling live Shopify qty for warehouse={warehouse} location={location_id}", flush=True)
+    print(f"{len(pairs)} warehouse/location pair(s) mapped", flush=True)
 
+    # Bound per warehouse, not per item x every pair -- this site has 64 mapped
+    # warehouses, and checking every item against every location would be 64x the
+    # API calls for stock that mostly lives in one warehouse each.
+    warehouses = [w for w, _ in pairs]
     items = frappe.db.sql("""
-        SELECT i.name, v.sh_shopify_variant_id, i.disabled
+        SELECT i.name, v.sh_shopify_variant_id, i.disabled, b.warehouse, b.actual_qty
         FROM `tabItem` i
         JOIN `tabShopify Listing Variant` v ON v.item_variant = i.name
+        JOIN `tabBin` b ON b.item_code = i.name AND b.warehouse IN %(warehouses)s
         WHERE v.sh_shopify_variant_id IS NOT NULL AND v.sh_shopify_variant_id != ''
-    """, as_dict=True)
+    """, {"warehouses": warehouses}, as_dict=True)
     # Slice for parallel runs. Partitioned by position, not by a range, so each
     # session gets an even mix rather than one taking every slow item -- and the
     # partition is deterministic, so a re-run of the same slice covers the same
@@ -73,8 +77,9 @@ def run(dry_run=True, slice_index=None, slices=None):
         items = [it for n, it in enumerate(items) if n % int(slices) == int(slice_index)]
         print(f"SLICE {slice_index} of {slices}", flush=True)
     total = len(items)
-    print(f"TOTAL {total} items", flush=True)
+    print(f"TOTAL {total} item/warehouse row(s)", flush=True)
 
+    location_of = dict(pairs)
     corrections = []
     skipped_disabled = []
     for i, item in enumerate(items):
@@ -87,13 +92,12 @@ def run(dry_run=True, slice_index=None, slices=None):
             # everything else over it.
             skipped_disabled.append(item.name)
             continue
-        local_qty = frappe.db.get_value(
-            "Bin", {"item_code": item.name, "warehouse": warehouse}, "actual_qty") or 0
+        location_id = location_of[item.warehouse]
         try:
             _, shopify_qty = _get_inventory_item_state(
                 client, item.sh_shopify_variant_id, location_id)
         except Exception as exc:
-            print(f"ERROR {item.name}: {exc}", flush=True)
+            print(f"ERROR {item.name}/{item.warehouse}: {exc}", flush=True)
             continue
         shopify_qty = int(shopify_qty or 0)
         if shopify_qty < 0:
@@ -102,17 +106,19 @@ def run(dry_run=True, slice_index=None, slices=None):
             # stock" was on for that variant). Alaiy OS doesn't allow
             # negative stock by default; clamp to 0 rather than fail the
             # whole reconciliation over one variant.
-            print(f"NOTE {item.name}: Shopify qty is negative ({shopify_qty}), clamping to 0", flush=True)
+            print(f"NOTE {item.name}/{item.warehouse}: Shopify qty is negative ({shopify_qty}), clamping to 0", flush=True)
             shopify_qty = 0
-        if int(local_qty) != shopify_qty:
-            corrections.append({"item_code": item.name, "qty": shopify_qty, "was": int(local_qty)})
-            print(f"MISMATCH {item.name}: {int(local_qty)} -> {shopify_qty}", flush=True)
+        local_qty = int(item.actual_qty or 0)
+        if local_qty != shopify_qty:
+            corrections.append({"item_code": item.name, "warehouse": item.warehouse,
+                                 "qty": shopify_qty, "was": local_qty})
+            print(f"MISMATCH {item.name}/{item.warehouse}: {local_qty} -> {shopify_qty}", flush=True)
 
         if (i + 1) % 100 == 0:
             print(f"progress {i+1}/{total} -- {len(corrections)} mismatches so far", flush=True)
             frappe.db.commit()  # keep a long-running slice's progress visible/durable
 
-    print(f"DONE scanning. {len(corrections)} items need correction.", flush=True)
+    print(f"DONE scanning. {len(corrections)} row(s) need correction.", flush=True)
     if skipped_disabled:
         print(f"SKIPPED {len(skipped_disabled)} disabled item(s), not corrected: {skipped_disabled}", flush=True)
 
@@ -125,27 +131,39 @@ def run(dry_run=True, slice_index=None, slices=None):
         print("Nothing to correct.", flush=True)
         return {"total": total, "corrections": 0, "dry_run": False}
 
-    company = frappe.db.get_value("Warehouse", warehouse, "company")
-    sr = frappe.new_doc("Stock Reconciliation")
-    sr.company = company
-    sr.purpose = "Stock Reconciliation"
+    # One Stock Reconciliation per warehouse -- a single document can hold rows
+    # for multiple warehouses, but company is resolved per-warehouse and this
+    # keeps a bad row in one warehouse from blocking another's correction.
+    by_warehouse = {}
     for c in corrections:
-        sr.append("items", {
-            "item_code": c["item_code"],
-            "warehouse": warehouse,
-            "qty": c["qty"],
-            # Confirmed live: without this, submit fails partway through
-            # (past the docstatus flip, before the actual stock ledger/GL
-            # entries are created) with "Valuation Rate required" for any
-            # item that's never had a cost basis recorded -- same reasoning
-            # as opening stock's own allow_zero_valuation_rate=1.
-            "allow_zero_valuation_rate": 1,
-        })
-    sr.flags.ignore_permissions = True
-    sr.insert()
-    sr.submit()
-    frappe.db.commit()
+        by_warehouse.setdefault(c["warehouse"], []).append(c)
+
+    reconciliations = []
+    for warehouse, rows in by_warehouse.items():
+        company = frappe.db.get_value("Warehouse", warehouse, "company")
+        sr = frappe.new_doc("Stock Reconciliation")
+        sr.company = company
+        sr.purpose = "Stock Reconciliation"
+        for c in rows:
+            sr.append("items", {
+                "item_code": c["item_code"],
+                "warehouse": warehouse,
+                "qty": c["qty"],
+                # Confirmed live: without this, submit fails partway through
+                # (past the docstatus flip, before the actual stock ledger/GL
+                # entries are created) with "Valuation Rate required" for any
+                # item that's never had a cost basis recorded -- same reasoning
+                # as opening stock's own allow_zero_valuation_rate=1.
+                "allow_zero_valuation_rate": 1,
+            })
+        sr.flags.ignore_permissions = True
+        sr.insert()
+        sr.submit()
+        frappe.db.commit()
+        reconciliations.append(sr.name)
+        print(f"Applied {warehouse}: {sr.name}", flush=True)
+
     label = f" (slice {slice_index} of {slices})" if slices else ""
-    print(f"Applied. Stock Reconciliation: {sr.name}{label}", flush=True)
+    print(f"Applied.{label} {len(reconciliations)} reconciliation(s): {reconciliations}", flush=True)
     return {"total": total, "corrections": len(corrections),
-            "reconciliation": sr.name, "dry_run": False}
+            "reconciliations": reconciliations, "dry_run": False}
