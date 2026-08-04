@@ -11,6 +11,14 @@ what frappe.init() alone provides and failed on a log file path.
     bench --site <site> execute \
         alaiy_os_connector_shopify.shopify.pull_stock_from_shopify.run
 
+Which warehouse to correct is asked of Shopify, not guessed locally: this site
+maps 64 warehouses (one per vendor/consignor), and neither the local Bin table
+nor Item Default reliably says which one a given item belongs to -- Item
+Default is stuck at a placeholder group warehouse for nearly every item, and
+most items have no Bin row at all until their first real stock movement. Shopify
+already knows, from inventoryLevels on the variant's inventoryItem, exactly
+which location(s) track it.
+
 One API call per item, so a large catalogue takes hours in a single process.
 slice/slices splits the work across parallel tmux sessions:
 
@@ -20,8 +28,8 @@ slice/slices splits the work across parallel tmux sessions:
         --kwargs \"{'slice_index': $i, 'slices': 3}\" 2>&1 | tee ~/pull_stock$i.log"
     done
 
-Each slice writes its OWN Stock Reconciliation when applied -- one document
-cannot be built across processes -- so a 3-way run produces 3 documents.
+Each slice writes its OWN Stock Reconciliation(s) when applied -- one document
+cannot be built across processes.
 
 Dry run first:
     bench --site <site> execute \
@@ -35,6 +43,43 @@ Then, once the dry run's mismatch list looks right, apply for real:
 
 import frappe
 
+_VARIANT_LOCATIONS_QUERY = """
+query VariantInventoryLevels($id: ID!) {
+  productVariant(id: $id) {
+    inventoryItem {
+      id
+      inventoryLevels(first: 50) {
+        nodes {
+          location { id }
+          quantities(names: ["available"]) { quantity }
+        }
+        pageInfo { hasNextPage }
+      }
+    }
+  }
+}
+"""
+
+
+def _shopify_locations(client, variant_id):
+    """[(location_gid, quantity), ...] -- every location Shopify tracks this
+    variant's inventory at, not just the one location we happen to guess."""
+    variant_gid = f"gid://shopify/ProductVariant/{variant_id}"
+    data = client.execute(_VARIANT_LOCATIONS_QUERY, {"id": variant_gid})
+    variant = data.get("productVariant") or {}
+    levels = (variant.get("inventoryItem") or {}).get("inventoryLevels") or {}
+    nodes = levels.get("nodes") or []
+    if (levels.get("pageInfo") or {}).get("hasNextPage"):
+        print(f"NOTE {variant_id}: tracked at 50+ locations, only the first 50 read", flush=True)
+    out = []
+    for node in nodes:
+        location_gid = (node.get("location") or {}).get("id")
+        quantities = node.get("quantities") or []
+        qty = quantities[0].get("quantity") if quantities else 0
+        if location_gid:
+            out.append((location_gid, qty or 0))
+    return out
+
 
 def run(dry_run=True, slice_index=None, slices=None):
     if isinstance(dry_run, str):
@@ -46,9 +91,7 @@ def run(dry_run=True, slice_index=None, slices=None):
         frappe.throw(f"slice_index must be between 0 and {int(slices) - 1}")
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    from alaiy_os_connector_shopify.shopify.inventory_sync import (
-        _resolve_location_pairs, _get_inventory_item_state,
-    )
+    from alaiy_os_connector_shopify.shopify.inventory_sync import _resolve_location_pairs
 
     client = ShopifyGraphQLClient()
     settings = frappe.get_single("Shopify Connector Settings")
@@ -57,53 +100,14 @@ def run(dry_run=True, slice_index=None, slices=None):
         print("No warehouse/location pair resolved -- aborting.", flush=True)
         return {"aborted": "no_location_pair"}
     print(f"{len(pairs)} warehouse/location pair(s) mapped", flush=True)
+    warehouse_of_location = {location_gid: warehouse for warehouse, location_gid in pairs}
 
-    # A full item x warehouse cross product would be 14k items x 64 warehouses --
-    # far too many API calls for a one-off. Instead, check each item only against
-    # the warehouse(s) it actually has a Bin row in (real stock history), falling
-    # back to its Item Default warehouse when it has none there yet -- an item
-    # with no stock movement anywhere still has to be checked once, or the pull
-    # would silently skip it even though Shopify may show real stock for it.
-    warehouses = [w for w, _ in pairs]
-    variants = frappe.db.sql("""
+    items = frappe.db.sql("""
         SELECT i.name, v.sh_shopify_variant_id, i.disabled
         FROM `tabItem` i
         JOIN `tabShopify Listing Variant` v ON v.item_variant = i.name
         WHERE v.sh_shopify_variant_id IS NOT NULL AND v.sh_shopify_variant_id != ''
     """, as_dict=True)
-
-    bins = frappe.db.sql("""
-        SELECT item_code, warehouse, actual_qty FROM `tabBin`
-        WHERE warehouse IN %(warehouses)s
-    """, {"warehouses": warehouses}, as_dict=True)
-    bin_warehouses_of = {}
-    qty_of = {}
-    for b in bins:
-        bin_warehouses_of.setdefault(b.item_code, []).append(b.warehouse)
-        qty_of[(b.item_code, b.warehouse)] = b.actual_qty or 0
-
-    defaults = frappe.db.sql("""
-        SELECT parent, default_warehouse FROM `tabItem Default`
-        WHERE default_warehouse IN %(warehouses)s
-    """, {"warehouses": warehouses}, as_dict=True)
-    default_warehouse_of = {d.parent: d.default_warehouse for d in defaults}
-
-    items = []
-    skipped_no_warehouse = []
-    for v in variants:
-        item_warehouses = bin_warehouses_of.get(v.name)
-        if not item_warehouses:
-            fallback = default_warehouse_of.get(v.name)
-            if not fallback:
-                skipped_no_warehouse.append(v.name)
-                continue
-            item_warehouses = [fallback]
-        for w in item_warehouses:
-            items.append(frappe._dict(
-                name=v.name, sh_shopify_variant_id=v.sh_shopify_variant_id,
-                disabled=v.disabled, warehouse=w,
-                actual_qty=qty_of.get((v.name, w), 0)))
-
     # Slice for parallel runs. Partitioned by position, not by a range, so each
     # session gets an even mix rather than one taking every slow item -- and the
     # partition is deterministic, so a re-run of the same slice covers the same
@@ -112,12 +116,11 @@ def run(dry_run=True, slice_index=None, slices=None):
         items = [it for n, it in enumerate(items) if n % int(slices) == int(slice_index)]
         print(f"SLICE {slice_index} of {slices}", flush=True)
     total = len(items)
-    print(f"TOTAL {total} item/warehouse row(s), {len(skipped_no_warehouse)} item(s) skipped "
-          f"(no Bin row or Item Default in any mapped warehouse)", flush=True)
+    print(f"TOTAL {total} item(s)", flush=True)
 
-    location_of = dict(pairs)
     corrections = []
     skipped_disabled = []
+    skipped_no_mapped_location = []
     for i, item in enumerate(items):
         if item.disabled:
             # ERPNext's Stock Reconciliation rejects the ENTIRE document if
@@ -128,27 +131,34 @@ def run(dry_run=True, slice_index=None, slices=None):
             # everything else over it.
             skipped_disabled.append(item.name)
             continue
-        location_id = location_of[item.warehouse]
         try:
-            _, shopify_qty = _get_inventory_item_state(
-                client, item.sh_shopify_variant_id, location_id)
+            locations = _shopify_locations(client, item.sh_shopify_variant_id)
         except Exception as exc:
-            print(f"ERROR {item.name}/{item.warehouse}: {exc}", flush=True)
+            print(f"ERROR {item.name}: {exc}", flush=True)
             continue
-        shopify_qty = int(shopify_qty or 0)
-        if shopify_qty < 0:
-            # Shopify itself can report negative available qty (oversold --
-            # an order went through while "continue selling when out of
-            # stock" was on for that variant). Alaiy OS doesn't allow
-            # negative stock by default; clamp to 0 rather than fail the
-            # whole reconciliation over one variant.
-            print(f"NOTE {item.name}/{item.warehouse}: Shopify qty is negative ({shopify_qty}), clamping to 0", flush=True)
-            shopify_qty = 0
-        local_qty = int(item.actual_qty or 0)
-        if local_qty != shopify_qty:
-            corrections.append({"item_code": item.name, "warehouse": item.warehouse,
-                                 "qty": shopify_qty, "was": local_qty})
-            print(f"MISMATCH {item.name}/{item.warehouse}: {local_qty} -> {shopify_qty}", flush=True)
+
+        matched = [(warehouse_of_location[loc], qty)
+                   for loc, qty in locations if loc in warehouse_of_location]
+        if not matched:
+            skipped_no_mapped_location.append(item.name)
+            continue
+
+        for warehouse, shopify_qty in matched:
+            shopify_qty = int(shopify_qty or 0)
+            if shopify_qty < 0:
+                # Shopify itself can report negative available qty (oversold --
+                # an order went through while "continue selling when out of
+                # stock" was on for that variant). Alaiy OS doesn't allow
+                # negative stock by default; clamp to 0 rather than fail the
+                # whole reconciliation over one variant.
+                print(f"NOTE {item.name}/{warehouse}: Shopify qty is negative ({shopify_qty}), clamping to 0", flush=True)
+                shopify_qty = 0
+            local_qty = int(frappe.db.get_value(
+                "Bin", {"item_code": item.name, "warehouse": warehouse}, "actual_qty") or 0)
+            if local_qty != shopify_qty:
+                corrections.append({"item_code": item.name, "warehouse": warehouse,
+                                     "qty": shopify_qty, "was": local_qty})
+                print(f"MISMATCH {item.name}/{warehouse}: {local_qty} -> {shopify_qty}", flush=True)
 
         if (i + 1) % 100 == 0:
             print(f"progress {i+1}/{total} -- {len(corrections)} mismatches so far", flush=True)
@@ -157,15 +167,15 @@ def run(dry_run=True, slice_index=None, slices=None):
     print(f"DONE scanning. {len(corrections)} row(s) need correction.", flush=True)
     if skipped_disabled:
         print(f"SKIPPED {len(skipped_disabled)} disabled item(s), not corrected: {skipped_disabled}", flush=True)
-    if skipped_no_warehouse:
-        print(f"SKIPPED {len(skipped_no_warehouse)} item(s) with no Bin row or Item Default "
-              f"in any mapped warehouse -- not checked at all: {skipped_no_warehouse[:20]}", flush=True)
+    if skipped_no_mapped_location:
+        print(f"SKIPPED {len(skipped_no_mapped_location)} item(s) -- Shopify tracks them at no "
+              f"location we have mapped to a warehouse: {skipped_no_mapped_location[:20]}", flush=True)
 
     if dry_run:
         print("DRY RUN -- nothing applied. Re-run with dry_run=False to apply.", flush=True)
         return {"total": total, "corrections": len(corrections),
                 "skipped_disabled": len(skipped_disabled),
-                "skipped_no_warehouse": len(skipped_no_warehouse), "dry_run": True}
+                "skipped_no_mapped_location": len(skipped_no_mapped_location), "dry_run": True}
 
     if not corrections:
         print("Nothing to correct.", flush=True)
