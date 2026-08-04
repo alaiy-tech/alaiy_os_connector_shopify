@@ -21,13 +21,31 @@ Then, once the dry run's mismatch list looks right, apply for real:
     nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/pull_stock_from_shopify.py <site_name> --apply > ~/pull_stock_apply.log 2>&1 &
     tail -f ~/pull_stock_apply.log
 """
+import os
 import sys
 
 import frappe
 
+# apps/<app>/scripts/<this file> -> the bench root is four levels up. Derived from
+# the file's own location rather than the process's working directory: frappe.init
+# resolves "sites" relative to cwd, so launching from anywhere but the bench root
+# -- a tmux session, cron, a different shell -- fails with "site does not exist"
+# even though the site is right there.
+_BENCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_SITES_PATH = os.path.join(_BENCH_ROOT, "sites")
+
 
 def main(site, dry_run=True, slice_index=None, slices=None):
-    frappe.init(site=site)
+    if not os.path.isdir(os.path.join(_SITES_PATH, site)):
+        available = sorted(
+            d for d in os.listdir(_SITES_PATH)
+            if os.path.isdir(os.path.join(_SITES_PATH, d)) and "." in d
+        )
+        print(f"Site {site!r} not found under {_SITES_PATH}", flush=True)
+        print(f"Available: {', '.join(available) or '<none>'}", flush=True)
+        sys.exit(1)
+
+    frappe.init(site=site, sites_path=_SITES_PATH)
     frappe.connect()
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
