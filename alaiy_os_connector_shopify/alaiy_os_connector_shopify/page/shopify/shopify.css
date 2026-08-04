@@ -483,6 +483,10 @@
 	box-shadow: 0 4px 10px rgba(0, 0, 0, 0.06);
 }
 
+.shopify-stat-clickable {
+	cursor: pointer;
+}
+
 .shopify-stat-tile::before {
 	content: "";
 	position: absolute;

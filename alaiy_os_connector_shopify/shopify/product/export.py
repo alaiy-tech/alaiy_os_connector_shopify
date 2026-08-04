@@ -36,6 +36,7 @@ from alaiy_os_connector_shopify.shopify.sync_engine import entities
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_SET_MUTATION, _PRODUCT_UPDATE_MUTATION
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical, _product_set_input
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+from alaiy_os_connector_shopify.shopify.product import status as status_map
 
 LOCK_TIMEOUT_SECONDS = 30
 
@@ -168,6 +169,100 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
         summary = f"Exported {created} products to Shopify"
         if skipped_status:
             summary += f"; {skipped_status} skipped by the status filter"
+        if failed:
+            summary += f"; {failed} failed"
+        if cancelled:
+            summary += " (stopped early by user)"
+        _append_export_log(log, summary)
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    except Exception:
+        log.status = "failed"
+        log.error_message = frappe.get_traceback()[:500]
+        log.finished_at = frappe.utils.now_datetime()
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        raise
+
+    return log.name
+
+
+def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
+    """
+    Bulk-enable every disabled Shopify Product Listing whose own status
+    matches one of the caller's chosen statuses -- for switching on a batch
+    of already-created Draft/Archived listings in one action instead of
+    ticking each by hand. Matched against the Listing's own sh_shopify_status
+    (what push_item itself gates on), not the Item's copy.
+
+    Enable via doc.save(), not frappe.db.set_value -- the push side effect
+    from on_listing_update is the point here, same as a manual checkbox
+    click.
+    """
+    from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync, is_cancel_requested
+
+    log = load_or_create_log("listing_bulk_enable", trigger, log_name)
+
+    if has_active_sync("listing_bulk_enable", exclude_name=log.name):
+        log.status = "skipped"
+        log.finished_at = frappe.utils.now_datetime()
+        log.error_message = "Skipped: another bulk-enable run is already in progress."
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        return log.name
+
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    try:
+        allowed_statuses = status_map.parse_statuses(statuses)
+        disabled = frappe.get_all(
+            "Shopify Product Listing",
+            filters={"is_enabled": 0},
+            fields=["name", "sh_shopify_status"],
+        )
+        matched = [r.name for r in disabled if status_map.export_allows(r.sh_shopify_status, allowed_statuses)]
+        log.pages_total = len(matched)
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+
+        processed = enabled = failed = 0
+        cancelled = False
+
+        for i, listing_name in enumerate(matched):
+            if i % 10 == 0:
+                if is_cancel_requested(log.name):
+                    cancelled = True
+                    _append_export_log(log, f"Stopped by user after {processed}/{len(matched)} listings.")
+                    break
+                log.items_processed = processed
+                log.items_created = enabled
+                log.items_failed = failed
+                _append_export_log(log, f"...{processed}/{len(matched)} processed so far ({enabled} enabled, {failed} failed)")
+                log.save(ignore_permissions=True)
+                frappe.db.commit()
+            processed += 1
+            try:
+                listing = frappe.get_doc("Shopify Product Listing", listing_name)
+                listing.is_enabled = 1
+                listing.save(ignore_permissions=True)
+                enabled += 1
+            except Exception as exc:
+                failed += 1
+                _append_export_log(log, f"ERROR listing={listing_name}: {str(exc)[:200]}")
+                frappe.log_error(
+                    title=f"Shopify bulk-enable: listing {listing_name} save failed",
+                    message=frappe.get_traceback(),
+                )
+
+        log.status = "cancelled" if cancelled else "success"
+        log.items_processed = processed
+        log.items_created = enabled
+        log.items_failed = failed
+        log.finished_at = frappe.utils.now_datetime()
+        summary = f"Enabled {enabled} listing(s)"
         if failed:
             summary += f"; {failed} failed"
         if cancelled:

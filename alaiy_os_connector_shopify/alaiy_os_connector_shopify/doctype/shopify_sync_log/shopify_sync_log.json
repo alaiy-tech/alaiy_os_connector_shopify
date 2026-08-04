@@ -26,7 +26,7 @@
       "fieldtype": "Select",
       "in_list_view": 1,
       "label": "Sync Type",
-      "options": "orders\ninventory\nproducts\nproduct_export\ncollections\nlocations\nwebhook\ntaxonomy"
+      "options": "orders\ninventory\nproducts\nproduct_export\nlisting_bulk_enable\ncollections\nlocations\nwebhook\ntaxonomy"
     },
     {
       "fieldname": "trigger",
