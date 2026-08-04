@@ -3,50 +3,47 @@ One-off: pull Shopify's live inventory quantity for every Shopify-linked
 item and apply it locally via Stock Reconciliation (audited correction,
 doesn't touch sales/opening-stock history).
 
+Run through bench execute, not as a bare script -- a bare script has to
+reimplement everything bench's own wrapper sets up (site config, logging
+paths, DB connection), and on this environment that setup diverged from
+what frappe.init() alone provides and failed on a log file path.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.scripts.pull_stock_from_shopify.run
+
 One API call per item, so a large catalogue takes hours in a single process.
---slice/--slices splits the work across parallel sessions:
+slice/slices splits the work across parallel tmux sessions:
 
     for i in 0 1 2; do
-      tmux new -d -s stock$i "cd ~/alaiy_os_bench && ./env/bin/python -u         apps/alaiy_os_connector_shopify/scripts/pull_stock_from_shopify.py <site>         --dry-run --slice $i --slices 3 2>&1 | tee ~/pull_stock$i.log"
+      tmux new -d -s stock$i "cd ~/alaiy_os_bench && bench --site <site> execute \
+        alaiy_os_connector_shopify.scripts.pull_stock_from_shopify.run \
+        --kwargs \"{'slice_index': $i, 'slices': 3}\" 2>&1 | tee ~/pull_stock$i.log"
     done
 
 Each slice writes its OWN Stock Reconciliation when applied -- one document
 cannot be built across processes -- so a 3-way run produces 3 documents.
 
-Run backgrounded (recommended -- one API call each):
-    nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/pull_stock_from_shopify.py <site_name> --dry-run > ~/pull_stock.log 2>&1 &
-    tail -f ~/pull_stock.log
+Dry run first:
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.scripts.pull_stock_from_shopify.run
 
 Then, once the dry run's mismatch list looks right, apply for real:
-    nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/pull_stock_from_shopify.py <site_name> --apply > ~/pull_stock_apply.log 2>&1 &
-    tail -f ~/pull_stock_apply.log
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.scripts.pull_stock_from_shopify.run \
+        --kwargs "{'dry_run': False}"
 """
-import os
-import sys
 
 import frappe
 
-# apps/<app>/scripts/<this file> -> the bench root is four levels up. Derived from
-# the file's own location rather than the process's working directory: frappe.init
-# resolves "sites" relative to cwd, so launching from anywhere but the bench root
-# -- a tmux session, cron, a different shell -- fails with "site does not exist"
-# even though the site is right there.
-_BENCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-_SITES_PATH = os.path.join(_BENCH_ROOT, "sites")
 
+def run(dry_run=True, slice_index=None, slices=None):
+    if isinstance(dry_run, str):
+        dry_run = dry_run.strip().lower() not in ("0", "false", "no", "")
 
-def main(site, dry_run=True, slice_index=None, slices=None):
-    if not os.path.isdir(os.path.join(_SITES_PATH, site)):
-        available = sorted(
-            d for d in os.listdir(_SITES_PATH)
-            if os.path.isdir(os.path.join(_SITES_PATH, d)) and "." in d
-        )
-        print(f"Site {site!r} not found under {_SITES_PATH}", flush=True)
-        print(f"Available: {', '.join(available) or '<none>'}", flush=True)
-        sys.exit(1)
-
-    frappe.init(site=site, sites_path=_SITES_PATH)
-    frappe.connect()
+    if (slice_index is None) != (slices is None):
+        frappe.throw("slice_index and slices must be given together")
+    if slices is not None and not 0 <= int(slice_index) < int(slices):
+        frappe.throw(f"slice_index must be between 0 and {int(slices) - 1}")
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.inventory_sync import (
@@ -58,7 +55,7 @@ def main(site, dry_run=True, slice_index=None, slices=None):
     pairs = _resolve_location_pairs(settings, client)
     if not pairs:
         print("No warehouse/location pair resolved -- aborting.", flush=True)
-        return
+        return {"aborted": "no_location_pair"}
     warehouse, location_id = pairs[0]
     print(f"Pulling live Shopify qty for warehouse={warehouse} location={location_id}", flush=True)
 
@@ -113,18 +110,20 @@ def main(site, dry_run=True, slice_index=None, slices=None):
 
         if (i + 1) % 100 == 0:
             print(f"progress {i+1}/{total} -- {len(corrections)} mismatches so far", flush=True)
+            frappe.db.commit()  # keep a long-running slice's progress visible/durable
 
     print(f"DONE scanning. {len(corrections)} items need correction.", flush=True)
     if skipped_disabled:
         print(f"SKIPPED {len(skipped_disabled)} disabled item(s), not corrected: {skipped_disabled}", flush=True)
 
     if dry_run:
-        print("DRY RUN -- nothing applied. Re-run with --apply to actually correct.", flush=True)
-        return
+        print("DRY RUN -- nothing applied. Re-run with dry_run=False to apply.", flush=True)
+        return {"total": total, "corrections": len(corrections),
+                "skipped_disabled": len(skipped_disabled), "dry_run": True}
 
     if not corrections:
         print("Nothing to correct.", flush=True)
-        return
+        return {"total": total, "corrections": 0, "dry_run": False}
 
     company = frappe.db.get_value("Warehouse", warehouse, "company")
     sr = frappe.new_doc("Stock Reconciliation")
@@ -145,35 +144,8 @@ def main(site, dry_run=True, slice_index=None, slices=None):
     sr.flags.ignore_permissions = True
     sr.insert()
     sr.submit()
-    # Confirmed live: without an explicit commit, this write only exists
-    # inside the current DB transaction -- fine if this script runs to a
-    # normal process exit (which commits), but a `bench console` session
-    # that gets closed (or crashes) without this rolls the whole
-    # insert+submit back silently, even though sr.name and every print
-    # above already looked like a real success.
     frappe.db.commit()
     label = f" (slice {slice_index} of {slices})" if slices else ""
     print(f"Applied. Stock Reconciliation: {sr.name}{label}", flush=True)
-
-
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python pull_stock_from_shopify.py <site> [--dry-run|--apply] "
-              "[--slice N --slices M]", flush=True)
-        sys.exit(1)
-    site = sys.argv[1]
-    dry_run = "--apply" not in sys.argv
-
-    def _arg(name):
-        if name in sys.argv:
-            return int(sys.argv[sys.argv.index(name) + 1])
-        return None
-
-    slice_index, slices = _arg("--slice"), _arg("--slices")
-    if (slice_index is None) != (slices is None):
-        print("--slice and --slices must be given together", flush=True)
-        sys.exit(1)
-    if slices is not None and not 0 <= slice_index < slices:
-        print(f"--slice must be between 0 and {slices - 1}", flush=True)
-        sys.exit(1)
-    main(site, dry_run=dry_run, slice_index=slice_index, slices=slices)
+    return {"total": total, "corrections": len(corrections),
+            "reconciliation": sr.name, "dry_run": False}
