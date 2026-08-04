@@ -3,7 +3,17 @@ One-off: pull Shopify's live inventory quantity for every Shopify-linked
 item and apply it locally via Stock Reconciliation (audited correction,
 doesn't touch sales/opening-stock history).
 
-Run backgrounded (recommended -- ~1000+ items, one API call each):
+One API call per item, so a large catalogue takes hours in a single process.
+--slice/--slices splits the work across parallel sessions:
+
+    for i in 0 1 2; do
+      tmux new -d -s stock$i "cd ~/alaiy_os_bench && ./env/bin/python -u         apps/alaiy_os_connector_shopify/scripts/pull_stock_from_shopify.py <site>         --dry-run --slice $i --slices 3 2>&1 | tee ~/pull_stock$i.log"
+    done
+
+Each slice writes its OWN Stock Reconciliation when applied -- one document
+cannot be built across processes -- so a 3-way run produces 3 documents.
+
+Run backgrounded (recommended -- one API call each):
     nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/pull_stock_from_shopify.py <site_name> --dry-run > ~/pull_stock.log 2>&1 &
     tail -f ~/pull_stock.log
 
@@ -16,7 +26,7 @@ import sys
 import frappe
 
 
-def main(site, dry_run=True):
+def main(site, dry_run=True, slice_index=None, slices=None):
     frappe.init(site=site)
     frappe.connect()
 
@@ -40,6 +50,13 @@ def main(site, dry_run=True):
         JOIN `tabShopify Listing Variant` v ON v.item_variant = i.name
         WHERE v.sh_shopify_variant_id IS NOT NULL AND v.sh_shopify_variant_id != ''
     """, as_dict=True)
+    # Slice for parallel runs. Partitioned by position, not by a range, so each
+    # session gets an even mix rather than one taking every slow item -- and the
+    # partition is deterministic, so a re-run of the same slice covers the same
+    # items.
+    if slices:
+        items = [it for n, it in enumerate(items) if n % int(slices) == int(slice_index)]
+        print(f"SLICE {slice_index} of {slices}", flush=True)
     total = len(items)
     print(f"TOTAL {total} items", flush=True)
 
@@ -117,13 +134,28 @@ def main(site, dry_run=True):
     # insert+submit back silently, even though sr.name and every print
     # above already looked like a real success.
     frappe.db.commit()
-    print(f"Applied. Stock Reconciliation: {sr.name}", flush=True)
+    label = f" (slice {slice_index} of {slices})" if slices else ""
+    print(f"Applied. Stock Reconciliation: {sr.name}{label}", flush=True)
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python pull_stock_from_shopify.py <site_name> [--dry-run|--apply]", flush=True)
+        print("Usage: python pull_stock_from_shopify.py <site> [--dry-run|--apply] "
+              "[--slice N --slices M]", flush=True)
         sys.exit(1)
     site = sys.argv[1]
     dry_run = "--apply" not in sys.argv
-    main(site, dry_run=dry_run)
+
+    def _arg(name):
+        if name in sys.argv:
+            return int(sys.argv[sys.argv.index(name) + 1])
+        return None
+
+    slice_index, slices = _arg("--slice"), _arg("--slices")
+    if (slice_index is None) != (slices is None):
+        print("--slice and --slices must be given together", flush=True)
+        sys.exit(1)
+    if slices is not None and not 0 <= slice_index < slices:
+        print(f"--slice must be between 0 and {slices - 1}", flush=True)
+        sys.exit(1)
+    main(site, dry_run=dry_run, slice_index=slice_index, slices=slices)
