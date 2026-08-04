@@ -5,6 +5,11 @@
 // having run.
 frappe.listview_settings["Shopify Product Listing"] = frappe.listview_settings["Shopify Product Listing"] || {};
 
+// Own block below the header/filter row -- add_inner_message shares the
+// narrow header title slot with whatever else writes there (confirmed live,
+// other connectors on this same page also use it, squeezing our pills out
+// of view). Rendered into a dedicated div inserted once, refreshed in place
+// on every onload/refresh rather than re-inserted, so it never duplicates.
 function render_shopify_status_banner(listview) {
 	frappe.call({
 		method: "alaiy_os_connector_shopify.api.sync.get_dashboard_stats",
@@ -13,17 +18,23 @@ function render_shopify_status_banner(listview) {
 			if (!s) return;
 			var disabled = s.listings_total - s.listings_enabled;
 			var pills = [
-				{ label: "En", value: s.listings_enabled, filter: { is_enabled: 1 } },
-				{ label: "Dis", value: disabled, filter: { is_enabled: 0 } },
-				{ label: "Tot", value: s.listings_total, filter: {} },
+				{ label: "Enabled", value: s.listings_enabled, filter: { is_enabled: 1 } },
+				{ label: "Disabled", value: disabled, filter: { is_enabled: 0 } },
+				{ label: "Total", value: s.listings_total, filter: {} },
 			].map(function (c) {
-				return '<span class="shopify-listing-status-pill filterable" style="cursor:pointer;" data-filter=\'' +
+				return '<span class="shopify-listing-status-pill filterable" style="cursor:pointer;margin-right:16px;" data-filter=\'' +
 					JSON.stringify(c.filter) + "'>" + __(c.label) + ": <b>" + c.value + "</b></span>";
-			}).join(" ");
-			listview.page.add_inner_message(
-				'<div class="shopify-listing-status-banner" style="display:flex;gap:8px;white-space:nowrap;">' + pills + "</div>"
-			);
-			listview.page.wrapper.find(".shopify-listing-status-pill").off("click").on("click", function () {
+			}).join("");
+
+			var $container = listview.page.wrapper.find(".shopify-listing-status-block");
+			if (!$container.length) {
+				$container = $(
+					'<div class="shopify-listing-status-block" style="padding:8px 20px;border-bottom:1px solid var(--border-color);"></div>'
+				);
+				listview.page.wrapper.find(".page-content .list-area").first().before($container);
+			}
+			$container.html(pills);
+			$container.find(".shopify-listing-status-pill").off("click").on("click", function () {
 				frappe.set_route("List", "Shopify Product Listing", JSON.parse($(this).attr("data-filter")));
 			});
 		},
