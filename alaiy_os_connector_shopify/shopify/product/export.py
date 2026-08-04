@@ -25,6 +25,8 @@ product ID yet" before any of them writes one back, and each creates its
 own duplicate product.
 """
 
+import time
+
 import frappe
 
 from alaiy_os_connector_shopify.shopify.sync_guard import append_log as _append_export_log
@@ -188,6 +190,29 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
     return log.name
 
 
+def _save_throttled(listing, log, listing_name, max_wait=180):
+    """
+    listing.save() enqueues a push_item job via on_listing_update; when the
+    push queue is already full, frappe.throw(QueueOverloaded) fires AFTER
+    is_enabled=1 is committed, wrongly counting an already-enabled listing
+    as failed. Wait for the queue to drain and retry the save (re-enqueuing
+    the push) instead of treating queue pressure as a per-listing error.
+    """
+    waited = 0
+    while True:
+        try:
+            listing.save(ignore_permissions=True)
+            return
+        except frappe.exceptions.QueueOverloaded:
+            if waited >= max_wait:
+                raise
+            _append_export_log(log, f"Push queue full, pausing 15s ({listing_name})")
+            frappe.db.commit()
+            time.sleep(15)
+            waited += 15
+            listing.reload()
+
+
 def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
     """
     Bulk-enable every disabled Shopify Product Listing whose own status
@@ -247,7 +272,7 @@ def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
             try:
                 listing = frappe.get_doc("Shopify Product Listing", listing_name)
                 listing.is_enabled = 1
-                listing.save(ignore_permissions=True)
+                _save_throttled(listing, log, listing_name)
                 enabled += 1
             except Exception as exc:
                 failed += 1
