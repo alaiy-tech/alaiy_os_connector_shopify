@@ -31,7 +31,11 @@ function render_shopify_status_banner(listview) {
 				$container = $(
 					'<div class="shopify-listing-status-block" style="padding:8px 20px;border-bottom:1px solid var(--border-color);"></div>'
 				);
-				listview.page.wrapper.find(".page-content .list-area").first().before($container);
+				// listview.$result is the stable, documented reference to the
+				// actual list rows container -- the earlier ".page-content
+				// .list-area" guess didn't match this Frappe version's DOM at
+				// all, so the block silently never got inserted.
+				listview.$result.before($container);
 			}
 			$container.html(pills);
 			$container.find(".shopify-listing-status-pill").off("click").on("click", function () {
