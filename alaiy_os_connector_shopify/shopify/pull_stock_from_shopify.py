@@ -58,17 +58,52 @@ def run(dry_run=True, slice_index=None, slices=None):
         return {"aborted": "no_location_pair"}
     print(f"{len(pairs)} warehouse/location pair(s) mapped", flush=True)
 
-    # Bound per warehouse, not per item x every pair -- this site has 64 mapped
-    # warehouses, and checking every item against every location would be 64x the
-    # API calls for stock that mostly lives in one warehouse each.
+    # A full item x warehouse cross product would be 14k items x 64 warehouses --
+    # far too many API calls for a one-off. Instead, check each item only against
+    # the warehouse(s) it actually has a Bin row in (real stock history), falling
+    # back to its Item Default warehouse when it has none there yet -- an item
+    # with no stock movement anywhere still has to be checked once, or the pull
+    # would silently skip it even though Shopify may show real stock for it.
     warehouses = [w for w, _ in pairs]
-    items = frappe.db.sql("""
-        SELECT i.name, v.sh_shopify_variant_id, i.disabled, b.warehouse, b.actual_qty
+    variants = frappe.db.sql("""
+        SELECT i.name, v.sh_shopify_variant_id, i.disabled
         FROM `tabItem` i
         JOIN `tabShopify Listing Variant` v ON v.item_variant = i.name
-        JOIN `tabBin` b ON b.item_code = i.name AND b.warehouse IN %(warehouses)s
         WHERE v.sh_shopify_variant_id IS NOT NULL AND v.sh_shopify_variant_id != ''
+    """, as_dict=True)
+
+    bins = frappe.db.sql("""
+        SELECT item_code, warehouse, actual_qty FROM `tabBin`
+        WHERE warehouse IN %(warehouses)s
     """, {"warehouses": warehouses}, as_dict=True)
+    bin_warehouses_of = {}
+    qty_of = {}
+    for b in bins:
+        bin_warehouses_of.setdefault(b.item_code, []).append(b.warehouse)
+        qty_of[(b.item_code, b.warehouse)] = b.actual_qty or 0
+
+    defaults = frappe.db.sql("""
+        SELECT parent, default_warehouse FROM `tabItem Default`
+        WHERE default_warehouse IN %(warehouses)s
+    """, {"warehouses": warehouses}, as_dict=True)
+    default_warehouse_of = {d.parent: d.default_warehouse for d in defaults}
+
+    items = []
+    skipped_no_warehouse = []
+    for v in variants:
+        item_warehouses = bin_warehouses_of.get(v.name)
+        if not item_warehouses:
+            fallback = default_warehouse_of.get(v.name)
+            if not fallback:
+                skipped_no_warehouse.append(v.name)
+                continue
+            item_warehouses = [fallback]
+        for w in item_warehouses:
+            items.append(frappe._dict(
+                name=v.name, sh_shopify_variant_id=v.sh_shopify_variant_id,
+                disabled=v.disabled, warehouse=w,
+                actual_qty=qty_of.get((v.name, w), 0)))
+
     # Slice for parallel runs. Partitioned by position, not by a range, so each
     # session gets an even mix rather than one taking every slow item -- and the
     # partition is deterministic, so a re-run of the same slice covers the same
@@ -77,7 +112,8 @@ def run(dry_run=True, slice_index=None, slices=None):
         items = [it for n, it in enumerate(items) if n % int(slices) == int(slice_index)]
         print(f"SLICE {slice_index} of {slices}", flush=True)
     total = len(items)
-    print(f"TOTAL {total} item/warehouse row(s)", flush=True)
+    print(f"TOTAL {total} item/warehouse row(s), {len(skipped_no_warehouse)} item(s) skipped "
+          f"(no Bin row or Item Default in any mapped warehouse)", flush=True)
 
     location_of = dict(pairs)
     corrections = []
@@ -121,11 +157,15 @@ def run(dry_run=True, slice_index=None, slices=None):
     print(f"DONE scanning. {len(corrections)} row(s) need correction.", flush=True)
     if skipped_disabled:
         print(f"SKIPPED {len(skipped_disabled)} disabled item(s), not corrected: {skipped_disabled}", flush=True)
+    if skipped_no_warehouse:
+        print(f"SKIPPED {len(skipped_no_warehouse)} item(s) with no Bin row or Item Default "
+              f"in any mapped warehouse -- not checked at all: {skipped_no_warehouse[:20]}", flush=True)
 
     if dry_run:
         print("DRY RUN -- nothing applied. Re-run with dry_run=False to apply.", flush=True)
         return {"total": total, "corrections": len(corrections),
-                "skipped_disabled": len(skipped_disabled), "dry_run": True}
+                "skipped_disabled": len(skipped_disabled),
+                "skipped_no_warehouse": len(skipped_no_warehouse), "dry_run": True}
 
     if not corrections:
         print("Nothing to correct.", flush=True)
