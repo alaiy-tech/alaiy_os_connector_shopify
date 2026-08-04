@@ -17,6 +17,12 @@ def sync_connector_registry():
     _backfill_singles_defaults("Shopify Connector Settings", [
         "sh_token_refresh_interval",
         "sh_auto_sales_invoice", "sh_invoice_trigger",
+        # Confirmed live: never backfilled on a site whose Settings singleton
+        # predated these fields -- read back as 0, not None, so status.py's
+        # own _selected() safeguard (written for the None case) didn't catch
+        # it, and every export was silently blocked regardless of status.
+        "sh_import_status_active", "sh_import_status_draft", "sh_import_status_archived",
+        "sh_export_status_active", "sh_export_status_draft", "sh_export_status_archived",
     ])
     _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_description")
     _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_vendor")
