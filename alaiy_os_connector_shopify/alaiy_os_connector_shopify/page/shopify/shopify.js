@@ -564,6 +564,25 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		return html;
 	}
 
+	// Clicking a template-status tile jumps to the Listing list filtered to
+	// that status -- delegated on the grid's parent since load_stats()
+	// rewrites innerHTML on every refresh.
+	function render_status_stat_group(s) {
+		var html = '<div class="shopify-stat-group-title">Templates by status</div><div class="shopify-stats-grid">';
+		[
+			{label: 'Active', value: s.templates_active, status: 'Active'},
+			{label: 'Draft', value: s.templates_draft, status: 'Draft'},
+			{label: 'Archived', value: s.templates_archived, status: 'Archived'},
+		].forEach(function(c) {
+			html += '<div class="shopify-stat-tile shopify-stat-accent-local shopify-stat-clickable" data-status="' + c.status + '">' +
+				'<div class="shopify-stat-value">' + c.value + '</div>' +
+				'<div class="shopify-stat-label">' + c.label + '</div>' +
+				'</div>';
+		});
+		html += '</div>';
+		return html;
+	}
+
 	function load_stats() {
 		var grid = document.getElementById('shopify-stats-grid');
 		grid.innerHTML = render_skeleton_group('Alaiy OS (local)', 8);
@@ -582,7 +601,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					{label: 'Variants pushed', value: s.variants_pushed},
 					{label: 'Listings (enabled / total)', value: s.listings_enabled + ' / ' + s.listings_total},
 					{label: 'Orders synced', value: s.orders_synced},
-				], 'local') + '<div id="shopify-side-stats">' + render_skeleton_group('Shopify (live)', 3) + '</div>';
+				], 'local') + render_status_stat_group(s) + '<div id="shopify-side-stats">' + render_skeleton_group('Shopify (live)', 3) + '</div>';
 
 				frappe.call({
 					method: 'alaiy_os_connector_shopify.api.sync.get_shopify_side_stats',
@@ -625,6 +644,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	document.getElementById('sync-tags-btn').addEventListener('click', sync_tags);
 	document.getElementById('sync-collections-btn').addEventListener('click', sync_collections);
 	document.getElementById('sync-locations-btn').addEventListener('click', sync_locations);
+	$(page.body).on('click', '#shopify-stats-grid .shopify-stat-clickable', function() {
+		frappe.set_route('List', 'Shopify Product Listing', { sh_shopify_status: $(this).data('status') });
+	});
 	document.getElementById('manage-listings-btn').addEventListener('click', function() {
 		frappe.set_route('List', 'Shopify Product Listing');
 	});

@@ -134,6 +134,7 @@ doc_events = {
 
 doctype_list_js = {
     "Sales Order": "public/js/sales_order_list.js",
+    "Shopify Product Listing": "public/js/shopify_product_listing_list.js",
 }
 
 doctype_js = {

@@ -1,5 +1,6 @@
 import frappe
 
+from alaiy_os_connector_shopify.shopify.product import status as status_map
 from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
 
 
@@ -73,6 +74,24 @@ def trigger_product_export(statuses=None):
 
 
 @frappe.whitelist()
+def enable_listings_by_status(statuses=None):
+    """
+    Bulk-enable every currently-disabled Shopify Product Listing whose own
+    status matches one of the caller's chosen statuses (any combination --
+    not hardcoded to Active). Each enable is a real doc.save(), so
+    on_listing_update's push hook fires per listing same as a manual
+    checkbox click would -- enqueued because a large matching set is many
+    of those in a row.
+    """
+    return _enqueue_sync(
+        "listing_bulk_enable",
+        "alaiy_os_connector_shopify.shopify.product.export.run_bulk_enable_listings",
+        timeout=1800,
+        statuses=statuses,
+    )
+
+
+@frappe.whitelist()
 def get_sync_status(sync_type=None):
     filters = {}
     if sync_type:
@@ -120,6 +139,15 @@ def get_dashboard_stats():
     listings_total = frappe.db.count("Shopify Product Listing")
     listings_enabled = frappe.db.count("Shopify Product Listing", {"is_enabled": 1})
 
+    # Blank reads as Active -- same rule status.to_shopify/export_allows use for
+    # an unset field, so these three always add up to templates_total.
+    templates_active = frappe.db.count("Item", {
+        "variant_of": ["in", ["", None]], "sh_shopify_status": ["in", ["", None, status_map.DEFAULT_LOCAL]]})
+    templates_draft = frappe.db.count("Item", {
+        "variant_of": ["in", ["", None]], "sh_shopify_status": "Draft"})
+    templates_archived = frappe.db.count("Item", {
+        "variant_of": ["in", ["", None]], "sh_shopify_status": "Archived"})
+
     # Push and pull both stamp the same sh_shopify_order_id field -- nothing
     # in the schema distinguishes which direction created the link, so this
     # is "synced with Shopify" overall, not split by direction.
@@ -144,6 +172,9 @@ def get_dashboard_stats():
         "variants_pushed": variants_pushed,
         "listings_total": listings_total,
         "listings_enabled": listings_enabled,
+        "templates_active": templates_active,
+        "templates_draft": templates_draft,
+        "templates_archived": templates_archived,
         "orders_synced": orders_synced,
         "last_runs": latest_by_type,
     }
