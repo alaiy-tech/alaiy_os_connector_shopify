@@ -385,6 +385,12 @@ def _push_product_unlocked(item):
     product_input = _product_set_input(item, variants, settings, listing, client)
 
     identifier = None
+    # Only ever set True inside the product_id branch below (re-archiving only
+    # makes sense for a product that already exists on Shopify) -- confirmed
+    # live, a brand-new product (product_id is None, the common case for any
+    # first-time push) skipped that branch entirely and crashed on the
+    # unconditional `if re_archive` further down with UnboundLocalError.
+    re_archive = False
     # Listing's copy first (dual-written on every push below), Item as fallback.
     product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
     if product_id:
