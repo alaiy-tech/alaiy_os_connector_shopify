@@ -134,8 +134,9 @@ function run_update_listings(file_url) {
 }
 
 function open_update_listings_dialog(listview) {
-	var uploaded_file_url = null;
-
+	// A single Attach field renders its file picker inline in THIS dialog --
+	// no separate frappe.ui.FileUploader popup stacking on top of it (that
+	// was the bug: two overlapping modals, confirmed live).
 	var dialog = new frappe.ui.Dialog({
 		title: __("Update Listings from CSV"),
 		fields: [
@@ -144,28 +145,22 @@ function open_update_listings_dialog(listview) {
 				fieldname: "help",
 				options: "<p class='text-muted'>Same column shape as \"Export Listings (CSV)\". Updates existing Items/Listings only -- a row whose item_code doesn't already exist is skipped, not created (new products come in through the product import instead). Blank cells leave the current value unchanged. Applies directly -- every field actually changed is recorded as an explicit before -> after line on the resulting Shopify Sync Log.</p>",
 			},
+			{
+				fieldtype: "Attach",
+				fieldname: "csv_file",
+				label: __("CSV File"),
+				reqd: 1,
+				is_private: 1,
+			},
 		],
 		primary_action_label: __("Upload & Apply"),
-		primary_action: function () {
-			if (!uploaded_file_url) {
+		primary_action: function (values) {
+			if (!values.csv_file) {
 				frappe.msgprint(__("Upload a CSV file first."));
 				return;
 			}
-			run_update_listings(uploaded_file_url);
+			run_update_listings(values.csv_file);
 			dialog.hide();
-		},
-	});
-
-	dialog.$body.append('<div class="update-listings-upload-area" style="margin-top:12px;"></div>');
-	new frappe.ui.FileUploader({
-		dialog_title: __("Upload Listings CSV"),
-		private: true,
-		restrictions: { allowed_file_types: [".csv"] },
-		on_success: function (file_doc) {
-			uploaded_file_url = file_doc.file_url;
-			dialog.$body.find(".update-listings-upload-area").html(
-				"<p><b>" + __("Uploaded") + ":</b> " + frappe.utils.escape_html(file_doc.file_name) + "</p>"
-			);
 		},
 	});
 
