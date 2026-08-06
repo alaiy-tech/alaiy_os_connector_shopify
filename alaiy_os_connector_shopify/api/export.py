@@ -46,6 +46,7 @@ import csv
 import io
 
 import frappe
+from frappe.utils import cint
 
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
@@ -104,7 +105,11 @@ def _variant_rows(listing, item, settings):
             "variant_price": listing_resolver.variant_price(listing, code, settings) or "",
             "variant_sh_shopify_variant_id": listing_resolver.variant_shopify_id(listing, code) or "",
             "variant_image": listing_resolver.effective_variant_image(listing, code) or "",
-            "variant_is_enabled": (row.is_enabled if row else 1),
+            # row.is_enabled can be a genuine NULL in the DB for older rows
+            # (the field's default of 1 never backfills onto an
+            # already-existing row) -- fall back to 1 for that case too,
+            # not just when the row is missing entirely.
+            "variant_is_enabled": cint(row.is_enabled) if row and row.is_enabled is not None else 1,
         }
 
 
