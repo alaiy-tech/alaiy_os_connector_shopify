@@ -92,11 +92,10 @@ function export_listings(listview, scope) {
 	if (scope === "enabled") args.only_enabled = "1";
 	if (scope === "disabled") args.only_disabled = "1";
 
-	// A checked selection is bounded by hand -- safe to download directly.
-	// Otherwise this could be the whole site (thealtomoda alone has 1,577
-	// Listings), which would hang a web worker if built inside one request
-	// -- queue it and notify instead.
-	if (checked.length) {
+	// A checked selection is bounded by hand -- safe to download directly,
+	// UNLESS it's still large enough to risk hanging the request (someone
+	// can check hundreds of rows just as easily as a handful).
+	if (checked.length && checked.length <= SHOPIFY_EXPORT_SYNC_LIMIT) {
 		download_export_csv(args);
 		return;
 	}
