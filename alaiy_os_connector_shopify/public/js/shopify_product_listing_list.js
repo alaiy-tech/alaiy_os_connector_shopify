@@ -46,11 +46,18 @@ function render_shopify_status_banner(listview) {
 				$container = $(
 					'<div class="shopify-listing-status-block" style="padding:8px 20px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;"></div>'
 				);
-				// listview.$result is the stable, documented reference to the
-				// actual list rows container -- the earlier ".page-content
-				// .list-area" guess didn't match this Frappe version's DOM at
-				// all, so the block silently never got inserted.
-				listview.$result.before($container);
+				// Above the filter row (.page-form), not just above the list
+				// rows -- .page-form is the standard Frappe list view's
+				// ID/filter/sort row, sitting right below the title/header.
+				var $page_form = listview.page.wrapper.find(".page-form");
+				if ($page_form.length) {
+					$page_form.before($container);
+				} else {
+					// Fallback if this Frappe version's DOM doesn't have
+					// .page-form -- still show it somewhere rather than
+					// silently not inserting at all.
+					listview.$result.before($container);
+				}
 			}
 			$container.html(pills + actions);
 			$container.find(".shopify-listing-status-pill").off("click").on("click", function () {
