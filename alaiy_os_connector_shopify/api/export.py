@@ -11,17 +11,24 @@ from (listing.py) -- so what this shows is exactly what would actually be
 sent to Shopify, not a raw possibly-blank override field that reads as
 "nothing" when it really means "inherited from the Item".
 
-Two paths, gated by size:
-  - export_listings_csv: synchronous, streams the file back directly.
-    Fine for a bounded selection (a checked handful of rows) but a whole
-    site's listings (thealtomoda alone has 1,577) would build the entire
-    CSV inside one HTTP request/response cycle -- guaranteed to hit the
-    web worker's request timeout on a large site. Refuses above
-    _SYNC_ROW_LIMIT rather than silently hanging.
-  - trigger_background_export: enqueues the same build on the long queue,
+Two paths:
+  - export_listings_csv: synchronous, streams the file back directly. The
+    list view only routes a hand-checked (deliberately bounded) selection
+    here.
+  - trigger_background_export: enqueues the build on the long queue,
     writes the result to a private File, and notifies the browser via
-    realtime once it's ready to download -- the actual answer for "the
-    whole site" scale.
+    realtime once ready -- used for an unfiltered All/Enabled/Disabled
+    export, since a whole site's Listings (thealtomoda alone has 1,577)
+    built inside one HTTP request/response cycle risks the web worker's
+    request timeout.
+
+`category` (sh_shopify_category / listing_category) is populated for very
+few Items on most sites -- confirmed live on thealtomoda: only 6 of 896
+templates have it set at all, vs 764 with sh_shopify_product_type. That's
+a real data gap (category was never resolved against the taxonomy tree
+for most imports), not an export bug -- `item_group` is included
+alongside it as a fallback that's *always* set, so the export still shows
+something to categorize by even where the real Shopify category is blank.
 """
 
 import csv
@@ -32,18 +39,13 @@ import frappe
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 _COLUMNS = [
-    "item_code", "title", "description", "category", "product_type", "brand",
-    "tags", "seo_title", "seo_description", "is_enabled", "sh_shopify_status",
-    "sh_shopify_product_id", "last_synced_at", "image_urls",
+    "item_code", "title", "description", "category", "item_group",
+    "product_type", "brand", "tags", "seo_title", "seo_description",
+    "is_enabled", "sh_shopify_status", "sh_shopify_product_id",
+    "last_synced_at", "image_urls",
     "variant_item_code", "variant_attributes", "variant_price",
     "variant_sh_shopify_variant_id", "variant_image", "variant_is_enabled",
 ]
-
-# Past this many Listings, build in the background instead of inside the
-# request -- picked well under a typical 120s web-worker timeout given the
-# per-listing query cost (item + seo + images + N variants, each a few
-# queries) observed live.
-_SYNC_ROW_LIMIT = 200
 
 
 def _tags_for(item_name):
@@ -90,6 +92,7 @@ def _listing_rows(listing_name, settings):
         "title": listing_resolver.effective_title(listing, item),
         "description": listing_resolver.effective_description(listing, item),
         "category": listing_resolver.effective_category(listing, item),
+        "item_group": item.item_group or "",
         "product_type": listing_resolver.effective_product_type(listing, item),
         "brand": item.brand or "",
         "tags": _tags_for(item.name),
@@ -135,17 +138,13 @@ def _build_csv(names, settings):
 
 @frappe.whitelist()
 def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=None):
-    """Synchronous direct download -- refuses above _SYNC_ROW_LIMIT so a
-    whole-site export can't silently hang a web worker; use
-    trigger_background_export for that instead."""
+    """Synchronous direct download -- no size limit. The list view only
+    routes a hand-checked (deliberately bounded) selection here; an
+    unfiltered All/Enabled/Disabled export always goes through
+    trigger_background_export instead, so this path never sees the whole
+    site's Listings by accident."""
     settings = frappe.get_single("Shopify Connector Settings")
     names = _resolve_names(listing_names, only_enabled, only_disabled)
-
-    if len(names) > _SYNC_ROW_LIMIT:
-        frappe.throw(
-            f"{len(names)} listings selected -- too many for a direct download "
-            f"(limit {_SYNC_ROW_LIMIT}). Use the background export instead."
-        )
 
     frappe.response.filename = "shopify_listings_export.csv"
     frappe.response.filecontent = _build_csv(names, settings)

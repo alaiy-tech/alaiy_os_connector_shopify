@@ -83,8 +83,6 @@ function open_enable_by_status_dialog(listview) {
 	dialog.show();
 }
 
-var SHOPIFY_EXPORT_SYNC_LIMIT = 200; // keep in step with export.py's _SYNC_ROW_LIMIT
-
 function export_listings(listview, scope) {
 	var checked = listview.get_checked_items().map(function (d) { return d.name; });
 	var args = {};
@@ -92,10 +90,9 @@ function export_listings(listview, scope) {
 	if (scope === "enabled") args.only_enabled = "1";
 	if (scope === "disabled") args.only_disabled = "1";
 
-	// A checked selection is bounded by hand -- safe to download directly,
-	// UNLESS it's still large enough to risk hanging the request (someone
-	// can check hundreds of rows just as easily as a handful).
-	if (checked.length && checked.length <= SHOPIFY_EXPORT_SYNC_LIMIT) {
+	// A checked selection is a deliberate, hand-picked list -- always
+	// download it directly, whatever the size.
+	if (checked.length) {
 		download_export_csv(args);
 		return;
 	}
