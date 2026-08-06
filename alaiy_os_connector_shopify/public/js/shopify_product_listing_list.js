@@ -143,7 +143,11 @@ function open_update_listings_dialog(listview) {
 			{
 				fieldtype: "HTML",
 				fieldname: "help",
-				options: "<p class='text-muted'>Same column shape as \"Export Listings (CSV)\". Updates existing Items/Listings only -- a row whose item_code doesn't already exist is skipped, not created (new products come in through the product import instead). Blank cells leave the current value unchanged. Applies directly -- every field actually changed is recorded as an explicit before -> after line on the resulting Shopify Sync Log.</p>",
+				options: "<p class='text-muted'>Must use the same column shape as \"Export Listings (CSV)\" -- " +
+					"<a href='#' class='update-listings-download-link'>download a fresh export</a> first if you don't already have one, and edit that file rather than building a CSV from scratch. " +
+					"Updates existing Items/Listings only -- a row whose item_code doesn't already exist is skipped, not created (new products come in through the product import instead). " +
+					"Blank cells leave the current value unchanged. Applies directly -- every field actually changed is recorded as an explicit before -> after line on the resulting Shopify Sync Log. " +
+					"The file is checked before anything runs -- if it's missing the item_code column or doesn't look like a Listings file, you'll get a clear error instead of a silent no-op.</p>",
 			},
 			{
 				fieldtype: "Attach",
@@ -164,10 +168,27 @@ function open_update_listings_dialog(listview) {
 		},
 	});
 
+	dialog.$body.find(".update-listings-download-link").on("click", function (e) {
+		e.preventDefault();
+		// Routes through export_listings, not a direct download -- an
+		// unfiltered "all" export must go through the background path (see
+		// export_listings itself), same reasoning as the Export button.
+		export_listings(listview, "all");
+	});
+
 	dialog.show();
 }
 
 frappe.realtime.on("shopify_update_listings_done", function (data) {
+	if (data.error) {
+		frappe.msgprint({
+			title: __("Update Failed"),
+			message: __(data.error),
+			indicator: "red",
+		});
+		return;
+	}
+
 	var message = __(
 		"{0} updated, {1} unchanged, {2} skipped, {3} warnings, {4} field changes logged.",
 		[data.updated_count, data.unchanged_count, data.skipped_count, data.warning_count, data.change_count]

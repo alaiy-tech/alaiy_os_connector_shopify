@@ -46,8 +46,36 @@ from frappe.utils import cint, flt
 from alaiy_os_connector_shopify.shopify.product.tags import _set_item_tags
 
 
+# Wrong-file detection: a CSV missing item_code entirely used to parse
+# "successfully" into zero groups and silently do nothing -- no error, no
+# warning, just a report showing 0 updated with no explanation why.
+# Confirmed as a real gap, not hypothetical: nothing validated the header
+# before processing it.
+_REQUIRED_COLUMN = "item_code"
+_MIN_RECOGNIZED_COLUMNS = 3
+
+
+def _validate_header(fieldnames):
+    fieldnames = set(fieldnames or [])
+    if _REQUIRED_COLUMN not in fieldnames:
+        raise ValueError(
+            f"This file has no '{_REQUIRED_COLUMN}' column -- it doesn't look like a "
+            "Listings export/update file. Download 'Export Listings (CSV)' first and "
+            "use that as your starting point."
+        )
+    from alaiy_os_connector_shopify.api.export import _COLUMNS as EXPORT_COLUMNS
+    overlap = fieldnames & set(EXPORT_COLUMNS)
+    if len(overlap) < _MIN_RECOGNIZED_COLUMNS:
+        raise ValueError(
+            f"Only {len(overlap)} of the expected columns were recognized in this "
+            "file's header -- it doesn't look like a Listings export/update file. "
+            "Download 'Export Listings (CSV)' first and use that as your starting point."
+        )
+
+
 def _group_rows_by_item(csv_text):
     reader = csv.DictReader(io.StringIO(csv_text))
+    _validate_header(reader.fieldnames)
     order = []
     groups = {}
     for row in reader:
@@ -248,10 +276,15 @@ def _run_update_listings(csv_content, user):
     log.save(ignore_permissions=True)
     frappe.db.commit()
 
-    order, groups = _group_rows_by_item(csv_content)
-    report = {"updated": [], "unchanged": [], "skipped": [], "warnings": [], "changes": []}
+    report = {"updated": [], "unchanged": [], "skipped": [], "warnings": [], "changes": [], "error": None}
 
     try:
+        # Header validation happens INSIDE the try -- a wrong file (missing
+        # item_code, or a totally unrelated CSV) must fail loudly with a
+        # clear message, not crash unhandled or, worse, "succeed" having
+        # silently processed zero rows.
+        order, groups = _group_rows_by_item(csv_content)
+
         for i, item_code in enumerate(order):
             try:
                 _apply_group(item_code, groups[item_code], report)
@@ -287,6 +320,15 @@ def _run_update_listings(csv_content, user):
         log.finished_at = frappe.utils.now_datetime()
         log.save(ignore_permissions=True)
         frappe.db.commit()
+    except ValueError as e:
+        # A validation error (wrong file) -- clear, user-facing message, not
+        # a stack trace. Still recorded on the log for the audit trail.
+        report["error"] = str(e)
+        log.status = "failed"
+        log.error_message = str(e)
+        log.finished_at = frappe.utils.now_datetime()
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
     except Exception:
         log.status = "failed"
         log.error_message = frappe.get_traceback()[:2000]
@@ -303,6 +345,7 @@ def _run_update_listings(csv_content, user):
                 "skipped_count": len(report["skipped"]),
                 "warning_count": len(report["warnings"]),
                 "change_count": len(report["changes"]),
+                "error": report["error"],
                 "log_name": log.name,
             },
             user=user,
