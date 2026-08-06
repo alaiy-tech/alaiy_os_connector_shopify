@@ -29,6 +29,17 @@ a real data gap (category was never resolved against the taxonomy tree
 for most imports), not an export bug -- `item_group` is included
 alongside it as a fallback that's *always* set, so the export still shows
 something to categorize by even where the real Shopify category is blank.
+
+`effective_category` returns the Link field's raw value, which is the
+Shopify Category doctype's own document name -- and that doctype
+autonames on a hash (`autoname: hash`, confirmed in
+alaiy_os_connector_shopify/alaiy_os_connector_shopify/doctype/
+shopify_category/shopify_category.json), not the human-readable category
+name. So a bare `category` column would show a meaningless hash string
+even for the few rows that DO have it set. Resolved here into the real
+`shopify_category_name` (leaf label) and `shopify_category_id` (the
+actual Shopify taxonomy GID, `gid://shopify/TaxonomyCategory/...`) via
+`tabShopify Category` instead of exposing the raw Link value.
 """
 
 import csv
@@ -39,10 +50,10 @@ import frappe
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 _COLUMNS = [
-    "item_code", "title", "description", "category", "item_group",
+    "item_code", "title", "description", "category", "category_id", "item_group",
     "product_type", "brand", "tags", "seo_title", "seo_description",
     "is_enabled", "sh_shopify_status", "sh_shopify_product_id",
-    "last_synced_at", "image_urls",
+    "last_synced_at", "image_urls", "metafields",
     "variant_item_code", "variant_attributes", "variant_price",
     "variant_sh_shopify_variant_id", "variant_image", "variant_is_enabled",
 ]
@@ -58,6 +69,22 @@ def _variant_attributes(variant_code):
         "Item Variant Attribute", filters={"parent": variant_code},
         fields=["attribute", "attribute_value"], order_by="idx")
     return " | ".join(f"{r.attribute}: {r.attribute_value}" for r in rows if r.attribute_value)
+
+
+def _resolve_category(listing, item):
+    """effective_category returns the raw Link value -- Shopify Category's
+    own document name, which is a hash (autoname: hash), not the readable
+    category label. Resolve to the real (name, taxonomy GID) pair, or
+    ("", "") if unset/unresolvable."""
+    category_doc_name = listing_resolver.effective_category(listing, item)
+    if not category_doc_name:
+        return "", ""
+    row = frappe.db.get_value(
+        "Shopify Category", category_doc_name,
+        ["shopify_category_name", "shopify_category_id"], as_dict=True)
+    if not row:
+        return "", ""
+    return row.shopify_category_name or "", row.shopify_category_id or ""
 
 
 def _variant_rows(listing, item, settings):
@@ -87,11 +114,16 @@ def _listing_rows(listing_name, settings):
         return
     item = frappe.get_doc("Item", listing.item)
     seo = listing_resolver.effective_seo(listing, item)
+    category_name, category_id = _resolve_category(listing, item)
+    metafields = " | ".join(
+        f"{m.namespace}.{m.key}={m.value}" for m in (listing.metafields or []) if m.value
+    )
     product_fields = {
         "item_code": item.name,
         "title": listing_resolver.effective_title(listing, item),
         "description": listing_resolver.effective_description(listing, item),
-        "category": listing_resolver.effective_category(listing, item),
+        "category": category_name,
+        "category_id": category_id,
         "item_group": item.item_group or "",
         "product_type": listing_resolver.effective_product_type(listing, item),
         "brand": item.brand or "",
@@ -103,6 +135,7 @@ def _listing_rows(listing_name, settings):
         "sh_shopify_product_id": listing.sh_shopify_product_id or "",
         "last_synced_at": listing.last_synced_at or "",
         "image_urls": " | ".join(listing_resolver.effective_images(listing, item, settings)),
+        "metafields": metafields,
     }
     for variant_fields in _variant_rows(listing, item, settings):
         yield {**product_fields, **variant_fields}
