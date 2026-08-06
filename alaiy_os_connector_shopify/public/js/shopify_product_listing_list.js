@@ -26,10 +26,25 @@ function render_shopify_status_banner(listview) {
 					JSON.stringify(c.filter) + "'>" + __(c.label) + ": <b>" + c.value + "</b></span>";
 			}).join("");
 
+			// Export/Update Listings moved out of the crowded header toolbar
+			// into this banner instead -- small buttons, not full-width
+			// header entries.
+			var actions =
+				'<span class="btn-group" style="margin-left:16px;">' +
+					'<button type="button" class="btn btn-xs btn-default shopify-listing-export-all">' + __("Export") + '</button>' +
+					'<button type="button" class="btn btn-xs btn-default dropdown-toggle" data-toggle="dropdown" style="padding-left:4px;padding-right:6px;"></button>' +
+					'<ul class="dropdown-menu">' +
+						'<li><a href="#" class="shopify-listing-export-option" data-scope="all">' + __("All") + '</a></li>' +
+						'<li><a href="#" class="shopify-listing-export-option" data-scope="enabled">' + __("Enabled Only") + '</a></li>' +
+						'<li><a href="#" class="shopify-listing-export-option" data-scope="disabled">' + __("Disabled Only") + '</a></li>' +
+					'</ul>' +
+				'</span>' +
+				'<button type="button" class="btn btn-xs btn-default shopify-listing-update-btn" style="margin-left:8px;">' + __("Update Listings (CSV)") + '</button>';
+
 			var $container = listview.page.wrapper.find(".shopify-listing-status-block");
 			if (!$container.length) {
 				$container = $(
-					'<div class="shopify-listing-status-block" style="padding:8px 20px;border-bottom:1px solid var(--border-color);"></div>'
+					'<div class="shopify-listing-status-block" style="padding:8px 20px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;"></div>'
 				);
 				// listview.$result is the stable, documented reference to the
 				// actual list rows container -- the earlier ".page-content
@@ -37,9 +52,19 @@ function render_shopify_status_banner(listview) {
 				// all, so the block silently never got inserted.
 				listview.$result.before($container);
 			}
-			$container.html(pills);
+			$container.html(pills + actions);
 			$container.find(".shopify-listing-status-pill").off("click").on("click", function () {
 				frappe.set_route("List", "Shopify Product Listing", JSON.parse($(this).attr("data-filter")));
+			});
+			$container.find(".shopify-listing-export-all").off("click").on("click", function () {
+				export_listings(listview, "all");
+			});
+			$container.find(".shopify-listing-export-option").off("click").on("click", function (e) {
+				e.preventDefault();
+				export_listings(listview, $(this).data("scope"));
+			});
+			$container.find(".shopify-listing-update-btn").off("click").on("click", function () {
+				open_update_listings_dialog(listview);
 			});
 		},
 	});
@@ -213,18 +238,8 @@ frappe.listview_settings["Shopify Product Listing"].onload = function (listview)
 	listview.page.add_inner_button(__("Enable Listings by Status"), function () {
 		open_enable_by_status_dialog(listview);
 	});
-	listview.page.add_inner_button(__("All"), function () {
-		export_listings(listview, "all");
-	}, __("Export"));
-	listview.page.add_inner_button(__("Enabled Only"), function () {
-		export_listings(listview, "enabled");
-	}, __("Export"));
-	listview.page.add_inner_button(__("Disabled Only"), function () {
-		export_listings(listview, "disabled");
-	}, __("Export"));
-	listview.page.add_inner_button(__("Update Listings (CSV)"), function () {
-		open_update_listings_dialog(listview);
-	});
+	// Export/Update Listings live in the stats banner below now, not here --
+	// see render_shopify_status_banner.
 };
 
 frappe.listview_settings["Shopify Product Listing"].refresh = function (listview) {
