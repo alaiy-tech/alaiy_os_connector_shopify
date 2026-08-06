@@ -143,11 +143,13 @@ function open_update_listings_dialog(listview) {
 			{
 				fieldtype: "HTML",
 				fieldname: "help",
-				options: "<p class='text-muted'>Must use the same column shape as \"Export Listings (CSV)\" -- " +
-					"<a href='#' class='update-listings-download-link'>download a fresh export</a> first if you don't already have one, and edit that file rather than building a CSV from scratch. " +
-					"Updates existing Items/Listings only -- a row whose item_code doesn't already exist is skipped, not created (new products come in through the product import instead). " +
-					"Blank cells leave the current value unchanged. Applies directly -- every field actually changed is recorded as an explicit before -> after line on the resulting Shopify Sync Log. " +
-					"The file is checked before anything runs -- if it's missing the item_code column or doesn't look like a Listings file, you'll get a clear error instead of a silent no-op.</p>",
+				options: "<ul class='text-muted' style='padding-left:18px;margin-bottom:0;'>" +
+					"<li>Must use the same column shape as \"Export Listings (CSV)\" -- <a href='#' class='update-listings-download-link'>download a fresh export</a> first and edit that, don't build one from scratch.</li>" +
+					"<li>Updates existing Items/Listings only. A row whose item_code doesn't exist yet is skipped, not created -- new products come in through the product import instead.</li>" +
+					"<li>Blank cells leave the current value unchanged.</li>" +
+					"<li>Applies directly, no dry run. Every field actually changed is logged as a before -> after line on the resulting Shopify Sync Log.</li>" +
+					"<li>The file is checked before anything runs -- a missing item_code column or an unrecognized file gives a clear error, not a silent no-op.</li>" +
+					"</ul>",
 			},
 			{
 				fieldtype: "Attach",
