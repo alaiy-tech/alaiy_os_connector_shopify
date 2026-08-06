@@ -120,20 +120,13 @@ frappe.realtime.on("shopify_listings_export_ready", function (data) {
 	}, 15);
 });
 
-// Last uploaded file, kept so the dry-run result's "Apply for Real" button
-// can re-trigger the same file without asking for another upload.
-var _shopify_last_update_listings_file = null;
-
-function run_update_listings(file_url, dry_run) {
-	_shopify_last_update_listings_file = file_url;
+function run_update_listings(file_url) {
 	frappe.call({
 		method: "alaiy_os_connector_shopify.api.update_listings.trigger_update_listings",
-		args: { file_url: file_url, dry_run: dry_run ? 1 : 0 },
+		args: { file_url: file_url },
 		callback: function () {
 			frappe.show_alert({
-				message: dry_run
-					? __("Checking the file -- you'll get a summary shortly, nothing is written yet.")
-					: __("Updating Listings in the background -- check Shopify Sync Log for progress."),
+				message: __("Updating Listings in the background -- every changed field is logged as a before/after diff on the Sync Log."),
 				indicator: "blue",
 			}, 6);
 		},
@@ -149,16 +142,16 @@ function open_update_listings_dialog(listview) {
 			{
 				fieldtype: "HTML",
 				fieldname: "help",
-				options: "<p class='text-muted'>Same column shape as \"Export Listings (CSV)\". Updates existing Items/Listings only -- a row whose item_code doesn't already exist is skipped, not created (new products come in through the product import instead). Blank cells leave the current value unchanged.</p>",
+				options: "<p class='text-muted'>Same column shape as \"Export Listings (CSV)\". Updates existing Items/Listings only -- a row whose item_code doesn't already exist is skipped, not created (new products come in through the product import instead). Blank cells leave the current value unchanged. Applies directly -- every field actually changed is recorded as an explicit before -> after line on the resulting Shopify Sync Log.</p>",
 			},
 		],
-		primary_action_label: __("Upload & Check (Dry Run)"),
+		primary_action_label: __("Upload & Apply"),
 		primary_action: function () {
 			if (!uploaded_file_url) {
 				frappe.msgprint(__("Upload a CSV file first."));
 				return;
 			}
-			run_update_listings(uploaded_file_url, true);
+			run_update_listings(uploaded_file_url);
 			dialog.hide();
 		},
 	});
@@ -180,21 +173,20 @@ function open_update_listings_dialog(listview) {
 }
 
 frappe.realtime.on("shopify_update_listings_done", function (data) {
-	var message = data.dry_run
-		? __("Dry run done: {0} would update, {1} would be skipped, {2} warnings. See {3} for details.",
-			[data.updated_count, data.skipped_count, data.warning_count, data.log_name])
-		: __("Update done: {0} updated, {1} skipped, {2} warnings. See {3} for details.",
-			[data.updated_count, data.skipped_count, data.warning_count, data.log_name]);
+	var message = __(
+		"{0} updated, {1} unchanged, {2} skipped, {3} warnings, {4} field changes logged.",
+		[data.updated_count, data.unchanged_count, data.skipped_count, data.warning_count, data.change_count]
+	);
 	frappe.msgprint({
-		title: data.dry_run ? __("Dry Run Complete") : __("Update Complete"),
+		title: __("Update Complete"),
 		message: message,
-		indicator: data.skipped_count > 0 ? "orange" : "green",
-		primary_action: data.dry_run && _shopify_last_update_listings_file ? {
-			label: __("Apply for Real"),
+		indicator: data.skipped_count > 0 || data.warning_count > 0 ? "orange" : "green",
+		primary_action: {
+			label: __("View Full Diff (Sync Log)"),
 			action: function () {
-				run_update_listings(_shopify_last_update_listings_file, false);
+				frappe.set_route("Form", "Shopify Sync Log", data.log_name);
 			},
-		} : null,
+		},
 	});
 });
 

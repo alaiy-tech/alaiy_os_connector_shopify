@@ -30,6 +30,11 @@ Deliberately NOT written, even if present in the CSV:
 
 Blank cell convention, same as the supplier CSV format: blank means "leave
 unchanged", not "clear this field".
+
+Every field actually changed is recorded as an explicit before -> after
+diff line on the Sync Log (log_messages) -- applies directly, no separate
+dry-run step. The diff log is the audit trail: what changed, from what, to
+what, per item.
 """
 
 import csv
@@ -56,16 +61,32 @@ def _group_rows_by_item(csv_text):
     return order, groups
 
 
-def _apply_images(listing, image_urls_value):
+def _set_and_log(doc, fieldname, new_value, label, changes):
+    """Set doc.fieldname to new_value and record a before -> after diff line,
+    but only if the value actually changed -- an unchanged field (CSV value
+    happens to match what's already there) isn't a real change worth
+    logging."""
+    old_value = doc.get(fieldname)
+    if (old_value or "") == (new_value or ""):
+        return
+    doc.set(fieldname, new_value)
+    changes.append(f"{label}: {old_value!r} -> {new_value!r}")
+
+
+def _apply_images(listing, image_urls_value, changes, label):
     urls = [u.strip() for u in image_urls_value.split("|") if u.strip()]
     if not urls:
+        return
+    old_urls = [r.image for r in (listing.images or [])]
+    if old_urls == urls:
         return
     listing.set("images", [
         {"image": u, "source": "Original", "sort_order": i} for i, u in enumerate(urls)
     ])
+    changes.append(f"{label}.images: {old_urls!r} -> {urls!r}")
 
 
-def _apply_metafields(listing, metafields_value):
+def _apply_metafields(listing, metafields_value, changes, label):
     rows = []
     for part in metafields_value.split("|"):
         part = part.strip()
@@ -77,94 +98,114 @@ def _apply_metafields(listing, metafields_value):
         if namespace and key:
             rows.append({"namespace": namespace, "key": key,
                          "type": "single_line_text_field", "value": value})
-    if rows:
-        listing.set("metafields", rows)
+    if not rows:
+        return
+    old_pairs = sorted((m.namespace, m.key, m.value) for m in (listing.metafields or []))
+    new_pairs = sorted((r["namespace"], r["key"], r["value"]) for r in rows)
+    if old_pairs == new_pairs:
+        return
+    listing.set("metafields", rows)
+    changes.append(f"{label}.metafields: {len(old_pairs)} field(s) -> {len(new_pairs)} field(s)")
 
 
-def _apply_product_fields(item, listing, row, warnings):
+def _apply_product_fields(item, listing, row, report):
+    changes = report["changes"]
+
     brand = (row.get("brand") or "").strip()
     if brand:
-        item.brand = brand
+        _set_and_log(item, "brand", brand, f"{item.name}.brand", changes)
 
     tags_value = (row.get("tags") or "").strip()
     if tags_value:
-        _set_item_tags(item, [t.strip() for t in tags_value.split(",") if t.strip()])
+        new_tags = sorted(t.strip() for t in tags_value.split(",") if t.strip())
+        old_tags = sorted(r.shopify_tag for r in (item.get("sh_shopify_tags") or []))
+        if new_tags != old_tags:
+            _set_item_tags(item, new_tags)
+            changes.append(f"{item.name}.tags: {old_tags!r} -> {new_tags!r}")
 
     title = (row.get("title") or "").strip()
     if title:
-        listing.listing_title = title
+        _set_and_log(listing, "listing_title", title, f"{item.name}.title", changes)
 
     description = row.get("description")
     if description and description.strip():
-        listing.listing_description = description
+        _set_and_log(listing, "listing_description", description, f"{item.name}.description", changes)
 
     product_type = (row.get("product_type") or "").strip()
     if product_type:
-        listing.listing_product_type = product_type
+        _set_and_log(listing, "listing_product_type", product_type, f"{item.name}.product_type", changes)
 
     category_name = (row.get("category") or "").strip()
     if category_name:
         category_doc = frappe.db.get_value(
             "Shopify Category", {"shopify_category_name": category_name}, "name")
         if category_doc:
-            listing.listing_category = category_doc
+            _set_and_log(listing, "listing_category", category_doc, f"{item.name}.category", changes)
         else:
             # Never fabricate a disconnected taxonomy node from a plain name
             # -- that produced a tree of junk categories in production once
             # already. Leave the field untouched and report it instead.
-            warnings.append(f"{item.name}: category '{category_name}' not found -- left unchanged")
+            report["warnings"].append(f"{item.name}: category '{category_name}' not found -- left unchanged")
 
     seo_title = (row.get("seo_title") or "").strip()
     if seo_title:
-        listing.listing_seo_title = seo_title
+        _set_and_log(listing, "listing_seo_title", seo_title, f"{item.name}.seo_title", changes)
     seo_description = row.get("seo_description")
     if seo_description and seo_description.strip():
-        listing.listing_seo_description = seo_description
+        _set_and_log(listing, "listing_seo_description", seo_description, f"{item.name}.seo_description", changes)
 
     is_enabled = row.get("is_enabled")
     if is_enabled not in (None, ""):
-        listing.is_enabled = cint(is_enabled)
+        _set_and_log(listing, "is_enabled", cint(is_enabled), f"{item.name}.is_enabled", changes)
 
     status = (row.get("sh_shopify_status") or "").strip()
     if status:
-        listing.sh_shopify_status = status
+        _set_and_log(listing, "sh_shopify_status", status, f"{item.name}.sh_shopify_status", changes)
 
     images_value = (row.get("image_urls") or "").strip()
     if images_value:
-        _apply_images(listing, images_value)
+        _apply_images(listing, images_value, changes, item.name)
 
     metafields_value = (row.get("metafields") or "").strip()
     if metafields_value:
-        _apply_metafields(listing, metafields_value)
+        _apply_metafields(listing, metafields_value, changes, item.name)
 
 
-def _apply_variant_fields(listing, variant_rows, warnings):
+def _apply_variant_fields(listing, variant_rows, report):
+    changes = report["changes"]
     listing_variants = {r.item_variant: r for r in (listing.variants or [])}
     for vr in variant_rows:
         variant_code = (vr.get("variant_item_code") or "").strip()
         if not variant_code:
             continue
         if not frappe.db.exists("Item", variant_code):
-            warnings.append(
+            report["warnings"].append(
                 f"{variant_code}: Item not found -- new variants aren't created here, use product import")
             continue
         row = listing_variants.get(variant_code)
         if not row:
-            warnings.append(
+            report["warnings"].append(
                 f"{variant_code}: no Listing Variant row yet -- run 'Populate from Item' on the Listing first")
             continue
 
         price = vr.get("variant_price")
         if price not in (None, ""):
-            row.variant_price = flt(price)
+            new_price = flt(price)
+            if flt(row.variant_price) != new_price:
+                changes.append(f"{variant_code}.variant_price: {row.variant_price!r} -> {new_price!r}")
+                row.variant_price = new_price
 
         image = (vr.get("variant_image") or "").strip()
-        if image:
+        if image and image != row.variant_image:
+            changes.append(f"{variant_code}.variant_image: {row.variant_image!r} -> {image!r}")
             row.variant_image = image
 
         enabled = vr.get("variant_is_enabled")
         if enabled not in (None, ""):
-            row.is_enabled = cint(enabled)
+            new_enabled = cint(enabled)
+            if cint(row.is_enabled) != new_enabled:
+                changes.append(f"{variant_code}.variant_is_enabled: {row.is_enabled!r} -> {new_enabled!r}")
+                row.is_enabled = new_enabled
 
 
 def _apply_group(item_code, group, report):
@@ -178,8 +219,13 @@ def _apply_group(item_code, group, report):
     item = frappe.get_doc("Item", item_code)
     listing = frappe.get_doc("Shopify Product Listing", item_code)
 
-    _apply_product_fields(item, listing, group["product_row"], report["warnings"])
-    _apply_variant_fields(listing, group["variant_rows"], report["warnings"])
+    before = len(report["changes"])
+    _apply_product_fields(item, listing, group["product_row"], report)
+    _apply_variant_fields(listing, group["variant_rows"], report)
+
+    if len(report["changes"]) == before:
+        report["unchanged"].append(item_code)
+        return
 
     item.flags.ignore_permissions = True
     listing.flags.ignore_permissions = True
@@ -194,7 +240,7 @@ def _apply_group(item_code, group, report):
     report["updated"].append(item_code)
 
 
-def _run_update_listings(csv_content, dry_run, user):
+def _run_update_listings(csv_content, user):
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
 
     log = load_or_create_log("update_listings", "manual")
@@ -203,22 +249,13 @@ def _run_update_listings(csv_content, dry_run, user):
     frappe.db.commit()
 
     order, groups = _group_rows_by_item(csv_content)
-    report = {"updated": [], "skipped": [], "warnings": []}
+    report = {"updated": [], "unchanged": [], "skipped": [], "warnings": [], "changes": []}
 
     try:
         for i, item_code in enumerate(order):
             try:
-                if dry_run:
-                    # Dry run validates existence/lookups without writing --
-                    # same skip/warning checks, no save() calls.
-                    group = groups[item_code]
-                    if not frappe.db.exists("Item", item_code) or not frappe.db.exists("Shopify Product Listing", item_code):
-                        report["skipped"].append(f"{item_code}: would be skipped (not found)")
-                    else:
-                        report["updated"].append(f"{item_code} (dry run)")
-                else:
-                    _apply_group(item_code, groups[item_code], report)
-                    frappe.db.commit()
+                _apply_group(item_code, groups[item_code], report)
+                frappe.db.commit()
             except Exception:
                 report["skipped"].append(f"{item_code}: failed -- see Error Log")
                 frappe.log_error(
@@ -236,11 +273,15 @@ def _run_update_listings(csv_content, dry_run, user):
         log.items_processed = len(order)
         log.items_created = len(report["updated"])
         log.items_failed = len(report["skipped"])
+        # The full before -> after diff is the actual audit trail -- capped
+        # so one huge file doesn't blow past the field's own storage limit,
+        # not because the detail isn't wanted.
         log.log_messages = frappe.as_json({
-            "dry_run": bool(dry_run),
-            "updated": report["updated"][:200],
-            "skipped": report["skipped"][:200],
-            "warnings": report["warnings"][:200],
+            "updated": report["updated"][:500],
+            "unchanged": report["unchanged"][:500],
+            "skipped": report["skipped"][:500],
+            "warnings": report["warnings"][:500],
+            "changes": report["changes"][:2000],
         })[:100000]
         log.status = "success"
         log.finished_at = frappe.utils.now_datetime()
@@ -257,10 +298,11 @@ def _run_update_listings(csv_content, dry_run, user):
         frappe.publish_realtime(
             "shopify_update_listings_done",
             {
-                "dry_run": bool(dry_run),
                 "updated_count": len(report["updated"]),
+                "unchanged_count": len(report["unchanged"]),
                 "skipped_count": len(report["skipped"]),
                 "warning_count": len(report["warnings"]),
+                "change_count": len(report["changes"]),
                 "log_name": log.name,
             },
             user=user,
@@ -268,11 +310,13 @@ def _run_update_listings(csv_content, dry_run, user):
 
 
 @frappe.whitelist()
-def trigger_update_listings(file_url, dry_run=1):
+def trigger_update_listings(file_url):
     """file_url: a private File already uploaded (e.g. via the list view's
     file picker). Enqueued on the long queue -- same size reasoning as the
     export: a whole-site update file has no place running inside one
-    request/response cycle."""
+    request/response cycle. Applies directly, no separate dry-run step --
+    every change is logged as an explicit before -> after diff on the
+    resulting Shopify Sync Log instead."""
     file_doc = frappe.get_doc("File", {"file_url": file_url})
     csv_content = file_doc.get_content()
     if isinstance(csv_content, bytes):
@@ -283,7 +327,6 @@ def trigger_update_listings(file_url, dry_run=1):
         queue="long",
         timeout=1200,
         csv_content=csv_content,
-        dry_run=cint(dry_run),
         user=frappe.session.user,
     )
     return {"queued": True}
