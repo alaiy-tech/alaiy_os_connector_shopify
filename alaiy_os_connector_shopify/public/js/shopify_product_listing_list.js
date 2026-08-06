@@ -83,7 +83,7 @@ function open_enable_by_status_dialog(listview) {
 	dialog.show();
 }
 
-function export_listings(listview, only_enabled) {
+function export_listings(listview, scope) {
 	// A file download needs a real GET navigation, not frappe.call (which
 	// parses the response as JSON) -- build the URL directly and let the
 	// browser handle the resulting file response, same pattern Frappe's own
@@ -91,7 +91,8 @@ function export_listings(listview, only_enabled) {
 	var checked = listview.get_checked_items().map(function (d) { return d.name; });
 	var params = new URLSearchParams();
 	if (checked.length) params.set("listing_names", JSON.stringify(checked));
-	if (only_enabled) params.set("only_enabled", "1");
+	if (scope === "enabled") params.set("only_enabled", "1");
+	if (scope === "disabled") params.set("only_disabled", "1");
 	var qs = params.toString();
 	window.open("/api/method/alaiy_os_connector_shopify.api.export.export_listings_csv" + (qs ? "?" + qs : ""));
 }
@@ -101,12 +102,15 @@ frappe.listview_settings["Shopify Product Listing"].onload = function (listview)
 	listview.page.add_inner_button(__("Enable Listings by Status"), function () {
 		open_enable_by_status_dialog(listview);
 	});
-	listview.page.add_inner_button(__("Export Listings (CSV)"), function () {
-		export_listings(listview, false);
-	});
-	listview.page.add_inner_button(__("Export Enabled Only (CSV)"), function () {
-		export_listings(listview, true);
-	});
+	listview.page.add_inner_button(__("All"), function () {
+		export_listings(listview, "all");
+	}, __("Export"));
+	listview.page.add_inner_button(__("Enabled Only"), function () {
+		export_listings(listview, "enabled");
+	}, __("Export"));
+	listview.page.add_inner_button(__("Disabled Only"), function () {
+		export_listings(listview, "disabled");
+	}, __("Export"));
 };
 
 frappe.listview_settings["Shopify Product Listing"].refresh = function (listview) {

@@ -88,18 +88,20 @@ def _listing_rows(listing_name, settings):
 
 
 @frappe.whitelist()
-def export_listings_csv(listing_names=None, only_enabled=None):
+def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=None):
     """
     listing_names: optional JSON array of Shopify Product Listing names to
     scope the export to (e.g. a filtered list view selection). Omit for
     every Listing on the site.
-    only_enabled: "1" to export only currently-enabled Listings.
+    only_enabled / only_disabled: "1" to scope to that is_enabled state.
     """
     settings = frappe.get_single("Shopify Connector Settings")
 
     filters = {}
     if only_enabled and frappe.utils.cint(only_enabled):
         filters["is_enabled"] = 1
+    elif only_disabled and frappe.utils.cint(only_disabled):
+        filters["is_enabled"] = 0
     if listing_names:
         names = frappe.parse_json(listing_names) if isinstance(listing_names, str) else listing_names
         filters["name"] = ["in", names]
