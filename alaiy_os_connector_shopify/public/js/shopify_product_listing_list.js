@@ -120,6 +120,84 @@ frappe.realtime.on("shopify_listings_export_ready", function (data) {
 	}, 15);
 });
 
+// Last uploaded file, kept so the dry-run result's "Apply for Real" button
+// can re-trigger the same file without asking for another upload.
+var _shopify_last_update_listings_file = null;
+
+function run_update_listings(file_url, dry_run) {
+	_shopify_last_update_listings_file = file_url;
+	frappe.call({
+		method: "alaiy_os_connector_shopify.api.update_listings.trigger_update_listings",
+		args: { file_url: file_url, dry_run: dry_run ? 1 : 0 },
+		callback: function () {
+			frappe.show_alert({
+				message: dry_run
+					? __("Checking the file -- you'll get a summary shortly, nothing is written yet.")
+					: __("Updating Listings in the background -- check Shopify Sync Log for progress."),
+				indicator: "blue",
+			}, 6);
+		},
+	});
+}
+
+function open_update_listings_dialog(listview) {
+	var uploaded_file_url = null;
+
+	var dialog = new frappe.ui.Dialog({
+		title: __("Update Listings from CSV"),
+		fields: [
+			{
+				fieldtype: "HTML",
+				fieldname: "help",
+				options: "<p class='text-muted'>Same column shape as \"Export Listings (CSV)\". Updates existing Items/Listings only -- a row whose item_code doesn't already exist is skipped, not created (new products come in through the product import instead). Blank cells leave the current value unchanged.</p>",
+			},
+		],
+		primary_action_label: __("Upload & Check (Dry Run)"),
+		primary_action: function () {
+			if (!uploaded_file_url) {
+				frappe.msgprint(__("Upload a CSV file first."));
+				return;
+			}
+			run_update_listings(uploaded_file_url, true);
+			dialog.hide();
+		},
+	});
+
+	dialog.$body.append('<div class="update-listings-upload-area" style="margin-top:12px;"></div>');
+	new frappe.ui.FileUploader({
+		dialog_title: __("Upload Listings CSV"),
+		private: true,
+		restrictions: { allowed_file_types: [".csv"] },
+		on_success: function (file_doc) {
+			uploaded_file_url = file_doc.file_url;
+			dialog.$body.find(".update-listings-upload-area").html(
+				"<p><b>" + __("Uploaded") + ":</b> " + frappe.utils.escape_html(file_doc.file_name) + "</p>"
+			);
+		},
+	});
+
+	dialog.show();
+}
+
+frappe.realtime.on("shopify_update_listings_done", function (data) {
+	var message = data.dry_run
+		? __("Dry run done: {0} would update, {1} would be skipped, {2} warnings. See {3} for details.",
+			[data.updated_count, data.skipped_count, data.warning_count, data.log_name])
+		: __("Update done: {0} updated, {1} skipped, {2} warnings. See {3} for details.",
+			[data.updated_count, data.skipped_count, data.warning_count, data.log_name]);
+	frappe.msgprint({
+		title: data.dry_run ? __("Dry Run Complete") : __("Update Complete"),
+		message: message,
+		indicator: data.skipped_count > 0 ? "orange" : "green",
+		primary_action: data.dry_run && _shopify_last_update_listings_file ? {
+			label: __("Apply for Real"),
+			action: function () {
+				run_update_listings(_shopify_last_update_listings_file, false);
+			},
+		} : null,
+	});
+});
+
 frappe.listview_settings["Shopify Product Listing"].onload = function (listview) {
 	render_shopify_status_banner(listview);
 	listview.page.add_inner_button(__("Enable Listings by Status"), function () {
@@ -134,6 +212,9 @@ frappe.listview_settings["Shopify Product Listing"].onload = function (listview)
 	listview.page.add_inner_button(__("Disabled Only"), function () {
 		export_listings(listview, "disabled");
 	}, __("Export"));
+	listview.page.add_inner_button(__("Update Listings (CSV)"), function () {
+		open_update_listings_dialog(listview);
+	});
 };
 
 frappe.listview_settings["Shopify Product Listing"].refresh = function (listview) {
