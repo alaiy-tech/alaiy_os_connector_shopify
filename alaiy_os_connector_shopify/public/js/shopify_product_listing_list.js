@@ -40,7 +40,7 @@ function render_shopify_status_banner(listview) {
 					'</ul>' +
 				'</span>' +
 				'<button type="button" class="btn btn-xs btn-default shopify-listing-update-btn" style="margin-left:8px;"><i class="fa fa-upload"></i> ' + __("Update Listings (CSV)") + '</button>' +
-				'<button type="button" class="btn btn-xs btn-default shopify-listing-enable-btn" style="margin-left:8px;"><i class="fa fa-toggle-on"></i> ' + __("Enable Listings by Status") + '</button>';
+				'<button type="button" class="btn btn-xs btn-default shopify-listing-enable-btn" style="margin-left:8px;"><i class="fa fa-check-circle"></i> ' + __("Enable Listings by Status") + '</button>';
 
 			var $container = listview.page.wrapper.find(".shopify-listing-status-block");
 			if (!$container.length) {
