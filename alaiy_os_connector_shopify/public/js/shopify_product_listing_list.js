@@ -83,19 +83,46 @@ function open_enable_by_status_dialog(listview) {
 	dialog.show();
 }
 
+var SHOPIFY_EXPORT_SYNC_LIMIT = 200; // keep in step with export.py's _SYNC_ROW_LIMIT
+
 function export_listings(listview, scope) {
+	var checked = listview.get_checked_items().map(function (d) { return d.name; });
+	var args = {};
+	if (checked.length) args.listing_names = JSON.stringify(checked);
+	if (scope === "enabled") args.only_enabled = "1";
+	if (scope === "disabled") args.only_disabled = "1";
+
+	// A checked selection is bounded by hand -- safe to download directly.
+	// Otherwise this could be the whole site (thealtomoda alone has 1,577
+	// Listings), which would hang a web worker if built inside one request
+	// -- queue it and notify instead.
+	if (checked.length) {
+		download_export_csv(args);
+		return;
+	}
+
+	frappe.show_alert({ message: __("Building export in the background -- you'll get a download link when it's ready."), indicator: "blue" }, 6);
+	frappe.call({
+		method: "alaiy_os_connector_shopify.api.export.trigger_background_export",
+		args: args,
+	});
+}
+
+function download_export_csv(args) {
 	// A file download needs a real GET navigation, not frappe.call (which
 	// parses the response as JSON) -- build the URL directly and let the
 	// browser handle the resulting file response, same pattern Frappe's own
 	// report/list exports use.
-	var checked = listview.get_checked_items().map(function (d) { return d.name; });
-	var params = new URLSearchParams();
-	if (checked.length) params.set("listing_names", JSON.stringify(checked));
-	if (scope === "enabled") params.set("only_enabled", "1");
-	if (scope === "disabled") params.set("only_disabled", "1");
-	var qs = params.toString();
-	window.open("/api/method/alaiy_os_connector_shopify.api.export.export_listings_csv" + (qs ? "?" + qs : ""));
+	var params = new URLSearchParams(args);
+	window.open("/api/method/alaiy_os_connector_shopify.api.export.export_listings_csv?" + params.toString());
 }
+
+frappe.realtime.on("shopify_listings_export_ready", function (data) {
+	frappe.show_alert({
+		message: __("Export ready ({0} listings) -- <a href='{1}' target='_blank'>Download CSV</a>", [data.row_count, data.file_url]),
+		indicator: "green",
+	}, 15);
+});
 
 frappe.listview_settings["Shopify Product Listing"].onload = function (listview) {
 	render_shopify_status_banner(listview);
