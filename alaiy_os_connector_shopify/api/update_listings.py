@@ -45,6 +45,36 @@ from frappe.utils import cint, flt
 
 from alaiy_os_connector_shopify.shopify.product.tags import _set_item_tags
 
+# frappe.utils.flt()/cint() silently coerce unparseable input to 0 instead of
+# raising -- confirmed a real risk, not hypothetical: a typo'd price
+# ("313.5x") or status would otherwise silently write 0/garbage instead of
+# failing. These wrappers reject anything that isn't a real number/boolean/
+# known status, reporting it as a warning and leaving the field untouched
+# rather than trusting flt/cint's silent fallback.
+_VALID_STATUSES = {"Active", "Draft", "Archived"}
+_TRUE_VALUES = {"1", "true", "yes"}
+_FALSE_VALUES = {"0", "false", "no"}
+
+
+def _parse_number(raw):
+    """Real number or None -- unlike flt(), never silently returns 0 for
+    unparseable input."""
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_bool01(raw):
+    """0/1 or None -- unlike cint(), rejects anything that isn't a
+    recognized true/false spelling instead of silently defaulting to 0."""
+    value = str(raw).strip().lower()
+    if value in _TRUE_VALUES:
+        return 1
+    if value in _FALSE_VALUES:
+        return 0
+    return None
+
 
 # Wrong-file detection: a CSV missing item_code entirely used to parse
 # "successfully" into zero groups and silently do nothing -- no error, no
@@ -182,13 +212,22 @@ def _apply_product_fields(item, listing, row, report):
     if seo_description and seo_description.strip():
         _set_and_log(listing, "listing_seo_description", seo_description, f"{item.name}.seo_description", changes)
 
-    is_enabled = row.get("is_enabled")
-    if is_enabled not in (None, ""):
-        _set_and_log(listing, "is_enabled", cint(is_enabled), f"{item.name}.is_enabled", changes)
+    is_enabled_raw = row.get("is_enabled")
+    if is_enabled_raw not in (None, ""):
+        parsed = _parse_bool01(is_enabled_raw)
+        if parsed is None:
+            report["warnings"].append(
+                f"{item.name}: is_enabled value {is_enabled_raw!r} isn't 0/1/true/false -- left unchanged")
+        else:
+            _set_and_log(listing, "is_enabled", parsed, f"{item.name}.is_enabled", changes)
 
     status = (row.get("sh_shopify_status") or "").strip()
     if status:
-        _set_and_log(listing, "sh_shopify_status", status, f"{item.name}.sh_shopify_status", changes)
+        if status not in _VALID_STATUSES:
+            report["warnings"].append(
+                f"{item.name}: sh_shopify_status {status!r} isn't one of {sorted(_VALID_STATUSES)} -- left unchanged")
+        else:
+            _set_and_log(listing, "sh_shopify_status", status, f"{item.name}.sh_shopify_status", changes)
 
     images_value = (row.get("image_urls") or "").strip()
     if images_value:
@@ -216,10 +255,13 @@ def _apply_variant_fields(listing, variant_rows, report):
                 f"{variant_code}: no Listing Variant row yet -- run 'Populate from Item' on the Listing first")
             continue
 
-        price = vr.get("variant_price")
-        if price not in (None, ""):
-            new_price = flt(price)
-            if flt(row.variant_price) != new_price:
+        price_raw = vr.get("variant_price")
+        if price_raw not in (None, ""):
+            new_price = _parse_number(price_raw)
+            if new_price is None:
+                report["warnings"].append(
+                    f"{variant_code}: variant_price {price_raw!r} isn't a number -- left unchanged")
+            elif flt(row.variant_price) != new_price:
                 changes.append(f"{variant_code}.variant_price: {row.variant_price!r} -> {new_price!r}")
                 row.variant_price = new_price
 
@@ -228,10 +270,13 @@ def _apply_variant_fields(listing, variant_rows, report):
             changes.append(f"{variant_code}.variant_image: {row.variant_image!r} -> {image!r}")
             row.variant_image = image
 
-        enabled = vr.get("variant_is_enabled")
-        if enabled not in (None, ""):
-            new_enabled = cint(enabled)
-            if cint(row.is_enabled) != new_enabled:
+        enabled_raw = vr.get("variant_is_enabled")
+        if enabled_raw not in (None, ""):
+            new_enabled = _parse_bool01(enabled_raw)
+            if new_enabled is None:
+                report["warnings"].append(
+                    f"{variant_code}: variant_is_enabled {enabled_raw!r} isn't 0/1/true/false -- left unchanged")
+            elif cint(row.is_enabled) != new_enabled:
                 changes.append(f"{variant_code}.variant_is_enabled: {row.is_enabled!r} -> {new_enabled!r}")
                 row.is_enabled = new_enabled
 
