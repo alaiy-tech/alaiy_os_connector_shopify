@@ -529,3 +529,116 @@ def run(show=10):
         "duplicate_suffix_groups": len(duplicates),
         "duplicate_suffix_detail": duplicates,
     }
+
+
+_PRODUCTS_WITH_VARIANT_OPTIONS = """
+query AllProductsWithOptions($first: Int!, $after: String) {
+  products(first: $first, after: $after) {
+    edges {
+      node {
+        legacyResourceId
+        title
+        status
+        totalInventory
+        variants(first: 100) {
+          nodes { selectedOptions { name value } }
+        }
+      }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+_PLACEHOLDER_VALUE = re.compile(r"^V\d+$", re.IGNORECASE)
+
+_ARCHIVE_MUTATION = """
+mutation($input: ProductInput!) {
+  productUpdate(input: $input) {
+    userErrors { field message }
+  }
+}
+"""
+
+
+def _find_placeholder_variant_products(client, progress_every=10):
+    """Products where a variant's option value is a bare placeholder like
+    "V1"/"V2" instead of a real attribute (color, size, ...) -- confirmed
+    live, this is the bulk-import bug's signature: generic option names
+    paired with unrelated (often Chinese-source) images, a separate defect
+    from the title/time-window duplicates already handled by
+    remove_duplicate_products."""
+    matches = []
+    pages = 0
+    for page in client.execute_paginated(_PRODUCTS_WITH_VARIANT_OPTIONS, {"first": _PAGE}, ["products"]):
+        for node in page:
+            values = [
+                opt["value"]
+                for v in (node.get("variants") or {}).get("nodes") or []
+                for opt in (v.get("selectedOptions") or [])
+            ]
+            if any(_PLACEHOLDER_VALUE.match(v) for v in values):
+                matches.append({
+                    "id": str(node["legacyResourceId"]),
+                    "title": node["title"],
+                    "status": node["status"],
+                    "total_inventory": node.get("totalInventory"),
+                })
+        pages += 1
+        if progress_every and pages % progress_every == 0:
+            print(f"  ...{pages * _PAGE} products checked, {len(matches)} placeholder matches so far")
+    return matches
+
+
+def find_placeholder_variant_products(show=20):
+    """Read-only. Lists Shopify products whose variants use placeholder
+    option values (V1, V2, ...) -- the bulk-import garbage-listing bug."""
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    matches = _find_placeholder_variant_products(ShopifyGraphQLClient())
+    print(f"\nplaceholder-variant products: {len(matches)}")
+    for row in matches[:show]:
+        print(f"  id={row['id']:<14} status={row['status']:<10} "
+              f"inventory={row['total_inventory']:<5} title={row['title']}")
+    return {"count": len(matches), "products": matches}
+
+
+def archive_placeholder_variant_products(dry_run=True, show=20):
+    """Archives (does NOT delete) every Shopify product whose variants use
+    placeholder option values (V1, V2, ...). Archive, not delete -- unlike
+    remove_duplicate_products this isn't a confirmed exact duplicate, just
+    known-garbage import data; archiving keeps it recoverable."""
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    matches = _find_placeholder_variant_products(client)
+    to_archive = [m for m in matches if m["status"] != "ARCHIVED"]
+
+    print(f"\nplaceholder-variant products: {len(matches)} found, {len(to_archive)} to archive "
+          f"({len(matches) - len(to_archive)} already archived)")
+    for row in to_archive[:show]:
+        print(f"  id={row['id']:<14} inventory={row['total_inventory']:<5} title={row['title']}")
+
+    if dry_run:
+        print("\nDRY RUN -- nothing archived. Re-run with dry_run=False to actually archive.")
+        return {"would_archive": len(to_archive), "dry_run": True}
+
+    archived, failed = 0, 0
+    for i, row in enumerate(to_archive, 1):
+        try:
+            data = client.execute(_ARCHIVE_MUTATION, {
+                "input": {"id": f"gid://shopify/Product/{row['id']}", "status": "ARCHIVED"}
+            })
+            errors = (data.get("productUpdate") or {}).get("userErrors") or []
+            if errors:
+                print(f"  FAILED id={row['id']}: {errors}")
+                failed += 1
+            else:
+                archived += 1
+        except Exception as e:
+            print(f"  FAILED id={row['id']}: {e}")
+            failed += 1
+        if i % 25 == 0 or i == len(to_archive):
+            print(f"  ...{i}/{len(to_archive)} processed (archived={archived} failed={failed})")
+
+    return {"archived": archived, "failed": failed, "dry_run": False}
