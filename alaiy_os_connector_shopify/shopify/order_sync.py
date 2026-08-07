@@ -61,6 +61,7 @@ from alaiy_os_connector_shopify.shopify.order.pull import (
 )
 from alaiy_os_connector_shopify.shopify.order.webhook import (
     handle_order_webhook,
+    handle_fulfillment_webhook,
     _cancel_order,
 )
 from alaiy_os_connector_shopify.shopify.order.tax import (

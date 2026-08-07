@@ -63,6 +63,9 @@ def _update_order_unlocked(order, order_id):
         # a note to empty on Shopify is a legitimate edit that should sync
         # too, not get silently ignored.
         updates["sh_shopify_notes"] = order.get("note") or ""
+    if "tags" in order:
+        from alaiy_os_connector_shopify.shopify.order.push import parse_tags, strip_status_tag
+        updates["sh_shopify_order_tags"] = ",".join(strip_status_tag(parse_tags(order.get("tags"))))
 
     if updates:
         for field, value in updates.items():

@@ -15,14 +15,27 @@ from alaiy_os_connector_shopify.shopify.product import listing as listing_resolv
 _STATUS_TAG_PREFIX = "alaiy-os-status:"
 
 
-def _merge_status_tag(client, gid: str, status: str) -> list:
+def parse_tags(raw) -> list:
+    """Shopify's REST webhook payload sends tags as one comma-separated
+    string; the GraphQL API sends a list. Accepts either."""
+    parts = raw if isinstance(raw, list) else (raw or "").split(",")
+    return [t.strip() for t in parts if t.strip()]
+
+
+def strip_status_tag(tags: list) -> list:
+    return [t for t in tags if not t.startswith(_STATUS_TAG_PREFIX)]
+
+
+def _merge_status_tag(client, gid: str, status: str, sales_order: str = None) -> list:
     """
     orderUpdate's `tags` input is a full replace, not additive -- confirmed
     live, every status push was silently wiping any real tag a human (or
     another app) had put on the Shopify order, leaving only our own status
-    tag. Read the order's current tags first and merge in just our status
-    tag (replacing any previous alaiy-os-status:* entry), so everything
-    else survives.
+    tag. Read the order's current tags first and union in Alaiy OS's own
+    sh_shopify_order_tags field (what the user just edited locally, if
+    anything) plus our status tag (replacing any previous
+    alaiy-os-status:* entry), so a tag added on either side survives a
+    push from the other.
     """
     try:
         data = client.execute(_ORDER_TAGS_QUERY, {"id": gid})
@@ -33,8 +46,17 @@ def _merge_status_tag(client, gid: str, status: str) -> list:
             message=frappe.get_traceback(),
         )
         current = []
-    kept = [t for t in current if not t.startswith(_STATUS_TAG_PREFIX)]
-    return kept + [f"{_STATUS_TAG_PREFIX}{status}"]
+    kept = strip_status_tag(current)
+
+    local_tags = []
+    if sales_order:
+        local_tags = parse_tags(frappe.db.get_value("Sales Order", sales_order, "sh_shopify_order_tags"))
+
+    merged = list(kept)
+    for t in local_tags:
+        if t not in merged:
+            merged.append(t)
+    return merged + [f"{_STATUS_TAG_PREFIX}{status}"]
 
 
 def _address_to_shopify_input(address_fields: dict, customer_name: str = "") -> dict:
@@ -127,7 +149,7 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
     try:
         client = ShopifyGraphQLClient()
         gid = _to_gid(order_id)
-        merged_tags = _merge_status_tag(client, gid, status)
+        merged_tags = _merge_status_tag(client, gid, status, sales_order)
         order_input = {
             "id": gid,
             "note": notes,

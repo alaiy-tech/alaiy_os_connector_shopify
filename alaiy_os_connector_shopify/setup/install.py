@@ -376,6 +376,14 @@ def setup_custom_fields():
             # Order submits, which is effectively always.
             "allow_on_submit": 1,
         },
+        {
+            "fieldname": "sh_shopify_order_tags",
+            "label": "Shopify Order Tags",
+            "fieldtype": "Data",
+            "insert_after": "sh_shopify_notes",
+            "description": "Synced both directions with Shopify's order tags (comma-separated). Alaiy OS's own status tag is kept out of this field and merged in separately on push.",
+            "allow_on_submit": 1,
+        },
     ]
     sales_order_item_fields = [
         {
@@ -405,6 +413,27 @@ def setup_custom_fields():
             "read_only": 1,
             "description": "Set when this Delivery Note was auto-created from a Shopify fulfillment event. Prevents the same fulfillment from ever creating a duplicate Delivery Note.",
             "insert_after": "customer",
+        },
+        {
+            "fieldname": "sh_tracking_number",
+            "label": "Shopify Tracking Number",
+            "fieldtype": "Data",
+            "read_only": 1,
+            "insert_after": "sh_shopify_fulfillment_id",
+        },
+        {
+            "fieldname": "sh_tracking_company",
+            "label": "Shopify Tracking Company",
+            "fieldtype": "Data",
+            "read_only": 1,
+            "insert_after": "sh_tracking_number",
+        },
+        {
+            "fieldname": "sh_tracking_url",
+            "label": "Shopify Tracking URL",
+            "fieldtype": "Small Text",
+            "read_only": 1,
+            "insert_after": "sh_tracking_company",
         },
     ]
 
