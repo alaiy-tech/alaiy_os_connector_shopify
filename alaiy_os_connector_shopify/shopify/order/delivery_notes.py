@@ -143,18 +143,41 @@ def _sync_tracking(fulfillment):
     change AFTER the order is already marked fulfilled (a real, common
     flow: merchant adds/edits the tracking number later).
 
-    No-ops if the matching Delivery Note doesn't exist yet -- fulfillments/
-    create can arrive before orders/fulfilled finishes creating it; that's
-    fine, tracking is rarely set on the very first delivery anyway, and a
-    later fulfillments/update webhook (or a manual backfill) catches it.
+    Matches by sh_shopify_fulfillment_id first. Falls back to the order's
+    own Delivery Note when that's blank -- confirmed live: an order marked
+    fulfilled at create time (Shopify's one-click "Complete order") carries
+    fulfillment_status=fulfilled but an EMPTY fulfillments array on the
+    orders/create webhook payload, so _create_delivery_note_if_needed's
+    full-order fallback creates the Delivery Note without ever tagging a
+    fulfillment id. That's not a rare edge case -- it's how a quick manual
+    order gets fulfilled -- so tracking must still be able to land on it.
+    Also backfills the fulfillment id onto that Delivery Note so a second
+    fulfillments/update webhook matches directly next time.
+
+    No-ops if neither match finds a Delivery Note yet -- fulfillments/
+    create can arrive before the order webhook finishes creating one;
+    tracking is rarely set on the very first delivery anyway, and a later
+    fulfillments/update webhook (or a manual backfill) catches it.
     """
     fulfillment_id = str(fulfillment.get("id") or "")
     if not fulfillment_id:
         return
     dn_name = frappe.db.get_value(
         "Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}, "name")
+
     if not dn_name:
-        return
+        order_id = str(fulfillment.get("order_id") or "")
+        if not order_id:
+            return
+        from alaiy_os_connector_shopify.shopify.order.upsert import get_active_sales_order
+        so_name = get_active_sales_order(order_id)
+        if not so_name:
+            return
+        dn_name = frappe.db.get_value(
+            "Delivery Note Item", {"against_sales_order": so_name}, "parent")
+        if not dn_name:
+            return
+        frappe.db.set_value("Delivery Note", dn_name, "sh_shopify_fulfillment_id", fulfillment_id)
 
     tracking_number = fulfillment.get("tracking_number") or ",".join(fulfillment.get("tracking_numbers") or [])
     tracking_url = fulfillment.get("tracking_url") or ",".join(fulfillment.get("tracking_urls") or [])
