@@ -139,6 +139,67 @@ def _find_duplicate_suffixes(items: list) -> dict:
     }
 
 
+def fix_stale_variant_ids(dry_run=True, show=20):
+    """
+    Clears sh_shopify_variant_id (and sh_shopify_product_id, if the
+    product itself is also gone) on local Items whose linked Shopify
+    variant no longer exists there. Confirmed live: a scheduled push
+    (product/export.py's productSet) hits a hard RuntimeError --
+    "Following variant ids do not exist" -- for every item still carrying
+    one of these stale ids, blocking that item's push every single run
+    until cleared. Clearing lets the next push CREATE a fresh variant
+    instead of failing to update one that's gone.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.stats.fix_stale_variant_ids
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.stats.fix_stale_variant_ids \
+        --kwargs "{'dry_run': False}"
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    if isinstance(dry_run, str):
+        dry_run = dry_run.strip().lower() not in ("0", "false", "no", "")
+
+    live_products, live_variants = _pull_shopify_side(ShopifyGraphQLClient())
+
+    rows = frappe.db.sql("""
+        SELECT name, sh_shopify_variant_id, sh_shopify_product_id
+        FROM `tabItem`
+        WHERE sh_shopify_variant_id IS NOT NULL AND sh_shopify_variant_id != ''
+    """, as_dict=True)
+
+    stale_variant_only = []
+    stale_both = []
+    for row in rows:
+        variant_gone = str(row.sh_shopify_variant_id) not in live_variants
+        if not variant_gone:
+            continue
+        product_gone = (
+            not row.sh_shopify_product_id or str(row.sh_shopify_product_id) not in live_products
+        )
+        (stale_both if product_gone else stale_variant_only).append(row)
+
+    print(f"stale variant id (product still exists): {len(stale_variant_only)}")
+    print(f"stale variant id AND stale product id:    {len(stale_both)}")
+    for row in (stale_variant_only + stale_both)[:show]:
+        print(f"  {row.name}  variant={row.sh_shopify_variant_id}  product={row.sh_shopify_product_id}")
+
+    if not dry_run:
+        for row in stale_variant_only:
+            frappe.db.set_value("Item", row.name, "sh_shopify_variant_id", "", update_modified=False)
+        for row in stale_both:
+            frappe.db.set_value(
+                "Item", row.name, {"sh_shopify_variant_id": "", "sh_shopify_product_id": ""},
+                update_modified=False)
+        frappe.db.commit()
+        print(f"cleared {len(stale_variant_only) + len(stale_both)} Item(s)")
+    else:
+        print("DRY RUN -- nothing written. Re-run with dry_run=False to apply.")
+
+    return {"stale_variant_only": len(stale_variant_only), "stale_both": len(stale_both), "dry_run": dry_run}
+
+
 def investigate_only_on_shopify(show=66):
     """
     For every product that's on Shopify but has no local Item linked by
