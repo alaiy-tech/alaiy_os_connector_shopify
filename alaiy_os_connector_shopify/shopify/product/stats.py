@@ -163,41 +163,56 @@ def fix_stale_variant_ids(dry_run=True, show=20):
 
     live_products, live_variants = _pull_shopify_side(ShopifyGraphQLClient())
 
+    # Two separate populations: variant rows (variant_of set, may carry
+    # their own variant id) and TEMPLATE rows (variant_of blank, never
+    # have a variant id of their own -- only a product id). A template
+    # whose product was deleted (e.g. by remove_duplicate_products) is
+    # missed entirely by a query that requires sh_shopify_variant_id to
+    # be set -- confirmed live, exactly the gap this run closes.
     rows = frappe.db.sql("""
         SELECT name, sh_shopify_variant_id, sh_shopify_product_id
         FROM `tabItem`
-        WHERE sh_shopify_variant_id IS NOT NULL AND sh_shopify_variant_id != ''
+        WHERE (sh_shopify_variant_id IS NOT NULL AND sh_shopify_variant_id != '')
+           OR (sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != '')
     """, as_dict=True)
 
     stale_variant_only = []
     stale_both = []
+    stale_product_only = []
     for row in rows:
-        variant_gone = str(row.sh_shopify_variant_id) not in live_variants
-        if not variant_gone:
-            continue
-        product_gone = (
-            not row.sh_shopify_product_id or str(row.sh_shopify_product_id) not in live_products
-        )
-        (stale_both if product_gone else stale_variant_only).append(row)
+        has_variant = bool(row.sh_shopify_variant_id)
+        variant_gone = has_variant and str(row.sh_shopify_variant_id) not in live_variants
+        product_gone = bool(row.sh_shopify_product_id) and str(row.sh_shopify_product_id) not in live_products
+
+        if has_variant:
+            if not variant_gone:
+                continue
+            (stale_both if product_gone else stale_variant_only).append(row)
+        elif product_gone:
+            stale_product_only.append(row)
 
     print(f"stale variant id (product still exists): {len(stale_variant_only)}")
     print(f"stale variant id AND stale product id:    {len(stale_both)}")
-    for row in (stale_variant_only + stale_both)[:show]:
+    print(f"template with stale product id (no variant id at all): {len(stale_product_only)}")
+    for row in (stale_variant_only + stale_both + stale_product_only)[:show]:
         print(f"  {row.name}  variant={row.sh_shopify_variant_id}  product={row.sh_shopify_product_id}")
 
     if not dry_run:
         for row in stale_variant_only:
             frappe.db.set_value("Item", row.name, "sh_shopify_variant_id", "", update_modified=False)
-        for row in stale_both:
+        for row in stale_both + stale_product_only:
             frappe.db.set_value(
                 "Item", row.name, {"sh_shopify_variant_id": "", "sh_shopify_product_id": ""},
                 update_modified=False)
         frappe.db.commit()
-        print(f"cleared {len(stale_variant_only) + len(stale_both)} Item(s)")
+        print(f"cleared {len(stale_variant_only) + len(stale_both) + len(stale_product_only)} Item(s)")
     else:
         print("DRY RUN -- nothing written. Re-run with dry_run=False to apply.")
 
-    return {"stale_variant_only": len(stale_variant_only), "stale_both": len(stale_both), "dry_run": dry_run}
+    return {
+        "stale_variant_only": len(stale_variant_only), "stale_both": len(stale_both),
+        "stale_product_only": len(stale_product_only), "dry_run": dry_run,
+    }
 
 
 def investigate_only_on_shopify(show=66):
