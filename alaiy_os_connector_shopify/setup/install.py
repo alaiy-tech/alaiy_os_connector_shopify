@@ -406,6 +406,27 @@ def setup_custom_fields():
             "description": "Set when this Delivery Note was auto-created from a Shopify fulfillment event. Prevents the same fulfillment from ever creating a duplicate Delivery Note.",
             "insert_after": "customer",
         },
+        {
+            "fieldname": "sh_tracking_number",
+            "label": "Shopify Tracking Number",
+            "fieldtype": "Data",
+            "read_only": 1,
+            "insert_after": "sh_shopify_fulfillment_id",
+        },
+        {
+            "fieldname": "sh_tracking_company",
+            "label": "Shopify Tracking Company",
+            "fieldtype": "Data",
+            "read_only": 1,
+            "insert_after": "sh_tracking_number",
+        },
+        {
+            "fieldname": "sh_tracking_url",
+            "label": "Shopify Tracking URL",
+            "fieldtype": "Small Text",
+            "read_only": 1,
+            "insert_after": "sh_tracking_company",
+        },
     ]
 
     custom_fields = {

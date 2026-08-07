@@ -8,6 +8,7 @@ import frappe
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator
 from alaiy_os_connector_shopify.shopify.order.upsert import _upsert_order, get_active_sales_order
 from alaiy_os_connector_shopify.shopify.order.update import _update_order
+from alaiy_os_connector_shopify.shopify.order.delivery_notes import _sync_tracking
 
 
 def handle_order_webhook(topic, payload):
@@ -32,6 +33,18 @@ def handle_order_webhook(topic, payload):
     except Exception:
         frappe.log_error(
             title=f"Shopify: order webhook {topic} failed",
+            message=frappe.get_traceback(),
+        )
+
+
+def handle_fulfillment_webhook(topic, payload):
+    """fulfillments/create, fulfillments/update -- payload is the
+    Fulfillment object itself, carrying tracking info. See _sync_tracking."""
+    try:
+        _sync_tracking(payload)
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: fulfillment webhook {topic} failed",
             message=frappe.get_traceback(),
         )
 

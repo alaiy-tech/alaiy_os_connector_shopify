@@ -11,6 +11,13 @@ WEBHOOK_TOPICS = [
 
     "orders/edited",
 
+    # Fulfillment webhooks (tracking number create/update) -- carries
+    # trackingInfo the order-level webhooks don't; orders/fulfilled only
+    # fires once, so a tracking number added or changed afterwards (a real,
+    # common flow) needs its own subscription to ever reach us.
+    "fulfillments/create",
+    "fulfillments/update",
+
     # Product webhooks (bidirectional product sync - inbound)
     "products/create",
     "products/update",

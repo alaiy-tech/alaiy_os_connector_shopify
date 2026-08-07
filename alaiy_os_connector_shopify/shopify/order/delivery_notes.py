@@ -132,3 +132,35 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             title=f"Shopify: auto Delivery Note failed for fulfillment {fulfillment_id}",
             message=f"Sales Order: {so.name}\n{frappe.get_traceback()}",
         )
+
+
+def _sync_tracking(fulfillment):
+    """
+    fulfillments/create and fulfillments/update webhooks deliver the
+    Fulfillment object directly (not wrapped in an order), carrying
+    tracking_number/tracking_company/tracking_url(s) -- fields
+    orders/fulfilled's payload doesn't reliably carry and which can also
+    change AFTER the order is already marked fulfilled (a real, common
+    flow: merchant adds/edits the tracking number later).
+
+    No-ops if the matching Delivery Note doesn't exist yet -- fulfillments/
+    create can arrive before orders/fulfilled finishes creating it; that's
+    fine, tracking is rarely set on the very first delivery anyway, and a
+    later fulfillments/update webhook (or a manual backfill) catches it.
+    """
+    fulfillment_id = str(fulfillment.get("id") or "")
+    if not fulfillment_id:
+        return
+    dn_name = frappe.db.get_value(
+        "Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}, "name")
+    if not dn_name:
+        return
+
+    tracking_number = fulfillment.get("tracking_number") or ",".join(fulfillment.get("tracking_numbers") or [])
+    tracking_url = fulfillment.get("tracking_url") or ",".join(fulfillment.get("tracking_urls") or [])
+    frappe.db.set_value("Delivery Note", dn_name, {
+        "sh_tracking_number": tracking_number,
+        "sh_tracking_company": fulfillment.get("tracking_company") or "",
+        "sh_tracking_url": tracking_url,
+    })
+    frappe.db.commit()
