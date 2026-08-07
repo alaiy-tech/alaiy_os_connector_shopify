@@ -746,13 +746,18 @@ def fix_partial_push_gap(dry_run=True, show=20):
         if v.get("sku") and v["product_id"] in linked_product_ids
     }
 
+    # Not blank -- confirmed live, these 707 already carry a DIFFERENT
+    # (stale) variant id, not an empty one. Match on the real difference,
+    # not on "missing".
     rows = frappe.db.sql("""
-        SELECT name, item_code FROM `tabItem`
+        SELECT name, item_code, sh_shopify_variant_id FROM `tabItem`
         WHERE item_code LIKE 'SH-%' AND variant_of IS NOT NULL AND variant_of != ''
-          AND (sh_shopify_variant_id IS NULL OR sh_shopify_variant_id = '')
     """, as_dict=True)
 
-    to_fix = [(r, sku_to_variant[r.item_code]) for r in rows if r.item_code in sku_to_variant]
+    to_fix = [
+        (r, sku_to_variant[r.item_code]) for r in rows
+        if r.item_code in sku_to_variant and str(r.sh_shopify_variant_id or "") != sku_to_variant[r.item_code]
+    ]
 
     print(f"local variants with no Shopify id, fixable by exact SKU match: {len(to_fix)}")
     for r, vid in to_fix[:show]:
