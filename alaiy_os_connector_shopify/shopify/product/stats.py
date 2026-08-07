@@ -378,7 +378,8 @@ def remove_duplicate_products(dry_run=True, show=20):
 
     deleted = 0
     failed = []
-    for row in to_delete:
+    total = len(to_delete)
+    for i, row in enumerate(to_delete, 1):
         try:
             result = client.execute(_DELETE_MUTATION, {"id": f"gid://shopify/Product/{row['id']}"})
             errors = result["productDelete"].get("userErrors") or []
@@ -388,6 +389,8 @@ def remove_duplicate_products(dry_run=True, show=20):
                 deleted += 1
         except Exception as e:
             failed.append((row["id"], str(e)))
+        if i % 25 == 0 or i == total:
+            print(f"  ...{i}/{total} processed, deleted={deleted} failed={len(failed)}")
 
     print(f"deleted={deleted} failed={len(failed)}")
     if failed:
