@@ -422,9 +422,14 @@ def _push_product_unlocked(item):
     result = data.get("productSet") or {}
     errors = result.get("userErrors") or []
 
-    if errors:
-        # Self-heal: check if error is due to variant IDs that do not exist on Shopify anymore
-        import re
+    # Self-heal: stale variant ids ("Following variant ids do not exist")
+    # can come back in more than one batch -- confirmed live, a single
+    # retry cleared one batch and still failed on a second. Loop it
+    # instead of retrying once.
+    import re
+    for _attempt in range(3):
+        if not errors:
+            break
         invalid_variant_ids = []
         for err in errors:
             msg = err.get("message") or ""
@@ -433,37 +438,39 @@ def _push_product_unlocked(item):
                 invalid_ids = [x.strip() for x in match.group(1).split(",") if x.strip()]
                 invalid_variant_ids.extend(invalid_ids)
 
-        if invalid_variant_ids:
-            frappe.logger().warning(
-                f"Shopify push: found stale variant IDs {invalid_variant_ids} in Alaiy OS database. "
-                "Clearing them and retrying sync..."
-            )
-            for v_id in invalid_variant_ids:
-                frappe.db.sql("""
-                    UPDATE `tabItem`
-                    SET sh_shopify_variant_id = NULL
-                    WHERE sh_shopify_variant_id = %s
-                """, v_id)
-                # Clear the Listing Variant's copy too so the two don't drift.
-                frappe.db.sql("""
-                    UPDATE `tabShopify Listing Variant`
-                    SET sh_shopify_variant_id = NULL
-                    WHERE sh_shopify_variant_id = %s
-                """, v_id)
-            frappe.db.commit()
+        if not invalid_variant_ids:
+            break
 
-            # Re-fetch item, rebuild variants list and payload, then retry the sync
-            item = frappe.get_doc("Item", item.name)
-            variants = _variants_of(item)
-            product_input = _product_set_input(item, variants, settings, listing, client)
+        frappe.logger().warning(
+            f"Shopify push: found stale variant IDs {invalid_variant_ids} in Alaiy OS database. "
+            "Clearing them and retrying sync..."
+        )
+        for v_id in invalid_variant_ids:
+            frappe.db.sql("""
+                UPDATE `tabItem`
+                SET sh_shopify_variant_id = NULL
+                WHERE sh_shopify_variant_id = %s
+            """, v_id)
+            # Clear the Listing Variant's copy too so the two don't drift.
+            frappe.db.sql("""
+                UPDATE `tabShopify Listing Variant`
+                SET sh_shopify_variant_id = NULL
+                WHERE sh_shopify_variant_id = %s
+            """, v_id)
+        frappe.db.commit()
 
-            data = client.execute(_PRODUCT_SET_MUTATION, {
-                "input": product_input,
-                "identifier": identifier,
-                "synchronous": True,
-            })
-            result = data.get("productSet") or {}
-            errors = result.get("userErrors") or []
+        # Re-fetch item, rebuild variants list and payload, then retry the sync
+        item = frappe.get_doc("Item", item.name)
+        variants = _variants_of(item)
+        product_input = _product_set_input(item, variants, settings, listing, client)
+
+        data = client.execute(_PRODUCT_SET_MUTATION, {
+            "input": product_input,
+            "identifier": identifier,
+            "synchronous": True,
+        })
+        result = data.get("productSet") or {}
+        errors = result.get("userErrors") or []
 
     if errors and identifier:
         # Self-heal: the identifier itself (the whole product, not just a
