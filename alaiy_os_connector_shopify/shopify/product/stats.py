@@ -650,6 +650,12 @@ def relink_deleted_placeholder_products(dry_run=True, show=20):
         variants = frappe.db.sql("""
             SELECT name, item_code FROM `tabItem` WHERE variant_of = %s
         """, t.name, as_dict=True)
+        # Simple products (no separate variant rows) are their own only
+        # variant -- confirmed live, relinking 32 templates this way left
+        # every one at 0 relinked variants because there were no child
+        # rows to iterate. Fall back to the template's own item_code/sku.
+        if not variants:
+            variants = [frappe.db.get_value("Item", t.name, ["name", "item_code"], as_dict=True)]
         for v in variants:
             hit = sku_to_variant.get(v.item_code)
             if hit and hit[1] == new_pid:
