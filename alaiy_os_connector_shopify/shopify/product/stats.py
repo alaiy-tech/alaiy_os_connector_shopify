@@ -614,17 +614,19 @@ def relink_deleted_placeholder_products(dry_run=True, show=20):
     sku_to_variant = {v["sku"]: (vid, v["product_id"]) for vid, v in live_variants.items() if v.get("sku")}
 
     templates = frappe.db.sql("""
-        SELECT name, item_name, sh_shopify_product_id
-        FROM `tabItem`
-        WHERE item_code LIKE 'SH-%' AND (variant_of IS NULL OR variant_of = '')
-          AND sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''
+        SELECT i.name, i.item_name, i.sh_shopify_product_id, l.listing_title
+        FROM `tabItem` i
+        LEFT JOIN `tabShopify Product Listing` l ON l.item = i.name
+        WHERE i.item_code LIKE 'SH-%' AND (i.variant_of IS NULL OR i.variant_of = '')
+          AND i.sh_shopify_product_id IS NOT NULL AND i.sh_shopify_product_id != ''
     """, as_dict=True)
 
     to_relink = []
     for t in templates:
         if str(t.sh_shopify_product_id) in live_products:
             continue
-        candidates = title_to_ids.get(t.item_name) or []
+        effective_title = (t.listing_title or "").strip() or t.item_name
+        candidates = title_to_ids.get(effective_title) or []
         if len(candidates) == 1:
             to_relink.append((t, candidates[0]))
 
