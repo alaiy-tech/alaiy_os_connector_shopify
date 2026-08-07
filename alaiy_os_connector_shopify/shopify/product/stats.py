@@ -590,6 +590,77 @@ def _find_placeholder_variant_products(client, progress_every=10):
     return matches
 
 
+def relink_deleted_placeholder_products(dry_run=True, show=20):
+    """For local templates whose sh_shopify_product_id points at a product
+    that's been deleted (e.g. by resolve_placeholder_variant_products
+    deleting a garbage duplicate in favour of a clean one already on
+    Shopify) -- relink to that clean product by exact title match instead
+    of clearing and letting the next push create a THIRD duplicate.
+    Variant ids are relinked by SKU (confirmed live: a Shopify variant's
+    sku is the full item_code verbatim)."""
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    live_products, live_variants = _pull_shopify_side(client)
+
+    titles = {}
+    for page in client.execute_paginated(_ALL_PRODUCTS_WITH_TITLE, {"first": _PAGE}, ["products"]):
+        for node in page:
+            titles[str(node["legacyResourceId"])] = node["title"]
+    title_to_ids = collections.defaultdict(list)
+    for pid, title in titles.items():
+        title_to_ids[title].append(pid)
+
+    sku_to_variant = {v["sku"]: (vid, v["product_id"]) for vid, v in live_variants.items() if v.get("sku")}
+
+    templates = frappe.db.sql("""
+        SELECT name, item_name, sh_shopify_product_id
+        FROM `tabItem`
+        WHERE item_code LIKE 'SH-%' AND (variant_of IS NULL OR variant_of = '')
+          AND sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''
+    """, as_dict=True)
+
+    to_relink = []
+    for t in templates:
+        if str(t.sh_shopify_product_id) in live_products:
+            continue
+        candidates = title_to_ids.get(t.item_name) or []
+        if len(candidates) == 1:
+            to_relink.append((t, candidates[0]))
+
+    print(f"local templates linked to a deleted product: "
+          f"{sum(1 for t in templates if str(t.sh_shopify_product_id) not in live_products)}")
+    print(f"  relinkable by exact unique title match: {len(to_relink)}")
+    for t, new_pid in to_relink[:show]:
+        print(f"  {t.name}  {t.sh_shopify_product_id} -> {new_pid}  ({t.item_name})")
+
+    if dry_run:
+        print("\nDRY RUN -- nothing written. Re-run with dry_run=False to apply.")
+        return {"relinkable": len(to_relink), "dry_run": True}
+
+    relinked_products, relinked_variants = 0, 0
+    for t, new_pid in to_relink:
+        frappe.db.set_value("Item", t.name, "sh_shopify_product_id", new_pid, update_modified=False)
+        frappe.db.set_value("Shopify Product Listing", {"item": t.name}, "sh_shopify_product_id", new_pid,
+                             update_modified=False)
+        relinked_products += 1
+
+        variants = frappe.db.sql("""
+            SELECT name, item_code FROM `tabItem` WHERE variant_of = %s
+        """, t.name, as_dict=True)
+        for v in variants:
+            hit = sku_to_variant.get(v.item_code)
+            if hit and hit[1] == new_pid:
+                frappe.db.set_value("Item", v.name, "sh_shopify_variant_id", hit[0], update_modified=False)
+                frappe.db.set_value("Shopify Listing Variant", {"item_variant": v.name}, "sh_shopify_variant_id",
+                                     hit[0], update_modified=False)
+                relinked_variants += 1
+    frappe.db.commit()
+    print(f"relinked {relinked_products} template(s), {relinked_variants} variant(s)")
+
+    return {"relinked_products": relinked_products, "relinked_variants": relinked_variants, "dry_run": False}
+
+
 def find_placeholder_variant_products(show=20):
     """Read-only. Lists Shopify products whose variants use placeholder
     option values (V1, V2, ...) -- the bulk-import garbage-listing bug."""
