@@ -43,6 +43,15 @@ query AllVariants($first: Int!, $after: String) {
 }
 """
 
+_ALL_PRODUCTS_WITH_TITLE = """
+query AllProductsWithTitle($first: Int!, $after: String) {
+  products(first: $first, after: $after) {
+    edges { node { legacyResourceId title } }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
 _PAGE = 250
 
 # Every item_code shape confirmed live in this codebase's real data.
@@ -127,6 +136,63 @@ def _find_duplicate_suffixes(items: list) -> dict:
         for suffix, templates in by_suffix.items()
         if len(templates) > 1
     }
+
+
+def investigate_only_on_shopify(show=66):
+    """
+    For every product that's on Shopify but has no local Item linked by
+    sh_shopify_product_id, check WHY before assuming it needs importing --
+    it may instead be a product Alaiy OS pushed TO Shopify (export
+    direction) whose local Item never got the id written back, in which
+    case linking is the fix, not a fresh import that would create a
+    duplicate. Matches by exact title against local Item templates with a
+    blank sh_shopify_product_id.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.stats.investigate_only_on_shopify
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    all_products = {}
+    for page in client.execute_paginated(_ALL_PRODUCTS_WITH_TITLE, {"first": _PAGE}, ["products"]):
+        for node in page:
+            all_products[str(node["legacyResourceId"])] = node["title"]
+
+    local_ids = {
+        r.sh_shopify_product_id
+        for r in frappe.db.sql(
+            "SELECT sh_shopify_product_id FROM `tabItem` "
+            "WHERE variant_of IS NULL AND sh_shopify_product_id IS NOT NULL "
+            "AND sh_shopify_product_id != ''", as_dict=True)
+    }
+    only_on_shopify = {pid: title for pid, title in all_products.items() if pid not in local_ids}
+
+    unlinked_by_title = {
+        r.item_name: r.name
+        for r in frappe.db.sql(
+            "SELECT name, item_name FROM `tabItem` WHERE variant_of IS NULL "
+            "AND (sh_shopify_product_id IS NULL OR sh_shopify_product_id = '')", as_dict=True)
+    }
+
+    likely_unlinked_export = []
+    genuinely_never_touched = []
+    for pid, title in only_on_shopify.items():
+        local_match = unlinked_by_title.get(title)
+        if local_match:
+            likely_unlinked_export.append({"shopify_id": pid, "title": title, "local_item": local_match})
+        else:
+            genuinely_never_touched.append({"shopify_id": pid, "title": title})
+
+    print(f"only-on-Shopify: {len(only_on_shopify)}")
+    print(f"  likely export-direction, just unlinked: {len(likely_unlinked_export)}")
+    for row in likely_unlinked_export[:show]:
+        print(f"    {row['shopify_id']}  {row['title'][:60]!r}  -> local {row['local_item']}")
+    print(f"  genuinely never touched (real import candidates): {len(genuinely_never_touched)}")
+    for row in genuinely_never_touched[:show]:
+        print(f"    {row['shopify_id']}  {row['title'][:60]!r}")
+
+    return {"likely_unlinked_export": likely_unlinked_export, "genuinely_never_touched": genuinely_never_touched}
 
 
 def run(show=10):
