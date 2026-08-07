@@ -21,6 +21,7 @@ figure.
 """
 
 import collections
+import datetime
 import re
 
 import frappe
@@ -216,20 +217,27 @@ query AllProductsDetailed($first: Int!, $after: String) {
 }
 """
 
-# Real order-linkage signal without the Orders API scope: a product's own
-# variants carry inventory that only ever gets consumed by a real sale.
-# 0 here is not proof of "never sold" (COD/manual fulfillment can bypass
-# inventory tracking) -- it's the best signal available from the Products
-# scope alone, surfaced so a human makes the final call, not guessed away.
+# Confirmed live: grouping by title alone is the WRONG signal on this
+# catalog -- a bulk-imported supplier feed legitimately reuses the same
+# generic marketing title across dozens of genuinely different physical
+# products (one real title hit 76 copies, all created on different days --
+# not duplicates). The trustworthy signal, confirmed on a real example
+# ("Cowhide Hand-Stitched Steering Wheel Cover, 38cm Diameter", 6 copies
+# created 8 SECONDS apart): a bulk-import script creating the same product
+# more than once in a single run. Only title groups where every member was
+# created within this window of each other are flagged.
+_DUPLICATE_CREATION_WINDOW = datetime.timedelta(minutes=5)
+
+
 def investigate_duplicates(show=100):
     """
-    Groups Shopify products by exact title, reports every real signal
-    (created/updated date, inventory, has an image, has a description)
-    for each member of a group with more than one product -- no deletion,
-    no keep/remove decision made here. Confirmed live: a "recently
-    enriched" push and an older bare listing can BOTH be real duplicates
-    of the same product, and which one is safe to remove depends on
-    signals only a human should weigh, not a guess.
+    Groups Shopify products by exact title, then keeps only the groups
+    where every member was created within a tight time window of each
+    other (see _DUPLICATE_CREATION_WINDOW) -- the real signature of one
+    bulk-import run accidentally creating the same product more than once,
+    as opposed to a generic supplier title legitimately shared across many
+    different real products over time. No deletion, no keep/remove
+    decision made here.
 
     bench --site <site> execute \
         alaiy_os_connector_shopify.shopify.product.stats.investigate_duplicates
@@ -250,17 +258,31 @@ def investigate_duplicates(show=100):
                 "has_description": bool((node.get("descriptionHtml") or "").strip()),
             })
 
-    dupe_groups = {title: rows for title, rows in by_title.items() if len(rows) > 1}
+    def _created(row):
+        return datetime.datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
 
-    print(f"duplicate title groups: {len(dupe_groups)}")
-    for title, rows in list(dupe_groups.items())[:show]:
-        print(f"\n  {title[:70]!r} -- {len(rows)} copies")
+    all_title_groups = {title: rows for title, rows in by_title.items() if len(rows) > 1}
+    likely_bug_duplicates = {}
+    generic_shared_title = {}
+    for title, rows in all_title_groups.items():
+        times = sorted(_created(r) for r in rows)
+        if times[-1] - times[0] <= _DUPLICATE_CREATION_WINDOW:
+            likely_bug_duplicates[title] = rows
+        else:
+            generic_shared_title[title] = rows
+
+    print(f"title groups total: {len(all_title_groups)} "
+          f"(likely bulk-duplicate-creation bug: {len(likely_bug_duplicates)}, "
+          f"generic shared title, not duplicates: {len(generic_shared_title)})")
+    for title, rows in list(likely_bug_duplicates.items())[:show]:
+        print(f"\n  {title[:70]!r} -- {len(rows)} copies, all created within "
+              f"{_DUPLICATE_CREATION_WINDOW}")
         for row in sorted(rows, key=lambda r: r["created_at"]):
             print(f"    id={row['id']:<14} status={row['status']:<10} "
                   f"created={row['created_at']:<25} inventory={row['total_inventory']:<5} "
                   f"image={row['has_image']} description={row['has_description']}")
 
-    return dupe_groups
+    return {"likely_bug_duplicates": likely_bug_duplicates, "generic_shared_title_count": len(generic_shared_title)}
 
 
 def run(show=10):
