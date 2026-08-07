@@ -10,6 +10,39 @@ from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _r
 from alaiy_os_connector_shopify.shopify.order.warehouse import _force_valid_warehouse
 
 
+def _fill_expense_accounts(dn):
+    """
+    Force a valid Expense Account onto every Delivery Note row missing one.
+    Confirmed live: an Item with no expense_account of its own and no
+    default configured anywhere crashes submit at the GL-entry step
+    ("Expense Account not set for the Item ..."). Same self-heal shape as
+    invoice.py's _fill_item_accounts/_resolve_income_account -- resolve one
+    company-wide default rather than requiring the merchant to configure
+    every Item by hand.
+    """
+    expense = _resolve_expense_account(dn.company)
+    if not expense:
+        return
+    for row in dn.items:
+        if not row.expense_account:
+            row.expense_account = expense
+
+
+def _resolve_expense_account(company):
+    configured = frappe.get_cached_value("Company", company, "default_expense_account")
+    if configured and not frappe.db.get_value("Account", configured, "is_group"):
+        return configured
+    return frappe.db.get_value(
+        "Account",
+        {"company": company, "account_type": "Cost of Goods Sold", "is_group": 0, "disabled": 0},
+        "name",
+    ) or frappe.db.get_value(
+        "Account",
+        {"company": company, "root_type": "Expense", "is_group": 0, "disabled": 0},
+        "name",
+    )
+
+
 def _create_delivery_note_if_needed(so_name):
     """
     Full-order fallback for the one path that has no per-fulfillment
@@ -42,6 +75,7 @@ def _create_delivery_note_if_needed(so_name):
             # workaround.
             for row in dn.items:
                 row.allow_zero_valuation_rate = 1
+            _fill_expense_accounts(dn)
             dn.flags.ignore_permissions = True
             dn.insert()
             dn.submit()
@@ -123,6 +157,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             dn.sh_shopify_fulfillment_id = fulfillment_id
             for row in dn.items:
                 row.allow_zero_valuation_rate = 1
+            _fill_expense_accounts(dn)
             dn.flags.ignore_permissions = True
             dn.insert()
             dn.submit()
