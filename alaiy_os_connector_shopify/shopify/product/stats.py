@@ -290,6 +290,112 @@ query AllProductsDetailed($first: Int!, $after: String) {
 _DUPLICATE_CREATION_WINDOW = datetime.timedelta(minutes=5)
 
 
+def _created_at(row):
+    return datetime.datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+
+
+def _group_duplicate_products(client):
+    """Shared by investigate_duplicates and remove_duplicate_products --
+    groups by exact title, splits into likely-bug (all members created
+    within _DUPLICATE_CREATION_WINDOW) vs generic-shared-title (real,
+    unrelated products that happen to share a supplier title)."""
+    by_title = collections.defaultdict(list)
+    for page in client.execute_paginated(_ALL_PRODUCTS_DETAILED, {"first": _PAGE}, ["products"]):
+        for node in page:
+            by_title[node["title"]].append({
+                "id": node["legacyResourceId"],
+                "status": node["status"],
+                "created_at": node["createdAt"],
+                "updated_at": node["updatedAt"],
+                "total_inventory": node["totalInventory"],
+                "has_image": bool(node["images"]["edges"]),
+                "has_description": bool((node.get("descriptionHtml") or "").strip()),
+            })
+
+    all_title_groups = {title: rows for title, rows in by_title.items() if len(rows) > 1}
+    likely_bug_duplicates = {}
+    generic_shared_title = {}
+    for title, rows in all_title_groups.items():
+        times = sorted(_created_at(r) for r in rows)
+        if times[-1] - times[0] <= _DUPLICATE_CREATION_WINDOW:
+            likely_bug_duplicates[title] = rows
+        else:
+            generic_shared_title[title] = rows
+    return likely_bug_duplicates, generic_shared_title, len(all_title_groups)
+
+
+_DELETE_MUTATION = """
+mutation($id: ID!) {
+  productDelete(input: {id: $id}) {
+    deletedProductId
+    userErrors { field message }
+  }
+}
+"""
+
+
+def remove_duplicate_products(dry_run=True, show=20):
+    """
+    For every likely-bug-duplicate title group (see
+    _group_duplicate_products), keeps the OLDEST product and deletes the
+    rest -- but ONLY if every single member of that group has zero
+    inventory. A group with even one member carrying real stock is
+    skipped entirely and reported, never partially touched.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.stats.remove_duplicate_products
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.stats.remove_duplicate_products \
+        --kwargs "{'dry_run': False}"
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    if isinstance(dry_run, str):
+        dry_run = dry_run.strip().lower() not in ("0", "false", "no", "")
+
+    client = ShopifyGraphQLClient()
+    likely_bug_duplicates, _, _ = _group_duplicate_products(client)
+
+    to_delete = []
+    skipped_has_inventory = []
+    for title, rows in likely_bug_duplicates.items():
+        if any(r["total_inventory"] not in (0, None) for r in rows):
+            skipped_has_inventory.append((title, len(rows)))
+            continue
+        ordered = sorted(rows, key=lambda r: r["created_at"])
+        keep = ordered[0]
+        to_delete.extend({"title": title, "id": r["id"], "keep_instead": keep["id"]} for r in ordered[1:])
+
+    print(f"groups considered: {len(likely_bug_duplicates)}")
+    print(f"skipped (has real inventory somewhere in the group): {len(skipped_has_inventory)}")
+    print(f"products to delete: {len(to_delete)}")
+    for row in to_delete[:show]:
+        print(f"  delete {row['id']} (keeping {row['keep_instead']})  {row['title'][:60]!r}")
+
+    if dry_run:
+        print("DRY RUN -- nothing deleted. Re-run with dry_run=False to apply.")
+        return {"to_delete": len(to_delete), "skipped_has_inventory": len(skipped_has_inventory), "dry_run": True}
+
+    deleted = 0
+    failed = []
+    for row in to_delete:
+        try:
+            result = client.execute(_DELETE_MUTATION, {"id": f"gid://shopify/Product/{row['id']}"})
+            errors = result["productDelete"].get("userErrors") or []
+            if errors:
+                failed.append((row["id"], str(errors)))
+            else:
+                deleted += 1
+        except Exception as e:
+            failed.append((row["id"], str(e)))
+
+    print(f"deleted={deleted} failed={len(failed)}")
+    if failed:
+        print(f"first 10 failures: {failed[:10]}")
+
+    return {"deleted": deleted, "failed": len(failed), "skipped_has_inventory": len(skipped_has_inventory)}
+
+
 def investigate_duplicates(show=100):
     """
     Groups Shopify products by exact title, then keeps only the groups
@@ -306,33 +412,9 @@ def investigate_duplicates(show=100):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     client = ShopifyGraphQLClient()
-    by_title = collections.defaultdict(list)
-    for page in client.execute_paginated(_ALL_PRODUCTS_DETAILED, {"first": _PAGE}, ["products"]):
-        for node in page:
-            by_title[node["title"]].append({
-                "id": node["legacyResourceId"],
-                "status": node["status"],
-                "created_at": node["createdAt"],
-                "updated_at": node["updatedAt"],
-                "total_inventory": node["totalInventory"],
-                "has_image": bool(node["images"]["edges"]),
-                "has_description": bool((node.get("descriptionHtml") or "").strip()),
-            })
+    likely_bug_duplicates, generic_shared_title, all_title_groups_count = _group_duplicate_products(client)
 
-    def _created(row):
-        return datetime.datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
-
-    all_title_groups = {title: rows for title, rows in by_title.items() if len(rows) > 1}
-    likely_bug_duplicates = {}
-    generic_shared_title = {}
-    for title, rows in all_title_groups.items():
-        times = sorted(_created(r) for r in rows)
-        if times[-1] - times[0] <= _DUPLICATE_CREATION_WINDOW:
-            likely_bug_duplicates[title] = rows
-        else:
-            generic_shared_title[title] = rows
-
-    print(f"title groups total: {len(all_title_groups)} "
+    print(f"title groups total: {all_title_groups_count} "
           f"(likely bulk-duplicate-creation bug: {len(likely_bug_duplicates)}, "
           f"generic shared title, not duplicates: {len(generic_shared_title)})")
     for title, rows in list(likely_bug_duplicates.items())[:show]:
