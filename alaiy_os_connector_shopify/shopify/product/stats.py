@@ -349,7 +349,7 @@ mutation($id: ID!) {
 """
 
 
-def remove_duplicate_products(dry_run=True, show=20):
+def remove_duplicate_products(dry_run=True, show=20, shard=0, num_shards=1):
     """
     For every likely-bug-duplicate title group (see
     _group_duplicate_products), keeps the OLDEST product and deletes the
@@ -357,16 +357,25 @@ def remove_duplicate_products(dry_run=True, show=20):
     inventory. A group with even one member carrying real stock is
     skipped entirely and reported, never partially touched.
 
+    shard/num_shards let several of these run concurrently (e.g. 3 tmux
+    sessions with num_shards=3, shard=0/1/2) to split the delete workload
+    -- each shard re-pulls the same full Shopify state and computes the
+    same full to_delete list, then only acts on every num_shards-th
+    product id, so running several shards together is safe (no two
+    shards ever touch the same product) without needing to coordinate a
+    shared work queue.
+
     bench --site <site> execute \
         alaiy_os_connector_shopify.shopify.product.stats.remove_duplicate_products
     bench --site <site> execute \
         alaiy_os_connector_shopify.shopify.product.stats.remove_duplicate_products \
-        --kwargs "{'dry_run': False}"
+        --kwargs "{'dry_run': False, 'shard': 0, 'num_shards': 3}"
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     if isinstance(dry_run, str):
         dry_run = dry_run.strip().lower() not in ("0", "false", "no", "")
+    shard, num_shards = int(shard), int(num_shards)
 
     client = ShopifyGraphQLClient()
     likely_bug_duplicates, _, _ = _group_duplicate_products(client)
@@ -381,9 +390,18 @@ def remove_duplicate_products(dry_run=True, show=20):
         keep = ordered[0]
         to_delete.extend({"title": title, "id": r["id"], "keep_instead": keep["id"]} for r in ordered[1:])
 
+    # Sort by id for a stable, deterministic split -- every shard computes
+    # the identical full list above, so slicing it the same way on each
+    # shard guarantees no overlap without any coordination between them.
+    to_delete.sort(key=lambda r: r["id"])
+    if num_shards > 1:
+        full_count = len(to_delete)
+        to_delete = [r for i, r in enumerate(to_delete) if i % num_shards == shard]
+        print(f"shard {shard}/{num_shards}: {len(to_delete)} of {full_count} total assigned to this shard")
+
     print(f"groups considered: {len(likely_bug_duplicates)}")
     print(f"skipped (has real inventory somewhere in the group): {len(skipped_has_inventory)}")
-    print(f"products to delete: {len(to_delete)}")
+    print(f"products to delete (this shard): {len(to_delete)}")
     for row in to_delete[:show]:
         print(f"  delete {row['id']} (keeping {row['keep_instead']})  {row['title'][:60]!r}")
 
