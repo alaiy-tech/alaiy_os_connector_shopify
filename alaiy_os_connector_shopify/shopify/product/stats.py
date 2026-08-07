@@ -603,42 +603,86 @@ def find_placeholder_variant_products(show=20):
     return {"count": len(matches), "products": matches}
 
 
-def archive_placeholder_variant_products(dry_run=True, show=20):
-    """Archives (does NOT delete) every Shopify product whose variants use
-    placeholder option values (V1, V2, ...). Archive, not delete -- unlike
-    remove_duplicate_products this isn't a confirmed exact duplicate, just
-    known-garbage import data; archiving keeps it recoverable."""
+def resolve_placeholder_variant_products(dry_run=True, show=20):
+    """For every placeholder-variant (V1/V2/...) garbage product: if a
+    clean product (real attributes, not itself a placeholder match) shares
+    its exact title, delete the garbage one -- the real copy already
+    covers it. Otherwise archive it (not delete) since it may be the only
+    copy of that data. Zero-inventory required either way -- a group
+    member carrying real stock is left alone and reported, same safety
+    convention as remove_duplicate_products."""
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     client = ShopifyGraphQLClient()
     matches = _find_placeholder_variant_products(client)
-    to_archive = [m for m in matches if m["status"] != "ARCHIVED"]
+    placeholder_ids = {m["id"] for m in matches}
+    candidates = [m for m in matches if m["status"] != "ARCHIVED"]
 
-    print(f"\nplaceholder-variant products: {len(matches)} found, {len(to_archive)} to archive "
-          f"({len(matches) - len(to_archive)} already archived)")
+    print("Pulling all product titles to check for a clean copy of each match...")
+    clean_titles = collections.defaultdict(list)
+    for page in client.execute_paginated(_ALL_PRODUCTS_WITH_TITLE, {"first": _PAGE}, ["products"]):
+        for node in page:
+            pid = str(node["legacyResourceId"])
+            if pid not in placeholder_ids:
+                clean_titles[node["title"]].append(pid)
+
+    to_delete, to_archive, has_inventory = [], [], []
+    for row in candidates:
+        if row["total_inventory"] not in (0, None):
+            has_inventory.append(row)
+        elif clean_titles.get(row["title"]):
+            to_delete.append(row)
+        else:
+            to_archive.append(row)
+
+    print(f"\nplaceholder-variant products: {len(matches)} found "
+          f"({len(matches) - len(candidates)} already archived)")
+    print(f"  clean copy exists -> delete:  {len(to_delete)}")
+    print(f"  no clean copy -> archive only: {len(to_archive)}")
+    print(f"  skipped, has real inventory:   {len(has_inventory)}")
+    for row in to_delete[:show]:
+        print(f"  DELETE  id={row['id']:<14} title={row['title']}")
     for row in to_archive[:show]:
-        print(f"  id={row['id']:<14} inventory={row['total_inventory']:<5} title={row['title']}")
+        print(f"  ARCHIVE id={row['id']:<14} title={row['title']}")
+    if has_inventory:
+        for row in has_inventory[:show]:
+            print(f"  SKIP    id={row['id']:<14} inventory={row['total_inventory']} title={row['title']}")
 
     if dry_run:
-        print("\nDRY RUN -- nothing archived. Re-run with dry_run=False to actually archive.")
-        return {"would_archive": len(to_archive), "dry_run": True}
+        print("\nDRY RUN -- nothing changed. Re-run with dry_run=False to actually apply.")
+        return {"would_delete": len(to_delete), "would_archive": len(to_archive),
+                "skipped_has_inventory": len(has_inventory), "dry_run": True}
 
-    archived, failed = 0, 0
-    for i, row in enumerate(to_archive, 1):
+    deleted, archived, failed = 0, 0, 0
+    total = len(to_delete) + len(to_archive)
+    for i, row in enumerate(to_delete + to_archive, 1):
         try:
-            data = client.execute(_ARCHIVE_MUTATION, {
-                "input": {"id": f"gid://shopify/Product/{row['id']}", "status": "ARCHIVED"}
-            })
-            errors = (data.get("productUpdate") or {}).get("userErrors") or []
-            if errors:
-                print(f"  FAILED id={row['id']}: {errors}")
-                failed += 1
+            if row in to_delete:
+                data = client.execute(_DELETE_MUTATION, {"id": f"gid://shopify/Product/{row['id']}"})
+                errors = (data.get("productDelete") or {}).get("userErrors") or []
+                ok_key = "deletedProductId"
+                if not errors and (data.get("productDelete") or {}).get(ok_key):
+                    deleted += 1
+                elif not errors:
+                    deleted += 1
+                else:
+                    print(f"  FAILED delete id={row['id']}: {errors}")
+                    failed += 1
             else:
-                archived += 1
+                data = client.execute(_ARCHIVE_MUTATION, {
+                    "input": {"id": f"gid://shopify/Product/{row['id']}", "status": "ARCHIVED"}
+                })
+                errors = (data.get("productUpdate") or {}).get("userErrors") or []
+                if errors:
+                    print(f"  FAILED archive id={row['id']}: {errors}")
+                    failed += 1
+                else:
+                    archived += 1
         except Exception as e:
             print(f"  FAILED id={row['id']}: {e}")
             failed += 1
-        if i % 25 == 0 or i == len(to_archive):
-            print(f"  ...{i}/{len(to_archive)} processed (archived={archived} failed={failed})")
+        if i % 25 == 0 or i == total:
+            print(f"  ...{i}/{total} processed (deleted={deleted} archived={archived} failed={failed})")
 
-    return {"archived": archived, "failed": failed, "dry_run": False}
+    return {"deleted": deleted, "archived": archived, "failed": failed,
+            "skipped_has_inventory": len(has_inventory), "dry_run": False}
