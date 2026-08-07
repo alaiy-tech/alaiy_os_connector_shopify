@@ -195,6 +195,74 @@ def investigate_only_on_shopify(show=66):
     return {"likely_unlinked_export": likely_unlinked_export, "genuinely_never_touched": genuinely_never_touched}
 
 
+_ALL_PRODUCTS_DETAILED = """
+query AllProductsDetailed($first: Int!, $after: String) {
+  products(first: $first, after: $after) {
+    edges {
+      node {
+        legacyResourceId
+        title
+        status
+        createdAt
+        updatedAt
+        totalInventory
+        descriptionHtml
+        images(first: 1) { edges { node { id } } }
+        variants(first: 1) { edges { node { id } } }
+      }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+# Real order-linkage signal without the Orders API scope: a product's own
+# variants carry inventory that only ever gets consumed by a real sale.
+# 0 here is not proof of "never sold" (COD/manual fulfillment can bypass
+# inventory tracking) -- it's the best signal available from the Products
+# scope alone, surfaced so a human makes the final call, not guessed away.
+def investigate_duplicates(show=100):
+    """
+    Groups Shopify products by exact title, reports every real signal
+    (created/updated date, inventory, has an image, has a description)
+    for each member of a group with more than one product -- no deletion,
+    no keep/remove decision made here. Confirmed live: a "recently
+    enriched" push and an older bare listing can BOTH be real duplicates
+    of the same product, and which one is safe to remove depends on
+    signals only a human should weigh, not a guess.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.stats.investigate_duplicates
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    by_title = collections.defaultdict(list)
+    for page in client.execute_paginated(_ALL_PRODUCTS_DETAILED, {"first": _PAGE}, ["products"]):
+        for node in page:
+            by_title[node["title"]].append({
+                "id": node["legacyResourceId"],
+                "status": node["status"],
+                "created_at": node["createdAt"],
+                "updated_at": node["updatedAt"],
+                "total_inventory": node["totalInventory"],
+                "has_image": bool(node["images"]["edges"]),
+                "has_description": bool((node.get("descriptionHtml") or "").strip()),
+            })
+
+    dupe_groups = {title: rows for title, rows in by_title.items() if len(rows) > 1}
+
+    print(f"duplicate title groups: {len(dupe_groups)}")
+    for title, rows in list(dupe_groups.items())[:show]:
+        print(f"\n  {title[:70]!r} -- {len(rows)} copies")
+        for row in sorted(rows, key=lambda r: r["created_at"]):
+            print(f"    id={row['id']:<14} status={row['status']:<10} "
+                  f"created={row['created_at']:<25} inventory={row['total_inventory']:<5} "
+                  f"image={row['has_image']} description={row['has_description']}")
+
+    return dupe_groups
+
+
 def run(show=10):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
