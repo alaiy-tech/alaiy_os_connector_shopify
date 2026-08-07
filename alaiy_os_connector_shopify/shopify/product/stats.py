@@ -722,6 +722,55 @@ def investigate_unlinked_variants(show=30):
     }
 
 
+def fix_partial_push_gap(dry_run=True, show=20):
+    """Writes back sh_shopify_variant_id for every local Item whose SKU
+    (= full item_code, confirmed live) exactly matches an unlinked
+    Shopify variant under a product we already have linked -- the
+    product pushed fine, this specific variant's id just never made it
+    back into Alaiy OS. Safe direct match, not a guess."""
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    live_products, live_variants = _pull_shopify_side(client)
+
+    linked_product_ids = {
+        str(r.sh_shopify_product_id) for r in frappe.db.sql("""
+            SELECT sh_shopify_product_id FROM `tabItem`
+            WHERE item_code LIKE 'SH-%' AND (variant_of IS NULL OR variant_of = '')
+              AND sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''
+        """, as_dict=True)
+    }
+
+    sku_to_variant = {
+        v["sku"]: vid for vid, v in live_variants.items()
+        if v.get("sku") and v["product_id"] in linked_product_ids
+    }
+
+    rows = frappe.db.sql("""
+        SELECT name, item_code FROM `tabItem`
+        WHERE item_code LIKE 'SH-%' AND variant_of IS NOT NULL AND variant_of != ''
+          AND (sh_shopify_variant_id IS NULL OR sh_shopify_variant_id = '')
+    """, as_dict=True)
+
+    to_fix = [(r, sku_to_variant[r.item_code]) for r in rows if r.item_code in sku_to_variant]
+
+    print(f"local variants with no Shopify id, fixable by exact SKU match: {len(to_fix)}")
+    for r, vid in to_fix[:show]:
+        print(f"  {r.name}  -> variant={vid}")
+
+    if dry_run:
+        print("\nDRY RUN -- nothing written. Re-run with dry_run=False to apply.")
+        return {"fixable": len(to_fix), "dry_run": True}
+
+    for r, vid in to_fix:
+        frappe.db.set_value("Item", r.name, "sh_shopify_variant_id", vid, update_modified=False)
+        frappe.db.set_value("Shopify Listing Variant", {"item_variant": r.name}, "sh_shopify_variant_id", vid,
+                             update_modified=False)
+    frappe.db.commit()
+    print(f"fixed {len(to_fix)} Item(s)")
+    return {"fixed": len(to_fix), "dry_run": False}
+
+
 def find_placeholder_variant_products(show=20):
     """Read-only. Lists Shopify products whose variants use placeholder
     option values (V1, V2, ...) -- the bulk-import garbage-listing bug."""
