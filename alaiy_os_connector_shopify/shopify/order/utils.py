@@ -93,6 +93,7 @@ def _order_node_to_rest_shape(node: dict) -> dict:
         "total_discounts": ((node.get("totalDiscountsSet") or {}).get("shopMoney") or {}).get("amount") or "0",
         "currency": node.get("currencyCode") or "",
         "note": node.get("note") or "",
+        "tags": node.get("tags") or [],
         "created_at": node.get("createdAt") or "",
         "financial_status": (node.get("displayFinancialStatus") or "").lower(),
         "fulfillment_status": (node.get("displayFulfillmentStatus") or "").lower(),

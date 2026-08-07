@@ -376,6 +376,14 @@ def setup_custom_fields():
             # Order submits, which is effectively always.
             "allow_on_submit": 1,
         },
+        {
+            "fieldname": "sh_shopify_order_tags",
+            "label": "Shopify Order Tags",
+            "fieldtype": "Data",
+            "insert_after": "sh_shopify_notes",
+            "description": "Synced both directions with Shopify's order tags (comma-separated). Alaiy OS's own status tag is kept out of this field and merged in separately on push.",
+            "allow_on_submit": 1,
+        },
     ]
     sales_order_item_fields = [
         {
