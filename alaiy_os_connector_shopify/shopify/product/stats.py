@@ -669,6 +669,59 @@ def relink_deleted_placeholder_products(dry_run=True, show=20):
     return {"relinked_products": relinked_products, "relinked_variants": relinked_variants, "dry_run": False}
 
 
+def investigate_unlinked_variants(show=30):
+    """Read-only. For every Shopify variant with no matching local
+    sh_shopify_variant_id: is it under a product we already have linked
+    locally (a partial-push gap -- the product synced but this specific
+    variant's id never got written back), or under one of the products
+    that's only on Shopify with no local link at all (products_only_on_shopify)?"""
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    live_products, live_variants = _pull_shopify_side(client)
+
+    templates = frappe.db.sql("""
+        SELECT name, item_code, sh_shopify_product_id FROM `tabItem`
+        WHERE item_code LIKE 'SH-%' AND (variant_of IS NULL OR variant_of = '')
+          AND sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''
+    """, as_dict=True)
+    linked_product_ids = {str(t.sh_shopify_product_id) for t in templates}
+    product_to_template = {str(t.sh_shopify_product_id): t.item_code for t in templates}
+
+    local_variant_ids = {
+        r.sh_shopify_variant_id for r in frappe.db.sql("""
+            SELECT sh_shopify_variant_id FROM `tabItem`
+            WHERE item_code LIKE 'SH-%' AND variant_of IS NOT NULL AND variant_of != ''
+              AND sh_shopify_variant_id IS NOT NULL AND sh_shopify_variant_id != ''
+        """, as_dict=True)
+    }
+
+    unlinked = [(vid, v) for vid, v in live_variants.items() if vid not in local_variant_ids]
+
+    under_linked_product = [(vid, v) for vid, v in unlinked if v["product_id"] in linked_product_ids]
+    under_orphan_product = [(vid, v) for vid, v in unlinked if v["product_id"] not in linked_product_ids]
+
+    print(f"\nunlinked Shopify variants: {len(unlinked)}")
+    print(f"  under a product we already have linked (partial-push gap): {len(under_linked_product)}")
+    print(f"  under a product with no local link at all (orphan):         {len(under_orphan_product)}")
+
+    print("\npartial-push gap examples (product linked, this variant's id missing):")
+    for vid, v in under_linked_product[:show]:
+        print(f"  variant={vid}  sku={v['sku']}  local_template={product_to_template.get(v['product_id'])}")
+
+    orphan_product_counts = collections.Counter(v["product_id"] for _, v in under_orphan_product)
+    print(f"\norphan products accounting for these variants: {len(orphan_product_counts)}")
+    for pid, count in orphan_product_counts.most_common(show):
+        print(f"  product={pid}  variant_count={count}")
+
+    return {
+        "unlinked_total": len(unlinked),
+        "under_linked_product": len(under_linked_product),
+        "under_orphan_product": len(under_orphan_product),
+        "orphan_product_count": len(orphan_product_counts),
+    }
+
+
 def find_placeholder_variant_products(show=20):
     """Read-only. Lists Shopify products whose variants use placeholder
     option values (V1, V2, ...) -- the bulk-import garbage-listing bug."""
