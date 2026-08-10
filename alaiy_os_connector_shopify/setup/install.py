@@ -411,22 +411,31 @@ def setup_custom_fields():
             "fieldtype": "Data",
             "search_index": 1,
             "read_only": 1,
-            "description": "Set when this Delivery Note was auto-created from a Shopify fulfillment event. Prevents the same fulfillment from ever creating a duplicate Delivery Note.",
+            "description": "Set when this Delivery Note was auto-created from a Shopify fulfillment event, or once a Delivery Note created here has been pushed out as one (two-way mode). Either way, prevents the same fulfillment from ever being represented twice.",
             "insert_after": "customer",
         },
         {
+            # No longer read-only: in two-way mode this is also an INPUT --
+            # set before submit to attach tracking to the fulfillment this
+            # Delivery Note creates, or after submit to push a tracking edit
+            # to an already-linked one. The inbound direction (_sync_tracking)
+            # still writes it the same way either way (frappe.db.set_value
+            # bypasses read_only regardless), so relaxing this costs nothing
+            # there.
             "fieldname": "sh_tracking_number",
             "label": "Shopify Tracking Number",
             "fieldtype": "Data",
-            "read_only": 1,
+            "description": "Tracking number synced with the Shopify fulfillment -- set automatically inbound, or set here (before or after submit) to push it out in two-way mode.",
             "insert_after": "sh_shopify_fulfillment_id",
+            "allow_on_submit": 1,
         },
         {
             "fieldname": "sh_tracking_company",
             "label": "Shopify Tracking Company",
             "fieldtype": "Data",
-            "read_only": 1,
+            "description": "Carrier synced with the Shopify fulfillment -- set automatically inbound, or set here (before or after submit) to push it out in two-way mode.",
             "insert_after": "sh_tracking_number",
+            "allow_on_submit": 1,
         },
         {
             "fieldname": "sh_tracking_url",
