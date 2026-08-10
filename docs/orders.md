@@ -79,6 +79,20 @@ For an `orders/edited` / `orders/updated` on an order not yet shipped:
 
 > Fulfilled-order Delivery Notes need stock. On a site whose Alaiy OS stock doesn't match Shopify's historical fulfillments, enable **Allow Negative Stock** (Stock Settings) or the Delivery Note submit fails with `NegativeStockError` (order still imports; the DN is skipped and logged).
 
+Delivery Notes created here are flagged `flags.from_shopify_sync` on insert, so the outbound push below never tries to re-push a fulfillment Shopify already told us about.
+
+---
+
+## Delivery Note → Fulfillment, outbound (`fulfillment_push.py`)
+
+Gated by `Shopify Connector Settings.sh_fulfillment_sync_direction` — **"Shopify → Alaiy OS (default)"** leaves this section's behavior fully inert; existing installs see no change. Switching to **"Alaiy OS → Shopify (two-way)"** activates it for sites where the warehouse ships out of Alaiy OS itself (e.g. scanning items on a Delivery Note against a Sales Order).
+
+- `on_delivery_note_submit` — submitting a Delivery Note (not one mirrored in from Shopify, and not already linked) enqueues `push_delivery_note_fulfillment_job`, which matches the DN's items to the Shopify order's still-open `fulfillmentOrder` line items (by variant id, SKU as fallback) and calls `fulfillmentCreate` with exactly those quantities — a partial shipment only fulfills what it actually shipped, not everything Shopify has left open. The resulting Shopify fulfillment id is written back onto `sh_shopify_fulfillment_id`, the same field the inbound path checks — so the `orders/fulfilled` webhook this triggers on Shopify's side is recognized as already-accounted-for and never creates a duplicate Delivery Note.
+- `sh_carrier` / `sh_tracking_number` (Delivery Note, `allow_on_submit`) — set before or after submit; carried into the `fulfillmentCreate` call if set before submit.
+- `on_delivery_note_update_after_submit` — editing `sh_carrier`/`sh_tracking_number` on a Delivery Note that already has a linked fulfillment pushes `fulfillmentTrackingInfoUpdate`.
+- `on_delivery_note_cancel` — cancelling a Delivery Note that this app pushed out (never one mirrored in) cancels the matching Shopify fulfillment via `fulfillmentCancel`. Independent of the current setting value — a fulfillment already pushed stays cancellable even if the setting is later switched back to inbound-only.
+- `push_fulfillment_for_delivery_note` — a separate whitelisted entry point, independent of the setting, for carrier connectors (e.g. FedEx's `create_shipment_for_delivery_note`) to call explicitly once they have a real tracking number. An explicit call like this is the caller opting in directly, not the generic submit hook.
+
 ---
 
 ## Sales Invoice + payment (`invoice.py`)
@@ -112,4 +126,4 @@ All outbound pushes are skipped when `flags.from_shopify_sync` is set. A shared 
 
 ## Not yet built (order operations)
 
-Refunds/returns (→ Credit Note), restocking, tracking numbers, fulfillment cancel/split reflect-back (Alaiy OS → Shopify), manual customer notifications, and user-editable order **tags** (only an auto status tag is pushed) are not implemented.
+Refunds/returns (→ Credit Note), restocking, fulfillment **split** reflect-back (a single Shopify fulfillment order split across multiple Delivery Notes maps back to more than one `sh_shopify_fulfillment_id`, only the first is currently linked/trackable), manual customer notifications, and user-editable order **tags** (only an auto status tag is pushed) are not implemented. Tracking number sync and fulfillment cancel (Alaiy OS → Shopify) are covered above.

@@ -403,8 +403,24 @@ def setup_custom_fields():
             "fieldtype": "Data",
             "search_index": 1,
             "read_only": 1,
-            "description": "Set when this Delivery Note was auto-created from a Shopify fulfillment event. Prevents the same fulfillment from ever creating a duplicate Delivery Note.",
+            "description": "Set when this Delivery Note was auto-created from a Shopify fulfillment event, or once a Delivery Note created here has been pushed out as one (two-way mode). Either way, prevents the same fulfillment from ever being represented twice.",
             "insert_after": "customer",
+        },
+        {
+            "fieldname": "sh_carrier",
+            "label": "Shopify Carrier",
+            "fieldtype": "Data",
+            "description": "Carrier name to attach to the Shopify fulfillment (two-way mode only). Set before submit, or any time after -- editing it later pushes an update to Shopify if this Delivery Note already has a linked fulfillment.",
+            "insert_after": "sh_shopify_fulfillment_id",
+            "allow_on_submit": 1,
+        },
+        {
+            "fieldname": "sh_tracking_number",
+            "label": "Shopify Tracking Number",
+            "fieldtype": "Data",
+            "description": "Tracking number to attach to the Shopify fulfillment (two-way mode only). Set before submit, or any time after -- editing it later pushes an update to Shopify if this Delivery Note already has a linked fulfillment.",
+            "insert_after": "sh_carrier",
+            "allow_on_submit": 1,
         },
     ]
 

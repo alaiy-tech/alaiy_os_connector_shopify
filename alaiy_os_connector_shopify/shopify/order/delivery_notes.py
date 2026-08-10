@@ -43,6 +43,10 @@ def _create_delivery_note_if_needed(so_name):
             for row in dn.items:
                 row.allow_zero_valuation_rate = 1
             dn.flags.ignore_permissions = True
+            # This Delivery Note mirrors a fulfillment Shopify already knows
+            # about -- on_delivery_note_submit (the two-way outbound push)
+            # must never try to push it back out.
+            dn.flags.from_shopify_sync = True
             dn.insert()
             dn.submit()
         frappe.db.commit()
@@ -78,10 +82,36 @@ def _sync_fulfillments(so_name, fulfillments):
         if frappe.db.exists("Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}):
             continue
         _create_delivery_note_for_fulfillment(
-            so, fulfillment_id, fulfillment.get("line_items") or [])
+            so, fulfillment_id, fulfillment.get("line_items") or [], fulfillment)
 
 
-def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_items):
+def _set_tracking_fields(dn, fulfillment):
+    """
+    Carries the Shopify fulfillment's own tracking number/carrier onto the
+    Delivery Note -- this is a shipment Shopify already knows is fulfilled
+    (via its own label source, a different app, or manual entry there), not
+    one we created, so there's nothing to push back out for it (see
+    fulfillment_push.py, the outbound direction for shipments WE create).
+    lr_no/transporter_name are ERPNext core's own carrier fields, so this
+    works regardless of which carrier fulfilled the order. fedex_tracking_number
+    is additionally set only when the FedEx connector app is installed and
+    the carrier is actually FedEx, since that field is what
+    alaiy_os_connector_fedex's own UI/label logic reads.
+    """
+    numbers = fulfillment.get("tracking_numbers") or (
+        [fulfillment["tracking_number"]] if fulfillment.get("tracking_number") else [])
+    if not numbers:
+        return
+    number = str(numbers[0])
+    company = (fulfillment.get("tracking_company") or "").strip()
+    dn.lr_no = number
+    if company:
+        dn.transporter_name = company
+    if "fedex" in company.lower() and "alaiy_os_connector_fedex" in frappe.get_installed_apps():
+        dn.fedex_tracking_number = number
+
+
+def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_items, fulfillment=None):
     qty_by_item = {}
     for li in fulfillment_line_items:
         item_code = _resolve_item_code({
@@ -121,9 +151,12 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
                 return
 
             dn.sh_shopify_fulfillment_id = fulfillment_id
+            if fulfillment:
+                _set_tracking_fields(dn, fulfillment)
             for row in dn.items:
                 row.allow_zero_valuation_rate = 1
             dn.flags.ignore_permissions = True
+            dn.flags.from_shopify_sync = True
             dn.insert()
             dn.submit()
         frappe.db.commit()
