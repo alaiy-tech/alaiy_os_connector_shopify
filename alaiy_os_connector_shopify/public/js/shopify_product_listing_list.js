@@ -26,20 +26,56 @@ function render_shopify_status_banner(listview) {
 					JSON.stringify(c.filter) + "'>" + __(c.label) + ": <b>" + c.value + "</b></span>";
 			}).join("");
 
+			// Export/Update Listings/Enable-by-Status all moved out of the
+			// crowded header toolbar into this banner instead -- small
+			// icon buttons, not full-width header entries.
+			var actions =
+				'<span class="btn-group" style="margin-left:16px;">' +
+					'<button type="button" class="btn btn-xs btn-default shopify-listing-export-all"><i class="fa fa-download"></i> ' + __("Export Listings (CSV)") + '</button>' +
+					'<button type="button" class="btn btn-xs btn-default dropdown-toggle" data-toggle="dropdown" style="padding-left:4px;padding-right:6px;"></button>' +
+					'<ul class="dropdown-menu">' +
+						'<li><a href="#" class="shopify-listing-export-option" data-scope="all">' + __("All") + '</a></li>' +
+						'<li><a href="#" class="shopify-listing-export-option" data-scope="enabled">' + __("Enabled Only") + '</a></li>' +
+						'<li><a href="#" class="shopify-listing-export-option" data-scope="disabled">' + __("Disabled Only") + '</a></li>' +
+					'</ul>' +
+				'</span>' +
+				'<button type="button" class="btn btn-xs btn-default shopify-listing-update-btn" style="margin-left:8px;"><i class="fa fa-upload"></i> ' + __("Update Listings (CSV)") + '</button>' +
+				'<button type="button" class="btn btn-xs btn-default shopify-listing-enable-btn" style="margin-left:8px;"><i class="fa fa-check-circle"></i> ' + __("Enable Listings by Status") + '</button>';
+
 			var $container = listview.page.wrapper.find(".shopify-listing-status-block");
 			if (!$container.length) {
 				$container = $(
-					'<div class="shopify-listing-status-block" style="padding:8px 20px;border-bottom:1px solid var(--border-color);"></div>'
+					'<div class="shopify-listing-status-block" style="padding:8px 20px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;"></div>'
 				);
-				// listview.$result is the stable, documented reference to the
-				// actual list rows container -- the earlier ".page-content
-				// .list-area" guess didn't match this Frappe version's DOM at
-				// all, so the block silently never got inserted.
-				listview.$result.before($container);
+				// Above the filter row (.page-form), not just above the list
+				// rows -- .page-form is the standard Frappe list view's
+				// ID/filter/sort row, sitting right below the title/header.
+				var $page_form = listview.page.wrapper.find(".page-form");
+				if ($page_form.length) {
+					$page_form.before($container);
+				} else {
+					// Fallback if this Frappe version's DOM doesn't have
+					// .page-form -- still show it somewhere rather than
+					// silently not inserting at all.
+					listview.$result.before($container);
+				}
 			}
-			$container.html(pills);
+			$container.html(pills + actions);
 			$container.find(".shopify-listing-status-pill").off("click").on("click", function () {
 				frappe.set_route("List", "Shopify Product Listing", JSON.parse($(this).attr("data-filter")));
+			});
+			$container.find(".shopify-listing-export-all").off("click").on("click", function () {
+				export_listings(listview, "all");
+			});
+			$container.find(".shopify-listing-export-option").off("click").on("click", function (e) {
+				e.preventDefault();
+				export_listings(listview, $(this).data("scope"));
+			});
+			$container.find(".shopify-listing-update-btn").off("click").on("click", function () {
+				open_update_listings_dialog(listview);
+			});
+			$container.find(".shopify-listing-enable-btn").off("click").on("click", function () {
+				open_enable_by_status_dialog(listview);
 			});
 		},
 	});
@@ -83,11 +119,135 @@ function open_enable_by_status_dialog(listview) {
 	dialog.show();
 }
 
+function export_listings(listview, scope) {
+	var checked = listview.get_checked_items().map(function (d) { return d.name; });
+	var args = {};
+	if (checked.length) args.listing_names = JSON.stringify(checked);
+	if (scope === "enabled") args.only_enabled = "1";
+	if (scope === "disabled") args.only_disabled = "1";
+
+	// A checked selection is a deliberate, hand-picked list -- always
+	// download it directly, whatever the size.
+	if (checked.length) {
+		download_export_csv(args);
+		return;
+	}
+
+	frappe.show_alert({ message: __("Building export in the background -- you'll get a download link when it's ready."), indicator: "blue" }, 6);
+	frappe.call({
+		method: "alaiy_os_connector_shopify.api.export.trigger_background_export",
+		args: args,
+	});
+}
+
+function download_export_csv(args) {
+	// A file download needs a real GET navigation, not frappe.call (which
+	// parses the response as JSON) -- build the URL directly and let the
+	// browser handle the resulting file response, same pattern Frappe's own
+	// report/list exports use.
+	var params = new URLSearchParams(args);
+	window.open("/api/method/alaiy_os_connector_shopify.api.export.export_listings_csv?" + params.toString());
+}
+
+frappe.realtime.on("shopify_listings_export_ready", function (data) {
+	frappe.show_alert({
+		message: __("Export ready ({0} listings) -- <a href='{1}' target='_blank'>Download CSV</a>", [data.row_count, data.file_url]),
+		indicator: "green",
+	}, 15);
+});
+
+function run_update_listings(file_url) {
+	frappe.call({
+		method: "alaiy_os_connector_shopify.api.update_listings.trigger_update_listings",
+		args: { file_url: file_url },
+		callback: function () {
+			frappe.show_alert({
+				message: __("Updating Listings in the background -- every changed field is logged as a before/after diff on the Sync Log."),
+				indicator: "blue",
+			}, 6);
+		},
+	});
+}
+
+function open_update_listings_dialog(listview) {
+	// A single Attach field renders its file picker inline in THIS dialog --
+	// no separate frappe.ui.FileUploader popup stacking on top of it (that
+	// was the bug: two overlapping modals, confirmed live).
+	var dialog = new frappe.ui.Dialog({
+		title: __("Update Listings from CSV"),
+		fields: [
+			{
+				fieldtype: "HTML",
+				fieldname: "help",
+				options: "<ul class='text-muted' style='padding-left:18px;margin-bottom:0;'>" +
+					"<li>Must use the same column shape as \"Export Listings (CSV)\" -- <a href='#' class='update-listings-download-link'>download a fresh export</a> first and edit that, don't build one from scratch.</li>" +
+					"<li>Updates existing Items/Listings only. A row whose item_code doesn't exist yet is skipped, not created -- new products come in through the product import instead.</li>" +
+					"<li>Blank cells leave the current value unchanged.</li>" +
+					"<li>Applies directly, no dry run. Every field actually changed is logged as a before -> after line on the resulting Shopify Sync Log.</li>" +
+					"<li>The file is checked before anything runs -- a missing item_code column or an unrecognized file gives a clear error, not a silent no-op.</li>" +
+					"</ul>",
+			},
+			{
+				fieldtype: "Attach",
+				fieldname: "csv_file",
+				label: __("CSV File"),
+				reqd: 1,
+				is_private: 1,
+			},
+		],
+		primary_action_label: __("Upload & Apply"),
+		primary_action: function (values) {
+			if (!values.csv_file) {
+				frappe.msgprint(__("Upload a CSV file first."));
+				return;
+			}
+			run_update_listings(values.csv_file);
+			dialog.hide();
+		},
+	});
+
+	dialog.$body.find(".update-listings-download-link").on("click", function (e) {
+		e.preventDefault();
+		// Routes through export_listings, not a direct download -- an
+		// unfiltered "all" export must go through the background path (see
+		// export_listings itself), same reasoning as the Export button.
+		export_listings(listview, "all");
+	});
+
+	dialog.show();
+}
+
+frappe.realtime.on("shopify_update_listings_done", function (data) {
+	if (data.error) {
+		frappe.msgprint({
+			title: __("Update Failed"),
+			message: __(data.error),
+			indicator: "red",
+		});
+		return;
+	}
+
+	var message = __(
+		"{0} updated, {1} unchanged, {2} skipped, {3} warnings, {4} field changes logged.",
+		[data.updated_count, data.unchanged_count, data.skipped_count, data.warning_count, data.change_count]
+	);
+	frappe.msgprint({
+		title: __("Update Complete"),
+		message: message,
+		indicator: data.skipped_count > 0 || data.warning_count > 0 ? "orange" : "green",
+		primary_action: {
+			label: __("View Full Diff (Sync Log)"),
+			action: function () {
+				frappe.set_route("Form", "Shopify Sync Log", data.log_name);
+			},
+		},
+	});
+});
+
 frappe.listview_settings["Shopify Product Listing"].onload = function (listview) {
 	render_shopify_status_banner(listview);
-	listview.page.add_inner_button(__("Enable Listings by Status"), function () {
-		open_enable_by_status_dialog(listview);
-	});
+	// Export/Update Listings/Enable-by-Status all live in the stats banner
+	// now, not the header -- see render_shopify_status_banner.
 };
 
 frappe.listview_settings["Shopify Product Listing"].refresh = function (listview) {
