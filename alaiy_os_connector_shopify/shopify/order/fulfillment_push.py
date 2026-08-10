@@ -147,50 +147,56 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         if tracking_url:
             tracking_info["url"] = tracking_url
 
-    results = []
-    fulfillment_ids = []
-    for fulfillment_order_id, line_items in fulfillment_input_per_order.items():
-        fulfillment_input = {
-            "fulfillmentOrderId": fulfillment_order_id,
-            "fulfillmentOrderLineItems": line_items,
-            "notifyCustomer": notify_customer,
-        }
-        if tracking_info:
-            fulfillment_input["trackingInfo"] = tracking_info
-        data = client.execute(_FULFILLMENT_CREATE_MUTATION, {"fulfillment": fulfillment_input})
-        result = data.get("fulfillmentCreate") or {}
-        errors = result.get("userErrors") or []
-        if errors:
-            frappe.log_error(
-                title=f"Shopify: fulfillment push failed for {dn.name}",
-                message=f"Sales Order: {so_name}\n{errors}",
-            )
-            frappe.throw(f"Shopify rejected the fulfillment push: {errors}")
-        fulfillment = result.get("fulfillment") or {}
-        results.append(fulfillment)
-        if fulfillment.get("id"):
-            fulfillment_ids.append(fulfillment["id"])
+    # FulfillmentInput has no fulfillmentOrderId/fulfillmentOrderLineItems
+    # fields of its own -- confirmed live against a real store ("Field is
+    # not defined on FulfillmentInput"). The real shape wraps every
+    # fulfillment order's line items into ONE lineItemsByFulfillmentOrder
+    # array on a SINGLE fulfillmentCreate call, rather than one call per
+    # fulfillment order.
+    fulfillment_input = {
+        "lineItemsByFulfillmentOrder": [
+            {"fulfillmentOrderId": fulfillment_order_id, "fulfillmentOrderLineItems": line_items}
+            for fulfillment_order_id, line_items in fulfillment_input_per_order.items()
+        ],
+        "notifyCustomer": notify_customer,
+    }
+    if tracking_info:
+        fulfillment_input["trackingInfo"] = tracking_info
 
-    if fulfillment_ids:
-        # A Delivery Note maps 1:1 to one fulfillment event in the inbound
-        # direction (delivery_notes.py) -- store the first id so the same
-        # dedup check works both ways. Multiple fulfillment orders on one DN
-        # (split across Shopify locations) is rare; the rest are still
-        # created on Shopify, just not individually trackable from this one
-        # field -- logged so it's visible rather than silently dropped.
-        updates = {"sh_shopify_fulfillment_id": fulfillment_ids[0]}
+    data = client.execute(_FULFILLMENT_CREATE_MUTATION, {"fulfillment": fulfillment_input})
+    result = data.get("fulfillmentCreate") or {}
+    errors = result.get("userErrors") or []
+    if errors:
+        frappe.log_error(
+            title=f"Shopify: fulfillment push failed for {dn.name}",
+            message=f"Sales Order: {so_name}\n{errors}",
+        )
+        frappe.throw(f"Shopify rejected the fulfillment push: {errors}")
+
+    fulfillment = result.get("fulfillment") or {}
+    if fulfillment.get("id"):
+        # Shopify creates one Fulfillment PER fulfillment order named in
+        # lineItemsByFulfillmentOrder, but this mutation's payload only
+        # returns one of them -- a Delivery Note maps 1:1 to one fulfillment
+        # event in the inbound direction (delivery_notes.py), so the single
+        # returned id is what the dedup check needs. When more than one
+        # fulfillment order was actually involved (split across Shopify
+        # locations -- rare), the others still get created on Shopify, just
+        # not individually trackable from this one field -- logged so it's
+        # visible rather than silently dropped.
+        updates = {"sh_shopify_fulfillment_id": fulfillment["id"]}
         if tracking_number:
             updates["sh_tracking_number"] = tracking_number
             updates["sh_tracking_company"] = carrier or ""
         frappe.db.set_value("Delivery Note", dn.name, updates)
-        if len(fulfillment_ids) > 1:
+        if len(fulfillment_input_per_order) > 1:
             frappe.log_error(
-                title=f"Shopify: {dn.name} pushed as {len(fulfillment_ids)} separate fulfillments",
-                message=f"Fulfillment ids: {fulfillment_ids}. Only the first is linked via sh_shopify_fulfillment_id.",
+                title=f"Shopify: {dn.name} pushed across {len(fulfillment_input_per_order)} fulfillment orders",
+                message=f"Only the returned fulfillment id ({fulfillment['id']}) is linked via sh_shopify_fulfillment_id.",
             )
         frappe.db.commit()
 
-    return results
+    return [fulfillment]
 
 
 @frappe.whitelist()
