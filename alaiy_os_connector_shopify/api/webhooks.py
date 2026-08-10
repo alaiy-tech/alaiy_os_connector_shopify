@@ -93,6 +93,17 @@ def _dispatch(topic, payload):
             payload=payload,
         )
 
+    # Fulfillment webhooks (tracking number create/update)
+    fulfillment_topics = {"fulfillments/create", "fulfillments/update"}
+    if topic in fulfillment_topics:
+        frappe.enqueue(
+            "alaiy_os_connector_shopify.shopify.order_sync.handle_fulfillment_webhook",
+            queue="short",
+            timeout=300,
+            topic=topic,
+            payload=payload,
+        )
+
     # Product webhooks (bidirectional product sync - inbound)
     product_topics = {
         "products/create", "products/update", "products/delete",

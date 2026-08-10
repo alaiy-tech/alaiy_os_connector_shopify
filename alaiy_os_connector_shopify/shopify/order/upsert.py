@@ -173,6 +173,8 @@ def _upsert_order_unlocked(order, order_id):
     so.sh_financial_status = order.get("financial_status", "")
     so.sh_fulfillment_status = order.get("fulfillment_status", "")
     so.sh_shopify_notes = order.get("note") or ""
+    from alaiy_os_connector_shopify.shopify.order.push import parse_tags, strip_status_tag
+    so.sh_shopify_order_tags = ",".join(strip_status_tag(parse_tags(order.get("tags"))))
     for li in line_items:
         so.append("items", li)
 

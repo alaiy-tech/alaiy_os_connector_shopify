@@ -10,6 +10,39 @@ from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _r
 from alaiy_os_connector_shopify.shopify.order.warehouse import _force_valid_warehouse
 
 
+def _fill_expense_accounts(dn):
+    """
+    Force a valid Expense Account onto every Delivery Note row missing one.
+    Confirmed live: an Item with no expense_account of its own and no
+    default configured anywhere crashes submit at the GL-entry step
+    ("Expense Account not set for the Item ..."). Same self-heal shape as
+    invoice.py's _fill_item_accounts/_resolve_income_account -- resolve one
+    company-wide default rather than requiring the merchant to configure
+    every Item by hand.
+    """
+    expense = _resolve_expense_account(dn.company)
+    if not expense:
+        return
+    for row in dn.items:
+        if not row.expense_account:
+            row.expense_account = expense
+
+
+def _resolve_expense_account(company):
+    configured = frappe.get_cached_value("Company", company, "default_expense_account")
+    if configured and not frappe.db.get_value("Account", configured, "is_group"):
+        return configured
+    return frappe.db.get_value(
+        "Account",
+        {"company": company, "account_type": "Cost of Goods Sold", "is_group": 0, "disabled": 0},
+        "name",
+    ) or frappe.db.get_value(
+        "Account",
+        {"company": company, "root_type": "Expense", "is_group": 0, "disabled": 0},
+        "name",
+    )
+
+
 def _create_delivery_note_if_needed(so_name):
     """
     Full-order fallback for the one path that has no per-fulfillment
@@ -42,6 +75,7 @@ def _create_delivery_note_if_needed(so_name):
             # workaround.
             for row in dn.items:
                 row.allow_zero_valuation_rate = 1
+            _fill_expense_accounts(dn)
             dn.flags.ignore_permissions = True
             dn.insert()
             dn.submit()
@@ -123,6 +157,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             dn.sh_shopify_fulfillment_id = fulfillment_id
             for row in dn.items:
                 row.allow_zero_valuation_rate = 1
+            _fill_expense_accounts(dn)
             dn.flags.ignore_permissions = True
             dn.insert()
             dn.submit()
@@ -132,3 +167,58 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             title=f"Shopify: auto Delivery Note failed for fulfillment {fulfillment_id}",
             message=f"Sales Order: {so.name}\n{frappe.get_traceback()}",
         )
+
+
+def _sync_tracking(fulfillment):
+    """
+    fulfillments/create and fulfillments/update webhooks deliver the
+    Fulfillment object directly (not wrapped in an order), carrying
+    tracking_number/tracking_company/tracking_url(s) -- fields
+    orders/fulfilled's payload doesn't reliably carry and which can also
+    change AFTER the order is already marked fulfilled (a real, common
+    flow: merchant adds/edits the tracking number later).
+
+    Matches by sh_shopify_fulfillment_id first. Falls back to the order's
+    own Delivery Note when that's blank -- confirmed live: an order marked
+    fulfilled at create time (Shopify's one-click "Complete order") carries
+    fulfillment_status=fulfilled but an EMPTY fulfillments array on the
+    orders/create webhook payload, so _create_delivery_note_if_needed's
+    full-order fallback creates the Delivery Note without ever tagging a
+    fulfillment id. That's not a rare edge case -- it's how a quick manual
+    order gets fulfilled -- so tracking must still be able to land on it.
+    Also backfills the fulfillment id onto that Delivery Note so a second
+    fulfillments/update webhook matches directly next time.
+
+    No-ops if neither match finds a Delivery Note yet -- fulfillments/
+    create can arrive before the order webhook finishes creating one;
+    tracking is rarely set on the very first delivery anyway, and a later
+    fulfillments/update webhook (or a manual backfill) catches it.
+    """
+    fulfillment_id = str(fulfillment.get("id") or "")
+    if not fulfillment_id:
+        return
+    dn_name = frappe.db.get_value(
+        "Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}, "name")
+
+    if not dn_name:
+        order_id = str(fulfillment.get("order_id") or "")
+        if not order_id:
+            return
+        from alaiy_os_connector_shopify.shopify.order.upsert import get_active_sales_order
+        so_name = get_active_sales_order(order_id)
+        if not so_name:
+            return
+        dn_name = frappe.db.get_value(
+            "Delivery Note Item", {"against_sales_order": so_name}, "parent")
+        if not dn_name:
+            return
+        frappe.db.set_value("Delivery Note", dn_name, "sh_shopify_fulfillment_id", fulfillment_id)
+
+    tracking_number = fulfillment.get("tracking_number") or ",".join(fulfillment.get("tracking_numbers") or [])
+    tracking_url = fulfillment.get("tracking_url") or ",".join(fulfillment.get("tracking_urls") or [])
+    frappe.db.set_value("Delivery Note", dn_name, {
+        "sh_tracking_number": tracking_number,
+        "sh_tracking_company": fulfillment.get("tracking_company") or "",
+        "sh_tracking_url": tracking_url,
+    })
+    frappe.db.commit()
