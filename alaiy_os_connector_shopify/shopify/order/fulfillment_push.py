@@ -204,7 +204,21 @@ def push_fulfillment_for_delivery_note(delivery_note: str, tracking_number: str 
     """Whitelisted entry point -- called explicitly by carrier connectors
     (e.g. FedEx's create_shipment_for_delivery_note) once a real tracking
     number exists. Independent of the two-way setting: an explicit call like
-    this is the caller opting in directly, not the generic on_submit hook."""
+    this is the caller opting in directly, not the generic on_submit hook.
+
+    Routes by whether a Shopify fulfillment already exists for this
+    Delivery Note -- confirmed live: a DN pushed out by the generic
+    on_delivery_note_submit two-way hook already has sh_shopify_fulfillment_id
+    set by the time a carrier connector calls this with a real tracking
+    number, and push_delivery_note_fulfillment (create-only) throws outright
+    on an already-linked DN. An existing fulfillment gets a tracking UPDATE
+    instead of a second create attempt.
+    """
+    dn = frappe.get_doc("Delivery Note", delivery_note)
+    if dn.sh_shopify_fulfillment_id:
+        if not tracking_number:
+            return []
+        return [_push_tracking_update(dn.sh_shopify_fulfillment_id, tracking_number, carrier or "", delivery_note, raise_on_error=True)]
     return push_delivery_note_fulfillment(delivery_note, tracking_number, carrier, tracking_url)
 
 
@@ -265,6 +279,15 @@ def on_delivery_note_update_after_submit(doc, method=None):
 
 
 def push_tracking_update_job(fulfillment_gid: str, tracking_number: str, carrier: str, delivery_note: str):
+    """Enqueued body for on_delivery_note_update_after_submit -- best-effort,
+    logs and swallows rather than raising (nothing is awaiting a result)."""
+    try:
+        _push_tracking_update(fulfillment_gid, tracking_number, carrier, delivery_note, raise_on_error=False)
+    except Exception:
+        pass
+
+
+def _push_tracking_update(fulfillment_gid: str, tracking_number: str, carrier: str, delivery_note: str, raise_on_error: bool):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     try:
         client = ShopifyGraphQLClient()
@@ -273,17 +296,26 @@ def push_tracking_update_job(fulfillment_gid: str, tracking_number: str, carrier
             "trackingInfoInput": {"number": tracking_number, "company": carrier},
             "notifyCustomer": True,
         })
-        errors = (data.get("fulfillmentTrackingInfoUpdate") or {}).get("userErrors") or []
-        if errors:
-            frappe.log_error(
-                title=f"Shopify: tracking update push failed for {delivery_note}",
-                message=str(errors),
-            )
+        result = data.get("fulfillmentTrackingInfoUpdate") or {}
+        errors = result.get("userErrors") or []
     except Exception:
         frappe.log_error(
             title=f"Shopify: tracking update push failed for {delivery_note}",
             message=frappe.get_traceback(),
         )
+        if raise_on_error:
+            raise
+        return None
+
+    if errors:
+        frappe.log_error(
+            title=f"Shopify: tracking update push failed for {delivery_note}",
+            message=str(errors),
+        )
+        if raise_on_error:
+            frappe.throw(f"Shopify rejected the tracking update: {errors}")
+        return None
+    return result.get("fulfillment") or {}
 
 
 def on_delivery_note_cancel(doc, method=None):
