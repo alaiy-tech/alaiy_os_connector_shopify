@@ -28,6 +28,12 @@ from alaiy_os_connector_shopify.shopify.product import listing as listing_resolv
 _TWO_WAY = "Alaiy OS → Shopify (two-way)"
 
 
+def _fulfillment_gid(fulfillment_id: str) -> str:
+    """sh_shopify_fulfillment_id is always stored as the plain legacy
+    numeric id -- rebuild the GID Shopify's mutations actually require."""
+    return f"gid://shopify/Fulfillment/{fulfillment_id}"
+
+
 def _sales_order_of(dn):
     for item in dn.items:
         if item.against_sales_order:
@@ -174,7 +180,16 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         frappe.throw(f"Shopify rejected the fulfillment push: {errors}")
 
     fulfillment = result.get("fulfillment") or {}
-    if fulfillment.get("id"):
+    if fulfillment.get("legacyResourceId"):
+        # Stored as the plain legacy numeric id, matching every other
+        # sh_shopify_*_id field in this app (e.g. Sales Order's
+        # sh_shopify_order_id) and the INBOUND path's own convention
+        # (_sync_tracking writes Shopify's plain webhook fulfillment id to
+        # this same field). Confirmed live: storing the full GID here
+        # instead broke the very next webhook echo -- fulfillmentTrackingInfoUpdate/
+        # fulfillmentCancel need the GID form, so it's rebuilt from this at
+        # call time (_fulfillment_gid) rather than stored that way.
+        #
         # Shopify creates one Fulfillment PER fulfillment order named in
         # lineItemsByFulfillmentOrder, but this mutation's payload only
         # returns one of them -- a Delivery Note maps 1:1 to one fulfillment
@@ -184,7 +199,7 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         # locations -- rare), the others still get created on Shopify, just
         # not individually trackable from this one field -- logged so it's
         # visible rather than silently dropped.
-        updates = {"sh_shopify_fulfillment_id": fulfillment["id"]}
+        updates = {"sh_shopify_fulfillment_id": fulfillment["legacyResourceId"]}
         if tracking_number:
             updates["sh_tracking_number"] = tracking_number
             updates["sh_tracking_company"] = carrier or ""
@@ -192,7 +207,7 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         if len(fulfillment_input_per_order) > 1:
             frappe.log_error(
                 title=f"Shopify: {dn.name} pushed across {len(fulfillment_input_per_order)} fulfillment orders",
-                message=f"Only the returned fulfillment id ({fulfillment['id']}) is linked via sh_shopify_fulfillment_id.",
+                message=f"Only the returned fulfillment id ({fulfillment['legacyResourceId']}) is linked via sh_shopify_fulfillment_id.",
             )
         frappe.db.commit()
 
@@ -218,7 +233,7 @@ def push_fulfillment_for_delivery_note(delivery_note: str, tracking_number: str 
     if dn.sh_shopify_fulfillment_id:
         if not tracking_number:
             return []
-        return [_push_tracking_update(dn.sh_shopify_fulfillment_id, tracking_number, carrier or "", delivery_note, raise_on_error=True)]
+        return [_push_tracking_update(_fulfillment_gid(dn.sh_shopify_fulfillment_id), tracking_number, carrier or "", delivery_note, raise_on_error=True)]
     return push_delivery_note_fulfillment(delivery_note, tracking_number, carrier, tracking_url)
 
 
@@ -272,7 +287,7 @@ def on_delivery_note_update_after_submit(doc, method=None):
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order.fulfillment_push.push_tracking_update_job",
         queue="short", timeout=60,
-        fulfillment_gid=doc.sh_shopify_fulfillment_id,
+        fulfillment_gid=_fulfillment_gid(doc.sh_shopify_fulfillment_id),
         tracking_number=doc.sh_tracking_number, carrier=doc.sh_tracking_company or "",
         delivery_note=doc.name,
     )
@@ -330,7 +345,7 @@ def on_delivery_note_cancel(doc, method=None):
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order.fulfillment_push.push_fulfillment_cancel_job",
         queue="short", timeout=60,
-        fulfillment_gid=doc.sh_shopify_fulfillment_id, delivery_note=doc.name,
+        fulfillment_gid=_fulfillment_gid(doc.sh_shopify_fulfillment_id), delivery_note=doc.name,
     )
 
 

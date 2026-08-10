@@ -271,6 +271,7 @@ mutation CreateFulfillment($fulfillment: FulfillmentInput!) {
   fulfillmentCreate(fulfillment: $fulfillment) {
     fulfillment {
       id
+      legacyResourceId
       status
       trackingInfo {
         number
