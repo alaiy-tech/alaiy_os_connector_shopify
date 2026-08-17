@@ -93,6 +93,17 @@ def _dispatch(topic, payload):
             payload=payload,
         )
 
+    # Refund webhooks (returns/credit notes, inbound)
+    refund_topics = {"refunds/create"}
+    if topic in refund_topics:
+        frappe.enqueue(
+            "alaiy_os_connector_shopify.shopify.order_sync.handle_refund_webhook",
+            queue="short",
+            timeout=300,
+            topic=topic,
+            payload=payload,
+        )
+
     # Fulfillment webhooks (tracking number create/update)
     fulfillment_topics = {"fulfillments/create", "fulfillments/update"}
     if topic in fulfillment_topics:

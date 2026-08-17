@@ -17,6 +17,7 @@
   "sb_defaults",
   "sh_company",
   "sh_default_warehouse",
+  "sh_return_warehouse",
   "sh_customer_group",
   "sh_default_territory",
   "sh_selling_price_list",
@@ -120,6 +121,13 @@
    "label": "Default Warehouse",
    "options": "Warehouse",
    "reqd": 1
+  },
+  {
+   "description": "Where a Shopify refund's Sales Return lands. Leave blank to use Default Warehouse instead -- someone downstream (e.g. a supplier portal's own returns routing) decides where it really ends up from there.",
+   "fieldname": "sh_return_warehouse",
+   "fieldtype": "Link",
+   "label": "Return Warehouse",
+   "options": "Warehouse"
   },
   {
    "fieldname": "sh_customer_group",
