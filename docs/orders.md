@@ -124,6 +124,18 @@ All outbound pushes are skipped when `flags.from_shopify_sync` is set. A shared 
 
 ---
 
+## Refunds/returns (`returns.py`)
+
+Shopify has no separate "return" resource — a refund is the return record.
+`refunds/create` → `handle_refund_webhook` → `_process_refund`:
+1. Resolves the Sales Order via `get_active_sales_order`; skips if not found/not submitted.
+2. Maps each `refund_line_items[].line_item` to an item code (`_resolve_item_code`, same SKU → variant id → title chain as inbound order creation).
+3. **Sales Return**: `make_return_doc("Delivery Note", ...)` against the order's submitted Delivery Note, trimmed to only the refunded items/quantities (`_trim_return_items`), tagged `sh_shopify_refund_id` (idempotency — a redelivered webhook is a no-op).
+4. **Credit Note**: `make_return_doc("Sales Invoice", ...)` against the order's submitted Sales Invoice, same trim + tag. `update_stock=0` — stock already moved via the Sales Return.
+5. If Shopify's refund `transactions` carry a `kind: "refund"` amount, books a refund Payment Entry against the Credit Note (mirrors `invoice.py`'s `_mark_invoice_paid`, reversed direction).
+
+No Delivery Note yet (nothing shipped) → no Sales Return. No Sales Invoice yet (not invoiced) → no Credit Note. Either can happen independently; a refund on an unshipped/unpaid order just returns the reserved qty via the Sales Order itself.
+
 ## Not yet built (order operations)
 
-Refunds/returns (→ Credit Note), restocking, fulfillment **split** reflect-back (a single Shopify fulfillment order split across multiple Delivery Notes maps back to more than one `sh_shopify_fulfillment_id`, only the first is currently linked/trackable), manual customer notifications, and user-editable order **tags** (only an auto status tag is pushed) are not implemented. Tracking number sync and fulfillment cancel (both directions) are covered above.
+Restocking-to-a-specific-warehouse (returns land in whatever warehouse the original Delivery Note used — the sellable/damaged split, flow.txt's Return Warehouse → Rejected Goods step, is a deliberate non-goal since that decision belongs to whoever inspects the goods), fulfillment **split** reflect-back (a single Shopify fulfillment order split across multiple Delivery Notes maps back to more than one `sh_shopify_fulfillment_id`, only the first is currently linked/trackable), manual customer notifications, and user-editable order **tags** (only an auto status tag is pushed) are not implemented. Tracking number sync and fulfillment cancel (both directions) are covered above.
