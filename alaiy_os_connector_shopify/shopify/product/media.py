@@ -25,6 +25,16 @@ def _download_to_file(url: str, doctype: str, name: str) -> str:
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     filename = url.split("?")[0].rsplit("/", 1)[-1] or f"{name}.jpg"
+    # File.file_name is a plain Data field (140-char DB limit). Shopify's own
+    # image filenames are the full slugified product title, easily over that
+    # for a long name -- confirmed live, this crashed the entire product
+    # import over just its image. Truncate the stem, keep the real extension.
+    if len(filename) > 140:
+        stem, dot, ext = filename.rpartition(".")
+        if dot:
+            filename = stem[: 140 - len(ext) - 1] + dot + ext
+        else:
+            filename = filename[:140]
     return save_file(filename, resp.content, doctype, name, is_private=0).file_url
 
 
