@@ -264,6 +264,16 @@ def _make_sales_return(so_name, qty_by_item, refund_id):
             row.allow_zero_valuation_rate = 1
         _fill_expense_accounts(dn)
         dn.sh_shopify_refund_id = refund_id
+        # ERPNext's own validate_return_against requires a return's
+        # conversion_rate to exactly match the document it's returning
+        # against -- confirmed live that make_return_doc doesn't always
+        # carry this over (e.g. a source doc created while a since-fixed
+        # currency bug had it set to a wrong non-1.0 value on a same-currency
+        # order still has that same wrong value baked in). Copying it
+        # explicitly satisfies the check regardless of what the source's
+        # rate actually is, correct or not -- this fix is scoped to
+        # unblocking the return, not correcting historical rate data.
+        dn.conversion_rate = frappe.db.get_value("Delivery Note", dn_name, "conversion_rate")
         dn.flags.ignore_permissions = True
         dn.insert()
         dn.submit()
@@ -316,6 +326,10 @@ def _make_credit_note(so_name, qty_by_item, refund_id):
         si.update_stock = 0  # stock already returned via the Sales Return above
         _fill_item_accounts(si, settings)
         si.sh_shopify_refund_id = refund_id
+        # Same reasoning as _make_sales_return: ERPNext requires an exact
+        # conversion_rate match against the document being returned against,
+        # and make_return_doc doesn't always carry it over.
+        si.conversion_rate = frappe.db.get_value("Sales Invoice", si_name, "conversion_rate")
         si.flags.from_shopify_sync = True
         si.flags.ignore_permissions = True
         si.insert()
