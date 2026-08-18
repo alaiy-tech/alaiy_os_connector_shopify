@@ -1163,7 +1163,12 @@ def _apply_product_meta(item, node: dict):
         if cat_name:
             item.sh_shopify_category = ensure_shopify_category(cat_name)
     seo = node.get("seo") or {}
-    item.sh_seo_title = seo.get("title") or node.get("title") or item.item_name or ""
+    # sh_seo_title is a plain Data field (140-char DB limit) -- a long
+    # product title plus the " | The Solist" suffix Shopify's own SEO title
+    # often carries can exceed that and crash the entire item insert.
+    # Confirmed live: this took down products whose title alone was
+    # otherwise perfectly valid. Truncate rather than lose the whole import.
+    item.sh_seo_title = (seo.get("title") or node.get("title") or item.item_name or "")[:140]
 
     desc_val = seo.get("description")
     if not desc_val:
