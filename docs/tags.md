@@ -21,6 +21,8 @@ Bidirectional sync of Shopify product tags, presented in Alaiy OS as a **multi-s
 
 Per-product tags arrive with the product: `_normalize_tags` splits both shapes (GraphQL list vs the comma-joined webhook string), and `_set_item_tags` sets the Item's `sh_shopify_tags`, self-healing any `Shopify Tag` master not yet cached.
 
+`Shopify Tag` is autonamed directly from `tag_name` (no separate label field), so a tag literally containing `<` or `>` (seen live on a real catalog: filter tags like "Price < 500") fails Frappe's own name-character validation on insert. `_set_item_tags` skips just that tag rather than letting the whole product's import crash — confirmed live this was the root cause of ~1560 identical import failures before the fix. The skip logs a plain warning (`frappe.logger().warning`), not an Error Log entry — it's expected/handled, not a failure.
+
 ---
 
 ## Export

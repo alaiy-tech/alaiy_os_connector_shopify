@@ -52,6 +52,6 @@ Variants inherit the template's collections via `copy_template_collections_to_va
 
 `shopify_collection.js` renders, live-fetched on open:
 - **Sales Channels** chips (see [Sales Channels](sales-channels.md)).
-- **Products** grid — `get_collection_products` live-fetches the collection's products (title, image, price, sku, linked Item) and shows them as image cards like Shopify; also reconciles the stored `product_count` to the real fetched count.
+- **Products** grid — `get_collection_products` live-fetches the collection's products (title, image, price, sku, linked Item) and shows them as image cards like Shopify; also reconciles the stored `product_count` to the real fetched count. The Shopify product id → Item lookup goes through the Listing's own `template_by_product_id` first, falling back to Item — same Listing-first read order as [Listings](listings-architecture.md); behavior is unchanged wherever a product's Listing copy isn't populated yet.
 
 The title is read-only once the collection is synced (`read_only_depends_on` on `sh_collection_gid`) — editable only when creating a new collection in Alaiy OS.

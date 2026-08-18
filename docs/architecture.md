@@ -49,8 +49,10 @@ Token refresh is also proactive: `sync_jobs._maybe_refresh_token` refreshes on t
 `shopify/sync_guard.py` + `Shopify Sync Log` (autoname `SH-SYNC-.YYYY.-.MM.-.DD.-.######`):
 - `has_active_sync(sync_type)` — prevents concurrent runs of the same type.
 - `load_or_create_log` — creates the log row at enqueue time (so the UI shows "queued" instantly).
-- `append_log` / `close_log` — progress lines + final status/counts.
+- `append_log` / `close_log` — progress lines + final status/counts. Every long-running job (product export, inventory push, taxonomy fetch, collections sync, product import, order pull) writes a readable line per batch here, not just the numeric processed/created/failed fields — confirmed live that log_messages stayed empty for several jobs while the numeric counters climbed correctly, giving no visibility into what was actually happening mid-run.
+- `is_cancel_requested(log_name)` / `request_cancel(log_name)` — a `cancel_requested` Check field on Shopify Sync Log a job's own loop polls cheaply, and a whitelisted endpoint the dashboard's Stop button calls. Every long-running job's loop checks this alongside its periodic progress flush, so a stuck or unwanted run can be stopped without killing the worker process.
 - `sync_type` values: `orders`, `inventory`, `products`, `product_export`, `collections`, `locations`, `webhook`. Statuses: queued → running → success / failed / skipped.
+- **Retry-once on `TimestampMismatchError`** — an inbound webhook update (or a job's own close-out write) can race an outbound push or a sibling-variant cascade touching the same document in the same instant. Rather than let the whole update crash and silently drop a real change, the affected paths (`product/webhooks.py::_update_item_from_shopify`, sync_guard's own close-out) roll back, reload a fresh copy of the document, and replay the update once — raising only if the retry itself also hits the same error.
 
 ---
 

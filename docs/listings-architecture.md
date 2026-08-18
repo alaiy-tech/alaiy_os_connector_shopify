@@ -106,6 +106,23 @@ only.
 6. **Fingerprint/idempotency on resolved values** so an inherited Item change
    still triggers a re-push, and redelivered work is a no-op.
 7. **Connector extras stay on the connector's doctype**, never in the shared set.
+8. **Show the resolved value, not just "blank."** A blank override field reads
+   as "nothing will be sent" when rule 2 means "inherited from the Item" — a
+   real gap found live on Shopify's SEO fields, where both boxes sat empty on
+   every listing while a push still sent a real resolved title/description.
+   The listing form should show each blank field's actually-resolved value as
+   its description (and say so once overridden), read through the exact same
+   resolver the push uses — never a second, form-only computation that can
+   quietly disagree with what's actually sent.
+9. **Model every real status the marketplace has — never a convenient
+   subset.** Collapsing e.g. Shopify's Active/Draft/Archived into just
+   Active/Draft meant an archived product silently read back as Active
+   (8,721 archived products on one real store, 8,408 reading Active
+   locally) — and worse, a routine push could un-archive something archived
+   on purpose. A value the mapping doesn't recognize (a real store returned
+   `UNLISTED`, outside Shopify's own documented enum) must be logged and
+   left alone, never coerced to a default and never silently dropped from
+   sync.
 
 Follow these and a new connector = a new doctype matching the contract + its own
 push method + a `listing_doctype` line. The agent, the Item model, and the UX
