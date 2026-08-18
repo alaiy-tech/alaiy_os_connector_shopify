@@ -156,11 +156,26 @@ def _upsert_order_unlocked(order, order_id):
     if order_currency != company_currency:
         ensure_customer_currency_account(customer_name, company, order_currency)
 
+    conversion_rate = get_order_exchange_rate(order_currency, company_currency, order_date)
+    if order_currency == company_currency and conversion_rate != 1.0:
+        # Caught live on Solist: ~1,481 same-currency orders got stamped with
+        # a real exchange rate instead of 1.0 during a since-unexplained
+        # window, silently blocking every refund/return on them months
+        # later. get_order_exchange_rate's own same-currency guard should
+        # make this impossible -- if it ever fires again, log it loudly
+        # right away rather than letting it surface as a mystery refund
+        # failure later.
+        frappe.log_error(
+            title="Shopify: same-currency order got a non-1.0 conversion_rate",
+            message=f"order_currency={order_currency} company_currency={company_currency} conversion_rate={conversion_rate}",
+        )
+        conversion_rate = 1.0
+
     so = frappe.new_doc("Sales Order")
     so.customer = customer_name
     so.company = company
     so.currency = order_currency
-    so.conversion_rate = get_order_exchange_rate(order_currency, company_currency, order_date)
+    so.conversion_rate = conversion_rate
     so.transaction_date = order_date
     so.delivery_date = order_date
     so.selling_price_list = settings.sh_selling_price_list or "Standard Selling"
