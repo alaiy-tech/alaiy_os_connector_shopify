@@ -31,6 +31,7 @@ def sync_connector_registry():
     _ensure_list_view_column("Sales Order", "sh_shopify_order_name", "Shopify Order #")
     _ensure_list_view_column("Sales Order", "sh_fulfillment_status", "Shopify Fulfillment Status")
     _ensure_list_view_column("Sales Order", "sh_financial_status", "Shopify Financial Status")
+    _ensure_list_view_column("Delivery Note", "sh_delivery_status", "Shopify Delivery Status")
     _drop_orphaned_singles_value("Shopify Connector Settings", "sh_api_version")
 
     if not frappe.db.exists("DocType", "OS Connector Registry"):
@@ -384,6 +385,14 @@ def setup_custom_fields():
             "description": "Synced both directions with Shopify's order tags (comma-separated). Alaiy OS's own status tag is kept out of this field and merged in separately on push.",
             "allow_on_submit": 1,
         },
+        {
+            "fieldname": "sh_delivery_method",
+            "label": "Shopify Delivery Method",
+            "fieldtype": "Data",
+            "read_only": 1,
+            "insert_after": "sh_shopify_order_tags",
+            "description": "The shipping method the customer chose, straight from Shopify's shippingLine.title (e.g. \"Free Standard Shipping\", \"2nd air\"). Stored as its own field so it stays filterable/reportable -- the shipping COST rides separately on the Sales Taxes and Charges table, and a free-shipping order carries no charge row at all yet still has a real method name here.",
+        },
     ]
     sales_order_item_fields = [
         {
@@ -443,6 +452,15 @@ def setup_custom_fields():
             "fieldtype": "Small Text",
             "read_only": 1,
             "insert_after": "sh_tracking_company",
+        },
+        {
+            "fieldname": "sh_delivery_status",
+            "label": "Shopify Delivery Status",
+            "fieldtype": "Data",
+            "read_only": 1,
+            "in_list_view": 1,
+            "insert_after": "sh_tracking_url",
+            "description": "Shopify's own delivery state for this fulfillment (fulfillment.displayStatus -- IN_TRANSIT, DELIVERED, ATTEMPTED_DELIVERY, ...). Distinct from the order's fulfillment status, which only says whether it shipped at all. Blank until Shopify reports a delivery state.",
         },
     ]
 

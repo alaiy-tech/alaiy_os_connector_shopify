@@ -49,6 +49,15 @@ query PullOrders($after: String, $queryString: String!) {
             }
           }
         }
+        fulfillments(first: 10) {
+          legacyResourceId
+          displayStatus
+          trackingInfo {
+            number
+            company
+            url
+          }
+        }
         shippingAddress {
           name
           address1

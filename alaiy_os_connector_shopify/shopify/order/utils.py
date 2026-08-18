@@ -75,6 +75,24 @@ def _order_node_to_rest_shape(node: dict) -> dict:
         amt = ((ship_line.get("originalPriceSet") or {}).get("shopMoney") or {}).get("amount")
         shipping_lines.append({"title": ship_line.get("title") or "Shipping", "price": amt})
 
+    # Reshaped to the REST webhook's own fulfillments shape so the delivery
+    # sync path doesn't have to care which source it came from. Only
+    # displayStatus + trackingInfo are carried -- the GraphQL pull query
+    # deliberately doesn't fetch per-fulfillment line items (see
+    # delivery_notes.py's _create_delivery_note_if_needed, which is the
+    # full-order fallback for exactly that reason).
+    fulfillments = []
+    for f in (node.get("fulfillments") or []):
+        tracking = f.get("trackingInfo") or []
+        first = tracking[0] if tracking else {}
+        fulfillments.append({
+            "id": f.get("legacyResourceId"),
+            "display_status": (f.get("displayStatus") or "").upper(),
+            "tracking_number": ",".join(t.get("number") or "" for t in tracking).strip(","),
+            "tracking_company": first.get("company") or "",
+            "tracking_url": ",".join(t.get("url") or "" for t in tracking).strip(","),
+        })
+
     return {
         "id": node.get("legacyResourceId"),
         "name": node.get("name"),
@@ -90,6 +108,7 @@ def _order_node_to_rest_shape(node: dict) -> dict:
         "shipping_address": _addr(node.get("shippingAddress")),
         "billing_address": _addr(node.get("billingAddress")),
         "shipping_lines": shipping_lines,
+        "fulfillments": fulfillments,
         "total_discounts": ((node.get("totalDiscountsSet") or {}).get("shopMoney") or {}).get("amount") or "0",
         "currency": node.get("currencyCode") or "",
         "note": node.get("note") or "",
