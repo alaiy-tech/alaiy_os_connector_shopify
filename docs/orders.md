@@ -128,11 +128,21 @@ All outbound pushes are skipped when `flags.from_shopify_sync` is set. A shared 
 
 Shopify has no separate "return" resource — a refund is the return record.
 `refunds/create` → `handle_refund_webhook` → `_process_refund`:
-1. Resolves the Sales Order via `get_active_sales_order`; skips if not found/not submitted.
-2. Maps each `refund_line_items[].line_item` to an item code (`_resolve_item_code`, same SKU → variant id → title chain as inbound order creation).
-3. **Sales Return**: `make_return_doc("Delivery Note", ...)` against the order's submitted Delivery Note, trimmed to only the refunded items/quantities (`_trim_return_items`), tagged `sh_shopify_refund_id` (idempotency — a redelivered webhook is a no-op).
-4. **Credit Note**: `make_return_doc("Sales Invoice", ...)` against the order's submitted Sales Invoice, same trim + tag. `update_stock=0` — stock already moved via the Sales Return.
-5. If Shopify's refund `transactions` carry a `kind: "refund"` amount, books a refund Payment Entry against the Credit Note (mirrors `invoice.py`'s `_mark_invoice_paid`, reversed direction).
+1. Idempotency gate: skips entirely if either a Delivery Note **or** a Sales Invoice already carries this `sh_shopify_refund_id`. Both are checked because a no-restock refund creates no Delivery Note at all, so checking only that would let a redelivered webhook duplicate the Credit Note.
+2. Resolves the Sales Order via `get_active_sales_order`; skips if not found/not submitted.
+3. Maps each `refund_line_items[].line_item` to an item code (`_resolve_item_code`, same SKU → variant id → title chain as inbound order creation; `variant_id` is legitimately null on some lines, which the fallback chain handles). An unmatchable line is logged, not silently dropped.
+4. Splits the refunded quantities into **two** maps by `restock_type`:
+   - every line counts toward the **credit** quantity (money always comes back),
+   - only `return` / `legacy_restock` lines count toward the **restock** quantity. `no_restock` (damaged, written off) and `cancel` (never shipped, so it never left stock) must not create a positive stock movement — otherwise the connector invents inventory that doesn't physically exist.
+5. **Sales Return**: `make_return_doc("Delivery Note", ...)`, trimmed to the restock quantities (`_trim_return_items`), tagged `sh_shopify_refund_id`. Lands in **Return Warehouse** (`sh_return_warehouse`) if configured, else Default Warehouse — the connector doesn't decide what happens to the item after that; a downstream quality check or supplier-portal routing owns that decision.
+6. **Credit Note**: `make_return_doc("Sales Invoice", ...)`, trimmed to the credit quantities, same tag. `update_stock=0` — stock already moved via the Sales Return.
+7. If Shopify's refund `transactions` carry a **successful** `kind: "refund"` amount, books a refund Payment Entry against the Credit Note (mirrors `invoice.py`'s `_mark_invoice_paid`, reversed direction).
+
+**Source document selection.** Both `make_return_doc` calls pick a document that actually carries one of the refunded items (`_source_delivery_note` / `_source_sales_invoice`), most recent first — never just the order's first Delivery Note or Invoice. A partially shipped or per-shipment invoiced order has several, and returning against the wrong one maps lines the refund never touched, which the trim then drops — a silently empty return. The invoice lookup also skips existing return invoices.
+
+**Quantity trimming** treats the refunded quantities as a budget drawn down across rows, not a per-row cap. Two rows can share an `item_code` (the same SKU on two order lines, or two unmatched Shopify lines both resolving to the shared "Shopify Custom Item" placeholder), and capping each independently against the same total would return double. `make_return_doc` has already netted off earlier returns, so a refund for more than what's left lands short rather than going negative.
+
+**Refund total vs Credit Note total.** The Payment Entry settles the Credit Note's own outstanding amount, not Shopify's refund figure. Shopify's refund can legitimately include refunded shipping, duties, or a manual adjustment — none of which are line items on the trimmed Credit Note — and forcing that larger total onto the invoice is an ERPNext over-allocation error. Any difference is logged for a human to book separately rather than guessed at.
 
 No Delivery Note yet (nothing shipped) → no Sales Return. No Sales Invoice yet (not invoiced) → no Credit Note. Either can happen independently; a refund on an unshipped/unpaid order just returns the reserved qty via the Sales Order itself.
 
