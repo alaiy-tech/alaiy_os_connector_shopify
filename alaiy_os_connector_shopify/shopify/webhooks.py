@@ -11,6 +11,10 @@ WEBHOOK_TOPICS = [
 
     "orders/edited",
 
+    # Refund webhooks (returns/credit notes, inbound) -- Shopify has no
+    # separate "return" resource, a refund IS the return record.
+    "refunds/create",
+
     # Fulfillment webhooks (tracking number create/update) -- carries
     # trackingInfo the order-level webhooks don't; orders/fulfilled only
     # fires once, so a tracking number added or changed afterwards (a real,

@@ -462,6 +462,26 @@ def setup_custom_fields():
             "insert_after": "sh_tracking_url",
             "description": "Shopify's own delivery state for this fulfillment (fulfillment.displayStatus -- IN_TRANSIT, DELIVERED, ATTEMPTED_DELIVERY, ...). Distinct from the order's fulfillment status, which only says whether it shipped at all. Blank until Shopify reports a delivery state.",
         },
+        {
+            "fieldname": "sh_shopify_refund_id",
+            "label": "Shopify Refund ID",
+            "fieldtype": "Data",
+            "search_index": 1,
+            "read_only": 1,
+            "description": "Set when this Sales Return was auto-created from a Shopify refund event. Prevents the same refund from ever creating a duplicate return.",
+            "insert_after": "sh_delivery_status",
+        },
+    ]
+    sales_invoice_fields = [
+        {
+            "fieldname": "sh_shopify_refund_id",
+            "label": "Shopify Refund ID",
+            "fieldtype": "Data",
+            "search_index": 1,
+            "read_only": 1,
+            "description": "Set when this Credit Note was auto-created from a Shopify refund event. Prevents the same refund from ever creating a duplicate credit note.",
+            "insert_after": "customer",
+        },
     ]
 
     custom_fields = {
@@ -470,6 +490,7 @@ def setup_custom_fields():
         "Sales Order Item": sales_order_item_fields,
         "Customer": customer_fields,
         "Delivery Note": delivery_note_fields,
+        "Sales Invoice": sales_invoice_fields,
     }
     # Stamp each field with this app's module so they export under our
     # fixtures, matching how they were created before.
