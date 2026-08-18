@@ -39,7 +39,37 @@ def _resolve_default_warehouse(settings):
     return fallback
 
 
-def _force_valid_warehouse(dn):
+def _resolve_warehouse_for_location(location_id, settings):
+    """
+    Look up the real per-supplier warehouse for a Shopify location id
+    (the fulfillment's own location_id, REST-shaped -- a plain legacy
+    numeric id, matching Shopify Location.sh_location_id), via
+    Shopify Connector Settings.sh_location_map.
+
+    Confirmed live: this map (Warehouse to Location Map, 70+ real rows,
+    one per supplier) was populated and correct, but nothing in order/
+    Delivery Note creation ever consulted it -- only inventory_sync.py's
+    stock push did. Every order regardless of which supplier/location it
+    actually came from was landing on the one generic
+    sh_default_warehouse, silently wrong for FedEx shipping labels (the
+    shipper address needs to be the SUPPLIER's real warehouse, not a
+    shared fallback).
+
+    Returns None if location_id is missing or has no mapping -- caller
+    falls back to _resolve_default_warehouse, same as before this existed.
+    """
+    if not location_id:
+        return None
+    location_name = frappe.db.get_value("Shopify Location", {"sh_location_id": str(location_id)}, "name")
+    if not location_name:
+        return None
+    for row in settings.get("sh_location_map") or []:
+        if row.shopify_location == location_name:
+            return row.warehouse
+    return None
+
+
+def _force_valid_warehouse(dn, location_id=None):
     """
     make_delivery_note() copies each item's warehouse straight from the
     Sales Order's own already-stored Item rows -- which is exactly the
@@ -52,9 +82,16 @@ def _force_valid_warehouse(dn):
     point that actually matters (the document that moves stock), so this
     class of stale data can never break delivery creation again, for any
     order regardless of when it was created.
+
+    location_id (the fulfillment's own Shopify location, when the caller
+    has one) takes priority: resolves through sh_location_map to the
+    real per-supplier warehouse. Falls back to the single generic
+    sh_default_warehouse when there's no location_id, no mapping for it,
+    or the caller didn't pass one at all (the full-order-fallback path
+    has no per-fulfillment location to work with).
     """
     settings = frappe.get_single("Shopify Connector Settings")
-    warehouse = _resolve_default_warehouse(settings)
+    warehouse = _resolve_warehouse_for_location(location_id, settings) or _resolve_default_warehouse(settings)
     for item in dn.items:
         item.warehouse = warehouse
     dn.set_warehouse = warehouse
