@@ -116,10 +116,10 @@ def _sync_fulfillments(so_name, fulfillments):
         if frappe.db.exists("Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}):
             continue
         _create_delivery_note_for_fulfillment(
-            so, fulfillment_id, fulfillment.get("line_items") or [])
+            so, fulfillment_id, fulfillment.get("line_items") or [], fulfillment.get("location_id"))
 
 
-def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_items):
+def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_items, location_id=None):
     qty_by_item = {}
     for li in fulfillment_line_items:
         item_code = _resolve_item_code({
@@ -142,7 +142,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
         with _as_administrator():
             dn = make_delivery_note(so.name)
-            _force_valid_warehouse(dn)
+            _force_valid_warehouse(dn, location_id)
 
             # make_delivery_note maps the full remaining quantity per item
             # by default -- trim each row down to only what THIS
