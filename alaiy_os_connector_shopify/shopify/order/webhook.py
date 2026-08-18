@@ -61,40 +61,57 @@ def _cancel_order(order):
             f"mapped Sales Order {so_name} no longer exists")
         return
     if so_name:
-        so = frappe.get_doc("Sales Order", so_name)
-        if so.docstatus == 1:
-            # See _upsert_order's note on from_shopify_sync -- this cancel
-            # came FROM Shopify, so the on_cancel push-back hook must not
-            # try to cancel the same order on Shopify again. This webhook
-            # runs as Guest (allow_guest=True endpoint) -- confirmed live,
-            # so.cancel() hit a real PermissionError without this flag,
-            # same class of bug already fixed on every other webhook-driven
-            # save in this file.
-            so.flags.from_shopify_sync = True
-            so.flags.ignore_permissions = True
-            with _as_administrator():
-                try:
-                    so.cancel()
-                    frappe.db.commit()
-                except frappe.LinkExistsError:
-                    # A Purchase Order already routed against this order
-                    # (Solist's per-supplier PO routing) blocks the Sales
-                    # Order's own cancel -- confirmed live, this crashed the
-                    # whole webhook and left the order's status un-synced
-                    # with Shopify's real cancellation. If the PO is still
-                    # safe to cancel itself (nothing received/billed against
-                    # it yet), cancel it first so the Sales Order's cancel
-                    # can then go through cleanly; if the PO is already past
-                    # that point, fall back to logging rather than guessing.
-                    if not _cancel_linked_purchase_orders(so_name):
-                        frappe.log_error(
-                            title=f"Shopify: cannot cancel {so_name} -- Purchase Order already linked",
-                            message=frappe.get_traceback(),
-                        )
-                        return
-                    so.reload()
-                    so.cancel()
-                    frappe.db.commit()
+        with _as_administrator():
+            _cancel_sales_order(so_name)
+
+
+def _cancel_sales_order(so_name, _timestamp_retry_done=False, _po_retry_done=False):
+    """Cancel this Sales Order, working around the two real failure modes
+    seen live on a genuine Shopify cancellation:
+
+    - TimestampMismatchError: another job (e.g. line_items.py's own
+      _sync_order_line_items, firing concurrently off a related
+      orders/updated webhook for the same order) saved the document in
+      between -- always reload and retry once against the fresh copy
+      rather than treating a real, expected race as a hard failure.
+    - LinkExistsError: a Purchase Order already routed against this order
+      (Solist's per-supplier PO routing) blocks the Sales Order's own
+      cancel. If the PO is still safe to cancel itself (nothing
+      received/billed against it yet), cancel it first and retry once;
+      if the PO is already past that point, don't guess -- log it for a
+      human, since a supplier already receiving/being billed for stock
+      against a since-cancelled customer order needs a real decision.
+
+    Each failure mode gets its own one-shot retry, independent of the
+    other, so a PO-cancel retry doesn't consume the one legitimate
+    timestamp-race retry (and vice versa).
+    """
+    so = frappe.get_doc("Sales Order", so_name)
+    if so.docstatus != 1:
+        return
+    # See _upsert_order's note on from_shopify_sync -- this cancel came FROM
+    # Shopify, so the on_cancel push-back hook must not try to cancel the
+    # same order on Shopify again. This webhook runs as Guest
+    # (allow_guest=True endpoint) -- confirmed live, so.cancel() hit a real
+    # PermissionError without this flag, same class of bug already fixed on
+    # every other webhook-driven save in this file.
+    so.flags.from_shopify_sync = True
+    so.flags.ignore_permissions = True
+    try:
+        so.cancel()
+        frappe.db.commit()
+    except frappe.TimestampMismatchError:
+        if _timestamp_retry_done:
+            raise  # already retried once for this same reason; a second race is unexpected
+        _cancel_sales_order(so_name, _timestamp_retry_done=True, _po_retry_done=_po_retry_done)
+    except frappe.LinkExistsError:
+        if _po_retry_done or not _cancel_linked_purchase_orders(so_name):
+            frappe.log_error(
+                title=f"Shopify: cannot cancel {so_name} -- Purchase Order already linked",
+                message=frappe.get_traceback(),
+            )
+            return
+        _cancel_sales_order(so_name, _timestamp_retry_done=_timestamp_retry_done, _po_retry_done=True)
 
 
 def _cancel_linked_purchase_orders(so_name):
