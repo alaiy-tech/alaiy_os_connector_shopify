@@ -68,6 +68,7 @@ The connector uses the **client-credentials grant** (`shopify/auth.py::get_clien
 | Field | Type | Purpose |
 |---|---|---|
 | `sh_order_status_filter` | Select (default "Any") | Which orders the routine pull fetches: Open / Any / Closed / Cancelled. |
+| `sh_fulfillment_sync_direction` | Select (default "Shopify → Alaiy OS (default)") | Direction fulfillment sync runs in. Default is inbound-only (unchanged from before this setting existed). "Alaiy OS → Shopify (two-way)" additionally pushes Delivery Notes submitted here out to Shopify as real fulfillments. Changeable at any time, no reinstall needed. |
 | `sh_inventory_sync_interval` | Select (default "30 min") | How often stock is pushed: Disabled / 5 / 15 / 30 / 60 min. |
 | `sh_token_refresh_interval` | Select (default "12 hours") | Proactive token-refresh cadence: Disabled / 6h / 12h / 24h. |
 

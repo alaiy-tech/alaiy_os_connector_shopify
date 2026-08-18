@@ -77,6 +77,10 @@ def _create_delivery_note_if_needed(so_name):
                 row.allow_zero_valuation_rate = 1
             _fill_expense_accounts(dn)
             dn.flags.ignore_permissions = True
+            # This Delivery Note mirrors a fulfillment Shopify already knows
+            # about -- the two-way outbound push (fulfillment_push.py) must
+            # never try to push it back out.
+            dn.flags.from_shopify_sync = True
             dn.insert()
             dn.submit()
         frappe.db.commit()
@@ -159,6 +163,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
                 row.allow_zero_valuation_rate = 1
             _fill_expense_accounts(dn)
             dn.flags.ignore_permissions = True
+            dn.flags.from_shopify_sync = True
             dn.insert()
             dn.submit()
         frappe.db.commit()

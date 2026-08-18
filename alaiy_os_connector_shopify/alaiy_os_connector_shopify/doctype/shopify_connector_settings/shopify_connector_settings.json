@@ -28,6 +28,7 @@
   "sh_location_map",
   "sb_sync",
   "sh_order_status_filter",
+  "sh_fulfillment_sync_direction",
   "sh_inventory_sync_interval",
   "sh_token_refresh_interval",
   "sb_product_status",
@@ -195,6 +196,15 @@
    "fieldtype": "Select",
    "label": "Sync Orders With Status",
    "options": "Open\nAny\nClosed\nCancelled",
+   "reqd": 1
+  },
+  {
+   "default": "Shopify → Alaiy OS (default)",
+   "description": "Direction fulfillment sync runs in. 'Shopify → Alaiy OS' (default): a Shopify fulfillment auto-creates a submitted Delivery Note here -- today's only behavior, unchanged when left at default. 'Alaiy OS → Shopify (two-way)': in addition, submitting a Delivery Note here (e.g. a warehouse scanning items out against a Sales Order) creates a real Shopify fulfillment with tracking info. Safe to switch either way at any time -- no reinstall needed.",
+   "fieldname": "sh_fulfillment_sync_direction",
+   "fieldtype": "Select",
+   "label": "Fulfillment Sync Direction",
+   "options": "Shopify → Alaiy OS (default)\nAlaiy OS → Shopify (two-way)",
    "reqd": 1
   },
   {

@@ -230,3 +230,101 @@ mutation CommitOrderEdit($id: ID!, $notifyCustomer: Boolean) {
   }
 }
 """
+
+# fulfillmentCreate needs a fulfillment order id, not the order id itself --
+# an order can have multiple fulfillment orders (split shipments across
+# locations, or a prior partial fulfillment already closed one out), so this
+# walks the full paginated connection rather than assuming the first page
+# covers every order -- caller filters to OPEN ones with remainingQuantity > 0.
+_FULFILLMENT_ORDERS_QUERY = """
+query GetFulfillmentOrders($id: ID!, $after: String) {
+  order(id: $id) {
+    fulfillmentOrders(first: 50, after: $after) {
+      nodes {
+        id
+        status
+        assignedLocation {
+          location {
+            id
+          }
+        }
+        lineItems(first: 250) {
+          nodes {
+            id
+            remainingQuantity
+            totalQuantity
+            sku
+            variant {
+              legacyResourceId
+            }
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+"""
+
+# fulfillmentCreateV2 is deprecated in favor of fulfillmentCreate (same
+# FulfillmentInput shape minus the V2 suffix) -- using the non-deprecated one.
+_FULFILLMENT_CREATE_MUTATION = """
+mutation CreateFulfillment($fulfillment: FulfillmentInput!) {
+  fulfillmentCreate(fulfillment: $fulfillment) {
+    fulfillment {
+      id
+      legacyResourceId
+      status
+      trackingInfo {
+        number
+        company
+        url
+      }
+      createdAt
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_FULFILLMENT_CANCEL_MUTATION = """
+mutation CancelFulfillment($id: ID!) {
+  fulfillmentCancel(id: $id) {
+    fulfillment {
+      id
+      status
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+# fulfillmentTrackingInfoUpdateV2 is deprecated in favor of
+# fulfillmentTrackingInfoUpdate (same shape minus the V2 suffix).
+_FULFILLMENT_TRACKING_UPDATE_MUTATION = """
+mutation UpdateFulfillmentTracking($fulfillmentId: ID!, $trackingInfoInput: FulfillmentTrackingInput!, $notifyCustomer: Boolean) {
+  fulfillmentTrackingInfoUpdate(fulfillmentId: $fulfillmentId, trackingInfoInput: $trackingInfoInput, notifyCustomer: $notifyCustomer) {
+    fulfillment {
+      id
+      trackingInfo {
+        number
+        company
+        url
+      }
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
