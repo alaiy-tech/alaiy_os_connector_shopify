@@ -36,6 +36,7 @@ from alaiy_os_connector_shopify.shopify.product.media import _set_item_image, _s
 from alaiy_os_connector_shopify.shopify.product.taxonomy import ensure_shopify_category
 from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _set_item_tags
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+from alaiy_os_connector_shopify.shopify.product import status as status_map
 
 
 def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
