@@ -85,27 +85,36 @@ def _address_to_shopify_input(address_fields: dict, customer_name: str = "") -> 
     }
 
 
-def push_order_update(order_id: str, sales_order: str, status: str, items_changed: bool = False, removed_variant_ids: list = None, added_items: list = None, changed_quantities: list = None, shipping_address: dict = None):
+def push_order_update(order_id: str, sales_order: str, status: str, items_changed: bool = False, removed_variant_ids: list = None, added_items: list = None, changed_quantities: list = None, shipping_address: dict = None, swapped_variants: list = None, shipping_line: dict = None, custom_items: list = None):
     """
     Pushes order status/note/tags/shipping-address updates to Shopify, and
-    (if line items changed) adds/removes/quantity edits via Shopify's Order
-    Editing API in one session. If Delivery Notes exist (shipment started),
-    item changes are rejected -- the Shopify order can't be modified at that
-    point anyway -- but status/note/tags/address still push regardless,
-    since those aren't blocked by a started shipment. Rate-only edits on a
-    surviving row (no qty change) still have no Shopify-side equivalent and
-    fall back to the manual-edit warning, same as anything the Order
-    Editing API call itself fails to apply cleanly.
+    (if line items changed) adds/removes/quantity edits/variant swaps/a
+    shipping line/custom items via Shopify's Order Editing API in one
+    session. If Delivery Notes exist (shipment started), item changes are
+    rejected -- the Shopify order can't be modified at that point anyway --
+    but status/note/tags/address still push regardless, since those aren't
+    blocked by a started shipment. Rate-only edits on a surviving row (no
+    qty change) still have no Shopify-side equivalent and fall back to the
+    manual-edit warning, same as anything the Order Editing API call itself
+    fails to apply cleanly.
+
+    swapped_variants/shipping_line/custom_items have no automatic upstream
+    detection yet (unlike removed/added/changed_quantities, which
+    doc_events.py derives from a before/after item snapshot) -- callers
+    pass these explicitly for now.
     """
     removed_variant_ids = removed_variant_ids or []
     added_items = added_items or []
     changed_quantities = changed_quantities or []
+    swapped_variants = swapped_variants or []
+    custom_items = custom_items or []
     frappe.log_error(
         title=f"Shopify DEBUG: push_order_update {sales_order}",
         message=(
             f"items_changed={items_changed} removed_variant_ids={removed_variant_ids!r} "
             f"added_items={added_items!r} changed_quantities={changed_quantities!r} "
-            f"shipping_address_changed={shipping_address is not None}"
+            f"swapped_variants={swapped_variants!r} shipping_line={shipping_line!r} "
+            f"custom_items={custom_items!r} shipping_address_changed={shipping_address is not None}"
         ),
     )
 
@@ -121,8 +130,12 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
                     "Line items are locked. Create a follow-up order for additional items."
                 ),
             )
-        elif (removed_variant_ids or added_items or changed_quantities) and _apply_shopify_line_item_changes(
-            order_id, removed_variant_ids, added_items, sales_order, changed_quantities
+        elif (
+            removed_variant_ids or added_items or changed_quantities
+            or swapped_variants or shipping_line or custom_items
+        ) and _apply_shopify_line_item_changes(
+            order_id, removed_variant_ids, added_items, sales_order, changed_quantities,
+            swapped_variants=swapped_variants, shipping_line=shipping_line, custom_items=custom_items,
         ):
             pass  # line item edit committed cleanly -- status/note/tags/address below still run
         else:
