@@ -255,6 +255,10 @@ def _make_sales_return(so_name, qty_by_item, refund_id):
         return None  # nothing restockable shipped -- no stock to bring back
 
     try:
+        # Same last-point re-check as _make_credit_note -- see that
+        # function's comment for why.
+        if frappe.db.exists("Delivery Note", {"sh_shopify_refund_id": refund_id}):
+            return None
         from erpnext.controllers.sales_and_purchase_return import make_return_doc
         dn = make_return_doc("Delivery Note", dn_name)
         if not _trim_return_items(dn, qty_by_item):
@@ -318,6 +322,16 @@ def _make_credit_note(so_name, qty_by_item, refund_id):
         return None  # not invoiced yet -- nothing to credit
 
     try:
+        # Re-check right before inserting, not just at _process_refund's own
+        # entry point -- confirmed live that a duplicate Credit Note can
+        # still get created for one refund_id despite that earlier check
+        # (two Sales Invoices, same refund_id, half a second apart, from
+        # what traced back to a single _process_refund call -- exact
+        # mechanism unconfirmed, but the failure mode is real). This is the
+        # last point before an irreversible insert, so it's the last chance
+        # to catch a redundant run regardless of cause.
+        if frappe.db.exists("Sales Invoice", {"sh_shopify_refund_id": refund_id}):
+            return None
         from erpnext.controllers.sales_and_purchase_return import make_return_doc
         settings = frappe.get_single("Shopify Connector Settings")
         si = make_return_doc("Sales Invoice", si_name)
