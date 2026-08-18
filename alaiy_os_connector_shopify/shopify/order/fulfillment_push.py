@@ -45,9 +45,11 @@ def _open_fulfillment_order_line_items(client, order_gid):
     """
     Walks the full fulfillmentOrders connection (an order can have more than
     one -- prior partial fulfillments, multiple locations) and returns every
-    OPEN line item with remainingQuantity > 0, keyed by fulfillment order id.
+    OPEN line item with remainingQuantity > 0, keyed by fulfillment order id,
+    alongside the location each fulfillment order is assigned to.
     """
     by_fulfillment_order = {}
+    location_by_fulfillment_order = {}
     after = None
     while True:
         data = client.execute(_FULFILLMENT_ORDERS_QUERY, {"id": order_gid, "after": after})
@@ -61,11 +63,14 @@ def _open_fulfillment_order_line_items(client, order_gid):
             ]
             if open_lines:
                 by_fulfillment_order[node["id"]] = open_lines
+                location_by_fulfillment_order[node["id"]] = (
+                    ((node.get("assignedLocation") or {}).get("location") or {}).get("id")
+                )
         page_info = connection.get("pageInfo") or {}
         if not page_info.get("hasNextPage"):
             break
         after = page_info.get("endCursor")
-    return by_fulfillment_order
+    return by_fulfillment_order, location_by_fulfillment_order
 
 
 def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order):
@@ -109,6 +114,23 @@ def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order):
     return result, unmatched
 
 
+def _bucket_by_location(fulfillment_input_per_order, location_by_fulfillment_order):
+    """
+    fulfillmentCreate requires every fulfillment order in one call to be
+    assigned to the same Shopify location -- a Delivery Note whose items span
+    locations (multi-warehouse setups) must become one fulfillmentCreate call
+    per location, not one call mixing both. Unassigned/unknown locations
+    (missing assignedLocation.location.id) fall into their own bucket rather
+    than being merged with a real location, since Shopify would reject that
+    mix too.
+    """
+    buckets = {}
+    for fulfillment_order_id, line_items in fulfillment_input_per_order.items():
+        location_id = location_by_fulfillment_order.get(fulfillment_order_id)
+        buckets.setdefault(location_id, {})[fulfillment_order_id] = line_items
+    return buckets
+
+
 def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = None, carrier: str = None, tracking_url: str = None, notify_customer: bool = True):
     """
     Creates a real Shopify fulfillment for this Delivery Note's items and
@@ -134,7 +156,7 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
     client = ShopifyGraphQLClient()
     order_gid = _to_gid(shopify_order_id)
 
-    open_by_fulfillment_order = _open_fulfillment_order_line_items(client, order_gid)
+    open_by_fulfillment_order, location_by_fulfillment_order = _open_fulfillment_order_line_items(client, order_gid)
     if not open_by_fulfillment_order:
         frappe.throw(f"Shopify order for {so_name} has no open fulfillment orders left to fulfill.")
 
@@ -153,34 +175,44 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         if tracking_url:
             tracking_info["url"] = tracking_url
 
-    # FulfillmentInput has no fulfillmentOrderId/fulfillmentOrderLineItems
-    # fields of its own -- confirmed live against a real store ("Field is
-    # not defined on FulfillmentInput"). The real shape wraps every
-    # fulfillment order's line items into ONE lineItemsByFulfillmentOrder
-    # array on a SINGLE fulfillmentCreate call, rather than one call per
-    # fulfillment order.
-    fulfillment_input = {
-        "lineItemsByFulfillmentOrder": [
-            {"fulfillmentOrderId": fulfillment_order_id, "fulfillmentOrderLineItems": line_items}
-            for fulfillment_order_id, line_items in fulfillment_input_per_order.items()
-        ],
-        "notifyCustomer": notify_customer,
-    }
-    if tracking_info:
-        fulfillment_input["trackingInfo"] = tracking_info
+    # fulfillmentCreate requires every fulfillment order named in one call to
+    # be assigned to the same Shopify location -- a Delivery Note whose items
+    # span locations (multi-warehouse setups) must become one call per
+    # location, not one call mixing both (Shopify rejects the mix).
+    buckets = _bucket_by_location(fulfillment_input_per_order, location_by_fulfillment_order)
 
-    data = client.execute(_FULFILLMENT_CREATE_MUTATION, {"fulfillment": fulfillment_input})
-    result = data.get("fulfillmentCreate") or {}
-    errors = result.get("userErrors") or []
-    if errors:
-        frappe.log_error(
-            title=f"Shopify: fulfillment push failed for {dn.name}",
-            message=f"Sales Order: {so_name}\n{errors}",
-        )
-        frappe.throw(f"Shopify rejected the fulfillment push: {errors}")
+    fulfillments = []
+    for location_id, orders_in_bucket in buckets.items():
+        # FulfillmentInput has no fulfillmentOrderId/fulfillmentOrderLineItems
+        # fields of its own -- confirmed live against a real store ("Field is
+        # not defined on FulfillmentInput"). The real shape wraps every
+        # fulfillment order's line items into ONE lineItemsByFulfillmentOrder
+        # array -- one call per location bucket, since Shopify requires every
+        # entry in that array to share a location.
+        fulfillment_input = {
+            "lineItemsByFulfillmentOrder": [
+                {"fulfillmentOrderId": fulfillment_order_id, "fulfillmentOrderLineItems": line_items}
+                for fulfillment_order_id, line_items in orders_in_bucket.items()
+            ],
+            "notifyCustomer": notify_customer,
+        }
+        if tracking_info:
+            fulfillment_input["trackingInfo"] = tracking_info
 
-    fulfillment = result.get("fulfillment") or {}
-    if fulfillment.get("legacyResourceId"):
+        data = client.execute(_FULFILLMENT_CREATE_MUTATION, {"fulfillment": fulfillment_input})
+        result = data.get("fulfillmentCreate") or {}
+        errors = result.get("userErrors") or []
+        if errors:
+            frappe.log_error(
+                title=f"Shopify: fulfillment push failed for {dn.name}",
+                message=f"Sales Order: {so_name}\nLocation: {location_id}\n{errors}",
+            )
+            frappe.throw(f"Shopify rejected the fulfillment push: {errors}")
+        fulfillment = result.get("fulfillment") or {}
+        if fulfillment:
+            fulfillments.append(fulfillment)
+
+    if fulfillments:
         # Stored as the plain legacy numeric id, matching every other
         # sh_shopify_*_id field in this app (e.g. Sales Order's
         # sh_shopify_order_id) and the INBOUND path's own convention
@@ -190,28 +222,31 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         # fulfillmentCancel need the GID form, so it's rebuilt from this at
         # call time (_fulfillment_gid) rather than stored that way.
         #
-        # Shopify creates one Fulfillment PER fulfillment order named in
-        # lineItemsByFulfillmentOrder, but this mutation's payload only
-        # returns one of them -- a Delivery Note maps 1:1 to one fulfillment
-        # event in the inbound direction (delivery_notes.py), so the single
-        # returned id is what the dedup check needs. When more than one
-        # fulfillment order was actually involved (split across Shopify
-        # locations -- rare), the others still get created on Shopify, just
-        # not individually trackable from this one field -- logged so it's
-        # visible rather than silently dropped.
-        updates = {"sh_shopify_fulfillment_id": fulfillment["legacyResourceId"]}
-        if tracking_number:
-            updates["sh_tracking_number"] = tracking_number
-            updates["sh_tracking_company"] = carrier or ""
-        frappe.db.set_value("Delivery Note", dn.name, updates)
-        if len(fulfillment_input_per_order) > 1:
+        # sh_shopify_fulfillment_id holds one id (a Delivery Note maps 1:1 to
+        # one fulfillment event in the inbound direction), so when the DN's
+        # items spanned more than one location bucket, only the FIRST created
+        # fulfillment is linked/trackable there -- the others were still
+        # created on Shopify, just logged rather than silently dropped, since
+        # reflecting a Delivery Note split back across multiple Shopify
+        # fulfillments isn't implemented.
+        first = fulfillments[0]
+        if first.get("legacyResourceId"):
+            updates = {"sh_shopify_fulfillment_id": first["legacyResourceId"]}
+            if tracking_number:
+                updates["sh_tracking_number"] = tracking_number
+                updates["sh_tracking_company"] = carrier or ""
+            frappe.db.set_value("Delivery Note", dn.name, updates)
+            frappe.db.commit()
+        if len(fulfillments) > 1:
             frappe.log_error(
-                title=f"Shopify: {dn.name} pushed across {len(fulfillment_input_per_order)} fulfillment orders",
-                message=f"Only the returned fulfillment id ({fulfillment['legacyResourceId']}) is linked via sh_shopify_fulfillment_id.",
+                title=f"Shopify: {dn.name} pushed across {len(fulfillments)} Shopify locations",
+                message=(
+                    f"Fulfillment ids created: {[f.get('legacyResourceId') for f in fulfillments]}\n"
+                    f"Only the first ({first.get('legacyResourceId')}) is linked via sh_shopify_fulfillment_id."
+                ),
             )
-        frappe.db.commit()
 
-    return [fulfillment]
+    return fulfillments
 
 
 @frappe.whitelist()

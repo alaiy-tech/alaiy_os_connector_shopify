@@ -243,6 +243,11 @@ query GetFulfillmentOrders($id: ID!, $after: String) {
       nodes {
         id
         status
+        assignedLocation {
+          location {
+            id
+          }
+        }
         lineItems(first: 250) {
           nodes {
             id
