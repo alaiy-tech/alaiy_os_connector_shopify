@@ -126,6 +126,44 @@ All outbound pushes are skipped when `flags.from_shopify_sync` is set. A shared 
 
 ---
 
+## Refunds/returns (`returns.py`)
+
+Shopify has no separate "return" resource — a refund is the return record.
+`refunds/create` → `handle_refund_webhook` → `_process_refund`:
+1. Idempotency gate: skips entirely if either a Delivery Note **or** a Sales Invoice already carries this `sh_shopify_refund_id`. Both are checked because a no-restock refund creates no Delivery Note at all, so checking only that would let a redelivered webhook duplicate the Credit Note.
+2. Resolves the Sales Order via `get_active_sales_order`; skips if not found/not submitted.
+3. Maps each `refund_line_items[].line_item` to an item code (`_resolve_item_code`, same SKU → variant id → title chain as inbound order creation; `variant_id` is legitimately null on some lines, which the fallback chain handles). An unmatchable line is logged, not silently dropped.
+4. Splits the refunded quantities into **two** maps by `restock_type`:
+   - every line counts toward the **credit** quantity (money always comes back),
+   - only `return` / `legacy_restock` lines count toward the **restock** quantity. `no_restock` (damaged, written off) and `cancel` (never shipped, so it never left stock) must not create a positive stock movement — otherwise the connector invents inventory that doesn't physically exist.
+5. **Sales Return**: `make_return_doc("Delivery Note", ...)`, trimmed to the restock quantities (`_trim_return_items`), tagged `sh_shopify_refund_id`. Lands in **Return Warehouse** (`sh_return_warehouse`) if configured, else Default Warehouse — the connector doesn't decide what happens to the item after that; a downstream quality check or supplier-portal routing owns that decision.
+6. **Credit Note**: `make_return_doc("Sales Invoice", ...)`, trimmed to the credit quantities, same tag. `update_stock=0` — stock already moved via the Sales Return.
+7. If Shopify's refund `transactions` carry a **successful** `kind: "refund"` amount, books a refund Payment Entry against the Credit Note (mirrors `invoice.py`'s `_mark_invoice_paid`, reversed direction). If nothing has settled yet, the Credit Note still stands but is deliberately left **unpaid** — see below.
+
+### Three separate Shopify state machines
+
+This module is driven by the **refund**, not by Shopify's Return object. Shopify models three things independently, and only the middle one is handled here:
+
+| | What it is | Handled? |
+|---|---|---|
+| Return lifecycle | `returns/request`, `returns/approve`, `returns/decline`, `returns/cancel`, `returns/update`, `returns/process`, `returns/close`, `returns/reopen` — the physical goods: requested, approved, received. GraphQL Admin API only. | **No** |
+| Refund | `refunds/create` — the financial reversal, carrying refunded line items + restock instructions. | Yes |
+| Money settlement | each refund's `OrderTransaction` status: `pending` / `processing` / `success` / `failure`. | Partly — see below |
+
+**Consequence:** a return that is requested, approved, and physically received but **not yet refunded** produces nothing in Alaiy OS. For a merchant who inspects goods before refunding, the warehouse sees the box arrive with no corresponding record until the refund is issued on Shopify. Closing that gap means subscribing to `returns/process` (and probably `returns/approve`), which needs a decision about what an approved-but-unrefunded return should create — a draft Sales Return? a flag on the order? — so it's deliberately not wired up by default.
+
+**Money settlement:** `refunds/create` fires *independent of money movement* — a Refund existing does not mean the customer has been paid. Only `status: "success"` refund transactions are counted. When none have settled, the Credit Note is created (the sale really is reversed) but no Payment Entry is booked, and the situation is logged with every transaction's kind/status. Shopify does **not** re-fire `refunds/create` when a pending transaction later succeeds, so nothing revisits this automatically — the invoice sitting visibly unpaid in Accounts Receivable is the intended signal, rather than it silently looking settled.
+
+**On double-restocking:** Shopify adjusts its own inventory for `return`/`cancel` lines (that's what `refund_line_items[].location_id` is for). That is *not* a reason to skip our Sales Return — it's the same physical unit counted independently in two systems. Alaiy OS is the stock source of truth and the scheduled inventory push (`inventory_sync.py`) overwrites Shopify's number with ours, so our count must include the returned unit or the next push would wrongly tell Shopify the return never happened.
+
+**Source document selection.** Both `make_return_doc` calls pick a document that actually carries one of the refunded items (`_source_delivery_note` / `_source_sales_invoice`), most recent first — never just the order's first Delivery Note or Invoice. A partially shipped or per-shipment invoiced order has several, and returning against the wrong one maps lines the refund never touched, which the trim then drops — a silently empty return. The invoice lookup also skips existing return invoices.
+
+**Quantity trimming** treats the refunded quantities as a budget drawn down across rows, not a per-row cap. Two rows can share an `item_code` (the same SKU on two order lines, or two unmatched Shopify lines both resolving to the shared "Shopify Custom Item" placeholder), and capping each independently against the same total would return double. `make_return_doc` has already netted off earlier returns, so a refund for more than what's left lands short rather than going negative.
+
+**Refund total vs Credit Note total.** The Payment Entry settles the Credit Note's own outstanding amount, not Shopify's refund figure. Shopify's refund can legitimately include refunded shipping, duties, or a manual adjustment — none of which are line items on the trimmed Credit Note — and forcing that larger total onto the invoice is an ERPNext over-allocation error. Any difference is logged for a human to book separately rather than guessed at.
+
+No Delivery Note yet (nothing shipped) → no Sales Return. No Sales Invoice yet (not invoiced) → no Credit Note. Either can happen independently; a refund on an unshipped/unpaid order just returns the reserved qty via the Sales Order itself.
+
 ## Not yet built (order operations)
 
-Refunds/returns (→ Credit Note), restocking, fulfillment **split** reflect-back (a single Shopify fulfillment order split across multiple Delivery Notes maps back to more than one `sh_shopify_fulfillment_id`, only the first is currently linked/trackable), manual customer notifications, and user-editable order **tags** (only an auto status tag is pushed) are not implemented. Tracking number sync and fulfillment cancel (both directions) are covered above.
+Restocking-to-a-specific-warehouse (returns land in whatever warehouse the original Delivery Note used — the sellable/damaged split, flow.txt's Return Warehouse → Rejected Goods step, is a deliberate non-goal since that decision belongs to whoever inspects the goods), fulfillment **split** reflect-back (a single Shopify fulfillment order split across multiple Delivery Notes maps back to more than one `sh_shopify_fulfillment_id`, only the first is currently linked/trackable), manual customer notifications, and user-editable order **tags** (only an auto status tag is pushed) are not implemented. Tracking number sync and fulfillment cancel (both directions) are covered above.
