@@ -10,7 +10,11 @@ from alaiy_os_connector_shopify.shopify.order.locking import _acquire_order_lock
 from alaiy_os_connector_shopify.shopify.order.customer import _get_or_create_customer
 from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_warehouse
 from alaiy_os_connector_shopify.shopify.order.utils import _resolve_item_code
-from alaiy_os_connector_shopify.shopify.order.delivery_notes import _sync_fulfillments, _create_delivery_note_if_needed
+from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
+    _sync_fulfillments,
+    _create_delivery_note_if_needed,
+    _sync_tracking,
+)
 from alaiy_os_connector_shopify.shopify.order.tax import _append_tax_lines
 
 
@@ -173,6 +177,12 @@ def _upsert_order_unlocked(order, order_id):
     so.sh_financial_status = order.get("financial_status", "")
     so.sh_fulfillment_status = order.get("fulfillment_status", "")
     so.sh_shopify_notes = order.get("note") or ""
+    # The method NAME, independent of what it cost. The shipping charge
+    # itself rides on the Sales Taxes and Charges table (charges.py), which
+    # skips the row entirely when shipping is free -- so that description
+    # can't be relied on as the source of the method name.
+    shipping_lines = order.get("shipping_lines") or []
+    so.sh_delivery_method = (shipping_lines[0].get("title") or "") if shipping_lines else ""
     from alaiy_os_connector_shopify.shopify.order.push import parse_tags, strip_status_tag
     so.sh_shopify_order_tags = ",".join(strip_status_tag(parse_tags(order.get("tags"))))
     for li in line_items:
@@ -210,12 +220,30 @@ def _upsert_order_unlocked(order, order_id):
 
     frappe.db.commit()
 
-    if order.get("fulfillments"):
-        _sync_fulfillments(so.name, order.get("fulfillments"))
+    fulfillments = order.get("fulfillments") or []
+    # Only the REST webhook payload carries per-fulfillment line_items, which
+    # is what _sync_fulfillments needs to trim each Delivery Note to what
+    # that specific fulfillment shipped. The GraphQL pull reshapes
+    # fulfillments too (for delivery status/tracking) but deliberately
+    # without line items -- routing those into _sync_fulfillments would find
+    # nothing mappable and silently create no Delivery Note at all, so they
+    # take the full-order fallback and then get their status applied.
+    if any(f.get("line_items") for f in fulfillments):
+        _sync_fulfillments(so.name, fulfillments)
     elif so.sh_fulfillment_status == "fulfilled":
         # GraphQL pull path has no per-fulfillment breakdown to work with
         # (see _create_delivery_note_if_needed's note) -- full-order fallback.
         _create_delivery_note_if_needed(so.name)
+
+    # Delivery status/tracking is independent of which path created the
+    # Delivery Note -- _sync_tracking matches on fulfillment id and falls
+    # back to the order's own Delivery Note.
+    for fulfillment in fulfillments:
+        if fulfillment.get("display_status") or fulfillment.get("tracking_number"):
+            # order_id is on the standalone fulfillments/* webhook payload but
+            # not on a fulfillment nested inside an order -- _sync_tracking
+            # needs it for its no-fulfillment-id fallback.
+            _sync_tracking({**fulfillment, "order_id": order_id})
 
     # Orders often arrive already paid (and sometimes already fulfilled) at
     # create time -- invoice right away if the trigger is met.

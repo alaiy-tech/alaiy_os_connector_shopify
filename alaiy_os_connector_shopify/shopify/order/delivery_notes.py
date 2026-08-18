@@ -216,9 +216,23 @@ def _sync_tracking(fulfillment):
 
     tracking_number = fulfillment.get("tracking_number") or ",".join(fulfillment.get("tracking_numbers") or [])
     tracking_url = fulfillment.get("tracking_url") or ",".join(fulfillment.get("tracking_urls") or [])
-    frappe.db.set_value("Delivery Note", dn_name, {
+    values = {
         "sh_tracking_number": tracking_number,
         "sh_tracking_company": fulfillment.get("tracking_company") or "",
         "sh_tracking_url": tracking_url,
-    })
+    }
+    # Shopify's own delivery state (IN_TRANSIT / DELIVERED / ...), which the
+    # order-level fulfillment status can't express -- that only says whether
+    # the order shipped, not where the parcel is now. Only written when
+    # present: the REST webhook payload spells it "status" while the GraphQL
+    # pull reshapes displayStatus, and neither is guaranteed on every
+    # delivery, so a blank must not wipe a status already recorded.
+    delivery_status = (
+        fulfillment.get("display_status")
+        or fulfillment.get("shipment_status")
+        or ""
+    )
+    if delivery_status:
+        values["sh_delivery_status"] = str(delivery_status).upper()
+    frappe.db.set_value("Delivery Note", dn_name, values)
     frappe.db.commit()

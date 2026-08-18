@@ -8,7 +8,7 @@ import frappe
 from alaiy_os_connector_shopify.shopify.order.locking import _acquire_order_lock, _release_order_lock
 from alaiy_os_connector_shopify.shopify.order.upsert import get_active_sales_order, _upsert_order_unlocked
 from alaiy_os_connector_shopify.shopify.order.line_items import _sync_order_line_items
-from alaiy_os_connector_shopify.shopify.order.delivery_notes import _sync_fulfillments
+from alaiy_os_connector_shopify.shopify.order.delivery_notes import _sync_fulfillments, _sync_tracking
 
 
 def _update_order(order):
@@ -66,6 +66,13 @@ def _update_order_unlocked(order, order_id):
     if "tags" in order:
         from alaiy_os_connector_shopify.shopify.order.push import parse_tags, strip_status_tag
         updates["sh_shopify_order_tags"] = ",".join(strip_status_tag(parse_tags(order.get("tags"))))
+    if order.get("shipping_lines"):
+        # Gated on presence, not set unconditionally: a partial payload
+        # (orders/paid carries no shipping lines) must not blank out a
+        # method name already recorded at create time.
+        title = (order["shipping_lines"][0].get("title") or "").strip()
+        if title:
+            updates["sh_delivery_method"] = title
 
     if updates:
         for field, value in updates.items():
@@ -76,7 +83,14 @@ def _update_order_unlocked(order, order_id):
     if _can_modify_order_items(fulfillment_status):
         _sync_order_line_items(so_name, order)
 
-    _sync_fulfillments(so_name, order.get("fulfillments") or [])
+    fulfillments = order.get("fulfillments") or []
+    _sync_fulfillments(so_name, fulfillments)
+    # Delivery status can change on any orders/updated (parcel moved from
+    # IN_TRANSIT to DELIVERED) without any other field changing, so refresh
+    # it here too rather than only at create time.
+    for fulfillment in fulfillments:
+        if fulfillment.get("display_status") or fulfillment.get("shipment_status"):
+            _sync_tracking({**fulfillment, "order_id": order_id})
 
     # Payment or fulfillment landed (orders/paid, orders/fulfilled, or an
     # orders/updated flipping either) -- create the Sales Invoice if the
