@@ -1,11 +1,34 @@
 """
-Refund/return sync -- Shopify refund webhook -> Sales Return (Delivery Note,
+Refund sync -- Shopify refunds/create -> Sales Return (Delivery Note,
 is_return=1) + Credit Note (Sales Invoice, is_return=1) + refund Payment Entry.
 
-Shopify's refund object is the only place a return shows up at all -- there
-is no separate "return" resource on the REST/GraphQL API a merchant creates
-first. refunds/create fires once the merchant (or Shopify Returns flow)
-finalizes a refund, carrying which line items and how much money moved.
+Driven by the REFUND, not by Shopify's Return object. Shopify models three
+separate state machines and this module deliberately only handles the
+middle one:
+
+  1. Return lifecycle  -- returns/request, returns/approve, returns/decline,
+                          returns/cancel, returns/update, returns/process,
+                          returns/close, returns/reopen. The physical
+                          goods: requested, approved, received. GraphQL
+                          Admin API only. NOT SUBSCRIBED -- see below.
+  2. Refund            -- refunds/create. What this module handles: the
+                          financial reversal, which carries the refunded
+                          line items and restock instructions.
+  3. Money settlement  -- each refund's OrderTransaction has its own status
+                          (pending / processing / success / failure).
+                          refunds/create fires "independent from the
+                          movement of money", so a refund existing does not
+                          mean the customer has been paid.
+
+Consequence of only handling (2): a return that is requested, approved, and
+physically received but not yet refunded produces NOTHING here -- no
+document appears in Alaiy OS until money is actually refunded on Shopify.
+For merchants who inspect goods before refunding, the warehouse sees the
+box arrive with no corresponding Alaiy OS record until the refund is
+issued. Subscribing to returns/process (and probably returns/approve) would
+close that gap, but it needs a real decision about what an approved-but-
+unrefunded return should even create -- a draft Sales Return? nothing but a
+flag? -- rather than being wired up by default.
 """
 
 import frappe
@@ -46,12 +69,29 @@ def _process_refund(refund):
     if not so_name or frappe.db.get_value("Sales Order", so_name, "docstatus") != 1:
         return
 
-    # Two separate maps, deliberately. Money is always credited for every
-    # refunded line, but stock only comes back for lines Shopify itself says
-    # to restock -- restock_type "no_restock" (damaged/written off) and
-    # "cancel" (never shipped, so it never left our stock in the first
-    # place) must NOT create a positive stock movement, or we invent
-    # inventory that doesn't physically exist.
+    # Two separate maps, deliberately -- money and stock are different
+    # questions on the same refund.
+    #
+    # credit_qty: every refunded line, always. Money comes back regardless
+    # of what happened to the goods.
+    #
+    # restock_qty: only lines where the goods physically came back to us.
+    # Shopify's restock_type says which:
+    #   "return"         -- goods came back. Restock.
+    #   "legacy_restock" -- same, from the pre-Returns-API flow. Restock.
+    #   "no_restock"     -- damaged/written off, never re-enters stock. Skip.
+    #   "cancel"         -- never shipped, so it never left our stock in the
+    #                       first place; a Sales Return here would invent a
+    #                       unit that was always on the shelf. Skip.
+    #
+    # Note on double-restock: Shopify ALSO adjusts its own inventory for
+    # "return"/"cancel" lines (that's what refund_line_items[].location_id
+    # is for). That is not a reason to skip our Sales Return -- it's the
+    # same physical unit being recorded in two systems that each keep their
+    # own count. Alaiy OS is the stock source of truth here and the
+    # scheduled inventory push (inventory_sync.py) overwrites Shopify's
+    # number with ours, so our count must include the returned unit or the
+    # push would wrongly tell Shopify the return never happened.
     credit_qty = {}
     restock_qty = {}
     for rli in refund.get("refund_line_items") or []:
@@ -73,15 +113,60 @@ def _process_refund(refund):
         if (rli.get("restock_type") or "") in ("return", "legacy_restock"):
             restock_qty[item_code] = restock_qty.get(item_code, 0) + qty
 
-    refund_amount = sum(flt(t.get("amount")) for t in (refund.get("transactions") or [])
-                         if t.get("kind") == "refund" and t.get("status") == "success")
+    refund_amount = _settled_refund_amount(refund)
 
     with _as_administrator():
         _make_sales_return(so_name, restock_qty, refund_id)
         si_name = _make_credit_note(so_name, credit_qty, refund_id)
-        if si_name and refund_amount > 0:
-            _refund_payment_entry(si_name, refund_amount)
+        if si_name:
+            if refund_amount > 0:
+                _refund_payment_entry(si_name, refund_amount)
+            else:
+                _log_unsettled_refund(refund, refund_id, si_name)
     frappe.db.commit()
+
+
+def _settled_refund_amount(refund):
+    """
+    Only money that has actually moved. A Refund object existing does NOT
+    mean the customer has been paid -- Shopify documents refunds/create as
+    firing "independent from the movement of money", and each
+    OrderTransaction carries its own status (pending / processing /
+    success / failure). Booking a Payment Entry for a pending or failed
+    transaction would claim we refunded money we haven't.
+    """
+    return sum(
+        flt(t.get("amount")) for t in (refund.get("transactions") or [])
+        if t.get("kind") == "refund" and t.get("status") == "success"
+    )
+
+
+def _log_unsettled_refund(refund, refund_id, si_name):
+    """
+    Credit Note stands (the sale IS reversed), but no money has settled yet
+    -- so it deliberately sits outstanding rather than being marked paid.
+
+    Shopify does not re-fire refunds/create when a pending transaction
+    later succeeds, so nothing revisits this automatically. The invoice
+    being visibly unpaid is the intended signal: it shows up in
+    Accounts Receivable until someone books the payment, rather than
+    silently looking settled.
+    """
+    statuses = [
+        f"{t.get('kind')}/{t.get('status')}={t.get('amount')}"
+        for t in (refund.get("transactions") or [])
+    ]
+    frappe.log_error(
+        title=f"Shopify: refund {refund_id} has no settled money yet ({si_name} left unpaid)",
+        message=(
+            f"Credit Note {si_name} was created, but no refund transaction has "
+            f"status=success, so no Payment Entry was booked.\n\n"
+            f"Transactions: {statuses or 'none on payload'}\n\n"
+            f"Shopify fires refunds/create independent of money movement and does "
+            f"not re-fire it when a pending transaction later settles. Book the "
+            f"Payment Entry against {si_name} manually once the refund clears."
+        ),
+    )
 
 
 def _trim_return_items(doc, qty_by_item):
