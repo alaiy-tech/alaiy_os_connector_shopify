@@ -48,8 +48,11 @@ def run(dry_run=True):
     updated_status = 0
     no_data_on_shopify = 0
     failed = []
+    total = len(sos)
 
-    for so in sos:
+    for i, so in enumerate(sos, start=1):
+        if i % 50 == 0 or i == total:
+            print(f"  ...{i}/{total} processed (method: {updated_method}, status: {updated_status}, no-data: {no_data_on_shopify}, failed: {len(failed)})")
         try:
             data = client.execute("""
             query GetOrderDeliveryInfo($id: ID!) {
