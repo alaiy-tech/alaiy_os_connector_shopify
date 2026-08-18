@@ -155,6 +155,22 @@ def _sync_order_line_items(so_name: str, order: dict):
             if attempt == 1:
                 raise
             so = frappe.get_doc("Sales Order", so_name)
+        except frappe.LinkExistsError:
+            # Confirmed live: a Sales Order with a Purchase Order already
+            # routed against it (Solist's per-supplier PO routing -- see
+            # order_routing.py) can never be cancelled here, so the whole
+            # webhook crashed and aborted BEFORE any other field on this
+            # order (status, tags, delivery method, etc.) ever got applied
+            # -- a single line-item edit silently broke every other update
+            # to the order from that point on. Line items can't be
+            # reconciled while a PO is linked; log and let the caller's
+            # other field updates (already applied earlier in
+            # _update_order_unlocked) stand rather than crashing them too.
+            frappe.log_error(
+                title=f"Shopify: cannot reconcile line items for {so_name} -- Purchase Order already linked",
+                message=frappe.get_traceback(),
+            )
+            return
     frappe.db.commit()
 
     amended = frappe.copy_doc(so)
