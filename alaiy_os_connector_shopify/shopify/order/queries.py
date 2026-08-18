@@ -184,6 +184,17 @@ mutation BeginOrderEdit($id: ID!) {
           variant {
             legacyResourceId
           }
+          calculatedDiscountAllocations {
+            allocatedAmountSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            discountApplication {
+              targetType
+            }
+          }
         }
       }
     }
@@ -212,6 +223,101 @@ mutation SetOrderEditQuantity($id: ID!, $lineItemId: ID!, $quantity: Int!) {
 _ORDER_EDIT_ADD_VARIANT_MUTATION = """
 mutation AddOrderEditVariant($id: ID!, $variantId: ID!, $quantity: Int!) {
   orderEditAddVariant(id: $id, variantId: $variantId, quantity: $quantity) {
+    calculatedLineItem {
+      id
+    }
+    calculatedOrder {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_ORDER_EDIT_ADD_LINE_ITEM_DISCOUNT_MUTATION = """
+mutation AddOrderEditLineItemDiscount($id: ID!, $lineItemId: ID!, $discount: OrderEditAppliedDiscountInput!) {
+  orderEditAddLineItemDiscount(id: $id, lineItemId: $lineItemId, discount: $discount) {
+    calculatedLineItem {
+      id
+    }
+    calculatedOrder {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+# orderEditRemoveLineItemDiscount is deprecated in favor of
+# orderEditRemoveDiscount -- using the non-deprecated one.
+_ORDER_EDIT_REMOVE_DISCOUNT_MUTATION = """
+mutation RemoveOrderEditDiscount($id: ID!, $discountApplicationId: ID!) {
+  orderEditRemoveDiscount(id: $id, discountApplicationId: $discountApplicationId) {
+    calculatedOrder {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_ORDER_EDIT_ADD_SHIPPING_LINE_MUTATION = """
+mutation AddOrderEditShippingLine($id: ID!, $shippingLine: OrderEditAddShippingLineInput!) {
+  orderEditAddShippingLine(id: $id, shippingLine: $shippingLine) {
+    calculatedShippingLine {
+      id
+    }
+    calculatedOrder {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_ORDER_EDIT_UPDATE_SHIPPING_LINE_MUTATION = """
+mutation UpdateOrderEditShippingLine($id: ID!, $shippingLineId: ID!, $shippingLine: OrderEditUpdateShippingLineInput!) {
+  orderEditUpdateShippingLine(id: $id, shippingLineId: $shippingLineId, shippingLine: $shippingLine) {
+    calculatedOrder {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_ORDER_EDIT_REMOVE_SHIPPING_LINE_MUTATION = """
+mutation RemoveOrderEditShippingLine($id: ID!, $shippingLineId: ID!) {
+  orderEditRemoveShippingLine(id: $id, shippingLineId: $shippingLineId) {
+    calculatedOrder {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_ORDER_EDIT_ADD_CUSTOM_ITEM_MUTATION = """
+mutation AddOrderEditCustomItem($id: ID!, $title: String!, $price: MoneyInput!, $quantity: Int!, $taxable: Boolean, $requiresShipping: Boolean) {
+  orderEditAddCustomItem(id: $id, title: $title, price: $price, quantity: $quantity, taxable: $taxable, requiresShipping: $requiresShipping) {
     calculatedLineItem {
       id
     }
