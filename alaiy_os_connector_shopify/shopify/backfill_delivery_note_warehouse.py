@@ -6,12 +6,22 @@ Delivery Notes had landed on the one shared sh_default_warehouse instead of
 their real supplier warehouse, since order/DN creation never consulted the
 mapping table before that fix.
 
-Read-only against Shopify for the lookup (one call per Delivery Note, via
-its own fulfillment's real Shopify location); writes only the warehouse
+Covers two cases:
+  1. Delivery Notes tagged with a real sh_shopify_fulfillment_id -- look up
+     that exact fulfillment's location directly.
+  2. Delivery Notes with NO fulfillment id (confirmed live: the much larger
+     group, ~1,357 of ~1,458 total -- created via the full-order-fallback
+     path, _create_delivery_note_if_needed, which never tags one specific
+     fulfillment event) -- traced via the linked Sales Order's own Shopify
+     order id, then that order's fulfillments. If the order has exactly one
+     distinct location across its fulfillments, that's used; if it has more
+     than one (a genuinely multi-location order), this is skipped rather
+     than guessed, since there's no way to know which DN row belongs to
+     which location without more work than a one-off backfill should do.
+
+Read-only against Shopify for every lookup; writes only the warehouse
 field on the Delivery Note Item rows and the DN's own set_warehouse -- no
-new documents, no cancel/amend, nothing pushed back to Shopify. A
-Delivery Note whose fulfillment's location has no real mapping entry, or
-whose Shopify fulfillment can't be found, is skipped and left untouched.
+new documents, no cancel/amend, nothing pushed back to Shopify.
 
 Run via bench execute, matching this app's own pull_stock_from_shopify.py/
 fix_conversion_rates.py/backfill_delivery_fields.py convention:
@@ -30,6 +40,42 @@ Apply for real:
 import frappe
 
 
+def _resolve_expected_warehouse_via_fulfillment(client, fulfillment_id, location_map):
+    data = client.execute("""
+    query GetFulfillmentLocation($id: ID!) {
+      fulfillment(id: $id) { location { id } }
+    }
+    """, {"id": f"gid://shopify/Fulfillment/{fulfillment_id}"})
+    fulfillment = (data or {}).get("fulfillment") or {}
+    location_gid = (fulfillment.get("location") or {}).get("id")
+    if not location_gid:
+        return None
+    loc_name = frappe.db.get_value("Shopify Location", {"sh_location_gid": location_gid}, "name")
+    return location_map.get(loc_name) if loc_name else None
+
+
+def _resolve_expected_warehouse_via_order(client, shopify_order_id, location_map):
+    """Returns (warehouse_or_None, multi_location_bool)."""
+    from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
+
+    data = client.execute("""
+    query GetOrderFulfillmentLocations($id: ID!) {
+      order(id: $id) {
+        fulfillments(first: 20) { location { id } }
+      }
+    }
+    """, {"id": _to_gid(shopify_order_id)})
+    fulfillments = ((data or {}).get("order") or {}).get("fulfillments") or []
+    location_gids = {f["location"]["id"] for f in fulfillments if f.get("location")}
+    if not location_gids:
+        return None, False
+    if len(location_gids) > 1:
+        return None, True
+    location_gid = next(iter(location_gids))
+    loc_name = frappe.db.get_value("Shopify Location", {"sh_location_gid": location_gid}, "name")
+    return (location_map.get(loc_name) if loc_name else None), False
+
+
 def run(dry_run=True):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
@@ -38,37 +84,48 @@ def run(dry_run=True):
     location_map = {row.shopify_location: row.warehouse for row in (settings.get("sh_location_map") or [])}
 
     dns = frappe.db.sql("""
-        SELECT name, sh_shopify_fulfillment_id FROM `tabDelivery Note`
-        WHERE docstatus = 1 AND sh_shopify_fulfillment_id IS NOT NULL
-          AND sh_shopify_fulfillment_id != '' AND is_return = 0
-        ORDER BY creation
+        SELECT dn.name, dn.sh_shopify_fulfillment_id,
+               (SELECT dni.against_sales_order FROM `tabDelivery Note Item` dni
+                WHERE dni.parent = dn.name LIMIT 1) as against_sales_order
+        FROM `tabDelivery Note` dn
+        WHERE dn.docstatus = 1 AND dn.is_return = 0
+        ORDER BY dn.creation
     """, as_dict=True)
 
-    print(f"Found {len(dns)} fulfillment-linked Delivery Notes. dry_run={dry_run}")
+    print(f"Found {len(dns)} Delivery Notes total. dry_run={dry_run}")
 
     fixed = 0
     already_correct = 0
     no_mapping = 0
+    multi_location_skipped = 0
     failed = []
     total = len(dns)
 
     for i, dn in enumerate(dns, start=1):
         if i % 50 == 0 or i == total:
-            print(f"  ...{i}/{total} processed (fixed: {fixed}, already correct: {already_correct}, no mapping: {no_mapping}, failed: {len(failed)})")
+            print(
+                f"  ...{i}/{total} processed (fixed: {fixed}, already correct: {already_correct}, "
+                f"no mapping: {no_mapping}, multi-location skipped: {multi_location_skipped}, failed: {len(failed)})"
+            )
         try:
-            data = client.execute("""
-            query GetFulfillmentLocation($id: ID!) {
-              fulfillment(id: $id) { location { id } }
-            }
-            """, {"id": f"gid://shopify/Fulfillment/{dn.sh_shopify_fulfillment_id}"})
-            fulfillment = (data or {}).get("fulfillment") or {}
-            location_gid = (fulfillment.get("location") or {}).get("id")
-            if not location_gid:
+            expected_warehouse = None
+            if dn.sh_shopify_fulfillment_id:
+                expected_warehouse = _resolve_expected_warehouse_via_fulfillment(
+                    client, dn.sh_shopify_fulfillment_id, location_map)
+            elif dn.against_sales_order:
+                shopify_order_id = frappe.db.get_value("Sales Order", dn.against_sales_order, "sh_shopify_order_id")
+                if not shopify_order_id:
+                    no_mapping += 1
+                    continue
+                expected_warehouse, is_multi = _resolve_expected_warehouse_via_order(
+                    client, shopify_order_id, location_map)
+                if is_multi:
+                    multi_location_skipped += 1
+                    continue
+            else:
                 no_mapping += 1
                 continue
 
-            loc_name = frappe.db.get_value("Shopify Location", {"sh_location_gid": location_gid}, "name")
-            expected_warehouse = location_map.get(loc_name) if loc_name else None
             if not expected_warehouse:
                 no_mapping += 1
                 continue
@@ -98,5 +155,5 @@ def run(dry_run=True):
     if not dry_run:
         print(
             f"Fixed {fixed} Delivery Notes. Already correct: {already_correct}. "
-            f"No mapping/skip: {no_mapping}. Failed: {failed}"
+            f"No mapping/skip: {no_mapping}. Multi-location skipped: {multi_location_skipped}. Failed: {failed}"
         )
