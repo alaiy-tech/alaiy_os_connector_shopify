@@ -38,6 +38,29 @@ class TestTrimReturnItems(unittest.TestCase):
         self.assertFalse(_trim_return_items(doc, {"SKU-OTHER": 1}))
         self.assertEqual(doc.items, [])
 
+    def test_same_item_on_two_rows_shares_one_budget(self):
+        """Two rows with the same item_code must not each get the full
+        refunded qty -- that would return twice what Shopify refunded.
+        Happens for real: the same SKU on two order lines, or two unmatched
+        Shopify lines both resolving to the shared placeholder Item."""
+        doc = _Doc([_Row("SKU-1", -5), _Row("SKU-1", -5)])
+        self.assertTrue(_trim_return_items(doc, {"SKU-1": 3}))
+        self.assertEqual(sum(abs(r.qty) for r in doc.items), 3)
+
+    def test_budget_exhausted_drops_later_rows_entirely(self):
+        doc = _Doc([_Row("SKU-1", -2), _Row("SKU-1", -2)])
+        self.assertTrue(_trim_return_items(doc, {"SKU-1": 2}))
+        self.assertEqual(len(doc.items), 1)
+        self.assertEqual(doc.items[0].qty, -2)
+
+    def test_refund_larger_than_returnable_lands_short(self):
+        """make_return_doc already nets off earlier returns, so a refund for
+        more than what's left returns only what's actually available rather
+        than going negative."""
+        doc = _Doc([_Row("SKU-1", -1)])
+        self.assertTrue(_trim_return_items(doc, {"SKU-1": 4}))
+        self.assertEqual(doc.items[0].qty, -1)
+
 
 if __name__ == "__main__":
     unittest.main()
