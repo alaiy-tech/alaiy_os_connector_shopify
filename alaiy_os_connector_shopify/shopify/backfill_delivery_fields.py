@@ -34,15 +34,28 @@ def run(dry_run=True):
 
     client = ShopifyGraphQLClient()
 
+    # An order whose sh_delivery_method is already set (e.g. from a prior
+    # partial backfill run, or set going forward by PR #133's live pull)
+    # was previously excluded here entirely -- but delivery STATUS keeps
+    # changing after that (shipped -> delivered) while method never does,
+    # so a method-only filter permanently blocked ever refreshing status
+    # on an order that already has its method. Select on either field
+    # being incomplete: method blank, OR a linked Delivery Note still has
+    # no delivery status at all.
     sos = frappe.db.sql("""
-        SELECT name, sh_shopify_order_id FROM `tabSales Order`
-        WHERE docstatus = 1
-          AND sh_shopify_order_id IS NOT NULL AND sh_shopify_order_id != ''
-          AND (sh_delivery_method IS NULL OR sh_delivery_method = '')
-        ORDER BY creation
+        SELECT DISTINCT so.name, so.sh_shopify_order_id FROM `tabSales Order` so
+        LEFT JOIN `tabDelivery Note Item` dni ON dni.against_sales_order = so.name
+        LEFT JOIN `tabDelivery Note` dn ON dn.name = dni.parent
+        WHERE so.docstatus = 1
+          AND so.sh_shopify_order_id IS NOT NULL AND so.sh_shopify_order_id != ''
+          AND (
+            (so.sh_delivery_method IS NULL OR so.sh_delivery_method = '')
+            OR (dn.name IS NOT NULL AND (dn.sh_delivery_status IS NULL OR dn.sh_delivery_status = ''))
+          )
+        ORDER BY so.creation
     """, as_dict=True)
 
-    print(f"Found {len(sos)} Sales Orders missing sh_delivery_method. dry_run={dry_run}")
+    print(f"Found {len(sos)} Sales Orders missing sh_delivery_method or sh_delivery_status. dry_run={dry_run}")
 
     updated_method = 0
     updated_status = 0
@@ -82,15 +95,35 @@ def run(dry_run=True):
                 frappe.db.set_value("Sales Order", so.name, "sh_delivery_method", method, update_modified=False)
                 updated_method += 1
 
+            # Most real Delivery Notes (confirmed live: ~93%) were created via
+            # the full-order fallback path and never got tagged with a real
+            # sh_shopify_fulfillment_id -- looking up by that id alone missed
+            # almost every real DN, which is why this backfill's own status
+            # count sat near zero. Fall back to the order's own Delivery
+            # Note(s) when the id lookup finds nothing, same as
+            # backfill_delivery_note_warehouse.py already does for the
+            # identical problem. Only safe when the order has exactly one
+            # fulfillment to report -- with more than one, which specific DN
+            # a status belongs to can't be known without more work than a
+            # backfill should attempt.
+            so_dn_names = None
             for f in fulfillments:
                 status = (f.get("displayStatus") or "").strip()
                 if not status:
                     continue
                 fulfillment_id = str(f.get("legacyResourceId") or "")
-                if not fulfillment_id:
-                    continue
-                dn_name = frappe.db.get_value(
-                    "Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}, "name")
+                dn_name = (
+                    frappe.db.get_value("Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}, "name")
+                    if fulfillment_id else None
+                )
+                if not dn_name and len(fulfillments) == 1:
+                    if so_dn_names is None:
+                        so_dn_names = frappe.get_all(
+                            "Delivery Note Item", filters={"against_sales_order": so.name},
+                            pluck="parent", distinct=True,
+                        )
+                    if len(so_dn_names) == 1:
+                        dn_name = so_dn_names[0]
                 if not dn_name:
                     continue
                 frappe.db.set_value(
