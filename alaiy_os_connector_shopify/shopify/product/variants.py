@@ -82,17 +82,43 @@ def _set_item_variant_cost(item_code: str, variant: dict, settings):
 
 def _variant_available_qty(variant: dict) -> float:
     """
-    Extract available quantity from the inventoryItem.inventoryLevels
-    shape requested in _PRODUCTS_QUERY. Takes the first location Shopify
-    returns -- fine for the common single-location shop this bulk import
-    is aimed at; a multi-location shop's true total is a sum across
-    inventory_sync.py's own inventory push, not this one-time import.
+    Total available quantity across every location Shopify reports for
+    this variant (up to the 10 the query requests) -- confirmed live,
+    taking only the first location undercounted every multi-location
+    item's real total, on top of routing its opening stock into one
+    shared default warehouse regardless of which real supplier it
+    belongs to (see _variant_location_levels for the per-location split
+    opening stock is now created from).
     """
     levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
-    if not levels:
-        return 0
-    quantities = levels[0].get("quantities") or []
-    return flt(quantities[0].get("quantity")) if quantities else 0
+    total = 0
+    for level in levels:
+        quantities = level.get("quantities") or []
+        if quantities:
+            total += flt(quantities[0].get("quantity"))
+    return total
+
+
+def _variant_location_levels(variant: dict) -> list:
+    """
+    [(shopify_location_id, qty), ...] for this variant, one pair per real
+    Shopify location it's stocked at -- lets opening stock be split into
+    each location's own real per-supplier warehouse (via
+    order.warehouse._resolve_warehouse_for_location, the same lookup the
+    fulfillment/Delivery Note path already uses) instead of always
+    landing in one shared default warehouse. A location with no
+    legacyResourceId is skipped -- nothing to resolve a warehouse from.
+    """
+    levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
+    pairs = []
+    for level in levels:
+        location_id = ((level.get("location") or {}).get("legacyResourceId"))
+        if not location_id:
+            continue
+        quantities = level.get("quantities") or []
+        qty = flt(quantities[0].get("quantity")) if quantities else 0
+        pairs.append((str(location_id), qty))
+    return pairs
 
 
 def _variant_inventory_item_payload(variant) -> dict:
