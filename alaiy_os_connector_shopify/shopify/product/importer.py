@@ -205,6 +205,119 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
     return log.name
 
 
+def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
+    """
+    Catch-up import: only products never linked locally at all -- checked
+    by Shopify product id BEFORE any real work (Item lookups, fingerprint
+    diff, update_variants cascade), unlike run_full_product_import which
+    re-checks every already-imported product on every run.
+
+    Confirmed live: on a 14,270-product catalog with ~13,275 already
+    imported, run_full_product_import spent almost all its time
+    re-verifying unchanged products (and re-hitting known crash-classes
+    like the item_name length limit on products it had already seen many
+    times before) just to find the same few hundred genuinely new ones.
+    This skips that entirely -- existing products are never touched, not
+    even for a fingerprint comparison.
+
+    Uses the same "products" sync_type lock as run_full_product_import,
+    so the two can never run concurrently and race on the same Items.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.importer.run_missing_product_import
+    """
+    allowed_statuses = status_map.parse_statuses(statuses)
+    log = load_or_create_log("products", trigger, log_name)
+
+    if has_active_sync("products", exclude_name=log.name):
+        log.status = "skipped"
+        log.finished_at = now_datetime()
+        log.error_message = "Skipped: another products sync is already running."
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        return log.name
+
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    try:
+        existing_ids = {
+            row.sh_shopify_product_id
+            for row in frappe.db.sql(
+                "SELECT DISTINCT sh_shopify_product_id FROM `tabItem` "
+                "WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''",
+                as_dict=True,
+            )
+        }
+        _append_log(log, f"{len(existing_ids)} products already linked locally -- these will be skipped untouched.")
+
+        from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+        client = ShopifyGraphQLClient()
+        variables = {"after": None}
+
+        processed = created = skipped = failed = pages = 0
+        cancelled = False
+
+        for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, variables, ["products"]):
+            if is_cancel_requested(log.name):
+                cancelled = True
+                _append_log(log, f"Stopped by user after {processed} products ({pages} pages).")
+                break
+            pages += 1
+            for node in page_nodes:
+                product_id = str(node.get("legacyResourceId", ""))
+                if product_id in existing_ids:
+                    continue  # already linked -- no fingerprint check, no write, no risk
+                processed += 1
+                if not status_map.import_allows(node.get("status"), allowed_statuses):
+                    skipped += 1
+                    continue
+                try:
+                    was_created, reason = _import_product(node)
+                    if was_created:
+                        created += 1
+                    else:
+                        skipped += 1
+                except Exception as exc:
+                    failed += 1
+                    product_name = node.get("title", "Unknown")
+                    _append_log(log, f"ERROR product={product_name}: {str(exc)[:200]}")
+                    frappe.log_error(
+                        title=f"Shopify: product {product_name} import failed (missing-only run)",
+                        message=frappe.get_traceback(),
+                    )
+
+            log.items_processed = processed
+            log.items_created = created
+            log.pages_done = pages
+            _append_log(log, f"...page {pages}: {processed} new-candidate products seen so far "
+                              f"({created} created, {skipped} skipped, {failed} failed)")
+            log.save(ignore_permissions=True)
+            frappe.db.commit()
+
+        log.status = "cancelled" if cancelled else "success"
+        log.items_processed = processed
+        log.items_created = created
+        log.items_failed = failed
+        log.pages_done = pages
+        log.finished_at = now_datetime()
+        _append_log(log, f"Missing-only import: {created} created, {skipped} skipped, {failed} failed "
+                          f"out of {processed} products not already linked locally.")
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    except Exception:
+        log.status = "failed"
+        log.error_message = frappe.get_traceback()[:500]
+        log.finished_at = now_datetime()
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        raise
+
+    return log.name
+
+
 def _wipe_all_items():
     """
     Full destructive wipe of every previously-imported Shopify Item (any
