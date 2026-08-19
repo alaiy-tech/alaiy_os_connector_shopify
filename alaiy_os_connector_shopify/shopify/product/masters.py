@@ -205,14 +205,20 @@ def _ensure_item_attribute(attribute_name: str, values: list):
     # crashes doc.save() on EVERY future touch of this attribute, for any
     # value, not just the duplicated one -- so this must be cleaned up here,
     # not just prevented going forward.
+    #
+    # Compared via .title() throughout, matching ERPNext's own
+    # validate_duplication exactly -- confirmed live, an exact-string
+    # dedup here still let "brown" and "Brown" both through as "different"
+    # values, which ERPNext then rejected as the same duplicate on save.
     seen_values = set()
     deduped_rows = []
     changed = False
     for row in (doc.item_attribute_values or []):
-        if row.attribute_value in seen_values:
+        key = (row.attribute_value or "").title()
+        if key in seen_values:
             changed = True
             continue
-        seen_values.add(row.attribute_value)
+        seen_values.add(key)
         deduped_rows.append(row)
     if changed:
         doc.item_attribute_values = deduped_rows
@@ -228,11 +234,15 @@ def _ensure_item_attribute(attribute_name: str, values: list):
     existing_abbrs = {row.abbr.upper() for row in (doc.item_attribute_values or [])}
     changed = False
     for value in values:
-        if not value or value in existing_values:
+        # existing_values holds .title()-cased keys (see the dedup above) --
+        # compare the same way, or "brown" slips through as new when
+        # "Brown" is already registered, then crashes on save exactly like
+        # the stale-duplicate case this function already self-heals.
+        if not value or value.title() in existing_values:
             continue
         abbr = _make_attribute_abbr(value, existing_abbrs)
         doc.append("item_attribute_values", {"attribute_value": value, "abbr": abbr})
-        existing_values.add(value)
+        existing_values.add(value.title())
         existing_abbrs.add(abbr.upper())
         changed = True
 
