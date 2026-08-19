@@ -783,19 +783,19 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
             name = opt.get("name")
             val = opt.get("value")
             if name and val:
-                _ensure_item_attribute(name, [val])
-                v_item.append("attributes", {"attribute": name, "attribute_value": val})
+                canonical = _ensure_item_attribute(name, [val])
+                v_item.append("attributes", {"attribute": name, "attribute_value": canonical.get(val.title(), val)})
     else:
         for i, name in enumerate(template_attrs):
             opt_val = variant.get(f"option{i+1}") or (variant.get("title") if i == 0 else "Default")
             if opt_val:
-                _ensure_item_attribute(name, [opt_val])
-                v_item.append("attributes", {"attribute": name, "attribute_value": opt_val})
+                canonical = _ensure_item_attribute(name, [opt_val])
+                v_item.append("attributes", {"attribute": name, "attribute_value": canonical.get(opt_val.title(), opt_val)})
     if not v_item.attributes:
         for name in (template_attrs or ["Title"]):
             val = variant.get("title") or "Default"
-            _ensure_item_attribute(name, [val])
-            v_item.append("attributes", {"attribute": name, "attribute_value": val})
+            canonical = _ensure_item_attribute(name, [val])
+            v_item.append("attributes", {"attribute": name, "attribute_value": canonical.get(val.title(), val)})
 
     default_wh = _default_warehouse_row(settings)
     if default_wh:
@@ -1056,8 +1056,9 @@ def _import_product_with_variants(
             if value not in values_by_option[name]:
                 values_by_option[name].append(value)
 
+    canonical_by_option = {}
     for name in option_names:
-        _ensure_item_attribute(name, values_by_option[name])
+        canonical_by_option[name] = _ensure_item_attribute(name, values_by_option[name])
 
     # Some variant SKUs may already exist under a template created by
     # another connector (e.g. Cloudstore) before Shopify ever linked
@@ -1208,7 +1209,8 @@ def _import_product_with_variants(
         variant_item.include_item_in_buying = 1
 
         for name, value in resolved.items():
-            variant_item.append("attributes", {"attribute": name, "attribute_value": value})
+            canonical = canonical_by_option.get(name, {})
+            variant_item.append("attributes", {"attribute": name, "attribute_value": canonical.get(value.title(), value)})
 
         # Link to Shopify
         variant_item.sh_shopify_product_id = product_id

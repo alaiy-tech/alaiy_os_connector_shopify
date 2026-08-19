@@ -310,6 +310,25 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     try:
         with _as_administrator():
             item.save()
+    except frappe.ValidationError as e:
+        # Same class of bug as importer.py's _apply_existing_template_content:
+        # ERPNext's own Item.on_update cascades this template's is_stock_item
+        # (always 0 -- templates aren't stocked) onto every variant via
+        # update_variants(), and refuses when a variant already has real
+        # stock transactions against it. Nothing here is actually wrong,
+        # ERPNext's blanket cascade is just too strict for the
+        # template/variant split this connector uses. Confirmed live: this
+        # crashed the products/update webhook job outright over a stock
+        # flag nobody asked to change -- the import path already catches
+        # this exact error, the webhook path never did.
+        if "Maintain Stock" not in str(e):
+            raise
+        frappe.log_error(
+            title=f"Shopify: product webhook could not update {item.name} -- variant stock-flag conflict",
+            message=frappe.get_traceback(),
+        )
+        frappe.db.rollback()
+        return
     except frappe.TimestampMismatchError:
         # Confirmed live: this Item got saved by something else (our own
         # outbound push, a sibling-variant cascade, another webhook for

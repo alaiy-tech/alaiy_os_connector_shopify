@@ -184,13 +184,22 @@ def _make_attribute_abbr(value: str, existing_abbrs: set) -> str:
     return abbr
 
 
-def _ensure_item_attribute(attribute_name: str, values: list):
+def _ensure_item_attribute(attribute_name: str, values: list) -> dict:
     """
     Ensure an Item Attribute exists with this name, and that every value
     in `values` is registered in its allowed Item Attribute Value list --
     Alaiy OS rejects a variant whose attribute_value isn't pre-registered
     on the attribute, separately from the template needing the attribute
     declared at all.
+
+    Returns a {title-cased key: actual registered casing} map. Confirmed
+    live: the dedup below treats "brown"/"Brown" as the same value and
+    keeps whichever casing was already registered -- a caller that then
+    writes the variant's own attribute_value using the RAW incoming
+    casing (not the registered one) gets InvalidItemAttributeValueError,
+    since ERPNext's variant validation is an exact-string match against
+    the registered list, not case-insensitive like the dedup above. Callers
+    must look up the canonical casing here before setting a variant's value.
     """
     if frappe.db.exists("Item Attribute", attribute_name):
         doc = frappe.get_doc("Item Attribute", attribute_name)
@@ -210,20 +219,20 @@ def _ensure_item_attribute(attribute_name: str, values: list):
     # validate_duplication exactly -- confirmed live, an exact-string
     # dedup here still let "brown" and "Brown" both through as "different"
     # values, which ERPNext then rejected as the same duplicate on save.
-    seen_values = set()
+    canonical = {}  # title-cased key -> actual registered casing
     deduped_rows = []
     changed = False
     for row in (doc.item_attribute_values or []):
         key = (row.attribute_value or "").title()
-        if key in seen_values:
+        if key in canonical:
             changed = True
             continue
-        seen_values.add(key)
+        canonical[key] = row.attribute_value
         deduped_rows.append(row)
     if changed:
         doc.item_attribute_values = deduped_rows
 
-    existing_values = seen_values
+    existing_values = set(canonical.keys())
     # Uppercased on purpose: _make_attribute_abbr always generates an
     # uppercase candidate, but a legacy row can carry a lowercase abbr
     # (confirmed live -- attribute_value "ideal" stored with abbr "ideal").
@@ -238,12 +247,15 @@ def _ensure_item_attribute(attribute_name: str, values: list):
         # compare the same way, or "brown" slips through as new when
         # "Brown" is already registered, then crashes on save exactly like
         # the stale-duplicate case this function already self-heals.
-        if not value or value.title() in existing_values:
+        if not value:
+            continue
+        if value.title() in existing_values:
             continue
         abbr = _make_attribute_abbr(value, existing_abbrs)
         doc.append("item_attribute_values", {"attribute_value": value, "abbr": abbr})
         existing_values.add(value.title())
         existing_abbrs.add(abbr.upper())
+        canonical[value.title()] = value
         changed = True
 
     if doc.is_new():
@@ -254,6 +266,8 @@ def _ensure_item_attribute(attribute_name: str, values: list):
         doc.flags.ignore_permissions = True
         doc.save()
         frappe.db.commit()
+
+    return canonical
 
 
 def _ensure_uom(name: str) -> str:
