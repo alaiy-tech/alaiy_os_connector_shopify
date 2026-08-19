@@ -86,7 +86,7 @@ def run(dry_run=True, slice_index=None, slices=None):
     skipped_no_mapped_location = []
 
     for i, row in enumerate(rows, start=1):
-        if i % 25 == 0 or i == total:
+        if i % 100 == 0 or i == total:
             print(f"...{i}/{total} processed ({len(moved)} to fix, {len(correct)} already correct, "
                   f"{len(skipped_no_mapped_location)} no mapped location)", flush=True)
 
