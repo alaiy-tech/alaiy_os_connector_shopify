@@ -484,15 +484,25 @@ def _update_existing_product(entity, node: dict) -> tuple:
 
 
 def _warn_if_truncated(node: dict):
-    """Log when a product has more variants or images than the query asked for.
+    """Log when a product has more variants than the query asked for.
 
-    The query caps variants at 100 and images at 10 with no pagination, so a
-    product past either cap loses the remainder and Shopify reports no error --
-    the import looks entirely successful. variantsCount and mediaCount are the
-    store's own totals, so comparing them against what arrived turns a silent
-    partial import into something findable in the Error Log.
+    The query caps variants at 100 with no pagination, so a product past
+    that cap loses the remainder and Shopify reports no error -- the
+    import looks entirely successful. variantsCount is the store's own
+    total, so comparing it against what arrived turns a silent partial
+    import into something findable in the Error Log.
 
-    Reported, not fixed: following those cursors is a separate change.
+    Reported, not fixed: following the cursor to fetch the rest is a
+    separate change.
+
+    Deliberately doesn't do the same comparison for images: mediaCount
+    includes video and 3D models, which this connector never imports at
+    all, and the query has no way to learn how many of that total were
+    actually images. Confirmed live: this fired "images truncated" on
+    any product that simply had a video attached, correctly imported
+    every real image, and still flooded the Error Log as if something
+    was lost. A warning that fires on normal behavior is worse than no
+    warning.
     """
     product = node.get("title") or node.get("legacyResourceId") or "unknown product"
 
@@ -503,16 +513,6 @@ def _warn_if_truncated(node: dict):
             title="Shopify import: variants truncated",
             message=f"{product}: Shopify reports {total_variants} variants, the query "
                     f"returned {got_variants}. The remainder was not imported.",
-        )
-
-    total_media = (node.get("mediaCount") or {}).get("count")
-    got_images = len((node.get("images") or {}).get("nodes") or [])
-    if total_media and got_images and total_media > got_images:
-        frappe.log_error(
-            title="Shopify import: images truncated",
-            message=f"{product}: Shopify reports {total_media} media item(s), the query "
-                    f"returned {got_images} image(s). Note mediaCount includes video and "
-                    f"3D models, which this connector does not import at all.",
         )
 
 
