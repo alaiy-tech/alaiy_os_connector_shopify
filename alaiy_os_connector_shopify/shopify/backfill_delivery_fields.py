@@ -1,9 +1,15 @@
 """
-One-off: backfill sh_delivery_method (Sales Order) and sh_delivery_status
-(Delivery Note) for orders that already exist locally but never got these
-fields -- either because they predate PR #133, or because the order-update
-webhook silently crashed before reaching them (see the linked-Purchase-Order
-fix in line_items.py).
+One-off: backfill sh_delivery_method (Sales Order), sh_delivery_status, and
+carrier tracking (Delivery Note) for orders that already exist locally but
+never got these fields -- either because they predate PR #133, or because
+the order-update webhook silently crashed before reaching them (see the
+linked-Purchase-Order fix in line_items.py), or because they shipped in the
+window before this site's webhooks were correctly registered.
+
+Tracking is written to sh_tracking_number/sh_tracking_company -- the
+carrier-agnostic fields, NOT fedex_tracking_number, which is specific to
+this connector's own FedEx label-creation flow. Confirmed live: real
+shipments here carry USPS and UPS tracking too, not just FedEx.
 
 Read-only against Shopify -- pulls each order's current real data and writes
 ONLY the two fields below, on the EXISTING Sales Order / Delivery Note.
@@ -36,12 +42,12 @@ def run(dry_run=True):
 
     # An order whose sh_delivery_method is already set (e.g. from a prior
     # partial backfill run, or set going forward by PR #133's live pull)
-    # was previously excluded here entirely -- but delivery STATUS keeps
-    # changing after that (shipped -> delivered) while method never does,
-    # so a method-only filter permanently blocked ever refreshing status
-    # on an order that already has its method. Select on either field
-    # being incomplete: method blank, OR a linked Delivery Note still has
-    # no delivery status at all.
+    # was previously excluded here entirely -- but delivery STATUS and
+    # TRACKING keep changing/filling in after that while method never does,
+    # so a method-only filter permanently blocked ever refreshing them on
+    # an order that already has its method. Select on any of the three
+    # fields being incomplete: method blank, a linked Delivery Note has no
+    # delivery status, or no tracking number.
     sos = frappe.db.sql("""
         SELECT DISTINCT so.name, so.sh_shopify_order_id FROM `tabSales Order` so
         LEFT JOIN `tabDelivery Note Item` dni ON dni.against_sales_order = so.name
@@ -51,21 +57,23 @@ def run(dry_run=True):
           AND (
             (so.sh_delivery_method IS NULL OR so.sh_delivery_method = '')
             OR (dn.name IS NOT NULL AND (dn.sh_delivery_status IS NULL OR dn.sh_delivery_status = ''))
+            OR (dn.name IS NOT NULL AND dn.is_return = 0 AND (dn.sh_tracking_number IS NULL OR dn.sh_tracking_number = ''))
           )
         ORDER BY so.creation
     """, as_dict=True)
 
-    print(f"Found {len(sos)} Sales Orders missing sh_delivery_method or sh_delivery_status. dry_run={dry_run}")
+    print(f"Found {len(sos)} Sales Orders missing sh_delivery_method, sh_delivery_status, or tracking. dry_run={dry_run}")
 
     updated_method = 0
     updated_status = 0
+    updated_tracking = 0
     no_data_on_shopify = 0
     failed = []
     total = len(sos)
 
     for i, so in enumerate(sos, start=1):
         if i % 50 == 0 or i == total:
-            print(f"  ...{i}/{total} processed (method: {updated_method}, status: {updated_status}, no-data: {no_data_on_shopify}, failed: {len(failed)})")
+            print(f"  ...{i}/{total} processed (method: {updated_method}, status: {updated_status}, tracking: {updated_tracking}, no-data: {no_data_on_shopify}, failed: {len(failed)})")
         try:
             data = client.execute("""
             query GetOrderDeliveryInfo($id: ID!) {
@@ -74,6 +82,7 @@ def run(dry_run=True):
                 fulfillments(first: 10) {
                   legacyResourceId
                   displayStatus
+                  trackingInfo { number company }
                 }
               }
             }
@@ -130,6 +139,19 @@ def run(dry_run=True):
                     "Delivery Note", dn_name, "sh_delivery_status", status.upper(), update_modified=False)
                 updated_status += 1
 
+                # Tracking is real per-fulfillment data, same as status --
+                # never overwrite a number already recorded (e.g. a real
+                # FedEx label already on file), only fill in a genuinely
+                # blank one.
+                tracking = (f.get("trackingInfo") or [{}])[0]
+                number = (tracking.get("number") or "").strip()
+                if number and not frappe.db.get_value("Delivery Note", dn_name, "sh_tracking_number"):
+                    frappe.db.set_value("Delivery Note", dn_name, {
+                        "sh_tracking_number": number,
+                        "sh_tracking_company": (tracking.get("company") or "").strip(),
+                    }, update_modified=False)
+                    updated_tracking += 1
+
             frappe.db.commit()
         except Exception:
             failed.append(so.name)
@@ -141,7 +163,8 @@ def run(dry_run=True):
     if not dry_run:
         print(
             f"Updated sh_delivery_method on {updated_method} Sales Orders, "
-            f"sh_delivery_status on {updated_status} Delivery Notes. "
+            f"sh_delivery_status on {updated_status} Delivery Notes, "
+            f"tracking on {updated_tracking} Delivery Notes. "
             f"{no_data_on_shopify} orders had no real data on Shopify (left blank). "
             f"Failed: {failed}"
         )
