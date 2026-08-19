@@ -29,14 +29,16 @@ import frappe
 _CATALOG_QUERY = """
 query Catalog($first: Int!, $after: String) {
   products(first: $first, after: $after) {
-    nodes {
-      legacyResourceId
-      status
-      totalInventory
-      descriptionHtml
-      featuredImage { id }
-      variants(first: 250) {
-        nodes { legacyResourceId sku price image { id } }
+    edges {
+      node {
+        legacyResourceId
+        status
+        totalInventory
+        descriptionHtml
+        featuredImage { id }
+        variants(first: 250) {
+          nodes { legacyResourceId sku price image { id } }
+        }
       }
     }
     pageInfo { hasNextPage endCursor }
