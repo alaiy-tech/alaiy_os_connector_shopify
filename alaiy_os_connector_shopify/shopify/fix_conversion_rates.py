@@ -2,7 +2,7 @@
 One-off: correct conversion_rate=1.0 on USD Sales Orders (+ their Delivery
 Notes and Sales Invoices) that were wrongly stamped with a real exchange
 rate on a same-currency (USD order, USD company) order. Traced live on
-Solist: ~1,481 orders created 2026-07-31..2026-08-03 carry a conversion_rate
+a real site: ~1,481 orders created 2026-07-31..2026-08-03 carry a conversion_rate
 around 89-95 instead of 1.0 -- ERPNext's own currency.py already guards
 `if from_currency == to_currency: return 1.0` and Company.default_currency
 was never actually changed (checked Version history), so the exact cause

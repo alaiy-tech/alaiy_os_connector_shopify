@@ -157,8 +157,8 @@ def _sync_order_line_items(so_name: str, order: dict):
             so = frappe.get_doc("Sales Order", so_name)
         except frappe.LinkExistsError:
             # Confirmed live: a Sales Order with a Purchase Order already
-            # routed against it (Solist's per-supplier PO routing -- see
-            # order_routing.py) can never be cancelled here, so the whole
+            # routed against it (a client's own per-supplier PO routing)
+            # can never be cancelled here, so the whole
             # webhook crashed and aborted BEFORE any other field on this
             # order (status, tags, delivery method, etc.) ever got applied
             # -- a single line-item edit silently broke every other update

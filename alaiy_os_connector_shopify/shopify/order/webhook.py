@@ -75,7 +75,7 @@ def _cancel_sales_order(so_name, _timestamp_retry_done=False, _po_retry_done=Fal
       between -- always reload and retry once against the fresh copy
       rather than treating a real, expected race as a hard failure.
     - LinkExistsError: a Purchase Order already routed against this order
-      (Solist's per-supplier PO routing) blocks the Sales Order's own
+      (a client's own per-supplier PO routing) blocks the Sales Order's own
       cancel. If the PO is still safe to cancel itself (nothing
       received/billed against it yet), cancel it first and retry once;
       if the PO is already past that point, don't guess -- log it for a

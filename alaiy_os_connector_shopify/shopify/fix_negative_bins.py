@@ -3,9 +3,8 @@ One-off: zero out every Bin row with a negative actual_qty. Negative
 on-hand stock is never a real, legitimate state -- confirmed live, 720
 such rows exist across several warehouses, predating this session's
 work (the pattern -- small negative counts on totally unrelated items
-across Stores - TS, Finished Goods - TS, Timepiece Collection - TS)
-points to a historical data issue, not something caused by any script
-run today.
+across multiple, otherwise-unconnected warehouses) points to a
+historical data issue, not something caused by any script run today.
 
 One Stock Reconciliation per warehouse, correcting every negative item
 in it to 0. Read-only against Shopify (none needed -- this only fixes

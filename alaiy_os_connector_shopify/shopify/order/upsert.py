@@ -158,7 +158,7 @@ def _upsert_order_unlocked(order, order_id):
 
     conversion_rate = get_order_exchange_rate(order_currency, company_currency, order_date)
     if order_currency == company_currency and conversion_rate != 1.0:
-        # Caught live on Solist: ~1,481 same-currency orders got stamped with
+        # Caught live on a real site: ~1,481 same-currency orders got stamped with
         # a real exchange rate instead of 1.0 during a since-unexplained
         # window, silently blocking every refund/return on them months
         # later. get_order_exchange_rate's own same-currency guard should
