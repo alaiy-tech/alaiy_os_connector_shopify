@@ -80,7 +80,7 @@ query PullProducts($after: String) {
                   unit
                 }
               }
-              inventoryLevels(first: 10) {
+              inventoryLevels(first: 3) {
                 nodes {
                   location {
                     legacyResourceId

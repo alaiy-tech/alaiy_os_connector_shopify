@@ -83,11 +83,13 @@ def _set_item_variant_cost(item_code: str, variant: dict, settings):
 def _variant_available_qty(variant: dict) -> float:
     """
     Total available quantity across every location Shopify reports for
-    this variant (up to the 10 the query requests) -- confirmed live,
-    taking only the first location undercounted every multi-location
-    item's real total, on top of routing its opening stock into one
-    shared default warehouse regardless of which real supplier it
-    belongs to (see _variant_location_levels for the per-location split
+    this variant (up to the 3 the query requests -- asking for more than
+    that per variant on a 100-variant product pushed Shopify's query
+    cost over its 1000 hard limit, confirmed live). Taking only the
+    first location undercounted every multi-location item's real total,
+    on top of routing its opening stock into one shared default
+    warehouse regardless of which real supplier it belongs to (see
+    _variant_location_levels for the per-location split
     opening stock is now created from).
     """
     levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
