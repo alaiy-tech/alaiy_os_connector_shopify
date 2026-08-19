@@ -104,8 +104,22 @@ def run(dry_run=True, slice_index=None, slices=None):
         # right now, with its real quantity -- an item can legitimately be
         # correct in more than one warehouse if Shopify tracks it at more
         # than one location.
-        matched = {warehouse_of_location[loc]: int(qty or 0)
-                   for loc, qty in locations if loc in warehouse_of_location}
+        #
+        # Shopify itself can report negative available qty (oversold --
+        # "continue selling when out of stock" was on for that variant).
+        # Alaiy OS doesn't allow negative stock by default; clamp to 0
+        # here too, same as pull_stock_from_shopify.py already does --
+        # confirmed live, this was missing here and wrote real negative
+        # quantities into several warehouses.
+        matched = {}
+        for loc, qty in locations:
+            if loc not in warehouse_of_location:
+                continue
+            qty = int(qty or 0)
+            if qty < 0:
+                print(f"NOTE {row.item_code}/{warehouse_of_location[loc]}: Shopify qty is negative ({qty}), clamping to 0", flush=True)
+                qty = 0
+            matched[warehouse_of_location[loc]] = qty
 
         if not matched:
             # Shopify has no mapped location at all for this item -- can't
