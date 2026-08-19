@@ -198,7 +198,26 @@ def _ensure_item_attribute(attribute_name: str, values: list):
         doc = frappe.new_doc("Item Attribute")
         doc.attribute_name = attribute_name
 
-    existing_values = {row.attribute_value for row in (doc.item_attribute_values or [])}
+    # Self-heal a stale duplicate row already sitting in the DB (confirmed
+    # live -- two concurrent syncs can each read "not yet present" before
+    # either commits, since a child table has no unique constraint, so both
+    # inserts succeed). Once that exists, ERPNext's own validate_duplication
+    # crashes doc.save() on EVERY future touch of this attribute, for any
+    # value, not just the duplicated one -- so this must be cleaned up here,
+    # not just prevented going forward.
+    seen_values = set()
+    deduped_rows = []
+    changed = False
+    for row in (doc.item_attribute_values or []):
+        if row.attribute_value in seen_values:
+            changed = True
+            continue
+        seen_values.add(row.attribute_value)
+        deduped_rows.append(row)
+    if changed:
+        doc.item_attribute_values = deduped_rows
+
+    existing_values = seen_values
     # Uppercased on purpose: _make_attribute_abbr always generates an
     # uppercase candidate, but a legacy row can carry a lowercase abbr
     # (confirmed live -- attribute_value "ideal" stored with abbr "ideal").
