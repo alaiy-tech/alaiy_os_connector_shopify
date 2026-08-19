@@ -38,6 +38,16 @@ from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _se
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 from alaiy_os_connector_shopify.shopify.product import status as status_map
 
+_ITEM_NAME_MAX_LENGTH = 140
+
+
+def _fit_item_name(name: str) -> str:
+    """Item.item_name is a plain Data field (140-char DB limit) -- a long
+    real product title (confirmed live) crashes the whole product's
+    import over a display name, same class of bug already fixed for
+    sh_seo_title and downloaded image filenames."""
+    return (name or "")[:_ITEM_NAME_MAX_LENGTH]
+
 
 def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
                             statuses=None):
@@ -641,7 +651,7 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
     template = frappe.get_doc("Item", template_name)
     v_item = frappe.new_doc("Item")
     v_item.item_code = sku
-    v_item.item_name = f"{template.item_name} - {variant.get('title') or v_id}"
+    v_item.item_name = _fit_item_name(f"{template.item_name} - {variant.get('title') or v_id}")
     v_item.variant_of = template_name
     v_item.item_group = template.item_group
     v_item.brand = template.brand
@@ -798,7 +808,7 @@ def _import_simple_product(
     # nothing distinguishing to add here, so just use the product title.
     item = frappe.new_doc("Item")
     item.item_code = item_name
-    item.item_name = title
+    item.item_name = _fit_item_name(title)
     item.description = description
     item.item_group = _ensure_item_group(item_group)
     # Shopify's real productType, NOT whatever won for item_group -- those
@@ -982,7 +992,7 @@ def _import_product_with_variants(
         # Create template Item
         template = frappe.new_doc("Item")
         template.item_code = template_name
-        template.item_name = title
+        template.item_name = _fit_item_name(title)
         template.description = description
         template.item_group = _ensure_item_group(item_group)
         # See _import_simple_product's matching comment: real productType,
@@ -1074,7 +1084,7 @@ def _import_product_with_variants(
 
         variant_item = frappe.new_doc("Item")
         variant_item.item_code = variant_name
-        variant_item.item_name = f"{title} - {variant_label}"
+        variant_item.item_name = _fit_item_name(f"{title} - {variant_label}")
         variant_item.variant_of = template_name
         variant_item.item_group = template.item_group
         variant_item.brand = template.brand
