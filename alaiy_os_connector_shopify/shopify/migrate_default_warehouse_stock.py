@@ -134,6 +134,19 @@ def run(dry_run=True, slice_index=None, slices=None):
         # on their own pass through this same loop, since every Bin row
         # is checked independently).
         real_warehouse, real_qty = next(iter(matched.items()))
+
+        # A previous run (or a concurrent slice covering the real
+        # warehouse's own row) may have already fixed both sides -- this
+        # wrong-warehouse row already at 0, the real warehouse already at
+        # the right number. ERPNext's Stock Reconciliation throws
+        # EmptyStockReconciliationItemsError if every row it's given is a
+        # genuine no-op, confirmed live -- check first rather than crash.
+        current_real_qty = int(frappe.db.get_value(
+            "Bin", {"item_code": row.item_code, "warehouse": real_warehouse}, "actual_qty") or 0)
+        if int(row.current_qty or 0) == 0 and current_real_qty == real_qty:
+            correct.append(row.item_code)
+            continue
+
         print(f"  {row.item_code}: {row.current_warehouse}={row.current_qty} -> 0, "
               f"belongs in {real_warehouse} -> {real_qty}", flush=True)
         moved.append(row.item_code)
