@@ -1285,7 +1285,12 @@ def _apply_product_meta(item, node: dict):
     # a product's public URL from here); publishedAt distinguishes "never
     # published" from "published and later hidden", which status alone does not.
     if node.get("handle"):
-        item.sh_shopify_handle = node["handle"]
+        # Data field, 140-char DB limit -- confirmed live, a long real
+        # product title makes Shopify's own auto-generated handle exceed
+        # it too, crashing item.insert() over a slug field on brand-new
+        # products (the update path never hits this -- the handle is only
+        # ever set once, here, at create time).
+        item.sh_shopify_handle = node["handle"][:_ITEM_NAME_MAX_LENGTH]
     if node.get("publishedAt"):
         item.sh_published_at = frappe.utils.get_datetime(node["publishedAt"]).replace(tzinfo=None)
 
