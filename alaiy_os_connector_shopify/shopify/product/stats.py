@@ -103,13 +103,16 @@ def _pull_catalog(client, progress_every=10):
 
 
 def _local_side():
-    """Every Item under the SH- upload convention -- templates (has_variants=1
-    or no variant_of) and real variants (variant_of set), plus every
+    """Real Items with the sh_shopify_product_id set (item_code is not a
+    reliable signal -- confirmed live, most items on this site use raw
+    SKUs as item_code, not the SH- convention this file originally
+    assumed, which undercounted the local side by over 90%), plus every
     Shopify Product Listing / Shopify Listing Variant row."""
     items = frappe.db.sql("""
         SELECT item_code, has_variants, variant_of, sh_shopify_product_id, sh_shopify_variant_id
         FROM `tabItem`
-        WHERE item_code LIKE 'SH-%'
+        WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''
+           OR sh_shopify_variant_id IS NOT NULL AND sh_shopify_variant_id != ''
     """, as_dict=True)
 
     listings = frappe.db.count("Shopify Product Listing")
@@ -178,7 +181,7 @@ def run(show=10):
     print(f"  Shopify Listing Variant rows:       {listing_variants}")
     print(f"  templates never pushed (pending export): {pending_export}")
 
-    print(f"\nITEM_CODE SHAPES (all {len(items)} SH- items)")
+    print(f"\nITEM_CODE SHAPES (all {len(items)} Shopify-linked items)")
     shape_counts = collections.Counter(_classify_item_code(i.item_code) for i in items)
     for shape, count in shape_counts.most_common():
         print(f"    {shape:<26} {count}")
