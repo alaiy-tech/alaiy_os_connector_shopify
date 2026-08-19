@@ -82,7 +82,7 @@ def run(dry_run=True):
                 fulfillments(first: 10) {
                   legacyResourceId
                   displayStatus
-                  trackingInfo { number company }
+                  trackingInfo { number company url }
                 }
               }
             }
@@ -149,6 +149,7 @@ def run(dry_run=True):
                     frappe.db.set_value("Delivery Note", dn_name, {
                         "sh_tracking_number": number,
                         "sh_tracking_company": (tracking.get("company") or "").strip(),
+                        "sh_tracking_url": (tracking.get("url") or "").strip(),
                     }, update_modified=False)
                     updated_tracking += 1
 
