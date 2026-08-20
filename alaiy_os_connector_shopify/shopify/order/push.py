@@ -264,13 +264,24 @@ def push_order_create(sales_order: str):
 def push_order_cancel(order_id: str, sales_order: str):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
+    # restock=False tells Shopify this inventory is gone for good (a
+    # write-off) -- it releases the order's committed reservation WITHOUT
+    # returning the quantity to available/on-hand, permanently reducing
+    # on-hand by the order's qty. Confirmed live: cancelling a Sales Order
+    # that was never fulfilled drove a real item's on-hand to -1 this way.
+    # An order with no submitted Delivery Note never actually shipped, so
+    # cancelling it must restock -- only an order that already shipped
+    # (a real, physical loss) should ever pass restock=False.
+    has_shipped = bool(frappe.db.exists(
+        "Delivery Note Item", {"against_sales_order": sales_order, "docstatus": 1}
+    ))
     try:
         client = ShopifyGraphQLClient()
         data = client.execute(_ORDER_CANCEL_MUTATION, {
             "orderId": _to_gid(order_id),
             "reason": "OTHER",
             "refund": False,
-            "restock": False,
+            "restock": not has_shipped,
             "notifyCustomer": False,
         })
         errors = (data.get("orderCancel") or {}).get("orderCancelUserErrors") or []
