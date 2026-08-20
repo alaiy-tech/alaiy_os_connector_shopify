@@ -49,10 +49,25 @@ def run(dry_run=True):
 
         company = frappe.db.get_value("Warehouse", warehouse, "company") or frappe.defaults.get_global_default("company")
         try:
+            # Re-check each item's LIVE actual_qty right before building the
+            # reconciliation -- the initial query's snapshot can go stale by
+            # now (a concurrent job, or an earlier warehouse in this same
+            # run, may have already zeroed it). Including an already-0 item
+            # makes ERPNext's own remove_items_with_no_change() strip it;
+            # if every item in the batch is stale that empties the whole
+            # reconciliation and submit() throws EmptyStockReconciliationItemsError.
+            still_negative = [
+                r for r in items
+                if (frappe.db.get_value("Bin", {"item_code": r.item_code, "warehouse": warehouse}, "actual_qty") or 0) < 0
+            ]
+            if not still_negative:
+                print(f"  all {len(items)} item(s) already non-negative, skipping", flush=True)
+                continue
+
             sr = frappe.new_doc("Stock Reconciliation")
             sr.company = company
             sr.purpose = "Stock Reconciliation"
-            for r in items:
+            for r in still_negative:
                 sr.append("items", {
                     "item_code": r.item_code,
                     "warehouse": warehouse,
@@ -63,8 +78,8 @@ def run(dry_run=True):
             sr.insert()
             sr.submit()
             frappe.db.commit()
-            fixed += len(items)
-            print(f"  Applied: {sr.name}", flush=True)
+            fixed += len(still_negative)
+            print(f"  Applied: {sr.name} ({len(still_negative)} of {len(items)} still negative)", flush=True)
         except Exception:
             frappe.db.rollback()
             failed.append(warehouse)

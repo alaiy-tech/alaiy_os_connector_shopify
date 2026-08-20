@@ -404,7 +404,13 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
         listing.sh_shopify_product_id = product_id
         listing_dirty = True
     for variant in (product.get("variants") or []):
-        sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings)
+        # A single-variant product's Item IS the sellable item, not a
+        # template -- treating item.name as a template to create a child
+        # variant under crashes ERPNext's own validate_variant() ("Item ...
+        # is not a template item.") the moment Shopify sends any update for
+        # one of these (e.g. a plain "Default Title" watch, one SKU, no
+        # real variants).
+        sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings) if item.has_variants else item.name
         row = None
         if listing:
             row = next((r for r in listing.variants if r.item_variant == sku), None)

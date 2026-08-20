@@ -345,10 +345,12 @@ def push_order_paid(order_id: str, sales_invoice: str):
         data = client.execute(_ORDER_MARK_PAID_MUTATION, {"input": {"id": _to_gid(order_id)}})
         errors = (data.get("orderMarkAsPaid") or {}).get("userErrors") or []
         if errors:
-            # Most common: order already fully paid on Shopify -- benign.
-            frappe.log_error(
-                title=f"Shopify: orderMarkAsPaid userErrors for {sales_invoice}",
-                message=str(errors),
+            # Most common: order already fully paid/refunded/cancelled on
+            # Shopify -- benign, and not something a human should be paged
+            # on. Logged quietly instead of as an Error Log entry, which
+            # otherwise reads as a real failure needing attention.
+            frappe.logger().info(
+                f"Shopify orderMarkAsPaid no-op for {sales_invoice}: {errors}"
             )
     except Exception:
         frappe.log_error(
