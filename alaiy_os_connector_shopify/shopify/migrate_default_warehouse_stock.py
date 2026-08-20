@@ -183,6 +183,15 @@ def run(dry_run=True, slice_index=None, slices=None):
 
 def _apply_correction(item_code, warehouse, real_qty):
     """Right warehouse, wrong quantity -- a plain single-row correction."""
+    # Same stale-snapshot issue _apply_move already guards against: a
+    # concurrent slice or an earlier pass in this same run may have already
+    # applied this exact correction by the time this call actually runs.
+    # Submitting a no-op Stock Reconciliation throws
+    # EmptyStockReconciliationItemsError -- check the live value first.
+    current_qty = int(frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0)
+    if current_qty == real_qty:
+        return
+
     company = frappe.db.get_value("Warehouse", warehouse, "company") or frappe.defaults.get_global_default("company")
     try:
         sr = frappe.new_doc("Stock Reconciliation")
