@@ -27,7 +27,8 @@ def check_and_enqueue():
     if not settings.is_enabled:
         return
 
-    _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
+    if (settings.sh_inventory_sync_direction or "") == "Alaiy OS → Shopify (two-way)":
+        _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
     _maybe_refresh_token(settings)
     _maybe_ensure_webhooks(settings)
 
