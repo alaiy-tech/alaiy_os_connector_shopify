@@ -297,6 +297,22 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     from alaiy_os_connector_shopify.shopify.product.masters import _dedupe_item_uoms
     _dedupe_item_uoms(item)
 
+    # Populated BEFORE item.save() below, and committed on its own -- the
+    # save can throw and roll back (e.g. the Maintain-Stock cascade on a
+    # sibling variant with real stock transactions), which would otherwise
+    # wipe this out even though it's unrelated to whatever the save failed
+    # on. Uses the payload's own sku directly (matches item_code) rather
+    # than the variant-creation helper below, which only runs after the
+    # save and would never be reached on that same failure path.
+    for variant in (product.get("variants") or []):
+        sku = str(variant.get("sku") or "").strip()
+        inventory_item_id = str(variant.get("inventory_item_id") or "")
+        if not sku or not inventory_item_id or not frappe.db.exists("Item", sku):
+            continue
+        if frappe.db.get_value("Item", sku, "sh_shopify_inventory_item_id") != inventory_item_id:
+            frappe.db.set_value("Item", sku, "sh_shopify_inventory_item_id", inventory_item_id)
+            frappe.db.commit()
+
     # Save item. item.flags.ignore_permissions only covers this save --
     # Alaiy OS's Item.on_update() cascades into update_variants(), which
     # fetches fresh sibling variant Item docs and calls variant.save() on
@@ -422,15 +438,6 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
         # one of these (e.g. a plain "Default Title" watch, one SKU, no
         # real variants).
         sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings) if item.has_variants else item.name
-        inventory_item_id = str(variant.get("inventory_item_id") or "")
-        if inventory_item_id and frappe.db.get_value("Item", sku, "sh_shopify_inventory_item_id") != inventory_item_id:
-            frappe.db.set_value("Item", sku, "sh_shopify_inventory_item_id", inventory_item_id)
-            # Committed immediately, not left riding on item.save() below --
-            # confirmed live: the "Maintain Stock" cascade failure a few
-            # lines down calls frappe.db.rollback(), which would otherwise
-            # wipe this write out even though it has nothing to do with
-            # that unrelated variant's stock-flag conflict.
-            frappe.db.commit()
         row = None
         if listing:
             row = next((r for r in listing.variants if r.item_variant == sku), None)
