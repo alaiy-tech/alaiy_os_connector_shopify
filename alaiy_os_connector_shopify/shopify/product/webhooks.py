@@ -425,6 +425,12 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
         inventory_item_id = str(variant.get("inventory_item_id") or "")
         if inventory_item_id and frappe.db.get_value("Item", sku, "sh_shopify_inventory_item_id") != inventory_item_id:
             frappe.db.set_value("Item", sku, "sh_shopify_inventory_item_id", inventory_item_id)
+            # Committed immediately, not left riding on item.save() below --
+            # confirmed live: the "Maintain Stock" cascade failure a few
+            # lines down calls frappe.db.rollback(), which would otherwise
+            # wipe this write out even though it has nothing to do with
+            # that unrelated variant's stock-flag conflict.
+            frappe.db.commit()
         row = None
         if listing:
             row = next((r for r in listing.variants if r.item_variant == sku), None)
