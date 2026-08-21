@@ -12,19 +12,22 @@ this connector's own FedEx label-creation flow. Confirmed live: real
 shipments here carry USPS and UPS tracking too, not just FedEx.
 
 Read-only against Shopify -- pulls each order's current real data and writes
-ONLY the fields below, on the Sales Order / Delivery Note. Nothing is
-deleted or cancelled; nothing is written back to Shopify. A field stays
-blank if Shopify genuinely has nothing to report -- never guessed or
-defaulted.
+ONLY the two fields below, on the EXISTING Sales Order / Delivery Note.
+Nothing is deleted, cancelled, or recreated; nothing is written back to
+Shopify. A field stays blank if Shopify genuinely has nothing to report --
+never guessed or defaulted.
 
-One exception: if Shopify shows a real fulfillment but no Delivery Note
-exists here at all yet (confirmed live on TS27377 -- the supplier
-fulfilled directly via ShipStation, entirely outside this app, so the
-normal fulfillments/create webhook never fired), this creates one via
-the same idempotent _create_delivery_note_if_needed the live order-sync
-path already uses for "already fulfilled at import time" -- a real stock
-movement, same as any other fulfillment, correctly flagged so it's never
-pushed back out to Shopify as if it were new.
+Deliberately does NOT create a Delivery Note when one doesn't exist yet
+(e.g. an order fulfilled entirely outside this app, like TS27377 via
+ShipStation) -- confirmed live that doing so cascades into
+alaiy_os_thesolist's own auto-Sales-Invoice-on-DN-submit hook, which can
+crash with a real ERPNext over-billing error on an order that was
+already fully invoiced through some other path, yet still leaves the
+half-completed Sales Invoice persisted as submitted (docstatus=1) with
+real GL entries -- caused a genuine duplicate-billing incident that had
+to be found and reversed by hand. An order with no local Delivery Note
+at all needs a human to create it deliberately, not an automated
+backfill.
 
 Run via bench execute, matching this app's own pull_stock_from_shopify.py /
 fix_conversion_rates.py convention:
@@ -68,20 +71,9 @@ def run(dry_run=True, slice_index=None, slices=None):
     # was previously excluded here entirely -- but delivery STATUS and
     # TRACKING keep changing/filling in after that while method never does,
     # so a method-only filter permanently blocked ever refreshing them on
-    # an order that already has its method. Select on any of these being
-    # incomplete: method blank, a linked Delivery Note has no delivery
-    # status, no tracking number, or NO Delivery Note exists at all.
-    #
-    # Confirmed live: without the last condition, TS27377 (fulfilled
-    # entirely outside this app via ShipStation, no local DN ever created)
-    # got permanently dropped from every future run of this script the
-    # moment its first pass filled in sh_delivery_method -- at that point
-    # method was no longer blank, no DN existed for the status/tracking
-    # checks to even apply to, so nothing matched anymore. This broadens
-    # the candidate set to every submitted order with zero local Delivery
-    # Note (most of which are simply still-genuinely-pending -- cheap to
-    # check and skip, since the per-order loop below already no-ops
-    # immediately when Shopify itself reports no fulfillments either).
+    # an order that already has its method. Select on any of the three
+    # fields being incomplete: method blank, a linked Delivery Note has no
+    # delivery status, or no tracking number.
     sos = frappe.db.sql("""
         SELECT DISTINCT so.name, so.sh_shopify_order_id FROM `tabSales Order` so
         LEFT JOIN `tabDelivery Note Item` dni ON dni.against_sales_order = so.name
@@ -92,7 +84,6 @@ def run(dry_run=True, slice_index=None, slices=None):
             (so.sh_delivery_method IS NULL OR so.sh_delivery_method = '')
             OR (dn.name IS NOT NULL AND (dn.sh_delivery_status IS NULL OR dn.sh_delivery_status = ''))
             OR (dn.name IS NOT NULL AND dn.is_return = 0 AND (dn.sh_tracking_number IS NULL OR dn.sh_tracking_number = ''))
-            OR dn.name IS NULL
           )
         ORDER BY so.creation
     """, as_dict=True)
@@ -106,7 +97,6 @@ def run(dry_run=True, slice_index=None, slices=None):
     updated_method = 0
     updated_status = 0
     updated_tracking = 0
-    created_dn = 0
     no_data_on_shopify = 0
     failed = []
     total = len(sos)
@@ -135,30 +125,6 @@ def run(dry_run=True, slice_index=None, slices=None):
             if not method and not fulfillments:
                 no_data_on_shopify += 1
                 continue
-
-            # Shopify shows a real fulfillment, but nothing was ever created
-            # here at all -- confirmed live on TS27377: the supplier
-            # fulfilled directly via ShipStation, entirely bypassing this
-            # app, so the normal fulfillments/create webhook never fired and
-            # no Delivery Note exists to attach status/tracking to below.
-            # _create_delivery_note_if_needed is the same idempotent
-            # full-order fallback the live order-sync path already uses for
-            # "already fulfilled at import time" -- safe to reuse here for
-            # exactly the same reason: it self-checks for an existing DN,
-            # is a no-op on a cancelled/draft SO, and flags the result as
-            # from_shopify_sync so it's never pushed back out to Shopify.
-            has_local_dn = bool(frappe.db.exists("Delivery Note Item", {"against_sales_order": so.name}))
-            if fulfillments and not has_local_dn:
-                from alaiy_os_connector_shopify.shopify.order.delivery_notes import _create_delivery_note_if_needed
-                if dry_run:
-                    print(f"  would create missing Delivery Note for {so.name} (Shopify shows it fulfilled, nothing exists locally)")
-                else:
-                    _create_delivery_note_if_needed(so.name)
-                    if frappe.db.exists("Delivery Note Item", {"against_sales_order": so.name}):
-                        created_dn += 1
-                    else:
-                        failed.append(so.name)
-                        continue
 
             if dry_run:
                 print(f"  would update {so.name}: method={method!r}, fulfillments={fulfillments!r}")
@@ -227,7 +193,6 @@ def run(dry_run=True, slice_index=None, slices=None):
 
     if not dry_run:
         print(
-            f"Created {created_dn} missing Delivery Notes. "
             f"Updated sh_delivery_method on {updated_method} Sales Orders, "
             f"sh_delivery_status on {updated_status} Delivery Notes, "
             f"tracking on {updated_tracking} Delivery Notes. "
