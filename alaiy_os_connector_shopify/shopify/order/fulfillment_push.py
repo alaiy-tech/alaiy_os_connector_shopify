@@ -288,9 +288,17 @@ def on_delivery_note_submit(doc, method=None):
     so_name = _sales_order_of(doc)
     if not so_name or not frappe.db.get_value("Sales Order", so_name, "sh_shopify_order_id"):
         return
+    # enqueue_after_commit=True -- confirmed live: without it, a fast
+    # worker could dequeue and start push_delivery_note_fulfillment_job
+    # before the caller's own frappe.db.commit() (e.g. fulfill_order's,
+    # right after dn.submit()) had made this DN visible to other DB
+    # connections yet, raising DoesNotExistError on a real, correctly
+    # submitted Delivery Note. Same idiom already used in
+    # listing_hooks.py for this exact class of race.
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order.fulfillment_push.push_delivery_note_fulfillment_job",
         queue="short", timeout=120, delivery_note=doc.name,
+        enqueue_after_commit=True,
     )
 
 
