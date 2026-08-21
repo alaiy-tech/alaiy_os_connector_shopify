@@ -65,8 +65,8 @@ def _cancel_order(order):
             _cancel_sales_order(so_name)
 
 
-def _cancel_sales_order(so_name, _timestamp_retry_done=False, _po_retry_done=False):
-    """Cancel this Sales Order, working around the two real failure modes
+def _cancel_sales_order(so_name, _timestamp_retry_done=False, _po_retry_done=False, _si_retry_done=False):
+    """Cancel this Sales Order, working around the real failure modes
     seen live on a genuine Shopify cancellation:
 
     - TimestampMismatchError: another job (e.g. line_items.py's own
@@ -74,17 +74,19 @@ def _cancel_sales_order(so_name, _timestamp_retry_done=False, _po_retry_done=Fal
       orders/updated webhook for the same order) saved the document in
       between -- always reload and retry once against the fresh copy
       rather than treating a real, expected race as a hard failure.
-    - LinkExistsError: a Purchase Order already routed against this order
-      (a client's own per-supplier PO routing) blocks the Sales Order's own
-      cancel. If the PO is still safe to cancel itself (nothing
-      received/billed against it yet), cancel it first and retry once;
-      if the PO is already past that point, don't guess -- log it for a
-      human, since a supplier already receiving/being billed for stock
-      against a since-cancelled customer order needs a real decision.
+    - LinkExistsError: a Sales Invoice or Purchase Order already linked
+      against this order blocks the Sales Order's own cancel. If either
+      is still safe to cancel itself (nothing paid/received/billed
+      against it yet), cancel it first and retry; if it's already past
+      that point, don't guess -- log it for a human. Confirmed live:
+      this exact gap (only the PO side was ever handled, never a linked
+      Sales Invoice) left 72 real customer orders stuck permanently
+      "active" for months after they were genuinely cancelled+refunded
+      on Shopify, since every retry hit the same unhandled Sales Invoice
+      link and gave up for good.
 
     Each failure mode gets its own one-shot retry, independent of the
-    other, so a PO-cancel retry doesn't consume the one legitimate
-    timestamp-race retry (and vice versa).
+    others, so one retry doesn't consume another's.
     """
     so = frappe.get_doc("Sales Order", so_name)
     if so.docstatus != 1:
@@ -103,15 +105,50 @@ def _cancel_sales_order(so_name, _timestamp_retry_done=False, _po_retry_done=Fal
     except frappe.TimestampMismatchError:
         if _timestamp_retry_done:
             raise  # already retried once for this same reason; a second race is unexpected
-        _cancel_sales_order(so_name, _timestamp_retry_done=True, _po_retry_done=_po_retry_done)
+        _cancel_sales_order(so_name, _timestamp_retry_done=True, _po_retry_done=_po_retry_done, _si_retry_done=_si_retry_done)
     except frappe.LinkExistsError:
-        if _po_retry_done or not _cancel_linked_purchase_orders(so_name):
+        if not _si_retry_done and _cancel_linked_sales_invoices(so_name):
+            _cancel_sales_order(so_name, _timestamp_retry_done=_timestamp_retry_done, _po_retry_done=_po_retry_done, _si_retry_done=True)
+            return
+        if not _po_retry_done and _cancel_linked_purchase_orders(so_name):
+            _cancel_sales_order(so_name, _timestamp_retry_done=_timestamp_retry_done, _po_retry_done=True, _si_retry_done=_si_retry_done)
+            return
+        frappe.log_error(
+            title=f"Shopify: cannot cancel {so_name} -- Sales Invoice or Purchase Order already linked",
+            message=frappe.get_traceback(),
+        )
+
+
+def _cancel_linked_sales_invoices(so_name):
+    """Cancel every submitted Sales Invoice against this Sales Order, so
+    the Sales Order's own cancel can then proceed.
+
+    Returns False (nothing done, caller falls back to the PO check / a
+    log entry) the moment any Sales Invoice is itself blocked -- e.g.
+    already has a Payment Entry against it, meaning the customer already
+    paid against a since-cancelled order, which is a real situation
+    needing a human decision, not an automatic cancel.
+    """
+    si_names = frappe.get_all(
+        "Sales Invoice Item", filters={"sales_order": so_name}, pluck="parent", distinct=True
+    )
+    si_names = frappe.get_all("Sales Invoice", filters={"name": ["in", si_names], "docstatus": 1}, pluck="name")
+    if not si_names:
+        return False
+
+    for si_name in si_names:
+        si = frappe.get_doc("Sales Invoice", si_name)
+        si.flags.ignore_permissions = True
+        try:
+            si.cancel()
+        except frappe.LinkExistsError:
             frappe.log_error(
-                title=f"Shopify: cannot cancel {so_name} -- Purchase Order already linked",
+                title=f"Shopify: cannot cancel Sales Invoice {si_name} for cancelled order {so_name}",
                 message=frappe.get_traceback(),
             )
-            return
-        _cancel_sales_order(so_name, _timestamp_retry_done=_timestamp_retry_done, _po_retry_done=True)
+            return False
+    frappe.db.commit()
+    return True
 
 
 def _cancel_linked_purchase_orders(so_name):
