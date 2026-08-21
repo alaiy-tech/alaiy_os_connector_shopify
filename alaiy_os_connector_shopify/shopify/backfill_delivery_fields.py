@@ -34,9 +34,23 @@ Apply for real:
 import frappe
 
 
-def run(dry_run=True):
+def run(dry_run=True, slice_index=None, slices=None):
+    """slice_index/slices splits the work across parallel tmux sessions,
+    same convention as migrate_default_warehouse_stock.py:
+
+        for i in 0 1 2 3 4; do
+          tmux new -d -s backfill_delivery_$i \
+            "bench --site <site> execute alaiy_os_connector_shopify.shopify.backfill_delivery_fields.run \
+             --kwargs \"{'dry_run': True, 'slice_index': $i, 'slices': 5}\" 2>&1 | tee ~/backfill_delivery_$i.log"
+        done
+    """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
+
+    if (slice_index is None) != (slices is None):
+        frappe.throw("slice_index and slices must be given together")
+    if slices is not None and not 0 <= int(slice_index) < int(slices):
+        frappe.throw(f"slice_index must be between 0 and {int(slices) - 1}")
 
     client = ShopifyGraphQLClient()
 
@@ -61,6 +75,10 @@ def run(dry_run=True):
           )
         ORDER BY so.creation
     """, as_dict=True)
+
+    if slices:
+        sos = [r for n, r in enumerate(sos) if n % int(slices) == int(slice_index)]
+        print(f"SLICE {slice_index} of {slices}", flush=True)
 
     print(f"Found {len(sos)} Sales Orders missing sh_delivery_method, sh_delivery_status, or tracking. dry_run={dry_run}")
 
