@@ -422,6 +422,9 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
         # one of these (e.g. a plain "Default Title" watch, one SKU, no
         # real variants).
         sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings) if item.has_variants else item.name
+        inventory_item_id = str(variant.get("inventory_item_id") or "")
+        if inventory_item_id and frappe.db.get_value("Item", sku, "sh_shopify_inventory_item_id") != inventory_item_id:
+            frappe.db.set_value("Item", sku, "sh_shopify_inventory_item_id", inventory_item_id)
         row = None
         if listing:
             row = next((r for r in listing.variants if r.item_variant == sku), None)

@@ -31,6 +31,10 @@ WEBHOOK_TOPICS = [
     "collections/create",
     "collections/update",
     "collections/delete",
+
+    # Inventory webhooks (inbound leg of the bidirectional inventory sync --
+    # outbound is the existing run_inventory_push scheduled job)
+    "inventory_levels/update",
 ]
 
 _CREATE_MUTATION = """

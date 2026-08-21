@@ -140,3 +140,14 @@ def _dispatch(topic, payload):
             topic=topic,
             payload=payload,
         )
+
+    # Inventory webhooks (inbound leg of the bidirectional inventory sync)
+    inventory_topics = {"inventory_levels/update"}
+    if topic in inventory_topics:
+        frappe.enqueue(
+            "alaiy_os_connector_shopify.shopify.inventory_sync.handle_inventory_level_webhook",
+            queue="short",
+            timeout=120,
+            topic=topic,
+            payload=payload,
+        )

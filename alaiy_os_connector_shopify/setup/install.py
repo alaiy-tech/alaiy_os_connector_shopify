@@ -189,6 +189,15 @@ def setup_custom_fields():
             "description": "Set by the connector when this variant is created on or imported from Shopify. Never hand-edited.",
         },
         {
+            "fieldname": "sh_shopify_inventory_item_id",
+            "label": "Shopify Inventory Item ID",
+            "fieldtype": "Data",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_variant_id",
+            "description": "Shopify's own inventory_item_id for this variant -- the real key the inventory_levels/update webhook reports changes against (not the variant id). Lets the inbound inventory sync resolve a webhook straight to this Item without an extra API call.",
+        },
+        {
             "fieldname": "sh_shopify_status",
             "label": "Shopify Status",
             "fieldtype": "Select",

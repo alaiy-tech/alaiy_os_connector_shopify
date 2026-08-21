@@ -469,6 +469,59 @@ def _get_inventory_item_state(client, variant_id, location_id):
     return inventory_item_id, (current_qty or 0)
 
 
+def handle_inventory_level_webhook(topic, payload):
+    """Inbound leg: Shopify inventory_levels/update -> local Bin.actual_qty.
+    Sibling of run_inventory_push (local -> Shopify); no echo-loop guard
+    needed here because the outbound push already re-reads Shopify's own
+    current quantity and skips when it already matches (see
+    _push_warehouse_to_location above) -- writing the same value back here
+    just makes that push a no-op next run, not a duplicate push."""
+    inventory_item_id = str(payload.get("inventory_item_id") or "")
+    location_id = str(payload.get("location_id") or "")
+    available = payload.get("available")
+    if not inventory_item_id or not location_id or available is None:
+        frappe.log_error(
+            title="Shopify inventory_levels/update: incomplete payload",
+            message=frappe.as_json(payload),
+        )
+        return
+
+    item_code = frappe.db.get_value("Item", {"sh_shopify_inventory_item_id": inventory_item_id}, "name")
+    if not item_code:
+        # Not an error -- most stores have SKUs Alaiy OS never imported.
+        return
+
+    warehouse = _resolve_warehouse_for_location(location_id)
+    if not warehouse:
+        frappe.log_error(
+            title="Shopify inventory_levels/update: no warehouse mapped for location",
+            message=f"location_id={location_id} item_code={item_code} available={available}",
+        )
+        return
+
+    frappe.db.set_value(
+        "Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty", flt(available),
+    )
+    if not frappe.db.exists("Bin", {"item_code": item_code, "warehouse": warehouse}):
+        frappe.get_doc({
+            "doctype": "Bin", "item_code": item_code, "warehouse": warehouse, "actual_qty": flt(available),
+        }).insert(ignore_permissions=True)
+    frappe.db.commit()
+
+
+def _resolve_warehouse_for_location(location_id):
+    """location_id here is Shopify's REST numeric id (what webhooks carry),
+    matched against Shopify Location.sh_location_id -- distinct from the
+    GraphQL gid the outbound push uses."""
+    location = frappe.db.get_value("Shopify Location", {"sh_location_id": location_id}, "name")
+    if not location:
+        return None
+    warehouse = frappe.db.get_value(
+        "Shopify Location Map", {"shopify_location": location}, "warehouse")
+    if warehouse:
+        return warehouse
+    settings = frappe.get_cached_doc("Shopify Connector Settings")
+    return settings.sh_default_warehouse
 
 
 def check_fulfillment_service_mapping():
