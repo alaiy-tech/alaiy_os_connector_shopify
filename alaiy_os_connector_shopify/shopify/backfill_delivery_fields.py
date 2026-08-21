@@ -68,9 +68,20 @@ def run(dry_run=True, slice_index=None, slices=None):
     # was previously excluded here entirely -- but delivery STATUS and
     # TRACKING keep changing/filling in after that while method never does,
     # so a method-only filter permanently blocked ever refreshing them on
-    # an order that already has its method. Select on any of the three
-    # fields being incomplete: method blank, a linked Delivery Note has no
-    # delivery status, or no tracking number.
+    # an order that already has its method. Select on any of these being
+    # incomplete: method blank, a linked Delivery Note has no delivery
+    # status, no tracking number, or NO Delivery Note exists at all.
+    #
+    # Confirmed live: without the last condition, TS27377 (fulfilled
+    # entirely outside this app via ShipStation, no local DN ever created)
+    # got permanently dropped from every future run of this script the
+    # moment its first pass filled in sh_delivery_method -- at that point
+    # method was no longer blank, no DN existed for the status/tracking
+    # checks to even apply to, so nothing matched anymore. This broadens
+    # the candidate set to every submitted order with zero local Delivery
+    # Note (most of which are simply still-genuinely-pending -- cheap to
+    # check and skip, since the per-order loop below already no-ops
+    # immediately when Shopify itself reports no fulfillments either).
     sos = frappe.db.sql("""
         SELECT DISTINCT so.name, so.sh_shopify_order_id FROM `tabSales Order` so
         LEFT JOIN `tabDelivery Note Item` dni ON dni.against_sales_order = so.name
@@ -81,6 +92,7 @@ def run(dry_run=True, slice_index=None, slices=None):
             (so.sh_delivery_method IS NULL OR so.sh_delivery_method = '')
             OR (dn.name IS NOT NULL AND (dn.sh_delivery_status IS NULL OR dn.sh_delivery_status = ''))
             OR (dn.name IS NOT NULL AND dn.is_return = 0 AND (dn.sh_tracking_number IS NULL OR dn.sh_tracking_number = ''))
+            OR dn.name IS NULL
           )
         ORDER BY so.creation
     """, as_dict=True)
