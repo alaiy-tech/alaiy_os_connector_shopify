@@ -479,6 +479,7 @@ def handle_inventory_level_webhook(topic, payload):
     inventory_item_id = str(payload.get("inventory_item_id") or "")
     location_id = str(payload.get("location_id") or "")
     available = payload.get("available")
+    frappe.logger().info(f"Shopify inventory_levels/update received: {payload}")
     if not inventory_item_id or not location_id or available is None:
         frappe.log_error(
             title="Shopify inventory_levels/update: incomplete payload",
@@ -488,7 +489,7 @@ def handle_inventory_level_webhook(topic, payload):
 
     item_code = frappe.db.get_value("Item", {"sh_shopify_inventory_item_id": inventory_item_id}, "name")
     if not item_code:
-        # Not an error -- most stores have SKUs Alaiy OS never imported.
+        frappe.logger().info(f"Shopify inventory_levels/update: no local Item for inventory_item_id={inventory_item_id}")
         return
 
     warehouse = _resolve_warehouse_for_location(location_id)
@@ -507,6 +508,7 @@ def handle_inventory_level_webhook(topic, payload):
             "doctype": "Bin", "item_code": item_code, "warehouse": warehouse, "actual_qty": flt(available),
         }).insert(ignore_permissions=True)
     frappe.db.commit()
+    frappe.logger().info(f"Shopify inventory_levels/update: set Bin {item_code}@{warehouse} = {available}")
 
 
 def _resolve_warehouse_for_location(location_id):
