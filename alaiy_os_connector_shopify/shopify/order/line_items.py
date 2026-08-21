@@ -156,20 +156,27 @@ def _sync_order_line_items(so_name: str, order: dict):
                 raise
             so = frappe.get_doc("Sales Order", so_name)
         except frappe.LinkExistsError:
-            # Confirmed live: a Sales Order with a Purchase Order already
-            # routed against it (a client's own per-supplier PO routing)
-            # can never be cancelled here, so the whole
-            # webhook crashed and aborted BEFORE any other field on this
-            # order (status, tags, delivery method, etc.) ever got applied
-            # -- a single line-item edit silently broke every other update
-            # to the order from that point on. Line items can't be
-            # reconciled while a PO is linked; log and let the caller's
-            # other field updates (already applied earlier in
-            # _update_order_unlocked) stand rather than crashing them too.
-            frappe.log_error(
-                title=f"Shopify: cannot reconcile line items for {so_name} -- Purchase Order already linked",
-                message=frappe.get_traceback(),
-            )
+            # A Sales Invoice or Purchase Order already linked against
+            # this order blocks a bare so.cancel() here. Reuse
+            # webhook.py's _cancel_sales_order, which already knows how
+            # to cascade-cancel a safe-to-cancel SI/PO and retry --
+            # confirmed live: this exact case (an order fully cancelled
+            # via an orders/updated webhook rather than orders/cancelled)
+            # used to hit this same LinkExistsError and give up
+            # permanently, since only the dedicated orders/cancelled path
+            # ever had the cascading retry.
+            from alaiy_os_connector_shopify.shopify.order.webhook import _cancel_sales_order
+            _cancel_sales_order(so_name)
+            if frappe.db.get_value("Sales Order", so_name, "docstatus") != 2:
+                # Cascade couldn't clear it either (e.g. SI already paid,
+                # or a PO already received/billed) -- _cancel_sales_order
+                # already logged the real reason; let the caller's other
+                # field updates (already applied earlier in
+                # _update_order_unlocked) stand rather than crashing them too.
+                frappe.log_error(
+                    title=f"Shopify: cannot reconcile line items for {so_name} -- still linked after cascade attempt",
+                    message=frappe.get_traceback(),
+                )
             return
     frappe.db.commit()
 
