@@ -400,6 +400,17 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     from alaiy_os_connector_shopify.shopify.product.variants import _REST_WEIGHT_UNIT_TO_UOM
     from alaiy_os_connector_shopify.shopify.product.importer import _ensure_variant_exists_locally
     product_id = str(product.get("id", ""))
+    # Shopify's payload carries a distinct image_id per variant (color, in
+    # practice), but nothing anywhere in this sync ever wrote it down --
+    # confirmed live: Shopify Listing Variant.variant_image sat NULL for
+    # every real variant, so two different colors of the same product
+    # (e.g. Silver/Black) both fell back to the same shared template
+    # photo in the supplier portal, looking like a data error.
+    image_src_by_id = {
+        str(img.get("id")): img.get("src")
+        for img in (product.get("images") or [])
+        if img.get("id") and img.get("src")
+    }
     if listing and not listing.sh_shopify_product_id and product_id:
         listing.sh_shopify_product_id = product_id
         listing_dirty = True
@@ -429,6 +440,10 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
             elif v_id and row.sh_shopify_variant_id != v_id:
                 # Keep the Listing row's id in step with the Item's.
                 row.sh_shopify_variant_id = v_id
+                listing_dirty = True
+            variant_image_src = image_src_by_id.get(str(variant.get("image_id") or ""))
+            if variant_image_src and row.variant_image != variant_image_src:
+                row.variant_image = variant_image_src
                 listing_dirty = True
         price = flt(variant.get("price") or 0)
         if price > 0:
