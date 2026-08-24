@@ -500,15 +500,179 @@ def handle_inventory_level_webhook(topic, payload):
         )
         return
 
-    frappe.db.set_value(
-        "Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty", flt(available),
+    # Queue it; do NOT write Bin.actual_qty here. A direct Bin write leaves no
+    # Stock Ledger Entry, so the quantity is invisible to stock reports, gets
+    # silently recomputed away by the next real stock movement, and drifts Bin
+    # away from the ledger for good. That is not theoretical: this webhook did
+    # exactly that, and 12,140 of 13,653 Bin rows on thesolist ended up
+    # disagreeing with their own ledger, with Bin showing stock in supplier
+    # warehouses the ledger had never recorded.
+    #
+    # run_inventory_pull (scheduled) drains this queue into audited Stock
+    # Reconciliations. Only one Pending row is kept per item+warehouse -- the
+    # latest quantity Shopify reported is the only one worth applying, and
+    # Shopify sends these often, so superseding beats accumulating.
+    existing = frappe.db.get_value(
+        "Shopify Inventory Update",
+        {"item_code": item_code, "warehouse": warehouse, "status": "Pending"},
+        "name",
     )
-    if not frappe.db.exists("Bin", {"item_code": item_code, "warehouse": warehouse}):
+    if existing:
+        frappe.db.set_value("Shopify Inventory Update", existing, {
+            "shopify_qty": flt(available),
+            "location_id": location_id,
+            "inventory_item_id": inventory_item_id,
+        })
+    else:
         frappe.get_doc({
-            "doctype": "Bin", "item_code": item_code, "warehouse": warehouse, "actual_qty": flt(available),
+            "doctype": "Shopify Inventory Update",
+            "item_code": item_code,
+            "warehouse": warehouse,
+            "shopify_qty": flt(available),
+            "location_id": location_id,
+            "inventory_item_id": inventory_item_id,
+            "status": "Pending",
         }).insert(ignore_permissions=True)
     frappe.db.commit()
-    frappe.logger().info(f"Shopify inventory_levels/update: set Bin {item_code}@{warehouse} = {available}")
+    frappe.logger().info(
+        f"Shopify inventory_levels/update: queued {item_code}@{warehouse} = {available}")
+
+
+def run_inventory_pull(trigger="manual", log_name=None):
+    """PULL leg (Shopify -> Alaiy OS). Drain queued inventory updates into
+    audited Stock Reconciliations.
+
+    Sibling of run_inventory_push (Alaiy OS -> Shopify). This one NEVER writes
+    to Shopify -- it only applies quantities Shopify already told us about via
+    the inventory_levels/update webhook, which queues them rather than touching
+    Bin directly.
+
+    A queued row whose quantity already matches the current Bin is marked
+    Applied without a reconciliation -- there is nothing to correct, and an
+    empty Stock Reconciliation would just be noise.
+    """
+    pending = frappe.get_all(
+        "Shopify Inventory Update",
+        filters={"status": "Pending"},
+        fields=["name", "item_code", "warehouse", "shopify_qty"],
+        limit_page_length=0,
+    )
+    if not pending:
+        return {"pending": 0, "applied": 0, "reconciliations": []}
+
+    corrections, already_correct, names_by_key = [], [], {}
+    for row in pending:
+        current = flt(frappe.db.get_value(
+            "Bin", {"item_code": row.item_code, "warehouse": row.warehouse}, "actual_qty") or 0)
+        if current == flt(row.shopify_qty):
+            already_correct.append(row.name)
+            continue
+        corrections.append({
+            "item_code": row.item_code,
+            "warehouse": row.warehouse,
+            "qty": flt(row.shopify_qty),
+        })
+        names_by_key[(row.item_code, row.warehouse)] = row.name
+
+    for name in already_correct:
+        frappe.db.set_value("Shopify Inventory Update", name, "status", "Applied")
+
+    result = {"reconciliations": [], "by_warehouse": {}, "skipped": []}
+    if corrections:
+        try:
+            result = apply_pulled_stock(corrections)
+        except Exception:
+            for name in names_by_key.values():
+                frappe.db.set_value("Shopify Inventory Update", name, {
+                    "status": "Failed", "error": frappe.get_traceback()[:2000],
+                })
+            frappe.db.commit()
+            frappe.log_error(
+                title="Shopify inventory pull: applying queued quantities failed",
+                message=frappe.get_traceback(),
+            )
+            raise
+
+    skipped_items = {item for item, _reason in result["skipped"]}
+    for (item_code, warehouse), name in names_by_key.items():
+        if item_code in skipped_items:
+            frappe.db.set_value("Shopify Inventory Update", name, {
+                "status": "Skipped", "error": "Item is disabled",
+            })
+        else:
+            frappe.db.set_value("Shopify Inventory Update", name, {
+                "status": "Applied",
+                "stock_reconciliation": result["by_warehouse"].get(warehouse),
+            })
+    frappe.db.commit()
+
+    return {
+        "pending": len(pending),
+        "already_correct": len(already_correct),
+        "applied": len(names_by_key) - len(skipped_items),
+        "reconciliations": result["reconciliations"],
+    }
+
+
+def apply_pulled_stock(corrections):
+    """PULL leg (Shopify -> Alaiy OS). Apply {item_code, warehouse, qty} rows
+    as audited Stock Reconciliations.
+
+    The ONLY correct way to change stock in this app. Writing Bin.actual_qty
+    directly (which the inventory webhook used to do) leaves no Stock Ledger
+    Entry, so the quantity is invisible to every stock report, is silently
+    recomputed away by the next real stock movement, and drifts Bin away from
+    the ledger permanently. Confirmed live on thesolist: 12,140 of 13,653 Bin
+    rows disagreed with their own ledger, and Bin showed stock in supplier
+    warehouses that the ledger had no record of at all.
+
+    Never writes anything back to Shopify -- this is the inbound leg only.
+
+    Returns {"reconciliations": [...], "by_warehouse": {warehouse: name},
+    "skipped": [(item_code, reason)]}.
+    """
+    if not corrections:
+        return {"reconciliations": [], "by_warehouse": {}, "skipped": []}
+
+    skipped = []
+    rows_by_warehouse = {}
+    for c in corrections:
+        # ERPNext's Stock Reconciliation rejects the ENTIRE document if any row
+        # is a disabled Item -- confirmed live, one disabled item blocked every
+        # other real correction in the same batch. A disabled item can't be
+        # sold, so its stock number isn't meaningful to correct.
+        if frappe.db.get_value("Item", c["item_code"], "disabled"):
+            skipped.append((c["item_code"], "item disabled"))
+            continue
+        rows_by_warehouse.setdefault(c["warehouse"], []).append(c)
+
+    reconciliations, by_warehouse = [], {}
+    # One document per warehouse: company is resolved per-warehouse, and this
+    # keeps a bad row in one warehouse from blocking another's correction.
+    for warehouse, rows in rows_by_warehouse.items():
+        sr = frappe.new_doc("Stock Reconciliation")
+        sr.company = frappe.db.get_value("Warehouse", warehouse, "company")
+        sr.purpose = "Stock Reconciliation"
+        for c in rows:
+            sr.append("items", {
+                "item_code": c["item_code"],
+                "warehouse": warehouse,
+                "qty": c["qty"],
+                # Without this, submit fails partway through (past the docstatus
+                # flip, before the ledger/GL entries exist) with "Valuation Rate
+                # required" for any item that never had a cost basis recorded --
+                # same reasoning as opening stock's allow_zero_valuation_rate.
+                "allow_zero_valuation_rate": 1,
+            })
+        sr.flags.ignore_permissions = True
+        sr.insert()
+        sr.submit()
+        frappe.db.commit()
+        reconciliations.append(sr.name)
+        by_warehouse[warehouse] = sr.name
+
+    return {"reconciliations": reconciliations, "by_warehouse": by_warehouse,
+            "skipped": skipped}
 
 
 def _resolve_warehouse_for_location(location_id):

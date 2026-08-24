@@ -71,7 +71,13 @@ scheduler_events = {
         ]
     },
     "hourly": [
-        "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only"
+        "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only",
+        # PULL leg: drain queued inventory_levels/update quantities into audited
+        # Stock Reconciliations. The webhook only queues them -- it must never
+        # write Bin directly (see inventory_sync.apply_pulled_stock). Inbound
+        # only; the outbound push is run_inventory_push, scheduled separately
+        # via sync_jobs and gated by its own interval setting.
+        "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
     ],
     "daily": [
         "alaiy_os_connector_shopify.shopify.product_sync.scheduled_fetch_shopify_taxonomy",

@@ -188,37 +188,17 @@ def run(dry_run=True, slice_index=None, slices=None):
         print("Nothing to correct.", flush=True)
         return {"total": total, "corrections": 0, "dry_run": False}
 
-    # One Stock Reconciliation per warehouse -- a single document can hold rows
-    # for multiple warehouses, but company is resolved per-warehouse and this
-    # keeps a bad row in one warehouse from blocking another's correction.
-    by_warehouse = {}
-    for c in corrections:
-        by_warehouse.setdefault(c["warehouse"], []).append(c)
+    # Shared with the webhook-fed pull (inventory_sync.run_inventory_pull) so
+    # there is exactly one place that knows how to write stock correctly --
+    # per-warehouse documents, disabled items skipped, zero valuation allowed.
+    from alaiy_os_connector_shopify.shopify.inventory_sync import apply_pulled_stock
 
-    reconciliations = []
-    for warehouse, rows in by_warehouse.items():
-        company = frappe.db.get_value("Warehouse", warehouse, "company")
-        sr = frappe.new_doc("Stock Reconciliation")
-        sr.company = company
-        sr.purpose = "Stock Reconciliation"
-        for c in rows:
-            sr.append("items", {
-                "item_code": c["item_code"],
-                "warehouse": warehouse,
-                "qty": c["qty"],
-                # Confirmed live: without this, submit fails partway through
-                # (past the docstatus flip, before the actual stock ledger/GL
-                # entries are created) with "Valuation Rate required" for any
-                # item that's never had a cost basis recorded -- same reasoning
-                # as opening stock's own allow_zero_valuation_rate=1.
-                "allow_zero_valuation_rate": 1,
-            })
-        sr.flags.ignore_permissions = True
-        sr.insert()
-        sr.submit()
-        frappe.db.commit()
-        reconciliations.append(sr.name)
-        print(f"Applied {warehouse}: {sr.name}", flush=True)
+    applied = apply_pulled_stock(corrections)
+    reconciliations = applied["reconciliations"]
+    for warehouse, name in applied["by_warehouse"].items():
+        print(f"Applied {warehouse}: {name}", flush=True)
+    for item_code, reason in applied["skipped"]:
+        print(f"SKIPPED {item_code}: {reason}", flush=True)
 
     label = f" (slice {slice_index} of {slices})" if slices else ""
     print(f"Applied.{label} {len(reconciliations)} reconciliation(s): {reconciliations}", flush=True)
