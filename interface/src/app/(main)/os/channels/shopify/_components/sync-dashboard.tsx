@@ -11,7 +11,18 @@ import { Label } from "@alaiy-os/ui/label";
 import { Skeleton } from "@alaiy-os/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@alaiy-os/ui/table";
 import { cn } from "@alaiy-os/utils";
-import { Package, RefreshCw, ShoppingCart, Store, Warehouse } from "lucide-react";
+import {
+  Calendar as CalendarIcon,
+  CheckCircle,
+  FileText,
+  List as ListIcon,
+  Package,
+  RefreshCw,
+  ShoppingCart,
+  Store,
+  Truck,
+  Warehouse,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { getSyncStatusBadgeClass } from "@/constants/shopify";
@@ -51,6 +62,7 @@ export function SyncDashboard() {
   const [progress, setProgress] = useState<Record<string, SyncLogRow | undefined>>({});
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [orderImportMode, setOrderImportMode] = useState<"All orders" | "Date range">("All orders");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -147,16 +159,15 @@ export function SyncDashboard() {
   }
 
   async function runImportExistingOrders() {
-    setTriggering("import-orders");
-    try {
-      await importExistingOrders(importFrom || undefined, importTo || undefined);
-      toast.success("Order backfill started.");
-      setTimeout(() => void load(), 1500);
-    } catch (error) {
-      toast.error(shopifyErrorMessage(error, "Could not start the order backfill."));
-    } finally {
-      setTriggering(null);
+    if (orderImportMode === "Date range" && (!importFrom || !importTo)) {
+      toast.warning("Pick both a From and To date.");
+      return;
     }
+    await trigger(
+      "import-orders",
+      () => (orderImportMode === "Date range" ? importExistingOrders(importFrom, importTo) : importExistingOrders()),
+      "Order import",
+    );
   }
 
   if (loading) {
@@ -251,17 +262,91 @@ export function SyncDashboard() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Sync</CardTitle>
-          <CardDescription>Trigger a sync now, or check the recent runs below.</CardDescription>
-          <CardAction className="flex flex-wrap gap-2">
+          <div className="flex items-center gap-3">
+            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
+              <ShoppingCart className="size-4" />
+            </span>
+            <div>
+              <CardTitle>Orders</CardTitle>
+              <CardDescription>Import Shopify orders into Alaiy OS.</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex gap-2">
             <Button
+              type="button"
+              variant={orderImportMode === "All orders" ? "default" : "outline"}
+              className="flex-1 justify-start"
+              onClick={() => setOrderImportMode("All orders")}
+            >
+              <ListIcon /> All orders
+            </Button>
+            <Button
+              type="button"
+              variant={orderImportMode === "Date range" ? "default" : "outline"}
+              className="flex-1 justify-start"
+              onClick={() => setOrderImportMode("Date range")}
+            >
+              <CalendarIcon /> Date range
+            </Button>
+          </div>
+
+          {orderImportMode === "Date range" && (
+            <div className="flex flex-wrap gap-2">
+              <div className="space-y-1">
+                <Label htmlFor="import-from" className="text-muted-foreground text-xs">
+                  From
+                </Label>
+                <Input id="import-from" type="date" value={importFrom} onChange={(e) => setImportFrom(e.target.value)} className="h-8" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="import-to" className="text-muted-foreground text-xs">
+                  To
+                </Label>
+                <Input id="import-to" type="date" value={importTo} onChange={(e) => setImportTo(e.target.value)} className="h-8" />
+              </div>
+            </div>
+          )}
+
+          <p className="text-muted-foreground text-sm">Choose the import range and bring Shopify orders into Alaiy OS.</p>
+          <div className="flex flex-wrap gap-4 text-muted-foreground text-sm">
+            <span className="flex items-center gap-1.5">
+              <CheckCircle className="size-4" /> Sales Orders
+            </span>
+            <span className="flex items-center gap-1.5">
+              <FileText className="size-4" /> Invoices &amp; Payments
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Truck className="size-4" /> Fulfillments
+            </span>
+          </div>
+
+          {progress["import-orders"] && (
+            <p className="text-muted-foreground text-xs">{formatProgress(progress["import-orders"])}</p>
+          )}
+
+          <div className="flex items-center gap-2">
+            <Button disabled={triggering !== null} onClick={() => void runImportExistingOrders()}>
+              <RefreshCw className={cn(triggering === "import-orders" && "animate-spin")} /> Import Orders from Shopify
+            </Button>
+            <Button
+              variant="ghost"
               size="sm"
-              variant="outline"
               disabled={triggering !== null}
               onClick={() => void trigger("orders", triggerOrdersSync, "Order sync")}
             >
-              <RefreshCw className={cn(triggering === "orders" && "animate-spin")} /> Sync Orders
+              <RefreshCw className={cn(triggering === "orders" && "animate-spin")} /> Sync recent changes only
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Products &amp; Inventory</CardTitle>
+          <CardDescription>Push stock, import/export products, or check recent runs below.</CardDescription>
+          <CardAction className="flex flex-wrap gap-2">
             <Button
               size="sm"
               variant="outline"
@@ -280,31 +365,11 @@ export function SyncDashboard() {
         </CardHeader>
         <CardContent>
           {(progress.products || progress["export-products"]) && (
-            <div className="mb-3 flex flex-col gap-1 text-muted-foreground text-xs">
+            <div className="flex flex-col gap-1 text-muted-foreground text-xs">
               {progress.products && <p>Import: {formatProgress(progress.products)}</p>}
               {progress["export-products"] && <p>Export: {formatProgress(progress["export-products"])}</p>}
             </div>
           )}
-          <div className="flex flex-wrap items-end gap-2 rounded-lg border p-3">
-            <div className="space-y-1">
-              <Label htmlFor="import-from" className="text-muted-foreground text-xs">
-                Backfill orders from
-              </Label>
-              <Input id="import-from" type="date" value={importFrom} onChange={(e) => setImportFrom(e.target.value)} className="h-8" />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="import-to" className="text-muted-foreground text-xs">
-                to
-              </Label>
-              <Input id="import-to" type="date" value={importTo} onChange={(e) => setImportTo(e.target.value)} className="h-8" />
-            </div>
-            <Button size="sm" variant="outline" disabled={triggering !== null} onClick={() => void runImportExistingOrders()}>
-              <RefreshCw className={cn(triggering === "import-orders" && "animate-spin")} /> Import Existing Orders
-            </Button>
-            <p className="text-muted-foreground text-xs">
-              A one-off backfill for a date range — separate from the regular incremental Sync Orders above.
-            </p>
-          </div>
         </CardContent>
       </Card>
 
