@@ -13,15 +13,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn } from "@alaiy-os/utils";
 import {
   Calendar as CalendarIcon,
-  CheckCircle,
-  FileText,
+  Download,
   List as ListIcon,
   Package,
   RefreshCw,
   ShoppingCart,
   Store,
   Tag as TagIcon,
-  Truck,
+  Upload,
   Warehouse,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -314,24 +313,14 @@ export function SyncDashboard() {
               </div>
             )}
 
-            <div className="flex flex-wrap gap-3 text-muted-foreground text-xs">
-              <span className="flex items-center gap-1">
-                <CheckCircle className="size-3.5" /> Sales Orders
-              </span>
-              <span className="flex items-center gap-1">
-                <FileText className="size-3.5" /> Invoices &amp; Payments
-              </span>
-              <span className="flex items-center gap-1">
-                <Truck className="size-3.5" /> Fulfillments
-              </span>
-            </div>
+            <p className="text-muted-foreground text-xs">Brings in Sales Orders, Invoices &amp; Payments, and Fulfillments.</p>
 
             {progress["import-orders"] && (
               <p className="text-muted-foreground text-xs">{formatProgress(progress["import-orders"])}</p>
             )}
 
             <Button size="sm" className="mt-auto" disabled={triggering !== null} onClick={() => void runImportExistingOrders()}>
-              <RefreshCw className={cn(triggering === "import-orders" && "animate-spin")} /> Import Orders from Shopify
+              {triggering === "import-orders" ? <RefreshCw className="animate-spin" /> : <Download />} Import Orders from Shopify
             </Button>
           </CardContent>
         </Card>
@@ -376,7 +365,7 @@ export function SyncDashboard() {
             <p className="text-muted-foreground text-xs">Import products from Shopify.</p>
             {progress.products && <p className="text-muted-foreground text-xs">{formatProgress(progress.products)}</p>}
             <Button size="sm" disabled={triggering !== null} onClick={() => setImportDialogOpen(true)}>
-              <RefreshCw className={cn(triggering === "products" && "animate-spin")} /> Import Products from Shopify
+              {triggering === "products" ? <RefreshCw className="animate-spin" /> : <Download />} Import Products from Shopify
             </Button>
           </div>
           <div className="flex flex-col items-start gap-2 rounded-lg border p-3">
@@ -386,7 +375,7 @@ export function SyncDashboard() {
               <p className="text-muted-foreground text-xs">{formatProgress(progress["export-products"])}</p>
             )}
             <Button size="sm" variant="outline" disabled={triggering !== null} onClick={() => setExportDialogOpen(true)}>
-              <RefreshCw className={cn(triggering === "export-products" && "animate-spin")} /> Export Products to Shopify
+              {triggering === "export-products" ? <RefreshCw className="animate-spin" /> : <Upload />} Export Products to Shopify
             </Button>
           </div>
         </CardContent>
