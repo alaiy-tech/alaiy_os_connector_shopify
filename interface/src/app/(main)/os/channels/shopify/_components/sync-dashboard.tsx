@@ -264,8 +264,8 @@ export function SyncDashboard() {
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
+      <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
+        <Card className="flex flex-col">
           <CardHeader>
             <div className="flex items-center gap-2.5">
               <span className="flex size-7 items-center justify-center rounded-md border bg-background">
@@ -277,12 +277,12 @@ export function SyncDashboard() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="flex flex-col gap-3">
+          <CardContent className="flex flex-1 flex-col items-start gap-3">
             <div className="flex gap-1.5">
               <Button
                 type="button"
                 size="sm"
-                variant={orderImportMode === "All orders" ? "secondary" : "ghost"}
+                variant={orderImportMode === "All orders" ? "secondary" : "outline"}
                 onClick={() => setOrderImportMode("All orders")}
               >
                 <ListIcon /> All orders
@@ -290,7 +290,7 @@ export function SyncDashboard() {
               <Button
                 type="button"
                 size="sm"
-                variant={orderImportMode === "Date range" ? "secondary" : "ghost"}
+                variant={orderImportMode === "Date range" ? "secondary" : "outline"}
                 onClick={() => setOrderImportMode("Date range")}
               >
                 <CalendarIcon /> Date range
@@ -330,13 +330,13 @@ export function SyncDashboard() {
               <p className="text-muted-foreground text-xs">{formatProgress(progress["import-orders"])}</p>
             )}
 
-            <Button size="sm" disabled={triggering !== null} onClick={() => void runImportExistingOrders()}>
+            <Button size="sm" className="mt-auto" disabled={triggering !== null} onClick={() => void runImportExistingOrders()}>
               <RefreshCw className={cn(triggering === "import-orders" && "animate-spin")} /> Import Orders from Shopify
             </Button>
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex flex-col">
           <CardHeader>
             <div className="flex items-center gap-2.5">
               <span className="flex size-7 items-center justify-center rounded-md border bg-background">
@@ -348,10 +348,10 @@ export function SyncDashboard() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="flex flex-col gap-3">
+          <CardContent className="flex flex-1 flex-col items-start gap-3">
             <p className="text-muted-foreground text-sm">Send the latest stock updates from Alaiy OS to Shopify.</p>
             {progress.inventory && <p className="text-muted-foreground text-xs">{formatProgress(progress.inventory)}</p>}
-            <Button size="sm" disabled={triggering !== null} onClick={() => void trigger("inventory", triggerInventoryPush, "Inventory sync")}>
+            <Button size="sm" className="mt-auto" disabled={triggering !== null} onClick={() => void trigger("inventory", triggerInventoryPush, "Inventory sync")}>
               <RefreshCw className={cn(triggering === "inventory" && "animate-spin")} /> Sync Inventory
             </Button>
           </CardContent>
@@ -371,7 +371,7 @@ export function SyncDashboard() {
           </div>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2">
-          <div className="flex flex-col gap-2 rounded-lg border p-3">
+          <div className="flex flex-col items-start gap-2 rounded-lg border p-3">
             <p className="font-medium text-sm">Import</p>
             <p className="text-muted-foreground text-xs">Import products from Shopify.</p>
             {progress.products && <p className="text-muted-foreground text-xs">{formatProgress(progress.products)}</p>}
@@ -379,7 +379,7 @@ export function SyncDashboard() {
               <RefreshCw className={cn(triggering === "products" && "animate-spin")} /> Import Products from Shopify
             </Button>
           </div>
-          <div className="flex flex-col gap-2 rounded-lg border p-3">
+          <div className="flex flex-col items-start gap-2 rounded-lg border p-3">
             <p className="font-medium text-sm">Export</p>
             <p className="text-muted-foreground text-xs">Push local (not-yet-linked) products to Shopify.</p>
             {progress["export-products"] && (
@@ -424,7 +424,7 @@ export function SyncDashboard() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="flex flex-col gap-3">
+          <CardContent className="flex flex-col items-start gap-3">
             <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
