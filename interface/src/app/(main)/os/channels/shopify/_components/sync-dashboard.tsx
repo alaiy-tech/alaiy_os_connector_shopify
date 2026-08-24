@@ -264,112 +264,113 @@ export function SyncDashboard() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
-              <ShoppingCart className="size-4" />
-            </span>
-            <div>
-              <CardTitle>Orders</CardTitle>
-              <CardDescription>Import Shopify orders into Alaiy OS.</CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              variant={orderImportMode === "All orders" ? "default" : "outline"}
-              className="flex-1 justify-start"
-              onClick={() => setOrderImportMode("All orders")}
-            >
-              <ListIcon /> All orders
-            </Button>
-            <Button
-              type="button"
-              variant={orderImportMode === "Date range" ? "default" : "outline"}
-              className="flex-1 justify-start"
-              onClick={() => setOrderImportMode("Date range")}
-            >
-              <CalendarIcon /> Date range
-            </Button>
-          </div>
-
-          {orderImportMode === "Date range" && (
-            <div className="flex flex-wrap gap-2">
-              <div className="space-y-1">
-                <Label htmlFor="import-from" className="text-muted-foreground text-xs">
-                  From
-                </Label>
-                <Input id="import-from" type="date" value={importFrom} onChange={(e) => setImportFrom(e.target.value)} className="h-8" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="import-to" className="text-muted-foreground text-xs">
-                  To
-                </Label>
-                <Input id="import-to" type="date" value={importTo} onChange={(e) => setImportTo(e.target.value)} className="h-8" />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2.5">
+              <span className="flex size-7 items-center justify-center rounded-md border bg-background">
+                <ShoppingCart className="size-3.5" />
+              </span>
+              <div>
+                <CardTitle className="text-base">Orders</CardTitle>
+                <CardDescription>Import Shopify orders into Alaiy OS.</CardDescription>
               </div>
             </div>
-          )}
-
-          <p className="text-muted-foreground text-sm">Choose the import range and bring Shopify orders into Alaiy OS.</p>
-          <div className="flex flex-wrap gap-4 text-muted-foreground text-sm">
-            <span className="flex items-center gap-1.5">
-              <CheckCircle className="size-4" /> Sales Orders
-            </span>
-            <span className="flex items-center gap-1.5">
-              <FileText className="size-4" /> Invoices &amp; Payments
-            </span>
-            <span className="flex items-center gap-1.5">
-              <Truck className="size-4" /> Fulfillments
-            </span>
-          </div>
-
-          {progress["import-orders"] && (
-            <p className="text-muted-foreground text-xs">{formatProgress(progress["import-orders"])}</p>
-          )}
-
-          <Button disabled={triggering !== null} onClick={() => void runImportExistingOrders()}>
-            <RefreshCw className={cn(triggering === "import-orders" && "animate-spin")} /> Import Orders from Shopify
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
-              <Warehouse className="size-4" />
-            </span>
-            <div>
-              <CardTitle>Inventory</CardTitle>
-              <CardDescription>Push stock levels from Alaiy OS to Shopify.</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex gap-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant={orderImportMode === "All orders" ? "secondary" : "ghost"}
+                onClick={() => setOrderImportMode("All orders")}
+              >
+                <ListIcon /> All orders
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={orderImportMode === "Date range" ? "secondary" : "ghost"}
+                onClick={() => setOrderImportMode("Date range")}
+              >
+                <CalendarIcon /> Date range
+              </Button>
             </div>
-          </div>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <p className="text-muted-foreground text-sm">Send the latest stock updates from Alaiy OS to Shopify.</p>
-          {progress.inventory && <p className="text-muted-foreground text-xs">{formatProgress(progress.inventory)}</p>}
-          <Button disabled={triggering !== null} onClick={() => void trigger("inventory", triggerInventoryPush, "Inventory sync")}>
-            <RefreshCw className={cn(triggering === "inventory" && "animate-spin")} /> Sync Inventory
-          </Button>
-        </CardContent>
-      </Card>
+
+            {orderImportMode === "Date range" && (
+              <div className="flex flex-wrap gap-2">
+                <div className="space-y-1">
+                  <Label htmlFor="import-from" className="text-muted-foreground text-xs">
+                    From
+                  </Label>
+                  <Input id="import-from" type="date" value={importFrom} onChange={(e) => setImportFrom(e.target.value)} className="h-8" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="import-to" className="text-muted-foreground text-xs">
+                    To
+                  </Label>
+                  <Input id="import-to" type="date" value={importTo} onChange={(e) => setImportTo(e.target.value)} className="h-8" />
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-3 text-muted-foreground text-xs">
+              <span className="flex items-center gap-1">
+                <CheckCircle className="size-3.5" /> Sales Orders
+              </span>
+              <span className="flex items-center gap-1">
+                <FileText className="size-3.5" /> Invoices &amp; Payments
+              </span>
+              <span className="flex items-center gap-1">
+                <Truck className="size-3.5" /> Fulfillments
+              </span>
+            </div>
+
+            {progress["import-orders"] && (
+              <p className="text-muted-foreground text-xs">{formatProgress(progress["import-orders"])}</p>
+            )}
+
+            <Button size="sm" disabled={triggering !== null} onClick={() => void runImportExistingOrders()}>
+              <RefreshCw className={cn(triggering === "import-orders" && "animate-spin")} /> Import Orders from Shopify
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2.5">
+              <span className="flex size-7 items-center justify-center rounded-md border bg-background">
+                <Warehouse className="size-3.5" />
+              </span>
+              <div>
+                <CardTitle className="text-base">Inventory</CardTitle>
+                <CardDescription>Push stock levels from Alaiy OS to Shopify.</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <p className="text-muted-foreground text-sm">Send the latest stock updates from Alaiy OS to Shopify.</p>
+            {progress.inventory && <p className="text-muted-foreground text-xs">{formatProgress(progress.inventory)}</p>}
+            <Button size="sm" disabled={triggering !== null} onClick={() => void trigger("inventory", triggerInventoryPush, "Inventory sync")}>
+              <RefreshCw className={cn(triggering === "inventory" && "animate-spin")} /> Sync Inventory
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
 
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-3">
-            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
-              <Package className="size-4" />
+          <div className="flex items-center gap-2.5">
+            <span className="flex size-7 items-center justify-center rounded-md border bg-background">
+              <Package className="size-3.5" />
             </span>
             <div>
-              <CardTitle>Products</CardTitle>
+              <CardTitle className="text-base">Products</CardTitle>
               <CardDescription>Manage Shopify products and variants.</CardDescription>
             </div>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
+        <CardContent className="grid gap-3 md:grid-cols-2">
           <div className="flex flex-col gap-2 rounded-lg border p-3">
             <p className="font-medium text-sm">Import</p>
             <p className="text-muted-foreground text-xs">Import products from Shopify.</p>
@@ -391,39 +392,40 @@ export function SyncDashboard() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
-              <Store className="size-4" />
-            </span>
-            <div>
-              <CardTitle>Listings</CardTitle>
-              <CardDescription>Per-marketplace product listings (title, price, images, variants).</CardDescription>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2.5">
+              <span className="flex size-7 items-center justify-center rounded-md border bg-background">
+                <Store className="size-3.5" />
+              </span>
+              <div>
+                <CardTitle className="text-base">Listings</CardTitle>
+                <CardDescription>Per-marketplace product listings (title, price, images, variants).</CardDescription>
+              </div>
             </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <Button variant="outline" asChild>
-            <Link href="/os/channels/shopify/listings">Manage Listings</Link>
-          </Button>
-        </CardContent>
-      </Card>
+          </CardHeader>
+          <CardContent>
+            <Button size="sm" variant="outline" asChild>
+              <Link href="/os/channels/shopify/listings">Manage Listings</Link>
+            </Button>
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
-              <TagIcon className="size-4" />
-            </span>
-            <div>
-              <CardTitle>Categories &amp; Tags</CardTitle>
-              <CardDescription>Refresh cached taxonomy, tags, collections and locations</CardDescription>
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2.5">
+              <span className="flex size-7 items-center justify-center rounded-md border bg-background">
+                <TagIcon className="size-3.5" />
+              </span>
+              <div>
+                <CardTitle className="text-base">Categories &amp; Tags</CardTitle>
+                <CardDescription>Refresh cached taxonomy, tags, collections and locations</CardDescription>
+              </div>
             </div>
-          </div>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex flex-wrap gap-2">
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
               variant="outline"
@@ -465,8 +467,9 @@ export function SyncDashboard() {
               {progress.locations && <p>Locations: {formatProgress(progress.locations)}</p>}
             </div>
           )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </div>
 
       <Card>
         <CardHeader>
