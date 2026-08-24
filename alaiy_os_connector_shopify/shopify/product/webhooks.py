@@ -219,7 +219,7 @@ def _handle_product_update(product_id: str, product: dict):
     frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
  
 
-def _update_item_from_shopify(item, product: dict, _retried=False):
+def _update_item_from_shopify(item, product: dict, _retry_count=0):
     """
     Update Alaiy OS Item from Shopify product (inbound sync).
 
@@ -233,7 +233,7 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     GraphQL-based one-time import/pull does. Also NOT updated: stock
     levels (separate feature), variant structure (add/remove variants).
 
-    _retried is internal only -- see the TimestampMismatchError handling
+    _retry_count is internal only -- see the TimestampMismatchError handling
     at the bottom of this function.
     """
     settings = frappe.get_single("Shopify Connector Settings")
@@ -355,11 +355,11 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
         # kept from the stale `item`), so it's safe to just reload a
         # current copy and replay the whole update once rather than lose
         # it entirely.
-        if _retried:
+        if _retry_count >= 2:
             raise
         frappe.db.rollback()
         fresh_item = frappe.get_doc("Item", item.name)
-        return _update_item_from_shopify(fresh_item, product, _retried=True)
+        return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1)
     frappe.db.commit()
 
     # Images are LISTING-scoped too. With a Listing, route Shopify's images
