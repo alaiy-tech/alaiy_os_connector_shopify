@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@alaiy-os/ui/badge";
@@ -188,33 +189,41 @@ export function SyncDashboard() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-4">
         <StatCard icon={<Package className="size-4" />} label="Total items" value={stats.items_total} comparison="Every Item in the catalog" />
-        <StatCard
-          icon={<Package className="size-4" />}
-          label="Products"
-          value={stats.templates_total}
-          comparison={`${stats.templates_pushed} pushed to Shopify · ${stats.templates_pending} pending`}
-        />
-        <StatCard
-          icon={<Store className="size-4" />}
-          label="Listings"
-          value={stats.listings_total}
-          comparison={`${stats.listings_enabled} enabled`}
-        />
-        <StatCard
-          icon={<Warehouse className="size-4" />}
-          label="Variants"
-          value={stats.variants_total}
-          comparison={`${stats.variants_pushed} pushed to Shopify`}
-        />
-        <StatCard
-          icon={<ShoppingCart className="size-4" />}
-          label="Orders synced"
-          value={stats.orders_synced}
-          comparison="Linked to a Shopify order"
-        />
+        <StatCard icon={<Package className="size-4" />} label="Product templates" value={stats.templates_total} comparison="Templates only, not variants" />
+        <StatCard icon={<RefreshCw className="size-4" />} label="Pushed to Shopify" value={stats.templates_pushed} comparison="Templates linked to a Shopify product" />
+        <StatCard icon={<RefreshCw className="size-4" />} label="Pending export" value={stats.templates_pending} comparison="Not yet linked to Shopify" />
+        <StatCard icon={<Warehouse className="size-4" />} label="Variants" value={stats.variants_total} comparison="Total variants across all templates" />
+        <StatCard icon={<Warehouse className="size-4" />} label="Variants pushed" value={stats.variants_pushed} comparison="Variants linked to a Shopify variant" />
+        <StatCard icon={<Store className="size-4" />} label="Listings" value={stats.listings_total} comparison={`${stats.listings_enabled} enabled`} />
+        <StatCard icon={<ShoppingCart className="size-4" />} label="Orders synced" value={stats.orders_synced} comparison="Linked to a Shopify order" />
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Templates by status</CardTitle>
+          <CardDescription>Click a status to jump to those listings.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-3 gap-4">
+          {(
+            [
+              { label: "Active", value: stats.templates_active },
+              { label: "Draft", value: stats.templates_draft },
+              { label: "Archived", value: stats.templates_archived },
+            ] as const
+          ).map((s) => (
+            <Link
+              key={s.label}
+              href={`/os/channels/shopify/listings?status=${encodeURIComponent(s.label)}`}
+              className="rounded-lg border p-3 transition-colors hover:bg-accent"
+            >
+              <div className="text-2xl leading-none tracking-tight tabular-nums">{s.value.toLocaleString()}</div>
+              <div className="text-muted-foreground text-sm">{s.label}</div>
+            </Link>
+          ))}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

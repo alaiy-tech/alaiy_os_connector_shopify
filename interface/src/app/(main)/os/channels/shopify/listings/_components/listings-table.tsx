@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 import { Badge } from "@alaiy-os/ui/badge";
 import { Button } from "@alaiy-os/ui/button";
@@ -39,8 +40,14 @@ type StatusTab = (typeof STATUS_TABS)[number];
 // the cap silently.
 const ROW_LIMIT = 200;
 
+function isStatusTab(value: string | null): value is StatusTab {
+  return !!value && (STATUS_TABS as readonly string[]).includes(value);
+}
+
 export function ListingsTable() {
-  const [tab, setTab] = useState<StatusTab>("All");
+  const searchParams = useSearchParams();
+  const initialTab = searchParams.get("status");
+  const [tab, setTab] = useState<StatusTab>(isStatusTab(initialTab) ? initialTab : "All");
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<ShopifyListing[] | null>(null);
   const [error, setError] = useState<string | null>(null);
