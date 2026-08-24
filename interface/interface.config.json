@@ -5,12 +5,20 @@
     {
       "group": "Channels",
       "items": [
-        { "id": "shopify-dashboard", "title": "Shopify Dashboard", "url": "/os/channels/shopify", "icon": "shopping-bag" },
-        { "id": "shopify-listings", "title": "Shopify Listings", "url": "/os/channels/shopify/listings", "icon": "list" },
-        { "id": "shopify-categories", "title": "Shopify Categories", "url": "/os/channels/shopify/categories", "icon": "folder-tree" },
-        { "id": "shopify-collections", "title": "Shopify Collections", "url": "/os/channels/shopify/collections", "icon": "layers" },
-        { "id": "shopify-locations", "title": "Shopify Locations", "url": "/os/channels/shopify/locations", "icon": "map-pin" },
-        { "id": "shopify-tags", "title": "Shopify Tags", "url": "/os/channels/shopify/tags", "icon": "tag" }
+        {
+          "id": "shopify",
+          "title": "Shopify",
+          "icon": "shopping-bag",
+          "subItems": [
+            { "id": "shopify-dashboard", "title": "Dashboard", "icon": "layout-dashboard", "url": "/os/channels/shopify" },
+            { "id": "shopify-listings", "title": "Listings", "icon": "list", "url": "/os/channels/shopify/listings" },
+            { "id": "shopify-categories", "title": "Categories", "icon": "folder-tree", "url": "/os/channels/shopify/categories" },
+            { "id": "shopify-collections", "title": "Collections", "icon": "layers", "url": "/os/channels/shopify/collections" },
+            { "id": "shopify-locations", "title": "Locations", "icon": "map-pin", "url": "/os/channels/shopify/locations" },
+            { "id": "shopify-tags", "title": "Tags", "icon": "tag", "url": "/os/channels/shopify/tags" },
+            { "id": "shopify-retry-queue", "title": "Retry Queue", "icon": "alert-triangle", "url": "/os/channels/shopify/retry-queue" }
+          ]
+        }
       ]
     }
   ]

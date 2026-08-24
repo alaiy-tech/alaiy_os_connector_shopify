@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import Link from "next/link";
+
 import { Badge } from "@alaiy-os/ui/badge";
 import { Button } from "@alaiy-os/ui/button";
 import { Card, CardContent, CardHeader } from "@alaiy-os/ui/card";
@@ -150,9 +152,19 @@ export function ListingsTable() {
                 ) : (
                   rows.map((row) => (
                     <TableRow key={row.name}>
-                      <TableCell className="font-medium">{row.item}</TableCell>
+                      <TableCell className="font-medium">
+                        <Link href={`/os/channels/shopify/listings/${encodeURIComponent(row.name)}`} className="hover:underline">
+                          {row.item}
+                        </Link>
+                      </TableCell>
                       <TableCell className="max-w-64 truncate" title={row.listing_title ?? undefined}>
-                        {row.listing_title || <span className="text-muted-foreground">—</span>}
+                        {row.listing_title ? (
+                          <Link href={`/os/channels/shopify/listings/${encodeURIComponent(row.name)}`} className="hover:underline">
+                            {row.listing_title}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Badge

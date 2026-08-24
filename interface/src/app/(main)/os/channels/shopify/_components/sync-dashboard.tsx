@@ -14,6 +14,7 @@ import { Package, RefreshCw, ShoppingCart, Store, Warehouse } from "lucide-react
 import { toast } from "sonner";
 
 import { getSyncStatusBadgeClass } from "@/constants/shopify";
+import { testShopifyConnection } from "@/lib/frappe/shopify-connection";
 import {
   type DashboardStats,
   type ShopifySideStats,
@@ -29,8 +30,11 @@ import {
   triggerProductExport,
   triggerProductImport,
 } from "@/lib/frappe/shopify-sync";
+import { ProductStatusDialog } from "./product-status-dialog";
 
 const CANCELLABLE_STATUSES = new Set(["queued", "running"]);
+const ACTIVE_LOG_STATUSES = new Set(["queued", "running"]);
+const POLL_MS = 2000;
 
 export function SyncDashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -42,6 +46,10 @@ export function SyncDashboard() {
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [importFrom, setImportFrom] = useState("");
   const [importTo, setImportTo] = useState("");
+  const [connection, setConnection] = useState<{ success: boolean; message: string } | null>(null);
+  const [progress, setProgress] = useState<Record<string, SyncLogRow | undefined>>({});
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -80,12 +88,42 @@ export function SyncDashboard() {
     };
   }, []);
 
+  useEffect(() => {
+    testShopifyConnection()
+      .then(setConnection)
+      .catch(() => setConnection({ success: false, message: "Could not reach the connection test." }));
+  }, []);
+
+  // Polls the sync log for one job every 2s while it's queued/running, same
+  // cadence as the old Desk page's poll_import_progress, stopping once the
+  // job leaves that state.
+  function pollLog(key: string, logName: string) {
+    fetchSyncStatus()
+      .then((rows) => {
+        const row = rows.find((r) => r.name === logName);
+        setProgress((prev) => ({ ...prev, [key]: row }));
+        if (row && ACTIVE_LOG_STATUSES.has(row.status)) {
+          setTimeout(() => pollLog(key, logName), POLL_MS);
+        } else {
+          void load();
+        }
+      })
+      .catch(() => {
+        // transient — the next manual refresh will pick the final state up
+      });
+  }
+
   async function trigger(key: string, run: () => Promise<unknown>, label: string) {
     setTriggering(key);
+    setProgress((prev) => ({ ...prev, [key]: undefined }));
     try {
-      await run();
+      const result = (await run()) as { log_name?: string } | undefined;
       toast.success(`${label} started.`);
-      setTimeout(() => void load(), 1500);
+      if (result?.log_name) {
+        pollLog(key, result.log_name);
+      } else {
+        setTimeout(() => void load(), 1500);
+      }
     } catch (error) {
       toast.error(shopifyErrorMessage(error, `Could not start ${label.toLowerCase()}.`));
     } finally {
@@ -137,7 +175,21 @@ export function SyncDashboard() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="flex items-center gap-2 rounded-lg border p-3 text-sm">
+        {connection === null ? (
+          <span className="text-muted-foreground">Checking connection…</span>
+        ) : (
+          <>
+            <Badge variant="outline" className={cn("border-0 font-medium", connection.success ? getSyncStatusBadgeClass("Success") : getSyncStatusBadgeClass("Failed"))}>
+              {connection.success ? "Connected" : "Not connected"}
+            </Badge>
+            <span className="text-muted-foreground">{connection.message}</span>
+          </>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <StatCard icon={<Package className="size-4" />} label="Total items" value={stats.items_total} comparison="Every Item in the catalog" />
         <StatCard
           icon={<Package className="size-4" />}
           label="Products"
@@ -209,25 +261,21 @@ export function SyncDashboard() {
             >
               <RefreshCw className={cn(triggering === "inventory" && "animate-spin")} /> Push Inventory
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={triggering !== null}
-              onClick={() => void trigger("products", () => triggerProductImport(), "Product import")}
-            >
+            <Button size="sm" variant="outline" disabled={triggering !== null} onClick={() => setImportDialogOpen(true)}>
               <RefreshCw className={cn(triggering === "products" && "animate-spin")} /> Import Products
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={triggering !== null}
-              onClick={() => void trigger("export-products", () => triggerProductExport(), "Product export")}
-            >
+            <Button size="sm" variant="outline" disabled={triggering !== null} onClick={() => setExportDialogOpen(true)}>
               <RefreshCw className={cn(triggering === "export-products" && "animate-spin")} /> Export Products
             </Button>
           </CardAction>
         </CardHeader>
         <CardContent>
+          {(progress.products || progress["export-products"]) && (
+            <div className="mb-3 flex flex-col gap-1 text-muted-foreground text-xs">
+              {progress.products && <p>Import: {formatProgress(progress.products)}</p>}
+              {progress["export-products"] && <p>Export: {formatProgress(progress["export-products"])}</p>}
+            </div>
+          )}
           <div className="flex flex-wrap items-end gap-2 rounded-lg border p-3">
             <div className="space-y-1">
               <Label htmlFor="import-from" className="text-muted-foreground text-xs">
@@ -261,6 +309,7 @@ export function SyncDashboard() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Type</TableHead>
+                  <TableHead>Trigger</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Started</TableHead>
                   <TableHead className="text-right">Processed</TableHead>
@@ -272,14 +321,24 @@ export function SyncDashboard() {
               <TableBody>
                 {log.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
                       No sync runs yet.
                     </TableCell>
                   </TableRow>
                 ) : (
                   log.map((row) => (
                     <TableRow key={row.name}>
-                      <TableCell className="capitalize">{row.sync_type}</TableCell>
+                      <TableCell className="capitalize">
+                        <a
+                          href={`/app/shopify-sync-log/${row.name}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="underline underline-offset-2 hover:text-foreground"
+                        >
+                          {row.sync_type}
+                        </a>
+                      </TableCell>
+                      <TableCell className="capitalize text-muted-foreground">{row.trigger}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className={cn("border-0 font-medium", getSyncStatusBadgeClass(row.status))}>
                           {row.status}
@@ -310,8 +369,33 @@ export function SyncDashboard() {
           </div>
         </CardContent>
       </Card>
+
+      <ProductStatusDialog
+        open={importDialogOpen}
+        onOpenChange={setImportDialogOpen}
+        title="Import Products from Shopify"
+        blurb="New products are created, changed products are updated, unchanged ones are left alone. On the very first run only, any stray unlinked product data is wiped first as a safety net."
+        primaryLabel="Import"
+        onConfirm={(statuses) => void trigger("products", () => triggerProductImport(statuses), "Product import")}
+      />
+      <ProductStatusDialog
+        open={exportDialogOpen}
+        onOpenChange={setExportDialogOpen}
+        title="Export Products to Shopify"
+        blurb="Pushes every local product that is not yet linked to Shopify. Only listings whose status is ticked below are sent."
+        primaryLabel="Export"
+        onConfirm={(statuses) => void trigger("export-products", () => triggerProductExport(statuses), "Product export")}
+      />
     </div>
   );
+}
+
+function formatProgress(row: SyncLogRow): string {
+  const parts = [row.status];
+  if (row.items_processed) parts.push(`${row.items_processed} processed`);
+  if (row.items_created) parts.push(`${row.items_created} created`);
+  if (row.items_failed) parts.push(`${row.items_failed} failed`);
+  return parts.join(" · ");
 }
 
 function StatCard({
