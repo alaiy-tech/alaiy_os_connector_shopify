@@ -369,7 +369,7 @@ export function SyncDashboard() {
             </div>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-3">
+        <CardContent className="grid gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-2 rounded-lg border p-3">
             <p className="font-medium text-sm">Import</p>
             <p className="text-muted-foreground text-xs">Import products from Shopify.</p>
@@ -388,13 +388,25 @@ export function SyncDashboard() {
               <RefreshCw className={cn(triggering === "export-products" && "animate-spin")} /> Export Products to Shopify
             </Button>
           </div>
-          <div className="flex flex-col gap-2 rounded-lg border p-3">
-            <p className="font-medium text-sm">Listings</p>
-            <p className="text-muted-foreground text-xs">Per-marketplace product listings (title, price, images, variants).</p>
-            <Button size="sm" variant="outline" asChild>
-              <Link href="/os/channels/shopify/listings">Manage Listings</Link>
-            </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
+              <Store className="size-4" />
+            </span>
+            <div>
+              <CardTitle>Listings</CardTitle>
+              <CardDescription>Per-marketplace product listings (title, price, images, variants).</CardDescription>
+            </div>
           </div>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" asChild>
+            <Link href="/os/channels/shopify/listings">Manage Listings</Link>
+          </Button>
         </CardContent>
       </Card>
 
