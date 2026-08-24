@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import { shopifyErrorMessage } from "@/lib/frappe/shopify-sync";
 
 import { LinkField } from "./link-field";
+import { LocationMapEditor, type LocationMapRow } from "./location-map-editor";
 
 const CONNECTOR_ID = "shopify";
 
@@ -32,7 +33,6 @@ const CONNECTOR_ID = "shopify";
 const INVOICE_TRIGGER_OPTIONS = ["Paid and Fulfilled", "Paid"];
 const ORDER_STATUS_FILTER_OPTIONS = ["Open", "Any", "Closed", "Cancelled"];
 const FULFILLMENT_SYNC_DIRECTION_OPTIONS = ["Shopify → Alaiy OS (default)", "Alaiy OS → Shopify (two-way)"];
-const INVENTORY_SYNC_DIRECTION_OPTIONS = ["Shopify → Alaiy OS only", "Alaiy OS → Shopify (two-way)"];
 const INVENTORY_SYNC_INTERVAL_OPTIONS = ["Disabled", "5 min", "15 min", "30 min", "60 min"];
 const TOKEN_REFRESH_INTERVAL_OPTIONS = ["Disabled", "6 hours", "12 hours", "24 hours"];
 
@@ -54,7 +54,6 @@ type Form = {
   invoiceTrigger: string;
   orderStatusFilter: string;
   fulfillmentSyncDirection: string;
-  inventorySyncDirection: string;
   inventorySyncInterval: string;
   tokenRefreshInterval: string;
   importActive: boolean;
@@ -63,6 +62,7 @@ type Form = {
   exportActive: boolean;
   exportDraft: boolean;
   exportArchived: boolean;
+  locationMap: LocationMapRow[];
 };
 
 const EMPTY: Form = {
@@ -83,7 +83,6 @@ const EMPTY: Form = {
   invoiceTrigger: "",
   orderStatusFilter: "",
   fulfillmentSyncDirection: "",
-  inventorySyncDirection: "",
   inventorySyncInterval: "",
   tokenRefreshInterval: "",
   importActive: false,
@@ -92,6 +91,7 @@ const EMPTY: Form = {
   exportActive: false,
   exportDraft: false,
   exportArchived: false,
+  locationMap: [],
 };
 
 /**
@@ -101,10 +101,8 @@ const EMPTY: Form = {
  * (`alaiy_os.api.connectors`), same as every other connector's settings
  * screen — Shopify needs no bespoke settings endpoint of its own.
  *
- * Not covered here yet: `sh_location_map` (a child table -- warehouse to
- * Shopify location mapping) and `sh_access_token` (set by the OAuth flow,
- * not typed in by hand). Both are real follow-up work, not omissions by
- * accident.
+ * Not covered here: `sh_access_token` (set by the OAuth flow, not typed in
+ * by hand).
  */
 export function ConnectorSettings() {
   const [config, setConfig] = useState<ConnectorConfig | null>(null);
@@ -144,7 +142,6 @@ export function ConnectorSettings() {
           invoiceTrigger: asText(v.sh_invoice_trigger),
           orderStatusFilter: asText(v.sh_order_status_filter),
           fulfillmentSyncDirection: asText(v.sh_fulfillment_sync_direction),
-          inventorySyncDirection: asText(v.sh_inventory_sync_direction),
           inventorySyncInterval: asText(v.sh_inventory_sync_interval),
           tokenRefreshInterval: asText(v.sh_token_refresh_interval),
           importActive: Boolean(v.sh_import_status_active),
@@ -153,6 +150,7 @@ export function ConnectorSettings() {
           exportActive: Boolean(v.sh_export_status_active),
           exportDraft: Boolean(v.sh_export_status_draft),
           exportArchived: Boolean(v.sh_export_status_archived),
+          locationMap: asLocationMapRows(v.sh_location_map),
         });
       } catch (error) {
         if (!cancelled) toast.error(shopifyErrorMessage(error, "Could not load the connector settings."));
@@ -207,7 +205,6 @@ export function ConnectorSettings() {
         sh_invoice_trigger: form.invoiceTrigger,
         sh_order_status_filter: form.orderStatusFilter,
         sh_fulfillment_sync_direction: form.fulfillmentSyncDirection,
-        sh_inventory_sync_direction: form.inventorySyncDirection,
         sh_inventory_sync_interval: form.inventorySyncInterval,
         sh_token_refresh_interval: form.tokenRefreshInterval,
         sh_import_status_active: form.importActive ? 1 : 0,
@@ -216,6 +213,7 @@ export function ConnectorSettings() {
         sh_export_status_active: form.exportActive ? 1 : 0,
         sh_export_status_draft: form.exportDraft ? 1 : 0,
         sh_export_status_archived: form.exportArchived ? 1 : 0,
+        sh_location_map: form.locationMap,
       };
       // A blank Password field is read as "no change" upstream, so only send one the user actually typed.
       if (form.clientSecret) values.sh_client_secret = form.clientSecret;
@@ -292,6 +290,7 @@ export function ConnectorSettings() {
               disabled={busy}
               onChange={(e) => set("shopUrl", e.target.value)}
             />
+            <p className="text-muted-foreground text-xs">Your Shopify store domain, e.g. myshop.myshopify.com</p>
           </div>
 
           <div className="space-y-2">
@@ -303,6 +302,7 @@ export function ConnectorSettings() {
               disabled={busy}
               onChange={(e) => set("clientId", e.target.value)}
             />
+            <p className="text-muted-foreground text-xs">Client ID from your Shopify custom app (Developer Dashboard)</p>
           </div>
 
           <div className="space-y-2">
@@ -316,6 +316,7 @@ export function ConnectorSettings() {
               disabled={busy}
               onChange={(e) => set("clientSecret", e.target.value)}
             />
+            <p className="text-muted-foreground text-xs">Client Secret from your Shopify custom app</p>
           </div>
 
           <div className="space-y-2">
@@ -329,6 +330,17 @@ export function ConnectorSettings() {
               disabled={busy}
               onChange={(e) => set("webhookSecret", e.target.value)}
             />
+            <p className="text-muted-foreground text-xs">
+              Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret
+              configured on the Shopify webhook subscriptions. Required: webhooks are rejected outright if this isn't set.
+            </p>
+          </div>
+
+          <div className="space-y-1 md:col-span-2">
+            <p className="text-muted-foreground text-xs">
+              Token last refreshed: {formatDatetime(config?.values.sh_token_refreshed_at)} · Token expires:{" "}
+              {formatDatetime(config?.values.sh_token_expires_at)}
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -360,6 +372,9 @@ export function ConnectorSettings() {
               onChange={(v) => set("returnWarehouse", v)}
               disabled={busy}
             />
+            <p className="text-muted-foreground text-xs">
+              Where a Shopify refund's Sales Return lands. Leave blank to use Default Warehouse instead.
+            </p>
           </div>
           <div className="space-y-2">
             <Label>Default Customer Group</Label>
@@ -378,6 +393,10 @@ export function ConnectorSettings() {
               onChange={(v) => set("defaultTerritory", v)}
               disabled={busy}
             />
+            <p className="text-muted-foreground text-xs">
+              Territory assigned to Customers auto-created from Shopify orders. Falls back to any existing Territory if
+              left blank.
+            </p>
           </div>
           <div className="space-y-2">
             <Label>Selling Price List</Label>
@@ -400,7 +419,25 @@ export function ConnectorSettings() {
           <div className="space-y-2">
             <Label>Tax Account</Label>
             <LinkField doctype="Account" value={form.taxAccount} onChange={(v) => set("taxAccount", v)} disabled={busy} />
+            <p className="text-muted-foreground text-xs">
+              Account that tax lines pulled from Shopify orders (CGST, SGST, VAT, ...) are booked against. Leave blank
+              to auto-resolve/create a "Shopify Tax" account under the company.
+            </p>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Inventory Locations</CardTitle>
+          <CardDescription>
+            Map Alaiy OS warehouses to Shopify locations for multi-location inventory sync. Run "Sync Locations" first
+            to load Shopify locations. Leave empty to push only the Default Warehouse to Shopify's primary location
+            (single-location mode).
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <LocationMapEditor rows={form.locationMap} onChange={(rows) => set("locationMap", rows)} disabled={busy} />
         </CardContent>
       </Card>
 
@@ -413,7 +450,10 @@ export function ConnectorSettings() {
           <div className="flex items-center justify-between gap-4 rounded-lg border p-3 md:col-span-2">
             <div>
               <Label htmlFor="sh-auto-invoice">Auto-create Sales Invoice</Label>
-              <p className="text-muted-foreground text-sm">When an order reaches the trigger status below.</p>
+              <p className="text-muted-foreground text-sm">
+                Auto-create + submit a Sales Invoice for Shopify orders. Submitting that invoice in Alaiy OS also marks
+                the order Paid on Shopify.
+              </p>
             </div>
             <Switch
               id="sh-auto-invoice"
@@ -425,6 +465,7 @@ export function ConnectorSettings() {
 
           <SelectField
             label="Generate Invoice When"
+            description="When to generate the invoice. 'Paid and Fulfilled' (recommended) waits for both payment and shipment -- correct for Cash on Delivery, where payment lands only on delivery. 'Paid' invoices as soon as the order is paid."
             value={form.invoiceTrigger}
             onChange={(v) => set("invoiceTrigger", v)}
             options={INVOICE_TRIGGER_OPTIONS}
@@ -432,6 +473,7 @@ export function ConnectorSettings() {
           />
           <SelectField
             label="Sync Orders With Status"
+            description="Filter for which orders to pull from Shopify"
             value={form.orderStatusFilter}
             onChange={(v) => set("orderStatusFilter", v)}
             options={ORDER_STATUS_FILTER_OPTIONS}
@@ -439,20 +481,15 @@ export function ConnectorSettings() {
           />
           <SelectField
             label="Fulfillment Sync Direction"
+            description="'Shopify → Alaiy OS' (default): a Shopify fulfillment auto-creates a submitted Delivery Note here -- today's only behavior, unchanged when left at default. 'Alaiy OS → Shopify (two-way)': in addition, submitting a Delivery Note here (e.g. a warehouse scanning items out against a Sales Order) creates a real Shopify fulfillment with tracking info. Safe to switch either way at any time -- no reinstall needed."
             value={form.fulfillmentSyncDirection}
             onChange={(v) => set("fulfillmentSyncDirection", v)}
             options={FULFILLMENT_SYNC_DIRECTION_OPTIONS}
             disabled={busy}
           />
           <SelectField
-            label="Inventory Sync Direction"
-            value={form.inventorySyncDirection}
-            onChange={(v) => set("inventorySyncDirection", v)}
-            options={INVENTORY_SYNC_DIRECTION_OPTIONS}
-            disabled={busy}
-          />
-          <SelectField
             label="Inventory Sync Interval"
+            description="How often to push Alaiy OS stock levels to Shopify"
             value={form.inventorySyncInterval}
             onChange={(v) => set("inventorySyncInterval", v)}
             options={INVENTORY_SYNC_INTERVAL_OPTIONS}
@@ -460,6 +497,7 @@ export function ConnectorSettings() {
           />
           <SelectField
             label="Token Refresh Interval"
+            description="How often to proactively mint a fresh access token, so a sync never has to hit an expired-token error first. Shopify's client_credentials tokens for this app were observed to last ~24h."
             value={form.tokenRefreshInterval}
             onChange={(v) => set("tokenRefreshInterval", v)}
             options={TOKEN_REFRESH_INTERVAL_OPTIONS}
@@ -519,12 +557,14 @@ export function ConnectorSettings() {
 
 function SelectField({
   label,
+  description,
   value,
   onChange,
   options,
   disabled,
 }: {
   label: string;
+  description?: string;
   value: string;
   onChange: (value: string) => void;
   options: string[];
@@ -545,6 +585,7 @@ function SelectField({
           ))}
         </SelectContent>
       </Select>
+      {description && <p className="text-muted-foreground text-xs">{description}</p>}
     </div>
   );
 }
@@ -566,6 +607,21 @@ function CheckRow({
       <Switch checked={checked} onCheckedChange={onChange} disabled={disabled} />
     </div>
   );
+}
+
+function asLocationMapRows(value: unknown): LocationMapRow[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => ({
+    warehouse: asText((row as Record<string, unknown>)?.warehouse),
+    shopify_location: asText((row as Record<string, unknown>)?.shopify_location),
+  }));
+}
+
+function formatDatetime(value: unknown): string {
+  const text = asText(value);
+  if (!text) return "—";
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
 }
 
 function asText(value: unknown): string {
