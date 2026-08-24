@@ -10,6 +10,7 @@ import { Button } from "@alaiy-os/ui/button";
 import { Card, CardContent, CardHeader } from "@alaiy-os/ui/card";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@alaiy-os/ui/input-group";
 import { Skeleton } from "@alaiy-os/ui/skeleton";
+import { Switch } from "@alaiy-os/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@alaiy-os/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@alaiy-os/ui/tabs";
 import { cn } from "@alaiy-os/utils";
@@ -17,6 +18,7 @@ import { Search, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { getListingStatusBadgeClass } from "@/constants/shopify";
+import { setListingEnabled } from "@/lib/frappe/shopify-listing-toggle";
 import { enableListingsByStatus, fetchResourceList, shopifyErrorMessage } from "@/lib/frappe/shopify-sync";
 
 interface ShopifyListing extends Record<string, unknown> {
@@ -53,6 +55,20 @@ export function ListingsTable() {
   const [error, setError] = useState<string | null>(null);
   const [enabling, setEnabling] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
+  const [togglingRow, setTogglingRow] = useState<string | null>(null);
+
+  async function toggleRow(row: ShopifyListing, next: boolean) {
+    setTogglingRow(row.name);
+    setRows((current) => current?.map((r) => (r.name === row.name ? { ...r, is_enabled: next ? 1 : 0 } : r)) ?? current);
+    try {
+      await setListingEnabled(row.name, next);
+    } catch (error) {
+      setRows((current) => current?.map((r) => (r.name === row.name ? { ...r, is_enabled: next ? 0 : 1 } : r)) ?? current);
+      toast.error(shopifyErrorMessage(error, "Could not update this listing."));
+    } finally {
+      setTogglingRow(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -182,7 +198,11 @@ export function ListingsTable() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={row.is_enabled ? "outline" : "secondary"}>{row.is_enabled ? "Enabled" : "Disabled"}</Badge>
+                        <Switch
+                          checked={!!row.is_enabled}
+                          disabled={togglingRow === row.name}
+                          onCheckedChange={(next) => void toggleRow(row, next)}
+                        />
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {row.listing_price != null ? row.listing_price.toFixed(2) : <span className="text-muted-foreground">—</span>}
