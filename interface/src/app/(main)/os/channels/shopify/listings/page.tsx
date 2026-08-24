@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+
 import { PageHeader } from "@alaiy-os/layout/page-header";
 
 import { ListingCsvActions } from "./_components/listing-csv-actions";
@@ -11,7 +13,9 @@ export default function Page() {
         subtitle="Every product listed on your Shopify storefront."
         action={<ListingCsvActions />}
       />
-      <ListingsTable />
+      <Suspense>
+        <ListingsTable />
+      </Suspense>
     </div>
   );
 }
