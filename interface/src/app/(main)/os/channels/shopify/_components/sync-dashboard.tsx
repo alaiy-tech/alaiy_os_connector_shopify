@@ -20,6 +20,7 @@ import {
   RefreshCw,
   ShoppingCart,
   Store,
+  Tag as TagIcon,
   Truck,
   Warehouse,
 } from "lucide-react";
@@ -35,10 +36,13 @@ import {
   fetchShopifySideStats,
   fetchSyncStatus,
   importExistingOrders,
+  refreshShopifyCollections,
+  refreshShopifyLocations,
+  refreshShopifyTags,
+  refreshShopifyTaxonomy,
   requestCancelSync,
   shopifyErrorMessage,
   triggerInventoryPush,
-  triggerOrdersSync,
   triggerProductExport,
   triggerProductImport,
 } from "@/lib/frappe/shopify-sync";
@@ -326,17 +330,69 @@ export function SyncDashboard() {
             <p className="text-muted-foreground text-xs">{formatProgress(progress["import-orders"])}</p>
           )}
 
-          <div className="flex items-center gap-2">
-            <Button disabled={triggering !== null} onClick={() => void runImportExistingOrders()}>
-              <RefreshCw className={cn(triggering === "import-orders" && "animate-spin")} /> Import Orders from Shopify
+          <Button disabled={triggering !== null} onClick={() => void runImportExistingOrders()}>
+            <RefreshCw className={cn(triggering === "import-orders" && "animate-spin")} /> Import Orders from Shopify
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
+              <Warehouse className="size-4" />
+            </span>
+            <div>
+              <CardTitle>Inventory</CardTitle>
+              <CardDescription>Push stock levels from Alaiy OS to Shopify.</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p className="text-muted-foreground text-sm">Send the latest stock updates from Alaiy OS to Shopify.</p>
+          {progress.inventory && <p className="text-muted-foreground text-xs">{formatProgress(progress.inventory)}</p>}
+          <Button disabled={triggering !== null} onClick={() => void trigger("inventory", triggerInventoryPush, "Inventory sync")}>
+            <RefreshCw className={cn(triggering === "inventory" && "animate-spin")} /> Sync Inventory
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
+              <Package className="size-4" />
+            </span>
+            <div>
+              <CardTitle>Products</CardTitle>
+              <CardDescription>Manage Shopify products and variants.</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-3">
+          <div className="flex flex-col gap-2 rounded-lg border p-3">
+            <p className="font-medium text-sm">Import</p>
+            <p className="text-muted-foreground text-xs">Import products from Shopify.</p>
+            {progress.products && <p className="text-muted-foreground text-xs">{formatProgress(progress.products)}</p>}
+            <Button size="sm" disabled={triggering !== null} onClick={() => setImportDialogOpen(true)}>
+              <RefreshCw className={cn(triggering === "products" && "animate-spin")} /> Import Products from Shopify
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={triggering !== null}
-              onClick={() => void trigger("orders", triggerOrdersSync, "Order sync")}
-            >
-              <RefreshCw className={cn(triggering === "orders" && "animate-spin")} /> Sync recent changes only
+          </div>
+          <div className="flex flex-col gap-2 rounded-lg border p-3">
+            <p className="font-medium text-sm">Export</p>
+            <p className="text-muted-foreground text-xs">Push local (not-yet-linked) products to Shopify.</p>
+            {progress["export-products"] && (
+              <p className="text-muted-foreground text-xs">{formatProgress(progress["export-products"])}</p>
+            )}
+            <Button size="sm" variant="outline" disabled={triggering !== null} onClick={() => setExportDialogOpen(true)}>
+              <RefreshCw className={cn(triggering === "export-products" && "animate-spin")} /> Export Products to Shopify
+            </Button>
+          </div>
+          <div className="flex flex-col gap-2 rounded-lg border p-3">
+            <p className="font-medium text-sm">Listings</p>
+            <p className="text-muted-foreground text-xs">Per-marketplace product listings (title, price, images, variants).</p>
+            <Button size="sm" variant="outline" asChild>
+              <Link href="/os/channels/shopify/listings">Manage Listings</Link>
             </Button>
           </div>
         </CardContent>
@@ -344,30 +400,57 @@ export function SyncDashboard() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Products &amp; Inventory</CardTitle>
-          <CardDescription>Push stock, import/export products, or check recent runs below.</CardDescription>
-          <CardAction className="flex flex-wrap gap-2">
+          <div className="flex items-center gap-3">
+            <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
+              <TagIcon className="size-4" />
+            </span>
+            <div>
+              <CardTitle>Categories &amp; Tags</CardTitle>
+              <CardDescription>Refresh cached taxonomy, tags, collections and locations</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
               variant="outline"
               disabled={triggering !== null}
-              onClick={() => void trigger("inventory", triggerInventoryPush, "Inventory push")}
+              onClick={() => void trigger("categories", refreshShopifyTaxonomy, "Category sync")}
             >
-              <RefreshCw className={cn(triggering === "inventory" && "animate-spin")} /> Push Inventory
+              <RefreshCw className={cn(triggering === "categories" && "animate-spin")} /> Sync Categories
             </Button>
-            <Button size="sm" variant="outline" disabled={triggering !== null} onClick={() => setImportDialogOpen(true)}>
-              <RefreshCw className={cn(triggering === "products" && "animate-spin")} /> Import Products
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={triggering !== null}
+              onClick={() => void trigger("tags", refreshShopifyTags, "Tags sync")}
+            >
+              <RefreshCw className={cn(triggering === "tags" && "animate-spin")} /> Sync Tags
             </Button>
-            <Button size="sm" variant="outline" disabled={triggering !== null} onClick={() => setExportDialogOpen(true)}>
-              <RefreshCw className={cn(triggering === "export-products" && "animate-spin")} /> Export Products
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={triggering !== null}
+              onClick={() => void trigger("collections", refreshShopifyCollections, "Collections sync")}
+            >
+              <RefreshCw className={cn(triggering === "collections" && "animate-spin")} /> Sync Collections
             </Button>
-          </CardAction>
-        </CardHeader>
-        <CardContent>
-          {(progress.products || progress["export-products"]) && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={triggering !== null}
+              onClick={() => void trigger("locations", refreshShopifyLocations, "Locations sync")}
+            >
+              <RefreshCw className={cn(triggering === "locations" && "animate-spin")} /> Sync Locations
+            </Button>
+          </div>
+          {(progress.categories || progress.tags || progress.collections || progress.locations) && (
             <div className="flex flex-col gap-1 text-muted-foreground text-xs">
-              {progress.products && <p>Import: {formatProgress(progress.products)}</p>}
-              {progress["export-products"] && <p>Export: {formatProgress(progress["export-products"])}</p>}
+              {progress.categories && <p>Categories: {formatProgress(progress.categories)}</p>}
+              {progress.tags && <p>Tags: {formatProgress(progress.tags)}</p>}
+              {progress.collections && <p>Collections: {formatProgress(progress.collections)}</p>}
+              {progress.locations && <p>Locations: {formatProgress(progress.locations)}</p>}
             </div>
           )}
         </CardContent>
