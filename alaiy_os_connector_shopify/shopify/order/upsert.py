@@ -236,18 +236,19 @@ def _upsert_order_unlocked(order, order_id):
     frappe.db.commit()
 
     fulfillments = order.get("fulfillments") or []
-    # Only the REST webhook payload carries per-fulfillment line_items, which
-    # is what _sync_fulfillments needs to trim each Delivery Note to what
-    # that specific fulfillment shipped. The GraphQL pull reshapes
-    # fulfillments too (for delivery status/tracking) but deliberately
-    # without line items -- routing those into _sync_fulfillments would find
-    # nothing mappable and silently create no Delivery Note at all, so they
-    # take the full-order fallback and then get their status applied.
+    # Both the REST webhook payload and the GraphQL pull (via
+    # fulfillmentLineItems, added to fix a confirmed live bug -- an order
+    # shipped in more than one real Shopify fulfillment was being collapsed
+    # into a single Delivery Note by the full-order fallback below) now
+    # carry per-fulfillment line_items, so _sync_fulfillments can create one
+    # Delivery Note per real fulfillment regardless of source. The
+    # full-order fallback is now only for the rare case where Shopify
+    # itself reports the order fulfilled but with no fulfillments array at
+    # all (e.g. a quick manual "Complete order" -- see
+    # _create_delivery_note_if_needed's own docstring).
     if any(f.get("line_items") for f in fulfillments):
         _sync_fulfillments(so.name, fulfillments)
     elif so.sh_fulfillment_status == "fulfilled":
-        # GraphQL pull path has no per-fulfillment breakdown to work with
-        # (see _create_delivery_note_if_needed's note) -- full-order fallback.
         _create_delivery_note_if_needed(so.name)
 
     # Delivery status/tracking is independent of which path created the

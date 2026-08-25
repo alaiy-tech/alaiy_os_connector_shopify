@@ -57,6 +57,18 @@ query PullOrders($after: String, $queryString: String!) {
             company
             url
           }
+          fulfillmentLineItems(first: 50) {
+            nodes {
+              quantity
+              lineItem {
+                sku
+                title
+                variant {
+                  legacyResourceId
+                }
+              }
+            }
+          }
         }
         shippingAddress {
           name

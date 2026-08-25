@@ -76,21 +76,37 @@ def _order_node_to_rest_shape(node: dict) -> dict:
         shipping_lines.append({"title": ship_line.get("title") or "Shipping", "price": amt})
 
     # Reshaped to the REST webhook's own fulfillments shape so the delivery
-    # sync path doesn't have to care which source it came from. Only
-    # displayStatus + trackingInfo are carried -- the GraphQL pull query
-    # deliberately doesn't fetch per-fulfillment line items (see
-    # delivery_notes.py's _create_delivery_note_if_needed, which is the
-    # full-order fallback for exactly that reason).
+    # sync path doesn't have to care which source it came from. Now also
+    # carries line_items (from fulfillmentLineItems) -- confirmed live that
+    # an order shipped in more than one real Shopify fulfillment was being
+    # collapsed into a single local Delivery Note by the full-order
+    # fallback below, because this reshape used to drop per-fulfillment
+    # line items entirely (a pull-only order never had them to route
+    # through _sync_fulfillments). With line_items present, _upsert_order
+    # can route these into _sync_fulfillments just like a webhook payload,
+    # creating one Delivery Note per real fulfillment instead of one per
+    # order.
     fulfillments = []
     for f in (node.get("fulfillments") or []):
         tracking = f.get("trackingInfo") or []
         first = tracking[0] if tracking else {}
+        fulfillment_line_items = []
+        for fli_node in ((f.get("fulfillmentLineItems") or {}).get("nodes") or []):
+            li = fli_node.get("lineItem") or {}
+            variant = li.get("variant") or {}
+            fulfillment_line_items.append({
+                "sku": li.get("sku"),
+                "title": li.get("title"),
+                "quantity": fli_node.get("quantity"),
+                "variant_id": variant.get("legacyResourceId"),
+            })
         fulfillments.append({
             "id": f.get("legacyResourceId"),
             "display_status": (f.get("displayStatus") or "").upper(),
             "tracking_number": ",".join(t.get("number") or "" for t in tracking).strip(","),
             "tracking_company": first.get("company") or "",
             "tracking_url": ",".join(t.get("url") or "" for t in tracking).strip(","),
+            "line_items": fulfillment_line_items,
         })
 
     return {

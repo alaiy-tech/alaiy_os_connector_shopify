@@ -45,14 +45,17 @@ def _resolve_expense_account(company):
 
 def _create_delivery_note_if_needed(so_name):
     """
-    Full-order fallback for the one path that has no per-fulfillment
-    breakdown to work with: an order pulled/imported that's already
-    fulfilled on Shopify (historical import, or orders/create arriving
-    after the order was already completed there) -- the GraphQL orders
-    query used for pulls doesn't currently fetch the fulfillments
-    connection, only the REST-shaped webhook payload does. Delivers the
-    full order in one go; idempotent via the same against_sales_order
-    check _sync_fulfillments's per-fulfillment-id check doesn't cover here.
+    Full-order fallback for orders Shopify reports as fulfilled but with an
+    EMPTY fulfillments array -- confirmed live, this is how a merchant's
+    quick manual "Complete order" click on Shopify behaves, not a rare
+    edge case. The GraphQL pull now fetches fulfillmentLineItems (see
+    _order_node_to_rest_shape), so any order that DOES have real
+    fulfillment data -- from a pull or a webhook -- routes through
+    _sync_fulfillments instead and gets one Delivery Note per real
+    fulfillment; this fallback only fires when there's nothing to split.
+    Delivers the full order in one go; idempotent via the same
+    against_sales_order check _sync_fulfillments's per-fulfillment-id
+    check doesn't cover here.
     """
     if frappe.db.exists("Delivery Note Item", {"against_sales_order": so_name}):
         return
