@@ -72,8 +72,12 @@ def _local_product_counts_by_supplier():
         if row.sh_location_gid:
             loc_to_supplier[row.sh_location_gid] = row.linked_supplier
 
+    # Scoped to sh_shopify_status="active" so this matches the same
+    # population the live Shopify count uses -- comparing "every non-disabled
+    # local item" against "Shopify's active items only" made every supplier
+    # look like a huge mismatch when it was really two different scopes.
     items_with_location = frappe.get_all(
-        "Item", filters={"disabled": 0, "shopify_location": ["!=", ""]},
+        "Item", filters={"disabled": 0, "sh_shopify_status": "active", "shopify_location": ["!=", ""]},
         fields=["item_code", "shopify_location"],
     )
     located_codes = set()
@@ -89,7 +93,7 @@ def _local_product_counts_by_supplier():
         SELECT s.supplier, s.parent
         FROM `tabItem Supplier` s
         JOIN `tabItem` i ON i.name = s.parent
-        WHERE s.parenttype = 'Item' AND i.disabled = 0
+        WHERE s.parenttype = 'Item' AND i.disabled = 0 AND i.sh_shopify_status = 'active'
     """, as_dict=True)
     seen_via_fallback = set()
     for row in rows:
