@@ -64,22 +64,30 @@ def _real_fulfillments(client, shopify_order_id):
     return ((data or {}).get("order") or {}).get("fulfillments") or []
 
 
-def run(dry_run=True):
+def run(dry_run=True, order_names=None):
+    """order_names (optional list of Sales Order names) skips the full
+    1,553-order rescan entirely -- pass the exact orders a prior dry run
+    already identified (e.g. the 10 confirmed-safe ones) instead of
+    re-checking everything against Shopify again just to land on the
+    same result."""
     if isinstance(dry_run, str):
         dry_run = dry_run.lower() not in ("false", "0", "")
+    if isinstance(order_names, str):
+        import json as _json
+        order_names = _json.loads(order_names)
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.order.delivery_notes import _create_delivery_note_for_fulfillment
     from alaiy_os_connector_shopify.shopify.order.utils import _resolve_item_code
 
-    sos = frappe.db.sql("""
-        SELECT name, sh_shopify_order_id FROM `tabSales Order`
-        WHERE docstatus = 1
-          AND sh_shopify_order_id IS NOT NULL AND sh_shopify_order_id != ''
-        ORDER BY creation
-    """, as_dict=True)
+    filters = {"docstatus": 1, "sh_shopify_order_id": ["!=", ""]}
+    if order_names:
+        filters["name"] = ["in", order_names]
+    sos = frappe.get_all(
+        "Sales Order", filters=filters, fields=["name", "sh_shopify_order_id"], order_by="creation",
+    )
 
-    print(f"{'DRY RUN: ' if dry_run else ''}Checking {len(sos)} orders...", flush=True)
+    print(f"{'DRY RUN: ' if dry_run else ''}Checking {len(sos)} order(s)...", flush=True)
 
     client = ShopifyGraphQLClient()
 
