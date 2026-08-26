@@ -6,12 +6,10 @@ Shopify's live data, and flags anything missing locally.
 
 Supplier attribution: Shopify has no native "supplier" field on a
 product or order. A product belongs to a supplier via the same
-location-based ownership this whole app already uses everywhere else
-(Item.shopify_location -> Shopify Location.linked_supplier, or the
-Item Supplier child table as fallback -- see
-alaiy_os_thesolist.api.supplier.common._item_codes_for_supplier, the
-canonical version of this same logic). An order belongs to a supplier
-if at least one of its line items' SKU maps to that supplier.
+location-based ownership pattern used elsewhere on the client site
+this runs against (Item.shopify_location -> Shopify Location.linked_supplier,
+or the Item Supplier child table as fallback). An order belongs to a
+supplier if at least one of its line items' SKU maps to that supplier.
 
 Products: Shopify's own product search has no location filter, so
 per-supplier product counts are computed from OUR local data (which
