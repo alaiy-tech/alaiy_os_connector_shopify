@@ -61,10 +61,14 @@ query VariantInventoryLevels($id: ID!) {
 
 
 def _real_stock_locations(client, variant_id):
-    """[(location_gid, location_name, quantity), ...] for real stock
-    only (quantity > 0) -- same "any tracked location" vs "real owner"
-    distinction confirmed necessary on the Item Supplier corruption fix
-    earlier this session."""
+    """[(location_gid, location_name, quantity), ...] for every location
+    Shopify tracks this variant at, regardless of current quantity.
+
+    This counts product ASSIGNMENT to a location, not live stock level --
+    matching what the local side (Item.shopify_location) already means:
+    which location a product belongs to, not whether it's in stock right
+    now. Quantity is still returned for reference but no longer filters
+    the result."""
     variant_gid = f"gid://shopify/ProductVariant/{variant_id}"
     data = client.execute(_VARIANT_LOCATIONS_QUERY, {"id": variant_gid})
     variant = (data or {}).get("productVariant") or {}
@@ -75,8 +79,8 @@ def _real_stock_locations(client, variant_id):
         location = node.get("location") or {}
         quantities = node.get("quantities") or []
         qty = quantities[0].get("quantity") if quantities else 0
-        if location.get("id") and (qty or 0) > 0:
-            out.append((location["id"], location.get("name") or "", qty))
+        if location.get("id"):
+            out.append((location["id"], location.get("name") or "", qty or 0))
     return out
 
 

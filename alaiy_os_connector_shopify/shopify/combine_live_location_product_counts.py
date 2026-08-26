@@ -55,15 +55,23 @@ def run():
         if r.sh_location_gid
     }
 
+    # Each slice scans a different subset of items but can still hit the
+    # same location -- sum per location_gid across slices before using it,
+    # instead of treating every slice's row as a separate location.
+    location_totals = {}
+    for row in location_rows:
+        gid = row["location_gid"]
+        entry = location_totals.setdefault(gid, {"name": row["location_name"], "product_count": 0})
+        entry["product_count"] += int(row["product_count"] or 0)
+
     supplier_shopify_products = {}
     unmapped_locations = []
-    for row in location_rows:
-        supplier = gid_to_supplier.get(row["location_gid"])
-        count = int(row["product_count"] or 0)
+    for gid, entry in location_totals.items():
+        supplier = gid_to_supplier.get(gid)
         if supplier:
-            supplier_shopify_products[supplier] = supplier_shopify_products.get(supplier, 0) + count
+            supplier_shopify_products[supplier] = supplier_shopify_products.get(supplier, 0) + entry["product_count"]
         else:
-            unmapped_locations.append(row)
+            unmapped_locations.append({"location_gid": gid, "location_name": entry["name"], "product_count": entry["product_count"]})
 
     order_rows = {}
     for path in order_csvs:
@@ -111,9 +119,8 @@ def run():
 
     ws3 = wb.create_sheet("By Location")
     ws3.append(["Location GID", "Location Name", "Product Count", "Linked Supplier"])
-    for row in sorted(location_rows, key=lambda r: -int(r["product_count"] or 0)):
-        ws3.append([row["location_gid"], row["location_name"], row["product_count"],
-                    gid_to_supplier.get(row["location_gid"], "")])
+    for gid, entry in sorted(location_totals.items(), key=lambda kv: -kv[1]["product_count"]):
+        ws3.append([gid, entry["name"], entry["product_count"], gid_to_supplier.get(gid, "")])
 
     if unmapped_locations:
         ws4 = wb.create_sheet("Unmapped Locations")
