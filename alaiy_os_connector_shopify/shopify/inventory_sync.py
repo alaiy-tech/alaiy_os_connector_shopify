@@ -644,6 +644,13 @@ def apply_pulled_stock(corrections):
         if frappe.db.get_value("Item", c["item_code"], "disabled"):
             skipped.append((c["item_code"], "item disabled"))
             continue
+        # Same reasoning as the disabled-item skip above: Stock Reconciliation
+        # rejects the ENTIRE document if any row has a negative qty, so one bad
+        # pulled value would otherwise block every other real correction in the
+        # same warehouse's batch.
+        if flt(c["qty"]) < 0:
+            skipped.append((c["item_code"], f"negative qty from Shopify: {c['qty']}"))
+            continue
         rows_by_warehouse.setdefault(c["warehouse"], []).append(c)
 
     reconciliations, by_warehouse = [], {}
