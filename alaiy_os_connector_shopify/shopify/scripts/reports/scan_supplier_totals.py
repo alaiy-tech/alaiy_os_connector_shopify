@@ -44,11 +44,11 @@ tmux sessions, same convention as this app's other large scans:
     done
 
 Once every slice (or the single non-sliced run) has finished, combine
-the CSV(s) into one Excel workbook with a Summary/Product Mismatches/
-Missing Orders sheet each:
+with scan_live_location_product_counts.py's output into one Excel
+workbook (also needs that scan's CSVs present):
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.scripts.reports.combine_supplier_totals.run
+        alaiy_os_connector_shopify.shopify.scripts.reports.combine_live_location_product_counts.run
 """
 
 import frappe
