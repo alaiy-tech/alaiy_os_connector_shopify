@@ -214,6 +214,7 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
           node {
             name
             legacyResourceId
+            cancelledAt
             lineItems(first: 50) { edges { node { sku } } }
           }
         }
@@ -224,8 +225,15 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
 
     shopify_orders_by_supplier = {}
     total_orders_seen = 0
+    cancelled_skipped = 0
     for page_nodes in client.execute_paginated(q, {"after": None, "queryString": query_string}, ["orders"]):
         for node in page_nodes:
+            if node.get("cancelledAt"):
+                # The real order sync never creates a Sales Order for a
+                # cancelled Shopify order (upsert.py) -- counting one as
+                # "missing" here would be a false alarm, not a real gap.
+                cancelled_skipped += 1
+                continue
             total_orders_seen += 1
             skus = [e["node"]["sku"] for e in node.get("lineItems", {}).get("edges", []) if e["node"].get("sku")]
             order_suppliers = {sku_to_supplier[sku] for sku in skus if sku in sku_to_supplier}
@@ -236,7 +244,8 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
         if total_orders_seen % 200 == 0:
             print(f"  ...{total_orders_seen} orders scanned so far", flush=True)
 
-    print(f"\nTotal Shopify orders in window: {total_orders_seen}", flush=True)
+    print(f"\nTotal Shopify orders in window: {total_orders_seen} "
+          f"({cancelled_skipped} cancelled, excluded)", flush=True)
     print(f"=== Per-supplier totals ({len(suppliers)} supplier(s)) ===\n")
 
     rows_out = []
