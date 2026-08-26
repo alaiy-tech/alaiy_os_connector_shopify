@@ -86,9 +86,19 @@ def run(slice_index=None, slices=None):
     if (slice_index is None) != (slices is None):
         frappe.throw("slice_index and slices must be given together")
 
+    # sh_shopify_status is Shopify's own real ACTIVE/DRAFT/ARCHIVED status
+    # (synced from Shopify, distinct from Item.disabled which is a LOCAL
+    # archive flag -- disabled=0 also includes drafts, unpublished, and
+    # anything else that was never explicitly disabled here, which is why
+    # filtering on it alone massively overcounted "active" against what
+    # Shopify itself reports). Confirmed live elsewhere in this app this
+    # field can go stale, but it's still the right first-pass narrowing
+    # filter here -- the per-item Shopify call below reads the real,
+    # current status anyway, so a stale local flag only risks checking a
+    # few extra/missing items, not reporting a wrong final count.
     items = frappe.get_all(
         "Item",
-        filters={"disabled": 0, "sh_shopify_variant_id": ["!=", ""]},
+        filters={"disabled": 0, "sh_shopify_status": "active", "sh_shopify_variant_id": ["!=", ""]},
         fields=["item_code", "sh_shopify_variant_id"],
         order_by="item_code",
     )
