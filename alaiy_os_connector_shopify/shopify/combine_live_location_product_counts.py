@@ -31,6 +31,7 @@ def run():
     site_files_dir = frappe.utils.get_site_path("private/files")
     location_csvs = sorted(glob.glob(f"{site_files_dir}/live_location_product_counts*.csv"))
     order_csvs = sorted(glob.glob(f"{site_files_dir}/supplier_totals*.csv"))
+    mismatch_csvs = sorted(glob.glob(f"{site_files_dir}/location_mismatches*.csv"))
 
     if not location_csvs:
         print("No live_location_product_counts*.csv files found -- run scan_live_location_product_counts.py first.")
@@ -128,6 +129,16 @@ def run():
         for row in unmapped_locations:
             ws4.append([row["location_gid"], row["location_name"], row["product_count"]])
 
+    mismatch_rows = []
+    for path in mismatch_csvs:
+        with open(path, newline="", encoding="utf-8") as f:
+            mismatch_rows.extend(csv.DictReader(f))
+    if mismatch_rows:
+        ws5 = wb.create_sheet("Cross-Supplier Mismatches")
+        ws5.append(["Item Code", "Local Location (claimed supplier)", "Real Shopify Location(s)"])
+        for row in mismatch_rows:
+            ws5.append([row["item_code"], row["local_shopify_location"], row["real_shopify_locations"]])
+
     for ws in wb.worksheets:
         for cell in ws[1]:
             cell.font = header_font
@@ -148,7 +159,8 @@ def run():
     total_missing_orders = sum(int(order_rows.get(s, {}).get("missing_orders_count") or 0) for s in all_suppliers)
 
     print(f"\n{len(all_suppliers)} supplier(s). {product_mismatches} product count mismatch(es). "
-          f"{total_missing_orders} missing order(s) total. {len(unmapped_locations)} unmapped location(s).")
+          f"{total_missing_orders} missing order(s) total. {len(unmapped_locations)} unmapped location(s). "
+          f"{len(mismatch_rows)} cross-supplier item mismatch(es).")
     print(f"Wrote report to {private_path}")
     print(f"Downloadable at /files/{filename}")
 

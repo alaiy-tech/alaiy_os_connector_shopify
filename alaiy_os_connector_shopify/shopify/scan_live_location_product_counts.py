@@ -103,7 +103,7 @@ def run(slice_index=None, slices=None):
     items = frappe.get_all(
         "Item",
         filters={"disabled": 0, "sh_shopify_status": "active", "sh_shopify_variant_id": ["!=", ""]},
-        fields=["item_code", "sh_shopify_variant_id"],
+        fields=["item_code", "sh_shopify_variant_id", "shopify_location"],
         order_by="item_code",
     )
     if slices:
@@ -115,7 +115,7 @@ def run(slice_index=None, slices=None):
     client = ShopifyGraphQLClient()
 
     location_counts = {}  # location_gid -> {"name": str, "product_count": int}
-    no_real_stock, errors = [], []
+    no_real_stock, errors, location_mismatches = [], [], []
 
     for i, item in enumerate(items, 1):
         if i % 100 == 0 or i == len(items):
@@ -130,9 +130,19 @@ def run(slice_index=None, slices=None):
             no_real_stock.append(item.item_code)
             continue
 
+        real_gids = set()
         for gid, name, qty in real_locations:
             entry = location_counts.setdefault(gid, {"name": name, "product_count": 0})
             entry["product_count"] += 1
+            real_gids.add(gid)
+
+        # Cross-supplier leak check: local Item.shopify_location says this
+        # item belongs to one location, but Shopify's real tracked
+        # locations for the variant say otherwise -- means the item is
+        # showing up under a different supplier's location than local
+        # records claim.
+        if item.shopify_location and item.shopify_location not in real_gids:
+            location_mismatches.append((item.item_code, item.shopify_location, sorted(real_gids)))
 
     print(f"\n=== DONE: {len(items)} active item(s) checked ===")
     print(f"No real stock at any Shopify location: {len(no_real_stock)}")
@@ -145,6 +155,11 @@ def run(slice_index=None, slices=None):
         for code, err in errors[:15]:
             print(f"  {code}: {err}")
 
+    if location_mismatches:
+        print(f"\nCross-supplier location mismatches ({len(location_mismatches)}):")
+        for code, local_gid, real_gids in location_mismatches[:15]:
+            print(f"  {code}: local={local_gid} real={real_gids}")
+
     suffix = f"_slice{slice_index}" if slice_index is not None else ""
     import csv
     filename = f"live_location_product_counts{suffix}.csv"
@@ -156,4 +171,18 @@ def run(slice_index=None, slices=None):
             writer.writerow([gid, entry["name"], entry["product_count"]])
     print(f"\nWrote {len(location_counts)} location row(s) to {path}")
 
-    return {"items_checked": len(items), "locations_found": len(location_counts), "no_real_stock": len(no_real_stock)}
+    mismatch_filename = f"location_mismatches{suffix}.csv"
+    mismatch_path = frappe.utils.get_site_path(f"private/files/{mismatch_filename}")
+    with open(mismatch_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["item_code", "local_shopify_location", "real_shopify_locations"])
+        for code, local_gid, real_gids in location_mismatches:
+            writer.writerow([code, local_gid, "; ".join(real_gids)])
+    print(f"Wrote {len(location_mismatches)} mismatch row(s) to {mismatch_path}")
+
+    return {
+        "items_checked": len(items),
+        "locations_found": len(location_counts),
+        "no_real_stock": len(no_real_stock),
+        "location_mismatches": len(location_mismatches),
+    }
