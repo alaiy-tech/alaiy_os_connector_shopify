@@ -33,13 +33,13 @@ Run via bench execute, matching this app's own pull_stock_from_shopify.py /
 fix_conversion_rates.py convention:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.backfill_delivery_fields.run
+        alaiy_os_connector_shopify.shopify.scripts.backfills.backfill_delivery_fields.run
 
 Dry run is the default -- prints what would change, writes nothing.
 Apply for real:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.backfill_delivery_fields.run \
+        alaiy_os_connector_shopify.shopify.scripts.backfills.backfill_delivery_fields.run \
         --kwargs "{'dry_run': False}"
 """
 
@@ -52,7 +52,7 @@ def run(dry_run=True, slice_index=None, slices=None):
 
         for i in 0 1 2 3 4; do
           tmux new -d -s backfill_delivery_$i \
-            "bench --site <site> execute alaiy_os_connector_shopify.shopify.backfill_delivery_fields.run \
+            "bench --site <site> execute alaiy_os_connector_shopify.shopify.scripts.backfills.backfill_delivery_fields.run \
              --kwargs \"{'dry_run': True, 'slice_index': $i, 'slices': 5}\" 2>&1 | tee ~/backfill_delivery_$i.log"
         done
     """

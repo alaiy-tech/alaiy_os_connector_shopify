@@ -31,7 +31,7 @@ flat list.
 Read-only. Makes no writes.
 
   bench --site <site> execute \
-      alaiy_os_connector_shopify.shopify.scan_supplier_totals.run \
+      alaiy_os_connector_shopify.shopify.scripts.reports.scan_supplier_totals.run \
       --kwargs '{"date_from": "2026-01-01"}'
 
 slice_index/slices splits the per-order Shopify pull across parallel
@@ -39,7 +39,7 @@ tmux sessions, same convention as this app's other large scans:
 
     for i in 0 1 2 3; do
       tmux new -d -s supptotals$i "cd ~/alaiy_os_bench && bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.scan_supplier_totals.run \
+        alaiy_os_connector_shopify.shopify.scripts.reports.scan_supplier_totals.run \
         --kwargs \"{'date_from': '2026-01-01', 'slice_index': $i, 'slices': 4}\" 2>&1 | tee ~/supp_totals$i.log"
     done
 
@@ -48,7 +48,7 @@ the CSV(s) into one Excel workbook with a Summary/Product Mismatches/
 Missing Orders sheet each:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.combine_supplier_totals.run
+        alaiy_os_connector_shopify.shopify.scripts.reports.combine_supplier_totals.run
 """
 
 import frappe

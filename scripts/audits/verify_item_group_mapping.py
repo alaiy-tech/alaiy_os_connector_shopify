@@ -7,7 +7,7 @@ that script ran, so it never looked at them).
 
 Run:
     bench --site <site> console
-    exec(open("apps/alaiy_os_connector_shopify/scripts/verify_item_group_mapping.py").read(), globals())
+    exec(open("apps/alaiy_os_connector_shopify/scripts/audits/verify_item_group_mapping.py").read(), globals())
     r = check()
 """
 

@@ -14,7 +14,7 @@ each possibly sliced across parallel sessions):
     and local product counts.
 
   bench --site <site> execute \
-      alaiy_os_connector_shopify.shopify.combine_live_location_product_counts.run
+      alaiy_os_connector_shopify.shopify.scripts.reports.combine_live_location_product_counts.run
 """
 
 import csv

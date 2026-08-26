@@ -26,7 +26,7 @@ Shopify calls) rather than trusting a stale log file, since orders can
 change state between the audit run and this one.
 
   bench --site <site> execute \
-      alaiy_os_connector_shopify.shopify.scope_dn_split_fix.run
+      alaiy_os_connector_shopify.shopify.scripts.audits.scope_dn_split_fix.run
 """
 
 import frappe

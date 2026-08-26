@@ -18,7 +18,7 @@ split across parallel tmux sessions. Makes no other writes; the output
 Excel is saved to both private/files and public/files (downloadable).
 
   bench --site <site> execute \
-      alaiy_os_connector_shopify.shopify.combine_supplier_totals.run
+      alaiy_os_connector_shopify.shopify.scripts.reports.combine_supplier_totals.run
 """
 
 import csv

@@ -22,13 +22,13 @@ Run via bench execute, matching this app's own pull_stock_from_shopify.py
 convention:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.fix_conversion_rates.run
+        alaiy_os_connector_shopify.shopify.scripts.fixes.fix_conversion_rates.run
 
 Dry run is the default -- prints what would change, writes nothing.
 Apply for real:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.fix_conversion_rates.run \
+        alaiy_os_connector_shopify.shopify.scripts.fixes.fix_conversion_rates.run \
         --kwargs "{'dry_run': False}"
 """
 

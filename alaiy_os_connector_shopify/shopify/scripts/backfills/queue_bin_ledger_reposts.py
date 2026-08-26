@@ -21,7 +21,7 @@ Run detached, since this queues thousands of documents and each is a real
 insert+submit:
 
     tmux new -d -s repost_queue "cd ~/alaiy_os_bench && bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.queue_bin_ledger_reposts.run 2>&1 | tee ~/repost_queue.log"
+        alaiy_os_connector_shopify.shopify.scripts.backfills.queue_bin_ledger_reposts.run 2>&1 | tee ~/repost_queue.log"
 
 Then check progress any time, from anywhere, without needing this session:
 

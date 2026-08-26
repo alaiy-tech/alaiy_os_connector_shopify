@@ -17,7 +17,7 @@ docstring). Scope this first before deciding how -- or whether -- to fix
 any of it.
 
   bench --site <site> execute \
-      alaiy_os_connector_shopify.shopify.audit_fulfillment_dn_mismatch.run
+      alaiy_os_connector_shopify.shopify.scripts.audits.audit_fulfillment_dn_mismatch.run
 
 Optional: --kwargs '{"limit": 50}' to sample instead of running the full set.
 """

@@ -28,11 +28,11 @@ Read-only against Shopify. Never creates, cancels, or amends any
 document. Dry run by default.
 
   bench --site <site> execute \
-      alaiy_os_connector_shopify.shopify.backfill_multi_shipment_tracking.run
+      alaiy_os_connector_shopify.shopify.scripts.backfills.backfill_multi_shipment_tracking.run
 
 Apply for real:
   bench --site <site> execute \
-      alaiy_os_connector_shopify.shopify.backfill_multi_shipment_tracking.run \
+      alaiy_os_connector_shopify.shopify.scripts.backfills.backfill_multi_shipment_tracking.run \
       --kwargs "{'dry_run': False}"
 """
 

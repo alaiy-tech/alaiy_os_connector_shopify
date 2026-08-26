@@ -24,21 +24,21 @@ scan; use slice_index/slices to split it across parallel tmux sessions.
 Read-only. Makes no writes.
 
   bench --site <site> execute \
-      alaiy_os_connector_shopify.shopify.scan_live_location_product_counts.run
+      alaiy_os_connector_shopify.shopify.scripts.reports.scan_live_location_product_counts.run
 
 slice_index/slices splits the per-item Shopify calls across parallel
 tmux sessions, same convention as this app's other large scans:
 
     for i in 0 1 2 3; do
       tmux new -d -s livecounts$i "cd ~/alaiy_os_bench && bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.scan_live_location_product_counts.run \
+        alaiy_os_connector_shopify.shopify.scripts.reports.scan_live_location_product_counts.run \
         --kwargs \"{'slice_index': $i, 'slices': 4}\" 2>&1 | tee ~/live_counts$i.log"
     done
 
 Once every slice has finished, combine into one Excel workbook:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.combine_live_location_product_counts.run
+        alaiy_os_connector_shopify.shopify.scripts.reports.combine_live_location_product_counts.run
 """
 
 import frappe

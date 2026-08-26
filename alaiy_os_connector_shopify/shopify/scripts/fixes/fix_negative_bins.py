@@ -13,12 +13,12 @@ an internally-impossible state, not a mismatch against live data).
 Run via bench execute, dry-run by default:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.fix_negative_bins.run
+        alaiy_os_connector_shopify.shopify.scripts.fixes.fix_negative_bins.run
 
 Apply for real:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.fix_negative_bins.run \
+        alaiy_os_connector_shopify.shopify.scripts.fixes.fix_negative_bins.run \
         --kwargs "{'dry_run': False}"
 """
 

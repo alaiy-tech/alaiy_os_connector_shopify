@@ -18,12 +18,12 @@ nothing deleted.
 Run via bench execute, dry-run by default:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.migrate_default_warehouse_stock.run
+        alaiy_os_connector_shopify.shopify.scripts.backfills.migrate_default_warehouse_stock.run
 
 Apply for real:
 
     bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.migrate_default_warehouse_stock.run \
+        alaiy_os_connector_shopify.shopify.scripts.backfills.migrate_default_warehouse_stock.run \
         --kwargs "{'dry_run': False}"
 
 slice_index/slices splits the work across parallel tmux sessions, same
@@ -31,7 +31,7 @@ convention as pull_stock_from_shopify.py:
 
     for i in 0 1 2; do
       tmux new -d -s migrate$i "cd ~/alaiy_os_bench && bench --site <site> execute \
-        alaiy_os_connector_shopify.shopify.migrate_default_warehouse_stock.run \
+        alaiy_os_connector_shopify.shopify.scripts.backfills.migrate_default_warehouse_stock.run \
         --kwargs \"{'slice_index': $i, 'slices': 3}\" 2>&1 | tee ~/migrate_stock$i.log"
     done
 """
