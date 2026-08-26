@@ -199,7 +199,7 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
             "shopify_orders_in_window": len(shopify_order_ids),
             "local_orders_matched": local_order_count,
             "missing_orders_count": len(missing_orders),
-            "missing_orders": missing_orders[:10],
+            "missing_orders": missing_orders,
         }
         rows_out.append(row)
 
@@ -211,14 +211,25 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
 
     suffix = f"_slice{slice_index}" if slice_index is not None else ""
     import csv
-    path = frappe.utils.get_site_path(f"private/files/supplier_totals{suffix}.csv")
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    import shutil
+
+    filename = f"supplier_totals{suffix}.csv"
+    private_path = frappe.utils.get_site_path(f"private/files/{filename}")
+    with open(private_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["supplier", "local_products", "shopify_orders_in_window",
-                          "local_orders_matched", "missing_orders_count", "missing_orders_sample"])
+                          "local_orders_matched", "missing_orders_count", "missing_orders"])
         for row in rows_out:
             writer.writerow([row["supplier"], row["local_products"], row["shopify_orders_in_window"],
                               row["local_orders_matched"], row["missing_orders_count"], "; ".join(row["missing_orders"])])
-    print(f"\nWrote {len(rows_out)} supplier row(s) to {path}")
+    print(f"\nWrote {len(rows_out)} supplier row(s) to {private_path}")
+
+    # Also copied to public/files so it's directly downloadable via a plain
+    # URL (https://<site>/files/<filename>) without needing to log into
+    # Desk -- same convention this app's other one-off reports already use
+    # for handing a CSV to someone outside the team.
+    public_path = frappe.utils.get_site_path(f"public/files/{filename}")
+    shutil.copy(private_path, public_path)
+    print(f"Also copied to {public_path} (downloadable at /files/{filename})")
 
     return {"suppliers_checked": len(suppliers), "total_orders_in_window": total_orders_seen}
