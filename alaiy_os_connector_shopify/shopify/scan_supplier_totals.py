@@ -11,11 +11,14 @@ this runs against (Item.shopify_location -> Shopify Location.linked_supplier,
 or the Item Supplier child table as fallback). An order belongs to a
 supplier if at least one of its line items' SKU maps to that supplier.
 
-Products: Shopify's own product search has no location filter, so
-per-supplier product counts are computed from OUR local data (which
-mirrors Shopify via the regular product sync) rather than one Shopify
-call per supplier. A separate site-wide productsCount check flags if
-our local Item count has drifted from Shopify's real total at all.
+Products: per-supplier product counts are reported from BOTH sides --
+local (from our Item data, mirroring Shopify via the regular product
+sync) and live Shopify (one productsCount call per supplier's real
+Shopify location, using the "inventory_location_id:" product search
+filter). The very first live call is verified before trusting it for
+the rest of the run: if Shopify rejects that filter or the count comes
+back nonsensical, every supplier's Shopify product count is reported
+as "unverified" rather than silently showing a wrong number.
 
 Orders: pulled fresh from Shopify for the date window, matched to a
 supplier via each order's real line item SKUs, and compared against
@@ -39,6 +42,13 @@ tmux sessions, same convention as this app's other large scans:
         alaiy_os_connector_shopify.shopify.scan_supplier_totals.run \
         --kwargs \"{'date_from': '2026-01-01', 'slice_index': $i, 'slices': 4}\" 2>&1 | tee ~/supp_totals$i.log"
     done
+
+Once every slice (or the single non-sliced run) has finished, combine
+the CSV(s) into one Excel workbook with a Summary/Product Mismatches/
+Missing Orders sheet each:
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.combine_supplier_totals.run
 """
 
 import frappe
@@ -120,6 +130,33 @@ def _sku_to_supplier_map():
     return mapping
 
 
+def _supplier_location_ids(supplier):
+    """Real Shopify location ids (numeric, for the search filter) linked to
+    this supplier -- a supplier can have more than one location."""
+    rows = frappe.get_all(
+        "Shopify Location", filters={"linked_supplier": supplier}, pluck="sh_location_id",
+    )
+    return [r for r in rows if r]
+
+
+def _shopify_products_count(client, location_ids):
+    """Live count of Shopify products tracked at any of these locations,
+    via one productsCount call per location (Shopify's search syntax has
+    no OR-list-of-locations shorthand, so each location gets its own
+    call and the results are summed -- a product stocked at two of a
+    supplier's own locations would double-count, but a supplier having
+    more than one of their own locations tracking the same product is
+    not the normal case this app models elsewhere either)."""
+    total = 0
+    for loc_id in location_ids:
+        data = client.execute(
+            "query($q: String!) { productsCount(query: $q) { count } }",
+            {"q": f"inventory_location_id:{loc_id}"},
+        )
+        total += ((data or {}).get("productsCount") or {}).get("count") or 0
+    return total
+
+
 def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
@@ -134,10 +171,38 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
     local_product_counts = _local_product_counts_by_supplier()
     sku_to_supplier = _sku_to_supplier_map()
 
+    # Verify the inventory_location_id: filter actually works before
+    # trusting it for every supplier -- test it against the first supplier
+    # that has both a real Shopify location AND at least one local product
+    # already confirmed to exist there, so a 0 back from Shopify is a real
+    # signal the filter is broken, not just "this supplier happens to have
+    # nothing".
+    client = ShopifyGraphQLClient()
+    location_filter_verified = False
+    for supplier in sorted(suppliers):
+        loc_ids = _supplier_location_ids(supplier)
+        if not loc_ids or local_product_counts.get(supplier, 0) == 0:
+            continue
+        try:
+            test_count = _shopify_products_count(client, loc_ids)
+        except Exception as e:
+            print(f"inventory_location_id: filter call failed ({e}) -- "
+                  f"Shopify product counts will be reported as unverified.", flush=True)
+            break
+        if test_count > 0:
+            location_filter_verified = True
+        else:
+            print(f"inventory_location_id: filter returned 0 for {supplier} "
+                  f"despite {local_product_counts[supplier]} local product(s) -- "
+                  f"treating the filter as unreliable, Shopify product counts "
+                  f"will be reported as unverified.", flush=True)
+        break
+    print(f"Shopify product count verification: "
+          f"{'PASSED -- live counts below are real' if location_filter_verified else 'FAILED -- live counts below are not trustworthy'}", flush=True)
+
     print(f"Pulling Shopify orders created_at >= {date_from}"
           + (f" and <= {date_to}" if date_to else "") + " ...", flush=True)
 
-    client = ShopifyGraphQLClient()
     query_string = f"created_at:>='{date_from}'"
     if date_to:
         query_string += f" AND created_at:<='{date_to}'"
@@ -178,6 +243,19 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
     for supplier in sorted(suppliers):
         local_products = local_product_counts.get(supplier, 0)
 
+        shopify_products = None
+        if location_filter_verified:
+            loc_ids = _supplier_location_ids(supplier)
+            if loc_ids:
+                try:
+                    shopify_products = _shopify_products_count(client, loc_ids)
+                except Exception:
+                    shopify_products = None
+
+        product_mismatch = (
+            shopify_products is not None and shopify_products != local_products
+        )
+
         shopify_orders_for_supplier = shopify_orders_by_supplier.get(supplier, [])
         shopify_order_ids = {o["shopify_id"] for o in shopify_orders_for_supplier}
 
@@ -194,6 +272,8 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
         row = {
             "supplier": supplier,
             "local_products": local_products,
+            "shopify_products": shopify_products if shopify_products is not None else "unverified",
+            "product_mismatch": product_mismatch,
             "shopify_orders_in_window": len(shopify_order_ids),
             "local_orders_matched": local_order_count,
             "missing_orders_count": len(missing_orders),
@@ -201,11 +281,13 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
         }
         rows_out.append(row)
 
-        flag = "  <-- MISSING ORDERS" if missing_orders else ""
-        print(f"  {supplier}: {local_products} local product(s), "
+        product_flag = "  <-- PRODUCT COUNT MISMATCH" if product_mismatch else ""
+        order_flag = "  <-- MISSING ORDERS" if missing_orders else ""
+        shopify_products_str = shopify_products if shopify_products is not None else "unverified"
+        print(f"  {supplier}: {local_products} local product(s) / {shopify_products_str} on Shopify{product_flag}, "
               f"{len(shopify_order_ids)} Shopify order(s) in window, "
               f"{local_order_count} matched locally, "
-              f"{len(missing_orders)} missing{flag}")
+              f"{len(missing_orders)} missing{order_flag}")
 
     suffix = f"_slice{slice_index}" if slice_index is not None else ""
     import csv
@@ -215,11 +297,13 @@ def run(date_from="2026-01-01", date_to=None, slice_index=None, slices=None):
     private_path = frappe.utils.get_site_path(f"private/files/{filename}")
     with open(private_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["supplier", "local_products", "shopify_orders_in_window",
-                          "local_orders_matched", "missing_orders_count", "missing_orders"])
+        writer.writerow(["supplier", "local_products", "shopify_products", "product_mismatch",
+                          "shopify_orders_in_window", "local_orders_matched",
+                          "missing_orders_count", "missing_orders"])
         for row in rows_out:
-            writer.writerow([row["supplier"], row["local_products"], row["shopify_orders_in_window"],
-                              row["local_orders_matched"], row["missing_orders_count"], "; ".join(row["missing_orders"])])
+            writer.writerow([row["supplier"], row["local_products"], row["shopify_products"], row["product_mismatch"],
+                              row["shopify_orders_in_window"], row["local_orders_matched"],
+                              row["missing_orders_count"], "; ".join(row["missing_orders"])])
     print(f"\nWrote {len(rows_out)} supplier row(s) to {private_path}")
 
     # Also copied to public/files so it's directly downloadable via a plain
