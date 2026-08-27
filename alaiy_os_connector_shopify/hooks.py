@@ -80,11 +80,19 @@ scheduler_events = {
         "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
     ],
     "daily": [
-        "alaiy_os_connector_shopify.shopify.product_sync.scheduled_fetch_shopify_taxonomy",
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_collections",
         "alaiy_os_connector_shopify.shopify.inventory_sync.sync_shopify_locations",
-    ]
+    ],
+    # Shopify's Standard Product Taxonomy is a fixed, versioned reference
+    # tree Shopify itself only revises a couple of times a year -- confirmed
+    # live, a daily run re-walked the entire ~14,600-node tree from scratch
+    # every single day (no change-detection short-circuit exists in
+    # fetch_shopify_taxonomy) for a tree that was already fully synced.
+    # Weekly is still far more often than the tree actually changes.
+    "weekly": [
+        "alaiy_os_connector_shopify.shopify.product_sync.scheduled_fetch_shopify_taxonomy",
+    ],
 }
 
 doc_events = {
