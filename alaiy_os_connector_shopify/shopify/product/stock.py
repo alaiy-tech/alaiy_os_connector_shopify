@@ -114,8 +114,9 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
         # so it is worth seeing rather than guessing an owner from listing.
         frappe.log_error(
             title="Shopify import: item has no stock at any location, can't resolve shopify_location",
-            message=f"item_code={item_code}, candidate locations={sorted(candidates)}. "
-            "Needs a human decision -- see Item Supplier / manual review.",
+            message=f"item_code={item_code}, listed at={sorted(candidates)} but held at "
+            "none of them. Ownership cannot be resolved from stock, so this needs a "
+            "human decision -- see Item Supplier / manual review.",
         )
 
     return None
