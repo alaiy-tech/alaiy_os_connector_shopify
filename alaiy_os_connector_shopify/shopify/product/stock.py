@@ -122,6 +122,33 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     return None
 
 
+def resolve_product_shopify_location(variants, settings=None, product_id=None):
+    """The one Shopify Location that owns a whole PRODUCT, or None.
+
+    Ownership is a fact about the product, not about today's stock in a
+    single variant. A sold-out variant still belongs to whoever owns the
+    product -- confirmed live on a ring listed in six sizes, where the one
+    size sitting at zero resolved to nothing while its five in-stock siblings
+    all resolved to the same supplier, leaving that size invisible in that
+    supplier's own portal.
+
+    Pools every variant's inventory levels and resolves them together, so a
+    variant holding no stock of its own inherits what the product as a whole
+    resolves to. Returns None when the product itself is ambiguous (stock at
+    two or more locations); a variant of an ambiguous product is genuinely
+    unresolvable too, and _resolve_item_shopify_location logs it.
+    """
+    from alaiy_os_connector_shopify.shopify.product.variants import _variant_location_levels
+
+    pooled = {}
+    for variant in variants or []:
+        for location_id, qty in _variant_location_levels(variant):
+            pooled[location_id] = pooled.get(location_id, 0) + (qty or 0)
+    if not pooled:
+        return None
+    return _resolve_item_shopify_location(list(pooled.items()), settings, product_id)
+
+
 def _write_shopify_location_from_supplier(item_code: str):
     """Counterpart to the import-direction resolution above, for an item
     that started life the OTHER way: created locally first (a manually-

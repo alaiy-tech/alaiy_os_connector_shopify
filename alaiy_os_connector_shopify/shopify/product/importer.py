@@ -31,7 +31,7 @@ from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute, _dedupe_item_uoms
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
 from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty, _variant_location_levels, _variant_inventory_item_id
-from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row, _resolve_item_shopify_location, _sync_item_supplier_from_location
+from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row, _resolve_item_shopify_location, _sync_item_supplier_from_location, resolve_product_shopify_location
 from alaiy_os_connector_shopify.shopify.product.media import _set_item_image, _set_item_slideshow
 from alaiy_os_connector_shopify.shopify.product.taxonomy import ensure_shopify_category
 from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _set_item_tags
@@ -461,9 +461,15 @@ def _update_existing_product(entity, node: dict) -> tuple:
         updated_skus = 0
         missing_skus = []
         variant_prices = {}
+        # Pooled across every variant, so a sold-out one still inherits the
+        # supplier that owns the product instead of resolving to nothing.
+        product_location = resolve_product_shopify_location(
+            variants, settings, entity.external_id)
         for variant in variants:
             sku = _ensure_variant_exists_locally(template_name, variant, entity.external_id, settings)
-            _apply_existing_variant_content(sku, variant, settings, set_stock=False, skip_abstracted=has_listing)
+            _apply_existing_variant_content(sku, variant, settings, set_stock=False,
+                                            skip_abstracted=has_listing,
+                                            product_location=product_location)
             price = flt(variant.get("price") or 0)
             if price > 0:
                 variant_prices[sku] = price
@@ -658,7 +664,7 @@ def _import_product_inner(node: dict) -> tuple:
         return False, "product has zero variants"
 
 
-def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None, set_stock: bool = True, skip_abstracted: bool = False):
+def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None, set_stock: bool = True, skip_abstracted: bool = False, product_location: str = None):
     """
     Populate price/stock/cost/weight (and, for a genuinely standalone
     item, tags/category/SEO/images) on an Item that was auto-linked to
@@ -679,7 +685,10 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
         _apply_product_meta(item, product_meta)
     _dedupe_item_uoms(item)
     location_levels = _variant_location_levels(variant)
-    resolved_location = _resolve_item_shopify_location(location_levels, settings, item_code)
+    # product_location is the fallback for a variant holding no stock
+    # anywhere -- ownership is a product fact, not a stock reading.
+    resolved_location = _resolve_item_shopify_location(
+        location_levels, settings, item_code) or product_location
     if resolved_location:
         item.shopify_location = resolved_location
     # The key inbound stock webhooks arrive on -- without it every
@@ -1165,6 +1174,13 @@ def _import_product_with_variants(
         template.insert()
         frappe.db.commit()
 
+    # Which location owns this PRODUCT, pooled across every variant. Used as
+    # the fallback for a variant that resolves to nothing on its own -- a
+    # sold-out size still belongs to the supplier that owns the product, and
+    # without this it would be left unmapped and invisible in that supplier's
+    # portal while its in-stock siblings showed up fine.
+    product_location = resolve_product_shopify_location(variants, settings, product_id)
+
     # Create variant Items
     for idx, variant in enumerate(variants):
         sku = (variant.get("sku") or "").strip()
@@ -1193,7 +1209,8 @@ def _import_product_with_variants(
                 # Auto-linking only ever wrote the Shopify IDs -- pull in
                 # this variant's own price/stock/weight the same as a
                 # freshly-created variant would get.
-                _apply_existing_variant_content(sku, variant, settings)
+                _apply_existing_variant_content(sku, variant, settings,
+                                                product_location=product_location)
 
                 # Create Synced Entity pairing for the template/product
                 entity = entities.get_or_new("product", "Item", variant_of, product_id)
@@ -1251,7 +1268,10 @@ def _import_product_with_variants(
             variant_item.append("item_defaults", default_warehouse_row)
 
         location_levels = _variant_location_levels(variant)
-        resolved_location = _resolve_item_shopify_location(location_levels, settings, variant_name)
+        # Falls back to the product's own location for a variant holding no
+        # stock anywhere -- ownership is a product fact, not a stock reading.
+        resolved_location = _resolve_item_shopify_location(
+            location_levels, settings, variant_name) or product_location
         if resolved_location:
             variant_item.shopify_location = resolved_location
         # The key inbound stock webhooks arrive on -- see the same write in
