@@ -139,9 +139,9 @@ def _variant_location_levels(variant: dict) -> list:
 
     if len(pairs) >= INVENTORY_LEVELS_PAGE_SIZE:
         full = _fetch_variant_location_levels(variant.get("legacyResourceId"))
-        if full is not None:
+        if full:
             return full
-    return pairs
+    return pairs or []
 
 
 _VARIANT_LEVELS_QUERY = """

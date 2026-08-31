@@ -142,7 +142,7 @@ def resolve_product_shopify_location(variants, settings=None, product_id=None):
 
     pooled = {}
     for variant in variants or []:
-        for location_id, qty in _variant_location_levels(variant):
+        for location_id, qty in (_variant_location_levels(variant) or []):
             pooled[location_id] = pooled.get(location_id, 0) + (qty or 0)
     if not pooled:
         return None
