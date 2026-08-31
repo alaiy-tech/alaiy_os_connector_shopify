@@ -39,7 +39,6 @@ from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_SET_MUTA
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical, _product_set_input
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 from alaiy_os_connector_shopify.shopify.product import status as status_map
-from alaiy_os_connector_shopify.shopify.product.stock import _write_shopify_location_from_supplier
 
 LOCK_TIMEOUT_SECONDS = 30
 
@@ -549,12 +548,6 @@ def _push_product_unlocked(item):
     if item.sh_shopify_product_id != product_id:
         frappe.db.set_value("Item", item.name,
                             "sh_shopify_product_id", product_id)
-        # First time this Item has ever had a real Shopify product id --
-        # resolve its shopify_location now from its already-known Item
-        # Supplier, the export-direction counterpart to the import-time
-        # resolution in stock.py. A re-push of an already-linked item
-        # (product_id unchanged) has nothing new to resolve.
-        _write_shopify_location_from_supplier(item.name)
     # Dual-write -- Item stays the id's ultimate owner until every read site
     # has moved to the Listing-based lookups, but the Listing's own copy is
     # a real field (no longer fetch_from), so it must be kept in step here

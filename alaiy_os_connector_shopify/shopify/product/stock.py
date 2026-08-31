@@ -111,49 +111,6 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     return None
 
 
-def _write_shopify_location_from_supplier(item_code: str):
-    """Counterpart to the import-direction resolution above, for an item
-    that came from the OTHER direction: created locally first (a manually-
-    built Item, or one promoted from a client's own supplier-submission
-    flow) and pushed to Shopify for the first time only now.
-
-    That path already knows its real Item Supplier before any Shopify
-    product exists -- there's no ambiguity to resolve from inventory
-    levels, unlike a fresh Shopify import. This just goes the other way:
-    Item Supplier's known supplier -> the Shopify Location(s) whose
-    linked_supplier matches it -> Item.shopify_location, if exactly one.
-
-    Only fires when the field doesn't already have a value (a re-push of
-    an already-linked item has nothing new to resolve) and only when both
-    the client-added shopify_location and linked_supplier fields exist on
-    this site -- same generic field-guard posture as everywhere else in
-    this module.
-    """
-    if not frappe.get_meta("Item").get_field("shopify_location"):
-        return
-    if not frappe.get_meta("Shopify Location").get_field("linked_supplier"):
-        return
-    if frappe.db.get_value("Item", item_code, "shopify_location"):
-        return
-
-    suppliers = frappe.get_all(
-        "Item Supplier", filters={"parent": item_code, "parenttype": "Item"}, pluck="supplier"
-    )
-    if len(suppliers) != 1:
-        # No supplier, or more than one -- same "don't guess" posture as
-        # the multi-location import case. A multi-supplier item has no
-        # single correct answer here either.
-        return
-
-    locations = frappe.get_all(
-        "Shopify Location", filters={"linked_supplier": suppliers[0]}, pluck="name"
-    )
-    if len(locations) != 1:
-        return
-
-    frappe.db.set_value("Item", item_code, "shopify_location", locations[0])
-
-
 def _sync_item_supplier_from_location(item_code: str, location_name: str):
     """Create an Item Supplier row for item_code from the resolved Shopify
     Location's own supplier mapping, if that mapping exists on this site.
