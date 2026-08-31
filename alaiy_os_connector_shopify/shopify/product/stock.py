@@ -59,15 +59,24 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     per-location warehouses -- this just resolves the SAME pairs to a
     Shopify Location docname instead of a Warehouse.
 
-    Exactly one real-stock (qty > 0) location resolves cleanly, same as
-    before. Exactly two, where one is the site's own default warehouse's
-    location, also resolves cleanly -- to the OTHER (non-default) one. This
-    matches the only realistic way stock legitimately shows at two places
-    at once: a supplier-owned item that's also been transferred/consigned
-    to the default (HQ) warehouse. Two real suppliers both showing stock
-    for the same item is not a real scenario on this model, so it's not
-    special-cased -- it would fall into the same "3+ / genuinely ambiguous"
-    bucket as anything else this can't resolve.
+    Resolution is on which locations the item is STOCKED AT, never on how
+    much is there. Shopify returns an inventory level row for every
+    location an item is stocked at, including one reading 0 -- that row
+    IS the ownership signal. An out-of-stock item still belongs to its
+    supplier: the portal shows 0 and the supplier restocks it. Filtering
+    on qty > 0 here meant every item that happened to be out of stock at
+    resolution time silently got no location at all, which on a site
+    whose stock had not synced back from Shopify yet is most of the
+    catalog.
+
+    Exactly one location resolves cleanly. Exactly two, where one is the
+    site's own default warehouse's location, also resolves cleanly -- to
+    the OTHER (non-default) one. This matches the only realistic way an
+    item legitimately sits at two places at once: a supplier-owned item
+    also transferred/consigned to the default (HQ) warehouse. Two real
+    suppliers holding the same item is not a real scenario on this model,
+    so it's not special-cased -- it falls into the same "3+ / genuinely
+    ambiguous" bucket as anything else this can't resolve.
 
     Anything else (0 or 3+ candidates, or exactly 2 with neither being the
     default) stays unresolved and gets logged loudly via
@@ -84,10 +93,10 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     if not frappe.get_meta("Item").get_field("shopify_location"):
         return None
 
+    # Deliberately ignores qty -- see the docstring. Presence of the level
+    # row is the signal; its quantity is not.
     candidates = set()
-    for location_id, qty in location_levels:
-        if not qty:
-            continue
+    for location_id, _qty in location_levels:
         location_name = frappe.db.get_value("Shopify Location", {"sh_location_id": str(location_id)}, "name")
         if location_name:
             candidates.add(location_name)
