@@ -83,6 +83,12 @@ scheduler_events = {
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_collections",
         "alaiy_os_connector_shopify.shopify.inventory_sync.sync_shopify_locations",
+        # Full inventory sweep, the backstop under the webhook. A dropped
+        # webhook (or one that arrived while the connector was disabled)
+        # otherwise leaves local stock silently wrong forever, since nothing
+        # else ever re-asks Shopify. Daily, not hourly: the webhook is the
+        # fast path, this only catches what it missed.
+        "alaiy_os_connector_shopify.shopify.inventory_sync.reconcile_inventory_from_shopify",
     ],
     # Shopify's Standard Product Taxonomy is a fixed, versioned reference
     # tree Shopify itself only revises a couple of times a year -- confirmed

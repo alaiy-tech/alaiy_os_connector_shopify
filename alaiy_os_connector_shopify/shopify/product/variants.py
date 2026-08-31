@@ -123,6 +123,18 @@ def _variant_location_levels(variant: dict) -> list:
     return pairs
 
 
+def _variant_inventory_item_id(variant: dict) -> str:
+    """
+    Shopify's own inventory_item_id for this variant, or None.
+
+    This is the key the inventory_levels/update webhook reports quantity
+    changes against -- NOT the variant id -- so an Item without it can
+    never be matched to an inbound stock webhook
+    (inventory_sync.handle_inventory_level_webhook drops the payload).
+    """
+    return ((variant.get("inventoryItem") or {}).get("legacyResourceId")) or None
+
+
 def _variant_inventory_item_payload(variant) -> dict:
     """inventoryItem sub-input for ProductVariantSetInput -- cost and
     weight live here, not flat on the variant."""

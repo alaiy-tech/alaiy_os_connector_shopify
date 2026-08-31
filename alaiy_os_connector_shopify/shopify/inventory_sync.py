@@ -750,3 +750,99 @@ def check_fulfillment_service_mapping():
     assert mapped == {} and available is True
 
     print("fulfillment service mapping self-check passed")
+
+
+def reconcile_inventory_from_shopify(dry_run=False):
+    """PULL leg, full sweep. Ask Shopify for every linked product's current
+    per-location quantity and apply the differences as audited Stock
+    Reconciliations.
+
+    The webhook (handle_inventory_level_webhook) is the fast path and stays
+    the primary mechanism, but it cannot be the only one: a webhook that is
+    dropped, arrives while the connector is disabled, or fires for an Item
+    whose sh_shopify_inventory_item_id was never populated leaves a
+    difference behind that nothing else would ever correct. That difference
+    is silent -- local stock simply stays wrong. This is the periodic
+    backstop that closes it, the same way run_inventory_push re-reads
+    Shopify's own quantity before pushing rather than trusting local state.
+
+    Reuses the importer's bulk paginated product query rather than asking
+    per item: scripts/../pull_stock_from_shopify.py does one API call per
+    item, which takes hours on a real catalogue and is why it was only ever
+    a manual one-off. This pulls the same data a few hundred products at a
+    time.
+
+    Only writes through apply_pulled_stock, so every correction lands as a
+    real Stock Reconciliation with ledger entries -- never a direct Bin
+    write. Items Shopify reports at a location this site has no warehouse
+    mapping for are skipped and counted, not guessed at.
+
+    dry_run=True reports what would change without writing.
+    """
+    settings = frappe.get_single("Shopify Connector Settings")
+    if not settings.is_enabled:
+        return {"skipped": "connector disabled"}
+
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
+    from alaiy_os_connector_shopify.shopify.product.variants import _variant_location_levels
+
+    client = ShopifyGraphQLClient()
+    corrections = []
+    unmapped_locations = set()
+    unknown_variants = 0
+    checked = 0
+
+    for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, {"after": None}, ["products"]):
+        for node in page_nodes:
+            for variant in (node.get("variants", {}).get("nodes") or []):
+                variant_id = variant.get("legacyResourceId")
+                if not variant_id:
+                    continue
+                item_code = frappe.db.get_value(
+                    "Item", {"sh_shopify_variant_id": str(variant_id)}, "name")
+                if not item_code:
+                    unknown_variants += 1
+                    continue
+                for location_id, qty in _variant_location_levels(variant):
+                    # Deliberately NOT _resolve_warehouse_for_location: that
+                    # falls back to sh_default_warehouse for an unmapped
+                    # location, which is right for a single webhook (better
+                    # somewhere than nowhere) but wrong for a sweep -- it
+                    # would dump every unmapped supplier's stock into the
+                    # default warehouse and report success. Report it instead.
+                    location = frappe.db.get_value(
+                        "Shopify Location", {"sh_location_id": str(location_id)}, "name")
+                    warehouse = frappe.db.get_value(
+                        "Shopify Location Map", {"shopify_location": location},
+                        "warehouse") if location else None
+                    if not warehouse:
+                        unmapped_locations.add(str(location_id))
+                        continue
+                    checked += 1
+                    current = flt(frappe.db.get_value(
+                        "Bin", {"item_code": item_code, "warehouse": warehouse},
+                        "actual_qty") or 0)
+                    if current == flt(qty):
+                        continue
+                    corrections.append({
+                        "item_code": item_code,
+                        "warehouse": warehouse,
+                        "qty": flt(qty),
+                    })
+
+    summary = {
+        "checked": checked,
+        "mismatched": len(corrections),
+        "unknown_variants": unknown_variants,
+        "unmapped_locations": sorted(unmapped_locations),
+        "dry_run": bool(dry_run),
+    }
+    if dry_run or not corrections:
+        summary["sample"] = corrections[:20]
+        return summary
+
+    result = apply_pulled_stock(corrections)
+    summary["reconciliations"] = result.get("reconciliations", [])
+    summary["skipped_rows"] = result.get("skipped", [])
+    return summary

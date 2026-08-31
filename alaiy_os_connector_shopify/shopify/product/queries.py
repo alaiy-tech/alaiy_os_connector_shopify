@@ -66,6 +66,7 @@ query PullProducts($after: String) {
             inventoryPolicy
             inventoryQuantity
             inventoryItem {
+              legacyResourceId
               tracked
               duplicateSkuCount
               requiresShipping
