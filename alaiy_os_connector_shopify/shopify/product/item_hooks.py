@@ -100,7 +100,16 @@ def ensure_listing_for_new_item(doc, method=None):
     if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
         return
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
+    from alaiy_os_connector_shopify.shopify.product.stock import _write_shopify_location_from_supplier
     ensure_listing(doc.name, default_enabled=0)
+    # A Listing is the point a locally-created Item (never imported FROM
+    # Shopify, so it has no inventory-level data to resolve from) becomes
+    # a real Shopify-linkable product. If it already has an Item Supplier
+    # by now (e.g. promoted through a supplier-submission approval flow),
+    # resolve shopify_location from that directly -- see stock.py's own
+    # docstring for why this is the export-direction counterpart to the
+    # import-time resolution.
+    _write_shopify_location_from_supplier(doc.name)
 
 
 def validate_item_uoms(doc, method=None):
@@ -164,6 +173,7 @@ def backfill_missing_listings(batch=None):
         alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_missing_listings
     """
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
+    from alaiy_os_connector_shopify.shopify.product.stock import _write_shopify_location_from_supplier
 
     # "is set" rather than ["not in", ["", None]] -- SQL `NOT IN (…, NULL)` is
     # never true, so that filter silently matches zero rows.
@@ -178,6 +188,7 @@ def backfill_missing_listings(batch=None):
             continue
         try:
             ensure_listing(name, default_enabled=0)
+            _write_shopify_location_from_supplier(name)
             created += 1
         except Exception:
             failed += 1
