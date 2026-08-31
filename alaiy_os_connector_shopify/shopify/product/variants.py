@@ -121,21 +121,28 @@ def _variant_location_levels(variant: dict) -> list:
         qty = flt(quantities[0].get("quantity")) if quantities else 0
         pairs.append((str(location_id), qty))
 
-    # inventoryLevels is capped in the query (it multiplies against
-    # products x variants toward Shopify's 1000-point single-query cost
-    # limit, so it cannot simply be raised). A variant sitting at exactly
-    # the cap may have more locations that never arrived, which would
-    # silently mis-resolve its shopify_location and its opening stock.
-    # Shopify reports no error for this, so say so here.
+    # inventoryLevels is capped low in the query -- it multiplies against
+    # products x variants toward Shopify's single-query cost limit and
+    # genuinely cannot be raised (see INVENTORY_LEVELS_PAGE_SIZE). A variant
+    # that comes back holding exactly the cap may have further locations that
+    # never arrived, and Shopify reports nothing when it truncates. That would
+    # silently mis-resolve both this item's shopify_location and its opening
+    # stock, so surface it rather than trusting a possibly-partial list.
+    #
+    # Hitting the cap is not automatically wrong (an item really can sit at
+    # its supplier, at HQ, and at one more), so this reports rather than
+    # fails -- it marks the items worth a human look.
     from alaiy_os_connector_shopify.shopify.product.queries import INVENTORY_LEVELS_PAGE_SIZE
 
     if len(pairs) >= INVENTORY_LEVELS_PAGE_SIZE:
         frappe.log_error(
-            title="Shopify import: variant inventory levels may be truncated",
+            title="Shopify import: variant may have more locations than the query returns",
             message=f"variant={variant.get('legacyResourceId')} sku={variant.get('sku')} "
-            f"returned {len(pairs)} inventory levels, the query's cap. Any location past "
-            "the cap was not seen, so this variant's location and opening stock may be "
-            "incomplete.",
+            f"returned {len(pairs)} inventory levels, which is the query's cap. If it is "
+            "stocked at more locations than that, the rest were not returned and its "
+            "resolved location and opening stock may be incomplete. "
+            "pull_stock_from_shopify._shopify_locations fetches all of them for a single "
+            "variant.",
         )
     return pairs
 

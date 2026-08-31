@@ -7,14 +7,26 @@ _PRODUCTS_COUNT_QUERY = """
 query { productsCount { count } }
 """
 
-# How many inventory levels (locations) each variant returns. Nested inside
-# products(50) x variants(100), so it multiplies toward Shopify's 1000-point
-# single-query cost limit -- confirmed live: raising this to 50 put the query
-# at 1892 and every import failed with MAX_COST_EXCEEDED. Ten covers any
-# realistic number of locations for one item while staying well inside the
-# limit. variants._variant_location_levels logs when a variant comes back at
-# exactly this many, since the rest would be silently missing.
-INVENTORY_LEVELS_PAGE_SIZE = 10
+# How many inventory levels (locations) each variant returns.
+#
+# This is nested inside products(50) x variants(100), so its page size
+# multiplies rather than adds, and Shopify charges the whole query against a
+# 1000-point single-query limit. Measured live on this store:
+#     first: 3   -> under the limit (the long-standing value)
+#     first: 10  -> 1325, MAX_COST_EXCEEDED
+#     first: 50  -> 1892, MAX_COST_EXCEEDED
+# So three is not a comfortable default here, it is close to the ceiling.
+# Raising it is not possible without restructuring the query (or moving to
+# bulk operations); pull_stock_from_shopify.py affords first: 50 only because
+# it queries ONE variant at a time, with no products x variants multiplier
+# above it.
+#
+# Three is enough for the intended case -- an item at one supplier location,
+# optionally also at the default/HQ location. An item at more locations than
+# this comes back truncated, and Shopify reports no error for it, so
+# variants._variant_location_levels logs whenever a variant returns exactly
+# this many.
+INVENTORY_LEVELS_PAGE_SIZE = 3
 
 _PRODUCTS_QUERY = """
 query PullProducts($after: String) {
@@ -90,7 +102,7 @@ query PullProducts($after: String) {
                   unit
                 }
               }
-              inventoryLevels(first: 10) {
+              inventoryLevels(first: 3) {
                 nodes {
                   location {
                     legacyResourceId
