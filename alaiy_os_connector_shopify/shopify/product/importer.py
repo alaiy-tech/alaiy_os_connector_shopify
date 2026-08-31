@@ -110,7 +110,10 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
         # Import phase
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
         client = ShopifyGraphQLClient()
-        variables = {"after": None}
+        # Let Shopify filter by status rather than fetching every product
+        # and discarding most locally. None when no explicit choice was
+        # made, which leaves the query unfiltered exactly as before.
+        variables = {"after": None, "query": status_map.search_filter(allowed_statuses)}
 
         processed = created = updated = skipped = failed = pages = 0
         skip_reason_counts = Counter()
@@ -254,7 +257,10 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
 
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
         client = ShopifyGraphQLClient()
-        variables = {"after": None}
+        # Let Shopify filter by status rather than fetching every product
+        # and discarding most locally. None when no explicit choice was
+        # made, which leaves the query unfiltered exactly as before.
+        variables = {"after": None, "query": status_map.search_filter(allowed_statuses)}
 
         processed = created = skipped = failed = pages = 0
         cancelled = False

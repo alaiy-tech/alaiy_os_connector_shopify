@@ -29,8 +29,8 @@ query { productsCount { count } }
 INVENTORY_LEVELS_PAGE_SIZE = 3
 
 _PRODUCTS_QUERY = """
-query PullProducts($after: String) {
-  products(first: 50, after: $after, sortKey: CREATED_AT) {
+query PullProducts($after: String, $query: String) {
+  products(first: 50, after: $after, sortKey: CREATED_AT, query: $query) {
     edges {
       node {
         legacyResourceId

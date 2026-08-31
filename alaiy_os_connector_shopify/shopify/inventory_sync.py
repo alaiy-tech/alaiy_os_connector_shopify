@@ -800,7 +800,7 @@ def reconcile_inventory_from_shopify(dry_run=False):
     unknown_variants = 0
     checked = 0
 
-    for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, {"after": None}, ["products"]):
+    for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, {"after": None, "query": None}, ["products"]):
         for node in page_nodes:
             for variant in (node.get("variants", {}).get("nodes") or []):
                 variant_id = variant.get("legacyResourceId")
