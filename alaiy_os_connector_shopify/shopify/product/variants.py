@@ -121,30 +121,78 @@ def _variant_location_levels(variant: dict) -> list:
         qty = flt(quantities[0].get("quantity")) if quantities else 0
         pairs.append((str(location_id), qty))
 
-    # inventoryLevels is capped low in the query -- it multiplies against
-    # products x variants toward Shopify's single-query cost limit and
-    # genuinely cannot be raised (see INVENTORY_LEVELS_PAGE_SIZE). A variant
-    # that comes back holding exactly the cap may have further locations that
-    # never arrived, and Shopify reports nothing when it truncates. That would
-    # silently mis-resolve both this item's shopify_location and its opening
-    # stock, so surface it rather than trusting a possibly-partial list.
+    # inventoryLevels is capped hard inside the bulk products query -- nested
+    # under products x variants, its page size multiplies toward Shopify's
+    # 1000-point single-query cost limit, and measurement on a real store put
+    # even 10 over that limit (see INVENTORY_LEVELS_PAGE_SIZE). Shopify
+    # signals nothing when it truncates a connection, so a variant that comes
+    # back holding exactly the cap may well sit at more locations that simply
+    # never arrived -- confirmed live, real locations here hold items at 15,
+    # 20 and 50 places at once.
     #
-    # Hitting the cap is not automatically wrong (an item really can sit at
-    # its supplier, at HQ, and at one more), so this reports rather than
-    # fails -- it marks the items worth a human look.
+    # Trusting that partial list would resolve shopify_location (ownership)
+    # and opening stock from an arbitrary subset. So when a variant hits the
+    # cap, re-fetch its levels on their own, where no multiplier applies and
+    # 50 is affordable. One extra API call, only for the variants that
+    # actually need it.
     from alaiy_os_connector_shopify.shopify.product.queries import INVENTORY_LEVELS_PAGE_SIZE
 
     if len(pairs) >= INVENTORY_LEVELS_PAGE_SIZE:
-        frappe.log_error(
-            title="Shopify import: variant may have more locations than the query returns",
-            message=f"variant={variant.get('legacyResourceId')} sku={variant.get('sku')} "
-            f"returned {len(pairs)} inventory levels, which is the query's cap. If it is "
-            "stocked at more locations than that, the rest were not returned and its "
-            "resolved location and opening stock may be incomplete. "
-            "pull_stock_from_shopify._shopify_locations fetches all of them for a single "
-            "variant.",
-        )
+        full = _fetch_variant_location_levels(variant.get("legacyResourceId"))
+        if full is not None:
+            return full
     return pairs
+
+
+_VARIANT_LEVELS_QUERY = """
+query VariantLevels($id: ID!) {
+  productVariant(id: $id) {
+    inventoryItem {
+      inventoryLevels(first: 50) {
+        nodes {
+          location { legacyResourceId }
+          quantities(names: ["available"]) { quantity }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _fetch_variant_location_levels(variant_id):
+    """Every location one variant is stocked at, fetched on its own.
+
+    Affords first: 50 because it queries a single variant -- there is no
+    products x variants multiplier above it, unlike the bulk import query.
+
+    Returns None (not an empty list) on any failure, so the caller keeps the
+    partial inline data rather than losing the locations it did get.
+    """
+    if not variant_id:
+        return None
+    try:
+        from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+        data = ShopifyGraphQLClient().execute(
+            _VARIANT_LEVELS_QUERY, {"id": f"gid://shopify/ProductVariant/{variant_id}"})
+        variant = (data.get("productVariant") or {})
+        levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
+        pairs = []
+        for level in levels:
+            location_id = ((level.get("location") or {}).get("legacyResourceId"))
+            if not location_id:
+                continue
+            quantities = level.get("quantities") or []
+            qty = flt(quantities[0].get("quantity")) if quantities else 0
+            pairs.append((str(location_id), qty))
+        return pairs
+    except Exception:
+        frappe.log_error(
+            title="Shopify import: could not re-fetch a variant's full location list",
+            message=f"variant={variant_id}\n{frappe.get_traceback()}",
+        )
+        return None
 
 
 def _variant_inventory_item_id(variant: dict) -> str:
