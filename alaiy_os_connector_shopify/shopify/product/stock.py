@@ -27,21 +27,6 @@ def _default_warehouse_row(settings) -> dict:
     return {"company": company, "default_warehouse": warehouse}
 
 
-def _default_warehouse_location_name(settings):
-    """The Shopify Location docname that maps (via sh_location_map) to
-    settings.sh_default_warehouse, or None if it isn't mapped. sh_default_
-    warehouse is real connector-owned config (every site using this
-    connector configures one), so this stays generic -- no client-specific
-    assumption here, unlike Shopify Location.linked_supplier below."""
-    default_wh = settings.sh_default_warehouse
-    if not default_wh:
-        return None
-    for row in settings.get("sh_location_map") or []:
-        if row.warehouse == default_wh:
-            return row.shopify_location
-    return None
-
-
 def _resolve_item_shopify_location(location_levels, settings=None, item_code=None) -> str:
     """
     Real Shopify Location docname to write onto Item.shopify_location, or
@@ -69,12 +54,11 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     Resolution order:
       - one location listed at all: that one, whatever its quantity
       - stock at exactly one location: that one owns it
-      - stock at exactly two, one being this site's own default (HQ)
-        warehouse: the OTHER one owns it -- consignment, supplier-owned
-        stock also sitting at HQ
-      - stock at two or more real locations: unresolved and logged. Two
-        suppliers cannot both own one item, so this needs a human, and
-        writing a guess would be actively wrong rather than incomplete
+      - stock at two or more locations: unresolved and logged, with no
+        exception for one of them being the default (HQ) warehouse. Stock
+        genuinely sitting in two places is a real question about who
+        fulfils it and who gets paid, and answering that in the importer
+        would be actively wrong rather than merely incomplete
       - listed in several places, held nowhere: also unresolved and
         logged. On a store where selling out archives the product this
         should never reach an Active import, so it is worth seeing
@@ -110,15 +94,12 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     if len(stocked) == 1:
         return next(iter(stocked))
 
-    if len(stocked) >= 2 and settings:
-        # Genuinely held at two places, one of them this site's own default
-        # (HQ) warehouse: the other one owns it. Matches consignment --
-        # supplier-owned stock also sitting at HQ.
-        default_location = _default_warehouse_location_name(settings)
-        if len(stocked) == 2 and default_location and default_location in stocked:
-            return next(loc for loc in stocked if loc != default_location)
-
     if len(stocked) >= 2:
+        # No exception for the default (HQ) warehouse being one of the two.
+        # Stock genuinely sitting in two places is a real question about who
+        # fulfils and who gets paid, and resolving it to the non-HQ location
+        # would quietly answer that question in the importer. Flag it and let
+        # a human decide.
         frappe.log_error(
             title="Shopify import: item stocked at multiple locations, can't resolve shopify_location",
             message=f"item_code={item_code}, stocked at={sorted(stocked)} "
