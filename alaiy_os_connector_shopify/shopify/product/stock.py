@@ -59,30 +59,25 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     per-location warehouses -- this just resolves the SAME pairs to a
     Shopify Location docname instead of a Warehouse.
 
-    Resolution is on which locations the item is STOCKED AT, never on how
-    much is there. Shopify returns an inventory level row for every
-    location an item is stocked at, including one reading 0 -- that row
-    IS the ownership signal. An out-of-stock item still belongs to its
-    supplier: the portal shows 0 and the supplier restocks it. Filtering
-    on qty > 0 here meant every item that happened to be out of stock at
-    resolution time silently got no location at all, which on a site
-    whose stock had not synced back from Shopify yet is most of the
-    catalog.
+    Which locations an item is LISTED at and which actually HOLD it are
+    different questions, and only the second answers ownership. Confirmed
+    live on a real store: products are routinely listed against three or
+    four locations while carrying stock at exactly one, the others sitting
+    at zero right across the catalogue. Resolving on listing alone made
+    almost every product look ambiguous.
 
-    Exactly one location resolves cleanly. Exactly two, where one is the
-    site's own default warehouse's location, also resolves cleanly -- to
-    the OTHER (non-default) one. This matches the only realistic way an
-    item legitimately sits at two places at once: a supplier-owned item
-    also transferred/consigned to the default (HQ) warehouse. Two real
-    suppliers holding the same item is not a real scenario on this model,
-    so it's not special-cased -- it falls into the same "3+ / genuinely
-    ambiguous" bucket as anything else this can't resolve.
-
-    Anything else (0 or 3+ candidates, or exactly 2 with neither being the
-    default) stays unresolved and gets logged loudly via
-    frappe.log_error -- writing a wrong single value onto a genuinely
-    ambiguous item would be actively wrong, not just incomplete, so this
-    surfaces the gap rather than guessing.
+    Resolution order:
+      - one location listed at all: that one, whatever its quantity
+      - stock at exactly one location: that one owns it
+      - stock at exactly two, one being this site's own default (HQ)
+        warehouse: the OTHER one owns it -- consignment, supplier-owned
+        stock also sitting at HQ
+      - stock at two or more real locations: unresolved and logged. Two
+        suppliers cannot both own one item, so this needs a human, and
+        writing a guess would be actively wrong rather than incomplete
+      - listed in several places, held nowhere: also unresolved and
+        logged. On a store where selling out archives the product this
+        should never reach an Active import, so it is worth seeing
     """
     if not location_levels:
         return None
@@ -93,26 +88,51 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     if not frappe.get_meta("Item").get_field("shopify_location"):
         return None
 
-    # Deliberately ignores qty -- see the docstring. Presence of the level
-    # row is the signal; its quantity is not.
     candidates = set()
-    for location_id, _qty in location_levels:
+    stocked = set()
+    for location_id, qty in location_levels:
         location_name = frappe.db.get_value("Shopify Location", {"sh_location_id": str(location_id)}, "name")
-        if location_name:
-            candidates.add(location_name)
+        if not location_name:
+            continue
+        candidates.add(location_name)
+        if qty and qty > 0:
+            stocked.add(location_name)
 
+    # One location overall: unambiguous on its own, whatever the quantity.
     if len(candidates) == 1:
         return next(iter(candidates))
 
-    if len(candidates) == 2 and settings:
-        default_location = _default_warehouse_location_name(settings)
-        if default_location and default_location in candidates:
-            non_default = next(loc for loc in candidates if loc != default_location)
-            return non_default
+    # Listed at several locations but held at exactly one: that one owns it.
+    # Confirmed live on a real store -- products are routinely listed against
+    # three or four locations while only ever carrying stock at a single one,
+    # the others sitting at zero across the whole catalogue. Reading listing
+    # alone there makes almost every product look ambiguous.
+    if len(stocked) == 1:
+        return next(iter(stocked))
 
-    if len(candidates) >= 2:
+    if len(stocked) >= 2 and settings:
+        # Genuinely held at two places, one of them this site's own default
+        # (HQ) warehouse: the other one owns it. Matches consignment --
+        # supplier-owned stock also sitting at HQ.
+        default_location = _default_warehouse_location_name(settings)
+        if len(stocked) == 2 and default_location and default_location in stocked:
+            return next(loc for loc in stocked if loc != default_location)
+
+    if len(stocked) >= 2:
         frappe.log_error(
             title="Shopify import: item stocked at multiple locations, can't resolve shopify_location",
+            message=f"item_code={item_code}, stocked at={sorted(stocked)} "
+            f"(listed at={sorted(candidates)}). Two or more real locations hold this "
+            "item, so ownership cannot be resolved automatically. Needs a human decision.",
+        )
+        return None
+
+    if not stocked and len(candidates) >= 2:
+        # Listed in several places, held nowhere. On a store where selling out
+        # archives the product this should not reach an Active import at all,
+        # so it is worth seeing rather than guessing an owner from listing.
+        frappe.log_error(
+            title="Shopify import: item has no stock at any location, can't resolve shopify_location",
             message=f"item_code={item_code}, candidate locations={sorted(candidates)}. "
             "Needs a human decision -- see Item Supplier / manual review.",
         )
