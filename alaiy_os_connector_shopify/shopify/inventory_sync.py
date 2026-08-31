@@ -783,6 +783,13 @@ def reconcile_inventory_from_shopify(dry_run=False):
     if not settings.is_enabled:
         return {"skipped": "connector disabled"}
 
+    # Shares the "inventory" sync slot with run_inventory_pull/push: all
+    # three write stock for the same items, and two of them applying
+    # corrections at once would race on the same Bins. A dry run reads
+    # nothing back, so it doesn't need (or take) the slot.
+    if not dry_run and has_active_sync("inventory"):
+        return {"skipped": "another inventory sync is already running"}
+
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
     from alaiy_os_connector_shopify.shopify.product.variants import _variant_location_levels
