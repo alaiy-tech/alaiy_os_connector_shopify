@@ -7,6 +7,15 @@ _PRODUCTS_COUNT_QUERY = """
 query { productsCount { count } }
 """
 
+# How many inventory levels (locations) each variant returns. Nested inside
+# products(50) x variants(100), so it multiplies toward Shopify's 1000-point
+# single-query cost limit -- confirmed live: raising this to 50 put the query
+# at 1892 and every import failed with MAX_COST_EXCEEDED. Ten covers any
+# realistic number of locations for one item while staying well inside the
+# limit. variants._variant_location_levels logs when a variant comes back at
+# exactly this many, since the rest would be silently missing.
+INVENTORY_LEVELS_PAGE_SIZE = 10
+
 _PRODUCTS_QUERY = """
 query PullProducts($after: String) {
   products(first: 50, after: $after, sortKey: CREATED_AT) {
@@ -81,7 +90,7 @@ query PullProducts($after: String) {
                   unit
                 }
               }
-              inventoryLevels(first: 50) {
+              inventoryLevels(first: 10) {
                 nodes {
                   location {
                     legacyResourceId
