@@ -8,7 +8,7 @@ from frappe.utils import flt
 
 from alaiy_os_connector_shopify.shopify.order.locking import _acquire_order_lock, _release_order_lock
 from alaiy_os_connector_shopify.shopify.order.customer import _get_or_create_customer
-from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_warehouse
+from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_warehouse, _resolve_warehouse_for_item
 from alaiy_os_connector_shopify.shopify.order.utils import _resolve_item_code
 from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
     _sync_fulfillments,
@@ -132,7 +132,12 @@ def _upsert_order_unlocked(order, order_id):
             "item_code": item_code,
             "qty": qty,
             "rate": flt(li.get("price", 0)),
-            "warehouse": warehouse,
+            # Real per-line warehouse, not the order-level default -- an
+            # order with items from 2+ real suppliers needs each line
+            # recorded against its own supplier's warehouse, not one
+            # shared fallback. Falls back to the order-level default
+            # itself when the item has no resolved location yet.
+            "warehouse": _resolve_warehouse_for_item(item_code, settings, warehouse),
             "delivery_date": order_date,
             "sh_shopify_variant_id": str(li.get("variant_id", "")),
         })

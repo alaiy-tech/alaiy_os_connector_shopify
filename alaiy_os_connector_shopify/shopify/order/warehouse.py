@@ -69,6 +69,43 @@ def _resolve_warehouse_for_location(location_id, settings):
     return None
 
 
+def _resolve_warehouse_for_item(item_code, settings, default_warehouse):
+    """
+    Real per-line-item warehouse for a Sales Order line, resolved from the
+    ITEM's own Item.shopify_location -- not the order-level default.
+
+    Confirmed live: _upsert_order_unlocked stamped every Sales Order Item
+    with the same single _resolve_default_warehouse(settings) result,
+    regardless of which real supplier actually owns that line. An order
+    with line items from 2+ different suppliers had every line recorded
+    against one shared warehouse -- order_routing.py's routing decision
+    still resolves the real supplier correctly (it reads Item.shopify_
+    location itself, independently), but the Sales Order Item's own stored
+    warehouse field was silently wrong from the moment of import, for
+    anyone/anything that reads that field directly rather than going
+    through routing.
+
+    Same resolution chain as the rest of this session's fixes: Item.
+    shopify_location -> Shopify Location docname -> Shopify Connector
+    Settings.sh_location_map -> real Warehouse. Falls back to the passed-in
+    default_warehouse when the item has no resolved location yet (a real,
+    expected gap for anything not yet imported through the fixed write
+    path, or an item this connector doesn't own at all).
+    """
+    if not frappe.get_meta("Item").get_field("shopify_location"):
+        return default_warehouse
+
+    location_name = frappe.db.get_value("Item", item_code, "shopify_location")
+    if not location_name:
+        return default_warehouse
+
+    for row in settings.get("sh_location_map") or []:
+        if row.shopify_location == location_name:
+            return row.warehouse
+
+    return default_warehouse
+
+
 def _force_valid_warehouse(dn, location_id=None):
     """
     make_delivery_note() copies each item's warehouse straight from the
