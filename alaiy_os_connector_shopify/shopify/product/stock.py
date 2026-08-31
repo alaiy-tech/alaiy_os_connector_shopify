@@ -27,29 +27,53 @@ def _default_warehouse_row(settings) -> dict:
     return {"company": company, "default_warehouse": warehouse}
 
 
-def _resolve_item_shopify_location(location_levels) -> str:
+def _default_warehouse_location_name(settings):
+    """The Shopify Location docname that maps (via sh_location_map) to
+    settings.sh_default_warehouse, or None if it isn't mapped. sh_default_
+    warehouse is real connector-owned config (every site using this
+    connector configures one), so this stays generic -- no client-specific
+    assumption here, unlike Shopify Location.linked_supplier below."""
+    default_wh = settings.sh_default_warehouse
+    if not default_wh:
+        return None
+    for row in settings.get("sh_location_map") or []:
+        if row.warehouse == default_wh:
+            return row.shopify_location
+    return None
+
+
+def _resolve_item_shopify_location(location_levels, settings=None, item_code=None) -> str:
     """
     Real Shopify Location docname to write onto Item.shopify_location, or
-    None if it can't be resolved unambiguously.
+    None if it can't be resolved.
 
     Item.shopify_location is a plain generic field: which single Shopify
-    Location does this item have real stock at, if exactly one. It has no
-    opinion about supplier ownership -- that's a client-specific concern
-    (some sites map a Location to a Supplier via their own custom field,
-    others don't) and does not belong hardcoded into the shared connector.
-    A client wanting per-supplier scoping resolves that themselves off this
-    generic fact in their own app code.
+    Location does this item have real stock at. It has no opinion about
+    supplier ownership -- that's a client-specific concern (some sites map
+    a Location to a Supplier via their own custom field, others don't) and
+    does not belong hardcoded into the shared connector. A client wanting
+    per-supplier scoping resolves that themselves off this generic fact.
 
     location_levels (from variants._variant_location_levels) is the exact
     same Shopify inventoryLevels data opening stock already resolves through
     per-location warehouses -- this just resolves the SAME pairs to a
     Shopify Location docname instead of a Warehouse.
 
-    Deliberately conservative: only returns a location when exactly ONE
-    real Shopify Location shows real stock (qty > 0) for this item.
-    Multiple locations, or none, return None -- writing a single value onto
-    an item genuinely split across locations would be actively wrong, not
-    just incomplete.
+    Exactly one real-stock (qty > 0) location resolves cleanly, same as
+    before. Exactly two, where one is the site's own default warehouse's
+    location, also resolves cleanly -- to the OTHER (non-default) one. This
+    matches the only realistic way stock legitimately shows at two places
+    at once: a supplier-owned item that's also been transferred/consigned
+    to the default (HQ) warehouse. Two real suppliers both showing stock
+    for the same item is not a real scenario on this model, so it's not
+    special-cased -- it would fall into the same "3+ / genuinely ambiguous"
+    bucket as anything else this can't resolve.
+
+    Anything else (0 or 3+ candidates, or exactly 2 with neither being the
+    default) stays unresolved and gets logged loudly via
+    frappe.log_error -- writing a wrong single value onto a genuinely
+    ambiguous item would be actively wrong, not just incomplete, so this
+    surfaces the gap rather than guessing.
     """
     if not location_levels:
         return None
@@ -70,6 +94,20 @@ def _resolve_item_shopify_location(location_levels) -> str:
 
     if len(candidates) == 1:
         return next(iter(candidates))
+
+    if len(candidates) == 2 and settings:
+        default_location = _default_warehouse_location_name(settings)
+        if default_location and default_location in candidates:
+            non_default = next(loc for loc in candidates if loc != default_location)
+            return non_default
+
+    if len(candidates) >= 2:
+        frappe.log_error(
+            title="Shopify import: item stocked at multiple locations, can't resolve shopify_location",
+            message=f"item_code={item_code}, candidate locations={sorted(candidates)}. "
+            "Needs a human decision -- see Item Supplier / manual review.",
+        )
+
     return None
 
 

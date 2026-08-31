@@ -673,7 +673,7 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
         _apply_product_meta(item, product_meta)
     _dedupe_item_uoms(item)
     location_levels = _variant_location_levels(variant)
-    resolved_location = _resolve_item_shopify_location(location_levels)
+    resolved_location = _resolve_item_shopify_location(location_levels, settings, item_code)
     if resolved_location:
         item.shopify_location = resolved_location
     item.flags.from_shopify_sync = True
@@ -950,7 +950,7 @@ def _import_simple_product(
         item.append("item_defaults", default_warehouse_row)
 
     location_levels = _variant_location_levels(variant)
-    resolved_location = _resolve_item_shopify_location(location_levels)
+    resolved_location = _resolve_item_shopify_location(location_levels, settings, item_name)
     if resolved_location:
         item.shopify_location = resolved_location
 
@@ -1235,7 +1235,7 @@ def _import_product_with_variants(
             variant_item.append("item_defaults", default_warehouse_row)
 
         location_levels = _variant_location_levels(variant)
-        resolved_location = _resolve_item_shopify_location(location_levels)
+        resolved_location = _resolve_item_shopify_location(location_levels, settings, variant_name)
         if resolved_location:
             variant_item.shopify_location = resolved_location
 
