@@ -144,6 +144,7 @@ def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str
         return None
     parent = "All Item Groups"
     leaf = None
+    dirty = False
     for i, name in enumerate(parts):
         is_last = i == len(parts) - 1
         is_group = 1 if (not is_last or ancestors_only) else 0
@@ -151,6 +152,7 @@ def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str
             # A node that now needs children must be a group.
             if is_group and not frappe.db.get_value("Item Group", name, "is_group"):
                 frappe.db.set_value("Item Group", name, "is_group", 1)
+                dirty = True
         else:
             try:
                 doc = frappe.new_doc("Item Group")
@@ -159,6 +161,7 @@ def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str
                 doc.is_group = is_group
                 doc.flags.ignore_permissions = True
                 doc.insert()
+                dirty = True
             except Exception:
                 frappe.log_error(
                     title=f"Shopify import: failed to create Item Group {name}",
@@ -167,7 +170,13 @@ def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str
                 return leaf
         parent = name
         leaf = name
-    frappe.db.commit()
+    # Only when this call actually wrote something. Called once per product
+    # during an import, and after the first few hundred products every group
+    # in the taxonomy already exists -- so this was forcing a transaction
+    # commit (and its disk flush) thousands of times over for no writes at
+    # all, while the caller commits its own work anyway.
+    if dirty:
+        frappe.db.commit()
     return leaf
 
 
