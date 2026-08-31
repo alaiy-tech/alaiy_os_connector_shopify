@@ -557,6 +557,11 @@ def on_shopify_collection_update(doc, method=None):
         return
     if doc.is_smart:
         return
+    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+        # Same class of gap found and fixed across Listing/Sales Order/
+        # Delivery Note/Sales Invoice push paths -- this never checked the
+        # master switch before enqueuing a real push.
+        return
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.product_sync.push_collection",
         queue="short",
@@ -567,6 +572,8 @@ def on_shopify_collection_update(doc, method=None):
 
 def on_shopify_collection_trash(doc, method=None):
     if doc.flags.from_shopify_sync:
+        return
+    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
         return
     if not doc.sh_collection_gid:
         return

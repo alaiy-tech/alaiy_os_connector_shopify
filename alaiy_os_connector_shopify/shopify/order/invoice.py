@@ -325,6 +325,11 @@ def on_sales_invoice_submit(doc, method=None):
     """
     if doc.flags.from_shopify_sync:
         return
+    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+        # Same class of gap found and fixed across Listing update/trash,
+        # Sales Order update/submit/cancel, and Delivery Note push -- this
+        # never checked the master switch before enqueuing a real push.
+        return
     order_id = _linked_shopify_order_id(doc)
     if not order_id:
         return

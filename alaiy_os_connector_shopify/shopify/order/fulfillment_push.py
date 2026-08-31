@@ -28,6 +28,20 @@ from alaiy_os_connector_shopify.shopify.product import listing as listing_resolv
 _TWO_WAY = "Alaiy OS → Shopify (two-way)"
 
 
+def _connector_enabled():
+    """None of the three functions below checked this master switch --
+    only sh_fulfillment_sync_direction (create) or nothing at all (tracking
+    update, cancel). Same class of gap found and fixed in Listing update/
+    trash and the Sales Order doc_events: disabling the connector entirely
+    (is_enabled = 0) did not actually stop these from still enqueuing a
+    real push against the live store. Checked once, used at the top of
+    every function here -- kept separate from sh_fulfillment_sync_direction,
+    which is a real, deliberately independent business toggle (see
+    on_delivery_note_cancel's own docstring for why cancel/tracking-edit
+    intentionally ignore that one once a fulfillment already exists)."""
+    return bool(frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"))
+
+
 def _fulfillment_gid(fulfillment_id: str) -> str:
     """sh_shopify_fulfillment_id is always stored as the plain legacy
     numeric id -- rebuild the GID Shopify's mutations actually require."""
@@ -283,6 +297,8 @@ def on_delivery_note_submit(doc, method=None):
         return  # mirrors a fulfillment Shopify already knows about
     if doc.sh_shopify_fulfillment_id:
         return  # already linked (defensive -- from_shopify_sync should have caught this)
+    if not _connector_enabled():
+        return
     if (frappe.db.get_single_value("Shopify Connector Settings", "sh_fulfillment_sync_direction") or "") != _TWO_WAY:
         return
     so_name = _sales_order_of(doc)
@@ -322,6 +338,8 @@ def on_delivery_note_update_after_submit(doc, method=None):
     """Editing sh_tracking_number/sh_tracking_company on a Delivery Note that
     already has a linked Shopify fulfillment pushes the change to Shopify."""
     if not doc.sh_shopify_fulfillment_id:
+        return
+    if not _connector_enabled():
         return
     if not (doc.has_value_changed("sh_tracking_number") or doc.has_value_changed("sh_tracking_company")):
         return
@@ -382,8 +400,11 @@ def on_delivery_note_cancel(doc, method=None):
     from_shopify_sync is never set on those) cancels that fulfillment on
     Shopify too. Kept independent of the current sync-direction setting: the
     fulfillment exists on Shopify because of something this app already did,
-    regardless of whether the setting has since been switched back."""
+    regardless of whether the setting has since been switched back. Still
+    respects the master is_enabled switch, unlike sh_fulfillment_sync_direction."""
     if doc.flags.from_shopify_sync or not doc.sh_shopify_fulfillment_id:
+        return
+    if not _connector_enabled():
         return
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order.fulfillment_push.push_fulfillment_cancel_job",
