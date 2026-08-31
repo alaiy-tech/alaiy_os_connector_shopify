@@ -242,10 +242,30 @@ def _resolve_opening_stock_rows(qty: float, settings, location_levels=None) -> l
     if location_levels:
         from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_warehouse_for_location
         rows = {}
+        disabled = []
         for location_id, level_qty in location_levels:
             warehouse = _resolve_warehouse_for_location(location_id, settings)
-            if warehouse and level_qty:
-                rows[warehouse] = rows.get(warehouse, 0) + level_qty
+            if not warehouse or not level_qty:
+                continue
+            # ERPNext refuses any stock transaction against a disabled
+            # warehouse, and it throws from inside the Stock Ledger Entry --
+            # far enough down that it takes the whole opening-stock entry
+            # with it, losing the quantities for every OTHER location on the
+            # same item. Confirmed live: a supplier's warehouse was disabled
+            # while its Shopify location stayed mapped and active, so stock
+            # kept arriving for it. Drop just that location's row and say so.
+            if frappe.db.get_value("Warehouse", warehouse, "disabled"):
+                disabled.append(warehouse)
+                continue
+            rows[warehouse] = rows.get(warehouse, 0) + level_qty
+        if disabled:
+            frappe.log_error(
+                title="Shopify import: skipped opening stock for a disabled warehouse",
+                message=f"Warehouse(s) {sorted(set(disabled))} are disabled but still mapped "
+                "to an active Shopify location, so stock is still arriving for them. That "
+                "quantity was left out of this item's opening stock. Either re-enable the "
+                "warehouse or unmap its Shopify location.",
+            )
         if rows:
             return list(rows.items())
 
@@ -260,6 +280,16 @@ def _resolve_opening_stock_rows(qty: float, settings, location_levels=None) -> l
         frappe.log_error(
             title=f"Shopify import: warehouse {warehouse} not found",
             message="Item will not have opening stock set"
+        )
+        return []
+    if frappe.db.get_value("Warehouse", warehouse, "disabled"):
+        # Same reason the per-location rows above skip a disabled warehouse:
+        # ERPNext throws from inside the Stock Ledger Entry, which would take
+        # the whole opening-stock entry down rather than just this row.
+        frappe.log_error(
+            title=f"Shopify import: default warehouse {warehouse} is disabled",
+            message="No opening stock could be set. Re-enable it, or point "
+            "Shopify Connector Settings' Default Warehouse at a live warehouse.",
         )
         return []
     if frappe.db.get_value("Warehouse", warehouse, "is_group"):
