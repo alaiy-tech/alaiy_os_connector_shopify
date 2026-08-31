@@ -122,13 +122,27 @@ def _force_valid_warehouse(dn, location_id=None):
 
     location_id (the fulfillment's own Shopify location, when the caller
     has one) takes priority: resolves through sh_location_map to the
-    real per-supplier warehouse. Falls back to the single generic
-    sh_default_warehouse when there's no location_id, no mapping for it,
-    or the caller didn't pass one at all (the full-order-fallback path
-    has no per-fulfillment location to work with).
+    real per-supplier warehouse, and applies to every row -- Shopify
+    itself is saying this whole shipment left that one location.
+
+    With no usable location_id, each row resolves its OWN warehouse from
+    its item's Item.shopify_location instead of all sharing one fallback.
+    A Delivery Note is the document that actually MOVES stock, so an
+    order containing items from two different suppliers would otherwise
+    draw every line out of the single default warehouse -- including the
+    lines whose stock physically sits in a supplier's warehouse and was
+    never in the default one at all. That both misstates the ledger and
+    drives the default warehouse negative (the internally-impossible
+    state scripts/fixes/fix_negative_bins.py exists to clean up).
+
+    dn.set_warehouse stays the single order-level default: it's only the
+    header default ERPNext applies to rows that don't set their own, and
+    every row here sets one explicitly.
     """
     settings = frappe.get_single("Shopify Connector Settings")
-    warehouse = _resolve_warehouse_for_location(location_id, settings) or _resolve_default_warehouse(settings)
+    default_warehouse = _resolve_default_warehouse(settings)
+    location_warehouse = _resolve_warehouse_for_location(location_id, settings)
     for item in dn.items:
-        item.warehouse = warehouse
-    dn.set_warehouse = warehouse
+        item.warehouse = location_warehouse or _resolve_warehouse_for_item(
+            item.item_code, settings, default_warehouse)
+    dn.set_warehouse = location_warehouse or default_warehouse

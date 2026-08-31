@@ -7,6 +7,7 @@ import frappe
 from frappe.utils import flt
 
 from alaiy_os_connector_shopify.shopify.order.utils import _line_item_qty, _resolve_item_code
+from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_warehouse_for_item
 
 
 def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
@@ -14,7 +15,11 @@ def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
     Reconciles doc.items (a Sales Order's child table) against Shopify's
     current line items. Returns True if anything actually changed, so the
     caller can decide whether a save/amend is even needed.
+
+    `warehouse` is the order-level default, used only as the per-line
+    fallback -- each line resolves its own real warehouse below.
     """
+    settings = frappe.get_single("Shopify Connector Settings")
     current_items_by_variant = {item.get("sh_shopify_variant_id"): item for item in doc.items if item.get("sh_shopify_variant_id")}
     current_items_by_code = {item.item_code: item for item in doc.items if not item.get("sh_shopify_variant_id")}
     new_items_from_shopify = {}
@@ -36,7 +41,12 @@ def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
             "item_code": item_code,
             "qty": qty,
             "rate": flt(li.get("price", 0)),
-            "warehouse": warehouse,
+            # Per-line warehouse from the item's own Item.shopify_location,
+            # same resolution _upsert_order_unlocked uses when it first
+            # creates the order -- a line added later via Shopify's Order
+            # Editing must land on its real supplier's warehouse too, not
+            # on whichever single default the order happened to open with.
+            "warehouse": _resolve_warehouse_for_item(item_code, settings, warehouse),
         }
 
     # Detect changes: match by variant_id first, then by item_code (fallback for old items)
