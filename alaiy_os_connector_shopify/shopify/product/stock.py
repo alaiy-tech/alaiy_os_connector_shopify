@@ -27,6 +27,52 @@ def _default_warehouse_row(settings) -> dict:
     return {"company": company, "default_warehouse": warehouse}
 
 
+def _resolve_item_shopify_location(location_levels) -> str:
+    """
+    Real Shopify Location docname to write onto Item.shopify_location, or
+    None if it can't be resolved unambiguously.
+
+    Item.shopify_location is a plain generic field: which single Shopify
+    Location does this item have real stock at, if exactly one. It has no
+    opinion about supplier ownership -- that's a client-specific concern
+    (some sites map a Location to a Supplier via their own custom field,
+    others don't) and does not belong hardcoded into the shared connector.
+    A client wanting per-supplier scoping resolves that themselves off this
+    generic fact in their own app code.
+
+    location_levels (from variants._variant_location_levels) is the exact
+    same Shopify inventoryLevels data opening stock already resolves through
+    per-location warehouses -- this just resolves the SAME pairs to a
+    Shopify Location docname instead of a Warehouse.
+
+    Deliberately conservative: only returns a location when exactly ONE
+    real Shopify Location shows real stock (qty > 0) for this item.
+    Multiple locations, or none, return None -- writing a single value onto
+    an item genuinely split across locations would be actively wrong, not
+    just incomplete.
+    """
+    if not location_levels:
+        return None
+
+    # Item.shopify_location is a client-added custom field, not something
+    # the shared connector itself defines. A client site without it should
+    # see this helper no-op, not crash on an unknown Item attribute.
+    if not frappe.get_meta("Item").get_field("shopify_location"):
+        return None
+
+    candidates = set()
+    for location_id, qty in location_levels:
+        if not qty:
+            continue
+        location_name = frappe.db.get_value("Shopify Location", {"sh_location_id": str(location_id)}, "name")
+        if location_name:
+            candidates.add(location_name)
+
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    return None
+
+
 def _resolve_opening_stock_rows(qty: float, settings, location_levels=None) -> list:
     """
     [(warehouse, qty), ...] to open this item's stock at -- one row per
