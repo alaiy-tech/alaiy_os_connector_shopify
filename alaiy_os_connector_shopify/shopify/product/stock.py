@@ -73,6 +73,38 @@ def _resolve_item_shopify_location(location_levels) -> str:
     return None
 
 
+def _sync_item_supplier_from_location(item_code: str, location_name: str):
+    """Create an Item Supplier row for item_code from the resolved Shopify
+    Location's own supplier mapping, if that mapping exists on this site.
+
+    Item Supplier is real ERPNext core, safe to write to on any site. What's
+    NOT generic is knowing which Supplier a Shopify Location belongs to --
+    that's only ever answered by a client-added custom field
+    (Shopify Location.linked_supplier on the one site that has it today).
+    Explicitly guarded on that field existing before reading it -- unlike a
+    plain doc attribute, frappe.db.get_value on an unknown column raises a
+    real SQL error rather than returning None, so this must check
+    get_field() first, same as _resolve_item_shopify_location's own guard
+    above, just one hop further down the resolution chain.
+    """
+    if not location_name:
+        return
+    if not frappe.get_meta("Shopify Location").get_field("linked_supplier"):
+        return
+    supplier = frappe.db.get_value("Shopify Location", location_name, "linked_supplier")
+    if not supplier:
+        return
+    if frappe.db.exists("Item Supplier", {"parent": item_code, "parenttype": "Item", "supplier": supplier}):
+        return
+    frappe.get_doc({
+        "doctype": "Item Supplier",
+        "parenttype": "Item",
+        "parentfield": "supplier_items",
+        "parent": item_code,
+        "supplier": supplier,
+    }).insert(ignore_permissions=True)
+
+
 def _resolve_opening_stock_rows(qty: float, settings, location_levels=None) -> list:
     """
     [(warehouse, qty), ...] to open this item's stock at -- one row per

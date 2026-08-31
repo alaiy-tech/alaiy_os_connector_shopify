@@ -31,7 +31,7 @@ from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute, _dedupe_item_uoms
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
 from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty, _variant_location_levels
-from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row, _resolve_item_shopify_location
+from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row, _resolve_item_shopify_location, _sync_item_supplier_from_location
 from alaiy_os_connector_shopify.shopify.product.media import _set_item_image, _set_item_slideshow
 from alaiy_os_connector_shopify.shopify.product.taxonomy import ensure_shopify_category
 from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _set_item_tags
@@ -679,6 +679,8 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     item.save()
+    if resolved_location:
+        _sync_item_supplier_from_location(item_code, resolved_location)
     frappe.db.commit()
 
     # selling PRICE is an abstracted (per-marketplace) field -- on the update
@@ -963,6 +965,8 @@ def _import_simple_product(
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     item.insert()
+    if resolved_location:
+        _sync_item_supplier_from_location(item.name, resolved_location)
     frappe.db.commit()
 
     # Set pricing
@@ -1241,6 +1245,8 @@ def _import_product_with_variants(
         variant_item.flags.from_shopify_sync = True
         variant_item.flags.ignore_permissions = True
         variant_item.insert()
+        if resolved_location:
+            _sync_item_supplier_from_location(variant_item.name, resolved_location)
 
         # Set pricing
         price = flt(variant.get("price") or 0)
