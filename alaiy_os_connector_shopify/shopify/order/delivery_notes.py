@@ -106,6 +106,12 @@ def _sync_fulfillments(so_name, fulfillments):
     a second, later partial shipment creates its own separate one.
     """
     if not fulfillments:
+        # Callers must decide what an empty array means -- an unfulfilled order
+        # has none legitimately, while a FULFILLED order with none is Shopify's
+        # one-click "Complete order" and does need a Delivery Note. Returning
+        # silently for both is what let that second case ship nothing and go
+        # unnoticed; both call sites now branch on fulfillment_status before
+        # reaching here.
         return
 
     so = frappe.get_doc("Sales Order", so_name)
