@@ -1,5 +1,5 @@
 import frappe
-from frappe.utils import now_datetime, add_to_date
+from frappe.utils import now_datetime, add_to_date, get_datetime
 
 _INTERVAL_MINUTES = {
     "5 min": 5,
@@ -85,8 +85,14 @@ def _maybe_refresh_token(settings):
         return
 
     if settings.sh_token_refreshed_at:
-        due_at = add_to_date(settings.sh_token_refreshed_at,
-                             minutes=interval_minutes)
+        # as_datetime, because add_to_date returns a STRING by default and
+        # comparing that to now_datetime() raises TypeError. Confirmed live:
+        # this threw every minute for days, and since it ran before the
+        # webhook self-heal in check_and_enqueue, it took that with it -- the
+        # site sat with zero webhook subscriptions registered while the job
+        # itself reported Complete on every run.
+        due_at = add_to_date(get_datetime(settings.sh_token_refreshed_at),
+                             minutes=interval_minutes, as_datetime=True)
         if now_datetime() < due_at:
             return
 
@@ -125,7 +131,10 @@ def _maybe_enqueue_inventory(interval_setting):
         order_by="started_at desc",
     )
     if last_success:
-        due_at = add_to_date(last_success, minutes=interval_minutes)
+        # Same as_datetime requirement as _maybe_refresh_token: add_to_date
+        # returns a string by default, and comparing it to a datetime raises.
+        due_at = add_to_date(get_datetime(last_success), minutes=interval_minutes,
+                             as_datetime=True)
         if now < due_at:
             return
 
