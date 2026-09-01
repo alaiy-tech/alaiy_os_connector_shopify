@@ -27,9 +27,24 @@ def check_and_enqueue():
     if not settings.is_enabled:
         return
 
+    # Each stage is independent and must not be able to take the others down.
+    # Confirmed live: a site ran for days with ZERO webhooks registered while
+    # this job completed every minute -- the webhook self-heal is last, so
+    # anything raising above it silently skipped the one check whose whole
+    # purpose is to recover from a failure. Calling the same function by hand
+    # registered all 17 topics immediately.
     if (settings.sh_inventory_sync_direction or "") == "Alaiy OS → Shopify (two-way)":
-        _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
-    _maybe_refresh_token(settings)
+        try:
+            _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
+        except Exception:
+            frappe.log_error(title="Shopify: inventory enqueue check failed",
+                             message=frappe.get_traceback())
+    try:
+        _maybe_refresh_token(settings)
+    except Exception:
+        frappe.log_error(title="Shopify: token refresh check failed",
+                         message=frappe.get_traceback())
+
     _maybe_ensure_webhooks(settings)
 
 
