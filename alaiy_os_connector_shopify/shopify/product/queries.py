@@ -285,3 +285,49 @@ mutation productUpdate($input: ProductInput!) {
   }
 }
 """
+
+
+# Stock-only product page, for the inventory reconcile sweep.
+#
+# _PRODUCTS_QUERY carries everything an IMPORT needs -- descriptions, SEO,
+# metafields(250), collections(50), media counts -- which is far more than a
+# stock comparison reads, and expensive enough that walking the whole
+# catalogue with it cannot finish inside the scheduler's job timeout.
+# Confirmed live: the daily reconcile died with JobTimeoutException at 300s
+# every single run, having written nothing, leaving local stock to drift with
+# no backstop under the webhook.
+#
+# Same variant/inventoryLevels shape as the full query, so
+# _variant_location_levels reads it unchanged.
+_PRODUCTS_STOCK_QUERY = """
+query PullProductStock($after: String, $query: String) {
+  products(first: 100, after: $after, sortKey: CREATED_AT, query: $query) {
+    edges {
+      node {
+        legacyResourceId
+        variants(first: 100) {
+          nodes {
+            legacyResourceId
+            inventoryItem {
+              inventoryLevels(first: 10) {
+                nodes {
+                  location {
+                    legacyResourceId
+                  }
+                  quantities(names: ["available"]) {
+                    quantity
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""

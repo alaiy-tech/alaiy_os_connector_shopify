@@ -752,6 +752,25 @@ def check_fulfillment_service_mapping():
     print("fulfillment service mapping self-check passed")
 
 
+def enqueue_reconcile_inventory():
+    """Scheduler entry point for the daily sweep.
+
+    Hands the work to the long queue with an hour's timeout instead of running
+    it inline. A scheduled_events entry runs inside the scheduler's own worker
+    under a 300s death penalty, which a full catalogue walk cannot finish --
+    confirmed live, every daily run was killed mid-page having written nothing,
+    so local stock drifted with no backstop under the webhook and no visible
+    failure beyond one Scheduled Job Log row.
+    """
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.inventory_sync.reconcile_inventory_from_shopify",
+        queue="long",
+        timeout=3600,
+        job_id="shopify_reconcile_inventory",
+        deduplicate=True,
+    )
+
+
 def reconcile_inventory_from_shopify(dry_run=False):
     """PULL leg, full sweep. Ask Shopify for every linked product's current
     per-location quantity and apply the differences as audited Stock
@@ -791,7 +810,7 @@ def reconcile_inventory_from_shopify(dry_run=False):
         return {"skipped": "another inventory sync is already running"}
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
+    from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_STOCK_QUERY
     from alaiy_os_connector_shopify.shopify.product.variants import _variant_location_levels
 
     client = ShopifyGraphQLClient()
@@ -800,7 +819,11 @@ def reconcile_inventory_from_shopify(dry_run=False):
     unknown_variants = 0
     checked = 0
 
-    for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, {"after": None, "query": None}, ["products"]):
+    # Stock-only query, not the full import one: this sweep reads variant ids
+    # and inventory levels and nothing else, and the heavyweight query could
+    # not walk the catalogue inside the scheduler's timeout -- confirmed live,
+    # every daily run died at 300s having written nothing.
+    for page_nodes in client.execute_paginated(_PRODUCTS_STOCK_QUERY, {"after": None, "query": None}, ["products"]):
         for node in page_nodes:
             for variant in (node.get("variants", {}).get("nodes") or []):
                 variant_id = variant.get("legacyResourceId")

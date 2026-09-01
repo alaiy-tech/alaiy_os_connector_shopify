@@ -88,7 +88,12 @@ scheduler_events = {
         # otherwise leaves local stock silently wrong forever, since nothing
         # else ever re-asks Shopify. Daily, not hourly: the webhook is the
         # fast path, this only catches what it missed.
-        "alaiy_os_connector_shopify.shopify.inventory_sync.reconcile_inventory_from_shopify",
+        # Enqueued rather than run inline: a scheduled_events entry executes in
+        # the scheduler's own worker on a 300s death penalty, and a full
+        # catalogue sweep cannot finish in that. Confirmed live -- every daily
+        # run died with JobTimeoutException having written nothing, so the one
+        # backstop under the webhook never actually ran.
+        "alaiy_os_connector_shopify.shopify.inventory_sync.enqueue_reconcile_inventory",
     ],
     # Shopify's Standard Product Taxonomy is a fixed, versioned reference
     # tree Shopify itself only revises a couple of times a year -- confirmed
