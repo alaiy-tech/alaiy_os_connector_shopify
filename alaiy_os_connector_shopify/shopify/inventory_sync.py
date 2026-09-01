@@ -1,4 +1,7 @@
 import frappe
+from erpnext.stock.doctype.stock_reconciliation.stock_reconciliation import (
+    EmptyStockReconciliationItemsError,
+)
 from frappe.utils import flt, now_datetime
 
 from alaiy_os_connector_shopify.shopify.sync_guard import (
@@ -672,9 +675,29 @@ def apply_pulled_stock(corrections):
                 "allow_zero_valuation_rate": 1,
             })
         sr.flags.ignore_permissions = True
-        sr.insert()
-        sr.submit()
-        frappe.db.commit()
+        try:
+            sr.insert()
+            sr.submit()
+            frappe.db.commit()
+        except EmptyStockReconciliationItemsError:
+            # Every row in this warehouse already matches. Not a failure:
+            # another process corrected them between the scan and this write,
+            # which is the normal outcome when slices run concurrently -- and
+            # running them concurrently is exactly what this script documents.
+            # Confirmed live: one slice lost all 12 of its corrections because
+            # a sibling slice had fixed some of the same items first, and the
+            # throw took the whole batch down rather than the settled rows.
+            frappe.db.rollback()
+            continue
+        except Exception:
+            # One warehouse's reconciliation failing must not discard every
+            # other warehouse's corrections in the same run.
+            frappe.db.rollback()
+            frappe.log_error(
+                title=f"Shopify: stock reconciliation failed for {warehouse}",
+                message=frappe.get_traceback(),
+            )
+            continue
         reconciliations.append(sr.name)
         by_warehouse[warehouse] = sr.name
 
