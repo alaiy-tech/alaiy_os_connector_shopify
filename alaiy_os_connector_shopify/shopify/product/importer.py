@@ -536,6 +536,15 @@ def _import_product(node: dict) -> tuple:
     the Listing) sees it -- ensure_listing is idempotent, so re-imports and
     updates never duplicate or clobber merchant edits.
     """
+    # The status choice is applied as a Shopify SEARCH filter in the paginated
+    # runs, so a node arriving any other way -- a webhook, a targeted re-import
+    # of one product -- was never checked against it at all. Confirmed live: a
+    # product archived on Shopify was imported as a fresh, enabled Item on a
+    # site with archived import switched off. Re-check the node itself so the
+    # setting holds wherever a product comes from.
+    if not status_map.import_allows(node.get("status")):
+        return False, f"skipped ({(node.get('status') or 'unknown').lower()} not enabled for import)"
+
     _warn_if_truncated(node)
     created, reason = _import_product_inner(node)
     product_id = str(node.get("legacyResourceId", ""))
