@@ -156,6 +156,13 @@ def _line_item_qty(li: dict) -> float:
 def _resolve_item_code(line_item):
     sku = (line_item.get("sku") or "").strip()
     if sku and frappe.db.exists("Item", sku):
+        # An item an order is selling must not be disabled: ERPNext refuses a
+        # disabled item on a Sales Order, so the order fails to insert at all.
+        # Re-enable rather than fail -- the order is proof the product is real,
+        # whatever its Shopify status. This also heals items an earlier version
+        # of the on-demand import created disabled.
+        if frappe.db.get_value("Item", sku, "disabled"):
+            frappe.db.set_value("Item", sku, "disabled", 0)
         return sku
 
     variant_id = str(line_item.get("variant_id") or "")
@@ -199,9 +206,12 @@ def _import_product_for_order_line(variant_id: str):
     Returns the resolved item_code, or None. Never raises: an order import
     must not fail because a product fetch did.
 
-    The product is left disabled, since it is archived or draft on Shopify and
-    so is not for sale -- it exists here for order history, supplier
-    attribution and fulfillment matching, not to be sold again.
+    The product is left ENABLED. Disabling it looks right -- it is archived or
+    draft on Shopify, so not for sale -- but ERPNext refuses a disabled item on
+    a Sales Order, so the order this was imported FOR then fails to insert.
+    Confirmed live: 22 of 55 orders in one run failed with "Item X is disabled",
+    which is worse than the placeholder this replaced. A zero-stock item is
+    already unsellable in practice, and the catalogue is full of them.
     """
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
@@ -232,12 +242,11 @@ def _import_product_for_order_line(variant_id: str):
 
         item_code = listing_resolver.item_by_variant_id(variant_id)
         if item_code:
-            frappe.db.set_value("Item", item_code, "disabled", 1)
             frappe.log_error(
                 title="Shopify: imported an out-of-catalogue product for an order line",
                 message=f"variant {variant_id} -> product {product_id} -> Item {item_code}. "
-                        "Imported disabled: it is archived or draft on Shopify, so it exists "
-                        "for order history and supplier attribution, not for sale.",
+                        "Archived or draft on Shopify, imported so the order that sold it has "
+                        "a real item to attribute, cost and fulfil against.",
             )
         return item_code
     except Exception:
