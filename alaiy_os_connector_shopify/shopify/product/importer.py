@@ -433,10 +433,10 @@ def _update_existing_product(entity, node: dict) -> tuple:
     Shopify's current qty on top of the existing balance instead of
     correcting it. Stock reconciliation is inventory_sync.py's job.
 
-    Also does NOT add or remove variants -- only updates content on
-    variants that already exist locally by SKU. A variant added on
-    Shopify after the original import needs a manual re-link; this is
-    flagged in the returned reason rather than silently dropped.
+    Adds variants that are new on Shopify (via _ensure_variant_exists_locally,
+    which also re-links an existing SKU whose Shopify ids or template have
+    changed), but never REMOVES one that has disappeared from Shopify -- a
+    variant with stock or order history is not ours to delete on a sync.
     """
     new_fp = _shopify_node_fingerprint(node)
     if entity.external_fingerprint == new_fp:
@@ -762,9 +762,26 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
         sku = f"{template_name}-{opt_title}" if opt_title else f"{template_name}-{v_id}"
 
     if frappe.db.exists("Item", sku):
-        if v_id and not frappe.db.get_value("Item", sku, "sh_shopify_variant_id"):
+        # Repoint whenever Shopify's ids differ from what's stored, not only
+        # when the item has none. A merchant deleting a product and recreating
+        # it keeps the SKU but changes every Shopify id, so an item that
+        # already carried the OLD ids would otherwise stay bound to a product
+        # that no longer exists -- the import reports the variant as handled,
+        # the item keeps a dead product id, and the new template ends up with
+        # zero children. Confirmed live on a duplicate-product cleanup.
+        current = frappe.db.get_value(
+            "Item", sku, ["sh_shopify_variant_id", "sh_shopify_product_id", "variant_of"], as_dict=True
+        ) or {}
+        if v_id and current.get("sh_shopify_variant_id") != v_id:
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", v_id)
+        if product_id and current.get("sh_shopify_product_id") != product_id:
             frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
+        # Re-parent too: a variant whose template moved is still the same
+        # physical product, and leaving it under the old template hides it
+        # from everything that walks the new one's children.
+        if template_name and current.get("variant_of") and current["variant_of"] != template_name:
+            frappe.db.set_value("Item", sku, "variant_of", template_name)
+        if v_id:
             listing_resolver.set_product_id(template_name, product_id)
             listing_resolver.set_variant_id(template_name, sku, v_id)
         return sku
