@@ -345,7 +345,12 @@ def get_collection_products(collection_name: str):
     # back 0 (seen live) while the live product set is non-empty. Reconcile it
     # to what we actually fetched.
     if frappe.db.get_value("Shopify Collection", collection_name, "product_count") != len(products):
-        frappe.db.set_value("Shopify Collection", collection_name, "product_count", len(products), update_modified=False)
+        # Named get_*, but it caches the count back onto the Collection. That
+        # write is why this endpoint needs a gate at all: db.set_value skips the
+        # doctype's permission rows, so any logged-in user could touch it.
+        if frappe.has_permission("Shopify Collection", "write"):
+            frappe.db.set_value("Shopify Collection", collection_name, "product_count",
+                                len(products), update_modified=False)
         frappe.db.commit()
     return products
 
