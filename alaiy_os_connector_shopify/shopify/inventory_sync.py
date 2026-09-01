@@ -771,7 +771,7 @@ def enqueue_reconcile_inventory():
     )
 
 
-def reconcile_inventory_from_shopify(dry_run=False):
+def reconcile_inventory_from_shopify(dry_run=False, query=None):
     """PULL leg, full sweep. Ask Shopify for every linked product's current
     per-location quantity and apply the differences as audited Stock
     Reconciliations.
@@ -806,7 +806,10 @@ def reconcile_inventory_from_shopify(dry_run=False):
     # three write stock for the same items, and two of them applying
     # corrections at once would race on the same Bins. A dry run reads
     # nothing back, so it doesn't need (or take) the slot.
-    if not dry_run and has_active_sync("inventory"):
+    # A windowed run skips the shared slot on purpose: the point of taking a
+    # window is to run several at once, and they cannot collide when each one
+    # covers a different slice of the catalogue.
+    if not dry_run and not query and has_active_sync("inventory"):
         return {"skipped": "another inventory sync is already running"}
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
@@ -823,7 +826,12 @@ def reconcile_inventory_from_shopify(dry_run=False):
     # and inventory levels and nothing else, and the heavyweight query could
     # not walk the catalogue inside the scheduler's timeout -- confirmed live,
     # every daily run died at 300s having written nothing.
-    for page_nodes in client.execute_paginated(_PRODUCTS_STOCK_QUERY, {"after": None, "query": None}, ["products"]):
+    # `query` is a Shopify search filter, so a caller can split the catalogue
+    # and run several windows side by side instead of one serial walk -- e.g.
+    # query="created_at:>=2026-01-01 created_at:<2026-04-01". Each window
+    # touches a disjoint set of products, so the concurrent runs never contend
+    # on the same Bins. None means the whole catalogue.
+    for page_nodes in client.execute_paginated(_PRODUCTS_STOCK_QUERY, {"after": None, "query": query}, ["products"]):
         for node in page_nodes:
             for variant in (node.get("variants", {}).get("nodes") or []):
                 variant_id = variant.get("legacyResourceId")
