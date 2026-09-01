@@ -128,6 +128,55 @@ def _sync_fulfillments(so_name, fulfillments):
             so, fulfillment_id, fulfillment.get("line_items") or [], fulfillment.get("location_id"))
 
 
+
+def _record_fulfilled_from_location(item_code, location_id):
+    """Set Item.shopify_location from the location that actually shipped it.
+
+    The import resolves ownership from where an item HOLDS stock, and leaves
+    the field blank when that is ambiguous -- an item listed at two locations
+    with stock at neither cannot be attributed from stock at all. A sold-out
+    or archived item is exactly that case, so it stays unattributed forever
+    and any order for it resolves no supplier: nobody is billed and the line
+    lands on an admin's desk with no way to answer it.
+
+    A fulfillment settles it. Shopify records which location the goods
+    physically shipped from, and that stays true after the stock is gone --
+    it is a fact about this shipment, not an inference from present-day
+    quantity. Confirmed live: item 202430 (archived, 0 stock at both its
+    locations) had no supplier at all, while the order that sold it carried
+    the shipping location in its fulfillment payload the whole time.
+
+    Only ever FILLS A BLANK. An item that already has a location keeps it:
+    the import's own resolution is the authority when it managed to resolve
+    one, and a later fulfillment from somewhere else (a transfer, a
+    one-off) must not silently reassign ownership of the whole item.
+
+    Deliberately does not touch fulfillment TYPE. Which location shipped it
+    is a fact; whether HQ owns that stock or holds it for a supplier is a
+    commercial arrangement, and inferring one from the other is what the
+    routing rewrite deliberately stopped doing.
+    """
+    if not item_code or not location_id:
+        return
+    if not frappe.get_meta("Item").get_field("shopify_location"):
+        return
+    try:
+        if frappe.db.get_value("Item", item_code, "shopify_location"):
+            return
+        location = frappe.db.get_value(
+            "Shopify Location", {"sh_location_id": str(location_id)}, "name")
+        if not location:
+            return
+        frappe.db.set_value("Item", item_code, "shopify_location", location,
+                            update_modified=False)
+    except Exception:
+        # Ownership bookkeeping must never stop a Delivery Note being created.
+        frappe.log_error(
+            title=f"Shopify: could not record fulfilled-from location for {item_code}",
+            message=frappe.get_traceback(),
+        )
+
+
 def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_items, location_id=None):
     qty_by_item = {}
     for li in fulfillment_line_items:
@@ -139,6 +188,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         if not item_code:
             continue
         qty_by_item[item_code] = qty_by_item.get(item_code, 0) + flt(li.get("quantity", 0))
+        _record_fulfilled_from_location(item_code, location_id)
 
     if not qty_by_item:
         frappe.log_error(
