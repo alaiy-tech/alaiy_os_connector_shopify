@@ -170,7 +170,82 @@ def _resolve_item_code(line_item):
     if title and frappe.db.exists("Item", title):
         return title
 
+    # Nothing matched. Before giving up and letting the caller fall back to
+    # the shared "Shopify Custom Item" placeholder, try importing the product
+    # this line actually refers to.
+    #
+    # The catalogue import only takes the statuses the site asked for --
+    # Active, typically -- but an order can reference a product that was
+    # ARCHIVED or set to DRAFT after it sold. That is ordinary retail
+    # behaviour for one-of-a-kind stock. Confirmed live: real jewellery lines
+    # (a Roberto Coin earring, a Rapport London box) collapsed onto the
+    # placeholder, which left the order with no supplier to pay, no cost, and
+    # a fulfillment that could not be mapped to any line.
+    #
+    # An order referencing a product is proof it was real, so the status
+    # filter does not apply here the way it does to a bulk sweep -- this
+    # fetches exactly one product, only when an order needs it.
+    if variant_id:
+        imported = _import_product_for_order_line(variant_id)
+        if imported:
+            return imported
+
     return None
+
+
+def _import_product_for_order_line(variant_id: str):
+    """Import the single product owning variant_id, whatever its status.
+
+    Returns the resolved item_code, or None. Never raises: an order import
+    must not fail because a product fetch did.
+
+    The product is left disabled, since it is archived or draft on Shopify and
+    so is not for sale -- it exists here for order history, supplier
+    attribution and fulfillment matching, not to be sold again.
+    """
+    try:
+        from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+        from alaiy_os_connector_shopify.shopify.product import importer
+        from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
+
+        client = ShopifyGraphQLClient()
+        found = client.execute(
+            """query($id: ID!){ productVariant(id:$id){ product{ legacyResourceId } } }""",
+            {"id": f"gid://shopify/ProductVariant/{variant_id}"},
+        )
+        product_id = str(
+            (((found or {}).get("productVariant") or {}).get("product") or {}).get("legacyResourceId") or ""
+        )
+        if not product_id:
+            return None
+
+        for page in client.execute_paginated(
+                _PRODUCTS_QUERY, {"first": 5, "query": f"id:{product_id}"}, ["products"]):
+            for node in page:
+                if str(node.get("legacyResourceId")) != product_id:
+                    continue
+                # Bypasses _import_product's status gate deliberately: that
+                # gate exists to keep a bulk sweep from dragging in dead
+                # products, which is a different question from an order
+                # needing the one product it actually sold.
+                importer._import_product_inner(node)
+
+        item_code = listing_resolver.item_by_variant_id(variant_id)
+        if item_code:
+            frappe.db.set_value("Item", item_code, "disabled", 1)
+            frappe.log_error(
+                title="Shopify: imported an out-of-catalogue product for an order line",
+                message=f"variant {variant_id} -> product {product_id} -> Item {item_code}. "
+                        "Imported disabled: it is archived or draft on Shopify, so it exists "
+                        "for order history and supplier attribution, not for sale.",
+            )
+        return item_code
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: could not import product for order line variant {variant_id}",
+            message=frappe.get_traceback(),
+        )
+        return None
 
 
 def _to_gid(shopify_order_id: str) -> str:
