@@ -299,17 +299,23 @@ mutation productUpdate($input: ProductInput!) {
 #
 # Same variant/inventoryLevels shape as the full query, so
 # _variant_location_levels reads it unchanged.
+#
+# Page sizes are deliberately small. Shopify costs nested connections
+# MULTIPLICATIVELY, so products x variants x inventoryLevels is what the
+# limit is charged against, not the fields. Confirmed live: 100 x 100 x 10
+# was rejected outright at cost 1325 against a 1000 ceiling. Raising any of
+# the three to make the sweep "faster" will fail every request instead.
 _PRODUCTS_STOCK_QUERY = """
 query PullProductStock($after: String, $query: String) {
-  products(first: 100, after: $after, sortKey: CREATED_AT, query: $query) {
+  products(first: 25, after: $after, sortKey: CREATED_AT, query: $query) {
     edges {
       node {
         legacyResourceId
-        variants(first: 100) {
+        variants(first: 20) {
           nodes {
             legacyResourceId
             inventoryItem {
-              inventoryLevels(first: 10) {
+              inventoryLevels(first: 5) {
                 nodes {
                   location {
                     legacyResourceId
