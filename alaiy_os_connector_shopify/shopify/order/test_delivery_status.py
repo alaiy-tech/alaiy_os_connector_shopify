@@ -21,7 +21,8 @@ import pathlib
 
 _SOURCE = pathlib.Path(__file__).with_name("delivery_status.py")
 
-_TERMINAL = {"DELIVERED", "CANCELED", "CANCELLED"}
+_TERMINAL = {"CANCELED", "CANCELLED"}
+_CANCELLED = {"CANCELED", "CANCELLED"}
 
 
 def _worth_polling(dn):
@@ -51,9 +52,18 @@ def demo():
     assert _worth_polling({"docstatus": 1, "sh_shopify_fulfillment_id": "70310",
                            "sh_delivery_status": "ATTEMPTED_DELIVERY"})
 
-    # Already delivered: the answer cannot change, so never ask again.
-    assert not _worth_polling({"docstatus": 1, "sh_shopify_fulfillment_id": "70310",
-                               "sh_delivery_status": "DELIVERED"})
+    # DELIVERED is NOT the end. Shopify lets a merchant mark a delivered order
+    # unfulfilled, which turns the fulfillment CANCELED and announces nothing --
+    # confirmed live. Dropping it from the poll left the Delivery Note
+    # permanently wrong and its supplier invoiceable for goods Shopify says were
+    # never shipped.
+    assert _worth_polling({"docstatus": 1, "sh_shopify_fulfillment_id": "70310",
+                           "sh_delivery_status": "DELIVERED"})
+
+    # A cancelled fulfillment genuinely is the end.
+    for spelling in ("CANCELED", "CANCELLED"):
+        assert not _worth_polling({"docstatus": 1, "sh_shopify_fulfillment_id": "70310",
+                                   "sh_delivery_status": spelling})
 
     # Never pushed to Shopify, so there is no fulfillment to ask about.
     assert not _worth_polling({"docstatus": 1, "sh_shopify_fulfillment_id": None,
@@ -85,6 +95,17 @@ def demo():
     assert not raises, f"sync_delivery_status raises at {[r.lineno for r in raises]}"
     handlers = [n for n in ast.walk(fn) if isinstance(n, ast.ExceptHandler)]
     assert handlers, "the Shopify call is not wrapped -- one failed batch would end the run"
+
+    # The delivered -> cancelled reversal must be recognised, in either spelling.
+    assert _worth_writing("DELIVERED", "CANCELED")
+    assert ("CANCELED" in _CANCELLED) and ("CANCELLED" in _CANCELLED)
+
+    # A cancellation has to be reported, not just recorded: the Delivery Note
+    # stays submitted, so nothing else would reveal that its stock movement and
+    # its supplier's claim to be paid now rest on a fulfillment Shopify has
+    # withdrawn.
+    src = _SOURCE.read_text(encoding="utf-8")
+    assert "_report_cancelled_fulfillment" in src, "a cancelled fulfillment is recorded but never raised"
 
     print("delivery status poll self-check: OK")
 

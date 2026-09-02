@@ -19,17 +19,36 @@ delivery Shopify never announced leaves that supplier unable to invoice at all.
 Nothing else fills this gap. The full order pull does read displayStatus, but
 nothing schedules it, so it only runs when someone triggers an import by hand.
 
-This asks Shopify directly, for the small set of Delivery Notes that could still
-change: submitted, carrying a Shopify fulfillment id, and not yet at a terminal
-state.
+The reverse happens too, and is worse: a merchant can mark a delivered order
+unfulfilled, which turns the fulfillment CANCELED -- also silently. The Delivery
+Note then still stands here, its stock movement stands, and its supplier remains
+invoiceable for goods Shopify now says were never shipped. So a delivered parcel
+is still asked about; only a cancelled fulfillment is finished.
+
+A cancellation is reported rather than acted on. Cancelling a submitted Delivery
+Note reverses real stock, can be refused outright by a linked Sales Invoice, and
+would push a second cancellation back to Shopify for a fulfillment it has
+already cancelled -- so what to do about it is left to a human.
 """
 
 import frappe
 
-# States that will not change again, so there is nothing left to poll for.
-# ATTEMPTED_DELIVERY is deliberately NOT terminal -- a second attempt usually
-# follows, and the parcel is still in play until it lands.
-_TERMINAL = {"DELIVERED", "CANCELED", "CANCELLED"}
+# The only state that will not change again.
+#
+# DELIVERED is deliberately NOT terminal, which is not obvious: a merchant can
+# mark a delivered fulfillment unfulfilled from Shopify's admin, and it becomes
+# CANCELED. Confirmed live -- a fulfillment this poll had correctly recorded as
+# DELIVERED read CANCELED on Shopify minutes later, with no webhook sent for
+# either transition. Treating DELIVERED as final left that Delivery Note
+# permanently wrong, still submitted, and its supplier still invoiceable for
+# goods Shopify says were never shipped.
+#
+# ATTEMPTED_DELIVERY is not terminal either: a second attempt usually follows.
+_TERMINAL = {"CANCELED", "CANCELLED"}
+
+# Shopify spells it with one L; both are accepted so a spelling change on their
+# side cannot silently stop this being recognised as a cancellation.
+_CANCELLED = {"CANCELED", "CANCELLED"}
 
 # One Shopify call per batch rather than per Delivery Note.
 _BATCH = 50
@@ -48,11 +67,14 @@ query($ids: [ID!]!) {
 
 
 def _pending_delivery_notes(limit=None):
-    """Delivery Notes whose parcel state could still change.
+    """Delivery Notes whose Shopify fulfillment could still change state.
 
-    Cancelled notes are excluded, and so is anything already at a terminal
-    state -- re-asking Shopify about a parcel that has already been delivered
-    is a call that can never change an answer.
+    A delivered parcel stays in this set: Shopify lets a merchant mark a
+    delivered order unfulfilled, which turns the fulfillment CANCELED, and
+    nothing announces it. Only a cancelled fulfillment is genuinely finished.
+
+    Ordered by least-recently-touched so a large backlog spreads across runs
+    rather than re-asking about the same rows every hour.
     """
     return frappe.get_all(
         "Delivery Note",
@@ -64,6 +86,38 @@ def _pending_delivery_notes(limit=None):
         fields=["name", "sh_shopify_fulfillment_id", "sh_delivery_status"],
         order_by="modified asc",
         limit=limit,
+    )
+
+
+def _report_cancelled_fulfillment(dn_name, status):
+    """Flag a Delivery Note whose Shopify fulfillment has been cancelled.
+
+    Deliberately does NOT cancel the Delivery Note. Cancelling a submitted one
+    reverses its Stock Ledger Entries and can be blocked outright by a linked
+    Sales Invoice, so doing it automatically on a Shopify signal would either
+    move real stock without anyone deciding to, or fail halfway and leave the
+    documents inconsistent. It would also feed straight back: cancelling a
+    Delivery Note fires on_delivery_note_cancel, which pushes a cancel BACK to
+    Shopify for the fulfillment Shopify has already cancelled.
+
+    What actually needs deciding -- whether the goods really did not ship,
+    whether stock returns, whether an invoice is reversed -- is a books
+    decision, so this raises it where a human will see it and stops.
+    """
+    frappe.log_error(
+        title=f"Shopify cancelled the fulfillment behind {dn_name}",
+        message=(
+            f"Shopify now reports this fulfillment as {status}, but the Delivery Note is still "
+            f"submitted here -- so its stock movement stands and its supplier remains "
+            f"invoiceable for it.\n\n"
+            f"This usually means someone marked the order unfulfilled in Shopify's admin. "
+            f"Decide whether the goods genuinely did not ship: if so the Delivery Note needs "
+            f"cancelling here (which reverses the stock), and any invoice raised against it "
+            f"needs reversing too.\n\n"
+            f"Not done automatically: cancelling a submitted Delivery Note moves real stock, "
+            f"can be refused by a linked Sales Invoice, and would push a second cancellation "
+            f"back to Shopify for a fulfillment it has already cancelled."
+        ),
     )
 
 
@@ -79,7 +133,8 @@ def sync_delivery_status(limit=None):
         return {"ok": False, "reason": "connector disabled"}
 
     pending = _pending_delivery_notes(limit)
-    summary = {"ok": True, "checked": len(pending), "updated": 0, "delivered": 0, "failed": 0}
+    summary = {"ok": True, "checked": len(pending), "updated": 0, "delivered": 0,
+               "cancelled": 0, "failed": 0}
     if not pending:
         return summary
 
@@ -117,6 +172,9 @@ def sync_delivery_status(limit=None):
             summary["updated"] += 1
             if status == "DELIVERED":
                 summary["delivered"] += 1
+            elif status in _CANCELLED:
+                summary["cancelled"] += 1
+                _report_cancelled_fulfillment(dn.name, status)
 
     frappe.db.commit()
     return summary
