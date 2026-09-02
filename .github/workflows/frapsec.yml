@@ -17,6 +17,7 @@ name: frapsec
 on:
   push:
   pull_request:
+  workflow_dispatch:   # lets the scan be run by hand from the Actions tab
 
 jobs:
   scan:
