@@ -111,9 +111,21 @@ doc_events = {
         # Item saves NO LONGER push to Shopify -- the Shopify Product Listing
         # is the push trigger and enable gate now (see product.listing_hooks).
         # Only tags/collections/UOM validation (Item-level concepts) stay here.
+        # UOM dedupe has to run BEFORE the doctype's own validate(), not with
+        # the other hooks after it. Frappe runs Item.validate() first, so
+        # ERPNext's validate_conversion_factor threw "Unit of Measure ...
+        # entered more than once" and the heal registered on `validate` never
+        # got a turn -- it only ever appeared to work because the import path
+        # calls it explicitly before saving.
+        #
+        # Measured live: 1,860 of 3,517 items carry a duplicated UOM row, so
+        # over half the catalogue could not be saved from Desk or the supplier
+        # portal at all, including editing a title or description.
+        "before_validate": [
+            "alaiy_os_connector_shopify.shopify.product_sync.validate_item_uoms",
+        ],
         "validate": [
             "alaiy_os_connector_shopify.shopify.product_sync.resolve_shopify_category_gid",
-            "alaiy_os_connector_shopify.shopify.product_sync.validate_item_uoms",
             "alaiy_os_connector_shopify.shopify.product_sync.copy_template_tags_to_variant",
             "alaiy_os_connector_shopify.shopify.product_sync.copy_template_collections_to_variant",
         ],
