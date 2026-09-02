@@ -1,0 +1,1397 @@
+{
+  "schema": 2,
+  "accepted": [
+    {
+      "key": "004b7227ac789ff4",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/test_variant_relink.py",
+      "line": 46,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "057e1557b71042cf",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 366,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "061be000076fe0bb",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/patches/drop_legacy_item_shopify_ids.py",
+      "line": 55,
+      "summary": "_scrub_list_view_refs()  uses ignore_permissions=True on s.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, kee"
+    },
+    {
+      "key": "06801d7d23461a66",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 365,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "07f1a3bf42a61780",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 368,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "0db53d51d22523fd",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "shopify/inventory_sync.py",
+      "line": 763,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "12e5843068ef2a27",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/metafields.py",
+      "line": 153,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "1394e171cbdc7da1",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/setup/install.py",
+      "line": 55,
+      "summary": "sync_connector_registry()  uses ignore_permissions=True on doc.insert \u2014 bypasses the permission model (background code \u2014 normal for sync job"
+    },
+    {
+      "key": "15579cd3866f1193",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/product/taxonomy.py",
+      "line": 65,
+      "summary": "ensure_shopify_category() [reachable from a whitelisted endpoint] uses ignore_permissions=True on doc.insert \u2014 bypasses the permission model"
+    },
+    {
+      "key": "17e7e244951927a4",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/sync_guard.py",
+      "line": 124,
+      "summary": "close_log()  uses ignore_permissions=True on log.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep as inven"
+    },
+    {
+      "key": "198a3ff34ad1329d",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/product/masters.py",
+      "line": 343,
+      "summary": "_ensure_cost_center() [reachable from a whitelisted endpoint] uses ignore_permissions=True on cc.insert \u2014 bypasses the permission model"
+    },
+    {
+      "key": "1a57b5855b6ef463",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 367,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "1aaf5eef26f1ff37",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 85,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "1c96ddfe7b534f82",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/status_audit.py",
+      "line": 197,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "1d7088f835b8170d",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/product/webhooks.py",
+      "line": 171,
+      "summary": "_handle_product_update() [reachable from a whitelisted endpoint] uses ignore_permissions=True on frappe.delete_doc \u2014 bypasses the permission"
+    },
+    {
+      "key": "1db21ee5077b1249",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "shopify/inventory_sync.py",
+      "line": 756,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "1eaa8c78ac67853b",
+      "rule_id": "FRAP-API-001",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/api/webhooks.py",
+      "line": 10,
+      "summary": "Guest webhook endpoint with HMAC verification: alaiy_os_connector_shopify.api.webhooks.handle_webhook"
+    },
+    {
+      "key": "1f240daac313a410",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "fixes/apply_category_fixes.py",
+      "line": 73,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "1f90940194333acc",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 379,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "1fda9bdcf50c171f",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 68,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "29a253ec097f819b",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/api/update_listings.py",
+      "line": 321,
+      "summary": "_run_update_listings() [reachable from a whitelisted endpoint] uses ignore_permissions=True on log.save \u2014 bypasses the permission model"
+    },
+    {
+      "key": "2a545daaef75e2d8",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/listing.py",
+      "line": 524,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "2a9e8002abe10653",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/pull.py",
+      "line": 68,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "2b0c6e52f3553aab",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "fixes/reparent_item_groups_from_shopify_taxonomy.py",
+      "line": 130,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "2b29eb64cd5d860e",
+      "rule_id": "FRAP-HOOK-001",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/hooks.py",
+      "line": 1,
+      "summary": "hooks.py defines before_request (1 entries): runs on every request before auth-sensitive handlers \u2014 audit for early returns and state mutati"
+    },
+    {
+      "key": "2b4ff7b70229e0a9",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 369,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "2e2ea6fb503340e4",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/patches/backfill_listing_ids.py",
+      "line": 72,
+      "summary": "_backfill_variants()  uses ignore_permissions=True on listing.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, "
+    },
+    {
+      "key": "2f8fb87055f70996",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "sync_engine/entities.py",
+      "line": 61,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "2fc539badad0a01b",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 75,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "34a9ffdc090fd3ad",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/test_variant_relink.py",
+      "line": 61,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "38e7d30e6fd02313",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/customer.py",
+      "line": 43,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "3aa0c153e0b24af8",
+      "rule_id": "SEMGREP:frapsec-security-file-traversal",
+      "severity": "medium",
+      "file": "reports/scan_live_location_product_counts.py",
+      "line": 167,
+      "summary": "Detected the file system access. This code should be manually audited by\nsecurity team to avoid file traversal issues."
+    },
+    {
+      "key": "3caee99f9e324b27",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 371,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "3cf4faa6b713c287",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 369,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "40aefd469bc0c3fc",
+      "rule_id": "SEMGREP:frapsec-security-file-traversal",
+      "severity": "medium",
+      "file": "reports/scan_supplier_totals.py",
+      "line": 311,
+      "summary": "Detected the file system access. This code should be manually audited by\nsecurity team to avoid file traversal issues."
+    },
+    {
+      "key": "43539e6a270f3cb9",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/patches/drop_legacy_item_shopify_ids.py",
+      "line": 38,
+      "summary": "execute()  uses ignore_permissions=True on frappe.delete_doc \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep a"
+    },
+    {
+      "key": "448832d4aa12378f",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/listing.py",
+      "line": 551,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "44b9a6f8f2b7c8aa",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 97,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "4562124554a2e371",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/item_hooks.py",
+      "line": 200,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "45d3bc9d6fad5946",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/patches/create_shopify_product_listings.py",
+      "line": 72,
+      "summary": "_backfill_one()  uses ignore_permissions=True on listing.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep "
+    },
+    {
+      "key": "47e46ec8448c1518",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 375,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "4817eee73cbda065",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/product/export.py",
+      "line": 89,
+      "summary": "run_bulk_export_to_shopify()  uses ignore_permissions=True on log.save \u2014 bypasses the permission model (background code \u2014 normal for sync jo"
+    },
+    {
+      "key": "49607c1c7cea5a69",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/archive.py",
+      "line": 63,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "4a32fc36b376d9fb",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/product/taxonomy.py",
+      "line": 200,
+      "summary": "fetch_shopify_taxonomy()  uses ignore_permissions=True on log.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, "
+    },
+    {
+      "key": "4a4e93efac5d8024",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "api/clear_orders.py",
+      "line": 163,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "4a70f76aa2cb14fa",
+      "rule_id": "FRAP-API-002",
+      "severity": "high",
+      "file": "alaiy_os_connector_shopify/shopify/product/collections.py",
+      "line": 304,
+      "summary": "alaiy_os_connector_shopify.shopify.product.collections.get_collection_products hits the database with no visible permission check (frappe.db"
+    },
+    {
+      "key": "4a9a0025bc53e8b1",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/listing.py",
+      "line": 528,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "4aa030850fe49851",
+      "rule_id": "FRAP-BIZ-001",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/order/utils.py",
+      "line": 28,
+      "summary": "_as_administrator() switches session to Administrator inside a try/finally that restores the original user (scoped) \u2014 still verify the calle"
+    },
+    {
+      "key": "4c9b3daf2d8cbfd9",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/listing.py",
+      "line": 525,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "4e8b76ba7e6a1a29",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 53,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "4f3b1d796369c8ee",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/test_variant_relink.py",
+      "line": 37,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "4f793e7852273274",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 379,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "4fb24c58c21e969f",
+      "rule_id": "FRAP-API-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/product/listing.py",
+      "line": 30,
+      "summary": "alaiy_os_connector_shopify.shopify.product.listing.item_without_listing_query hits the database with no visible permission check (frappe.db "
+    },
+    {
+      "key": "52f944b9ab6337b2",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 80,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "5376f00ca19f3403",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 74,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "53a9419e737f6fd1",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 374,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "546affc5050350db",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/pricing.py",
+      "line": 59,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "5694c746a5988a89",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 366,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "57613396823f5e70",
+      "rule_id": "FRAP-API-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/api/sync.py",
+      "line": 117,
+      "summary": "alaiy_os_connector_shopify.api.sync.get_dashboard_stats hits the database with no visible permission check (frappe.db bypasses DocType permi"
+    },
+    {
+      "key": "59c402b119bf8ea9",
+      "rule_id": "BANDIT:B112:try_except_continue",
+      "severity": "low",
+      "file": "product/media.py",
+      "line": 97,
+      "summary": "Try, Except, Continue detected."
+    },
+    {
+      "key": "5b09cadcc0eb2087",
+      "rule_id": "SEMGREP:frapsec-security-file-traversal",
+      "severity": "medium",
+      "file": "audits/audit_item_groups.py",
+      "line": 81,
+      "summary": "Detected the file system access. This code should be manually audited by\nsecurity team to avoid file traversal issues."
+    },
+    {
+      "key": "5bc36bed25afe00d",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/taxonomy.py",
+      "line": 201,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "5d2a3b9315c064af",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "shopify/inventory_sync.py",
+      "line": 749,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "5dbcc8a8130b1eff",
+      "rule_id": "SEMGREP:frapsec-security-file-traversal",
+      "severity": "medium",
+      "file": "reports/scan_live_location_product_counts.py",
+      "line": 176,
+      "summary": "Detected the file system access. This code should be manually audited by\nsecurity team to avoid file traversal issues."
+    },
+    {
+      "key": "5ece270932645052",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "api/update_listings.py",
+      "line": 322,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "5fecc3d11d18cae3",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 70,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "60be708abcf18660",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/webhooks.py",
+      "line": 172,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "615bec778b479be8",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 72,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "61ba8ecfde33ac06",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "shopify/inventory_sync.py",
+      "line": 751,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "64504cac7258e4e1",
+      "rule_id": "SEMGREP:frapsec-monkey-patching-not-allowed",
+      "severity": "high",
+      "file": "product/export.py",
+      "line": 40,
+      "summary": "from_shopify_sync being monkey patched by app. Use hooks provided by framework instead of patching behaviour at runtime."
+    },
+    {
+      "key": "671d4e6d2f4409ad",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "sync_engine/retry_queue.py",
+      "line": 26,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "680898a24b67f8c7",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/listing.py",
+      "line": 533,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "688952128f5f30c9",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 63,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "68ecb1a0f9b4a4dd",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/patches/backfill_simple_item_variant_rows.py",
+      "line": 37,
+      "summary": "execute()  uses ignore_permissions=True on listing.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep as inv"
+    },
+    {
+      "key": "6b44335085fd37dd",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/webhook.py",
+      "line": 150,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "6b5cb814e1ae3a06",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/product/tags.py",
+      "line": 56,
+      "summary": "_set_item_tags() [reachable from a whitelisted endpoint] uses ignore_permissions=True on frappe.get_doc({'doctype': 'Shopify Tag', 'tag_name"
+    },
+    {
+      "key": "6c7609992ca2d314",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/test_variant_relink.py",
+      "line": 54,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "6e1b7e384a4befce",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "api/retry_unpaid_invoices.py",
+      "line": 59,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "6e79ad226bca9f56",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 375,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "6f09e448c7acb990",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 59,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "70d995c2488ed9de",
+      "rule_id": "FRAP-API-002",
+      "severity": "high",
+      "file": "alaiy_os_connector_shopify/shopify/sync_guard.py",
+      "line": 89,
+      "summary": "alaiy_os_connector_shopify.shopify.sync_guard.request_cancel hits the database with no visible permission check (frappe.db bypasses DocType "
+    },
+    {
+      "key": "71e72ef7ee58d55a",
+      "rule_id": "SEMGREP:frapsec-setuser",
+      "severity": "medium",
+      "file": "order/utils.py",
+      "line": 32,
+      "summary": "Detected the use of functions that can be  dangerous if used incorrectly.\nThis code should be manually audited by security team."
+    },
+    {
+      "key": "727e5bdbe17a1fad",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/upsert.py",
+      "line": 241,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "73604bc3af4471bb",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/stock.py",
+      "line": 368,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "7558e033c9fc83fe",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 86,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "76a65a4895c997d9",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/inventory_sync.py",
+      "line": 530,
+      "summary": "handle_inventory_level_webhook() [reachable from a whitelisted endpoint] uses ignore_permissions=True on frappe.get_doc({'doctype': 'Shopify"
+    },
+    {
+      "key": "7753b8f93910ccd3",
+      "rule_id": "FRAP-API-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/api/sync.py",
+      "line": 95,
+      "summary": "alaiy_os_connector_shopify.api.sync.get_sync_status hits the database with no visible permission check (frappe.db bypasses DocType permissio"
+    },
+    {
+      "key": "7a7691a80f0cc734",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 356,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "810f78129085337b",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/order/pull.py",
+      "line": 44,
+      "summary": "_save_log_resilient()  uses ignore_permissions=True on log.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, kee"
+    },
+    {
+      "key": "81509035d4487ed7",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 371,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "8397e8e4654641d7",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/masters.py",
+      "line": 179,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "83fd3f58907bb6b7",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/product/masters.py",
+      "line": 284,
+      "summary": "_ensure_uom() [reachable from a whitelisted endpoint] uses ignore_permissions=True on frappe.get_doc({'doctype': 'UOM', 'uom_name': name}).i"
+    },
+    {
+      "key": "846709ada7968d0a",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 367,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "86bf23eb5e3cb5ab",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 380,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "88fda04add791c5f",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/product/listing_hooks.py",
+      "line": 89,
+      "summary": "sync_new_variant_to_listing()  uses ignore_permissions=True on listing.save \u2014 bypasses the permission model (background code \u2014 normal for sy"
+    },
+    {
+      "key": "8a2230d5f928e951",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 71,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "8cb222cb4b9b273b",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 368,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "8e94e4609402c5e2",
+      "rule_id": "SEMGREP:frapsec-security-file-traversal",
+      "severity": "medium",
+      "file": "audits/suggest_category_mapping.py",
+      "line": 98,
+      "summary": "Detected the file system access. This code should be manually audited by\nsecurity team to avoid file traversal issues."
+    },
+    {
+      "key": "8f6297e9c8e6bb87",
+      "rule_id": "SEMGREP:frapsec-security-file-traversal",
+      "severity": "medium",
+      "file": "reports/combine_live_location_product_counts.py",
+      "line": 47,
+      "summary": "Detected the file system access. This code should be manually audited by\nsecurity team to avoid file traversal issues."
+    },
+    {
+      "key": "936bfae64c667980",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 55,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "95a8027a4c4311d2",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/product/importer.py",
+      "line": 101,
+      "summary": "run_full_product_import()  uses ignore_permissions=True on log.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs,"
+    },
+    {
+      "key": "96a9db7f5e2ba7bb",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 365,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "9aecf373e2d7c21f",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/product/listing.py",
+      "line": 329,
+      "summary": "ensure_listing()  uses ignore_permissions=True on listing.insert \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, ke"
+    },
+    {
+      "key": "9b81477cc33173b1",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/returns.py",
+      "line": 126,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "9ccea0e44f0a1311",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/order/tax.py",
+      "line": 76,
+      "summary": "_create_tax_account() [reachable from a whitelisted endpoint] uses ignore_permissions=True on acc.insert \u2014 bypasses the permission model"
+    },
+    {
+      "key": "9f6d63caf80bb69d",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/line_items.py",
+      "line": 139,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "a007157a1594e2ab",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/item_hooks.py",
+      "line": 266,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "a3afb958964ed9dc",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/api/clear_orders.py",
+      "line": 55,
+      "summary": "_force_clear()  uses ignore_permissions=True on frappe.delete_doc \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, k"
+    },
+    {
+      "key": "a63b811837bdbed5",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 76,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "a6615b6293c39377",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "shopify/sync_guard.py",
+      "line": 46,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "aa51d78a8432a6a7",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/item_hooks.py",
+      "line": 270,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "ac33c11f8c996d36",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/sync_engine/retry_queue.py",
+      "line": 25,
+      "summary": "enqueue()  uses ignore_permissions=True on entry.insert \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep as inv"
+    },
+    {
+      "key": "acb89d3b9ded1a3d",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/sync_engine/retry_queue.py",
+      "line": 47,
+      "summary": "record_failure()  uses ignore_permissions=True on entry.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep a"
+    },
+    {
+      "key": "ace1febe3ea828c5",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/product/webhooks.py",
+      "line": 545,
+      "summary": "_handle_product_delete() [reachable from a whitelisted endpoint] uses ignore_permissions=True on entity.save \u2014 bypasses the permission model"
+    },
+    {
+      "key": "af4ebe08507bdccd",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/sync_guard.py",
+      "line": 65,
+      "summary": "load_or_create_log() [reachable from a whitelisted endpoint] uses ignore_permissions=True on log.insert \u2014 bypasses the permission model"
+    },
+    {
+      "key": "b082627ea0fd75fb",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/sync_engine/entities.py",
+      "line": 54,
+      "summary": "save()  uses ignore_permissions=True on entity.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep as invento"
+    },
+    {
+      "key": "b22b4e77590909b8",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/product/stock.py",
+      "line": 219,
+      "summary": "_sync_item_supplier_from_location() [reachable from a whitelisted endpoint] uses ignore_permissions=True on frappe.get_doc({'doctype': 'Item"
+    },
+    {
+      "key": "b26012ee236cfcdf",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/listing.py",
+      "line": 548,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "b48cbaadcf320c16",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "shopify/inventory_sync.py",
+      "line": 750,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "b4f1d8176d4c2764",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "api/export.py",
+      "line": 204,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "b5f2c7f978b7f256",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "fixes/clear_stale_shopify_product_ids.py",
+      "line": 83,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "b62d80fd13ab7c30",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/collections.py",
+      "line": 259,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "b77efa1f30326cca",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/product/archive.py",
+      "line": 62,
+      "summary": "archive_item()  uses ignore_permissions=True on entity.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep as"
+    },
+    {
+      "key": "b91f48192de8d942",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/patches/drop_sync_to_shopify_field.py",
+      "line": 20,
+      "summary": "execute()  uses ignore_permissions=True on frappe.delete_doc \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep a"
+    },
+    {
+      "key": "bb763cdff66ec266",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/patches/drop_sync_to_shopify_field.py",
+      "line": 42,
+      "summary": "_scrub_list_view_refs()  uses ignore_permissions=True on s.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, kee"
+    },
+    {
+      "key": "bc144bbe9a8b390a",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/item_hooks.py",
+      "line": 273,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "bcc3f67c3e130b9a",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/invoice.py",
+      "line": 254,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "bcf7999c2f0935db",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 84,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "bd3960952c3b0316",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/product/collections.py",
+      "line": 258,
+      "summary": "sync_shopify_collections() [whitelisted endpoint] uses ignore_permissions=True on log.save \u2014 bypasses the permission model"
+    },
+    {
+      "key": "be6a0e7978e74fcc",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 373,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "bfdd52a70f438413",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/listing.py",
+      "line": 540,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "c115b19a0f57feae",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 373,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "c224f505c8372761",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 52,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "c24963b41980497e",
+      "rule_id": "SEMGREP:frapsec-security-file-traversal",
+      "severity": "medium",
+      "file": "fixes/apply_category_fixes.py",
+      "line": 39,
+      "summary": "Detected the file system access. This code should be manually audited by\nsecurity team to avoid file traversal issues."
+    },
+    {
+      "key": "c5d8a7627e6af50c",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/test_variant_relink.py",
+      "line": 57,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "c974c1178dd73793",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/item_hooks.py",
+      "line": 255,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "cb44ebf469df5b5c",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 54,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "cbdacf9f814bd049",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/setup/install.py",
+      "line": 528,
+      "summary": "_remove_deprecated_item_fields()  uses ignore_permissions=True on frappe.delete_doc \u2014 bypasses the permission model (background code \u2014 norma"
+    },
+    {
+      "key": "cc2e3f0e070cbd7c",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/product/importer.py",
+      "line": 624,
+      "summary": "_import_product_inner() [reachable from a whitelisted endpoint] uses ignore_permissions=True on frappe.delete_doc \u2014 bypasses the permission "
+    },
+    {
+      "key": "cee1492aabac81b9",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/fulfillment_push.py",
+      "line": 253,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "d1d242b796e8f701",
+      "rule_id": "BANDIT:B110:try_except_pass",
+      "severity": "low",
+      "file": "order/fulfillment_push.py",
+      "line": 362,
+      "summary": "Try, Except, Pass detected."
+    },
+    {
+      "key": "d460c0a2e5d31f6d",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "setup/install.py",
+      "line": 62,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "d51f8a2db79a08e2",
+      "rule_id": "SEMGREP:frapsec-monkey-patching-not-allowed",
+      "severity": "high",
+      "file": "product/importer.py",
+      "line": 38,
+      "summary": "from_shopify_sync being monkey patched by app. Use hooks provided by framework instead of patching behaviour at runtime."
+    },
+    {
+      "key": "d8c8f529bc3c9f24",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/api/export.py",
+      "line": 203,
+      "summary": "_run_background_export() [reachable from a whitelisted endpoint] uses ignore_permissions=True on file_doc.insert \u2014 bypasses the permission m"
+    },
+    {
+      "key": "d8cea918fba0fb4e",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "shopify/inventory_sync.py",
+      "line": 758,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "d9fac6d68777fd78",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/order/pull.py",
+      "line": 50,
+      "summary": "_save_log_resilient()  uses ignore_permissions=True on fresh.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, k"
+    },
+    {
+      "key": "da918421ab811cfd",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "shopify/auth.py",
+      "line": 88,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "dc787d4b895d86e4",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/order/currency.py",
+      "line": 104,
+      "summary": "_ensure_currency_receivable_account() [reachable from a whitelisted endpoint] uses ignore_permissions=True on acc.insert \u2014 bypasses the perm"
+    },
+    {
+      "key": "e032b39d47cd0d14",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "product/export.py",
+      "line": 85,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "e217936084590f86",
+      "rule_id": "SEMGREP:frapsec-setuser",
+      "severity": "medium",
+      "file": "order/utils.py",
+      "line": 28,
+      "summary": "Detected the use of functions that can be  dangerous if used incorrectly.\nThis code should be manually audited by security team."
+    },
+    {
+      "key": "e2fb519277611739",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/setup/install.py",
+      "line": 60,
+      "summary": "sync_connector_registry()  uses ignore_permissions=True on doc.save \u2014 bypasses the permission model (background code \u2014 normal for sync jobs,"
+    },
+    {
+      "key": "e51c9e1f5761b300",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "backfills/backfill_tracking_numbers.py",
+      "line": 105,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "e53b5c8a27a797af",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/setup/install.py",
+      "line": 159,
+      "summary": "_ensure_list_view_column()  uses ignore_permissions=True on settings.save \u2014 bypasses the permission model (background code \u2014 normal for sync"
+    },
+    {
+      "key": "e652f3609d3fca40",
+      "rule_id": "SEMGREP:frapsec-monkey-patching-not-allowed",
+      "severity": "high",
+      "file": "product/webhooks.py",
+      "line": 241,
+      "summary": "listing_title being monkey patched by app. Use hooks provided by framework instead of patching behaviour at runtime."
+    },
+    {
+      "key": "e66d5a78e012c515",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 79,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "ec48b60dea614296",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "shopify/pull_stock_from_shopify.py",
+      "line": 172,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "ee2d28b1630b281f",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/update.py",
+      "line": 84,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "ee6be31daf1ff3df",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "order/delivery_notes.py",
+      "line": 302,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "ef8e05923a3ce982",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 51,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "f0289e20d3729d7b",
+      "rule_id": "SEMGREP:frapsec-manual-commit",
+      "severity": "medium",
+      "file": "shopify/inventory_sync.py",
+      "line": 108,
+      "summary": "Manually commiting a transaction is highly discouraged. Read about the transaction model implemented by Frappe Framework before adding manua"
+    },
+    {
+      "key": "f03ca9bde8364d67",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/product/listing.py",
+      "line": 405,
+      "summary": "sync_listing_variants()  uses ignore_permissions=True on listing.save \u2014 bypasses the permission model (background code \u2014 normal for sync job"
+    },
+    {
+      "key": "f1e073da57077039",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/order/invoice.py",
+      "line": 238,
+      "summary": "_ensure_round_off_account() [reachable from a whitelisted endpoint] uses ignore_permissions=True on acc.insert \u2014 bypasses the permission mod"
+    },
+    {
+      "key": "f61869346661b8be",
+      "rule_id": "SEMGREP:frapsec-sql-format-injection",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 374,
+      "summary": "Detected use of '.format()' or f-string in a Frappe SQL call. This can lead to SQL injection. Use parameterized queries instead."
+    },
+    {
+      "key": "f70a8a1601f96560",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/product/export.py",
+      "line": 147,
+      "summary": "run_bulk_export_to_shopify()  uses ignore_permissions=True on listing.save \u2014 bypasses the permission model (background code \u2014 normal for syn"
+    },
+    {
+      "key": "f73479d8878b3d00",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/listing.py",
+      "line": 539,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "f790a1b1b4e57d6d",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "medium",
+      "file": "alaiy_os_connector_shopify/shopify/inventory_sync.py",
+      "line": 107,
+      "summary": "sync_shopify_locations() [whitelisted endpoint] uses ignore_permissions=True on log.save \u2014 bypasses the permission model"
+    },
+    {
+      "key": "f84808dd8be2c04d",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "product/status.py",
+      "line": 69,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "f877138701cde0ac",
+      "rule_id": "FRAP-BIZ-002",
+      "severity": "info",
+      "file": "alaiy_os_connector_shopify/shopify/sync_engine/entities.py",
+      "line": 51,
+      "summary": "save()  uses ignore_permissions=True on entity.insert \u2014 bypasses the permission model (background code \u2014 normal for sync jobs, keep as inven"
+    },
+    {
+      "key": "f933313ca2de2e86",
+      "rule_id": "SEMGREP:frapsec-security-file-traversal",
+      "severity": "medium",
+      "file": "audits/resolve_uncategorized.py",
+      "line": 108,
+      "summary": "Detected the file system access. This code should be manually audited by\nsecurity team to avoid file traversal issues."
+    },
+    {
+      "key": "fa5f4c6d14442d55",
+      "rule_id": "BANDIT:B608:hardcoded_sql_expressions",
+      "severity": "medium",
+      "file": "product/importer.py",
+      "line": 380,
+      "summary": "Possible SQL injection vector through string-based query construction."
+    },
+    {
+      "key": "fc7a34ae9e567c78",
+      "rule_id": "FRAP-BIZ-003",
+      "severity": "high",
+      "file": "alaiy_os_connector_shopify/api/clear_orders.py",
+      "line": 54,
+      "summary": "_force_clear() writes docstatus via set_value() \u2014 bypasses submit/cancel workflow validations"
+    },
+    {
+      "key": "fcb62055c7b282d7",
+      "rule_id": "BANDIT:B101:assert_used",
+      "severity": "low",
+      "file": "shopify/inventory_sync.py",
+      "line": 769,
+      "summary": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+    },
+    {
+      "key": "fcbc65c8a351163a",
+      "rule_id": "BANDIT:B324:hashlib",
+      "severity": "high",
+      "file": "product/taxonomy.py",
+      "line": 29,
+      "summary": "Use of weak SHA1 hash for security. Consider usedforsecurity=False"
+    },
+    {
+      "key": "fe0425a0c3681490",
+      "rule_id": "BANDIT:B110:try_except_pass",
+      "severity": "low",
+      "file": "setup/install.py",
+      "line": 554,
+      "summary": "Try, Except, Pass detected."
+    }
+  ]
+}

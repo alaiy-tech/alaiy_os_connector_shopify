@@ -1,0 +1,26 @@
+# Security scan on every push and PR.
+#
+# Calls the canonical reusable workflow in frapsec's own repo, so rule changes
+# land here without editing this file. The job fails on critical/high findings
+# only -- medium and below are reported to the Security tab via SARIF but do
+# not block a merge.
+#
+# This app carries a baseline: 174 findings that already existed when the gate
+# was adopted are accepted and do not fail the build. Anything NEW does. The
+# baseline is not a fix -- it still contains 4 highs (two unchecked whitelisted
+# writes, a docstatus write via set_value, and a SHA1 hash). Fix those and
+# regenerate it; do not let it grow.
+#
+#   frapsec scan app . --baseline .frapsec-baseline.json --update-baseline
+name: frapsec
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  scan:
+    uses: alaiy-tech/frapsec/.github/workflows/frapsec.yml@main
+    with:
+      app_path: .
+      baseline: .frapsec-baseline.json
