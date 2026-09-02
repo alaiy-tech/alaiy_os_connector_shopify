@@ -170,9 +170,31 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
     client = ShopifyGraphQLClient()
     order_gid = _to_gid(shopify_order_id)
 
+    # Nothing from here on may raise. By the time this runs the goods have
+    # physically shipped and the Delivery Note is submitted -- a Shopify-side
+    # mismatch is a sync problem, not a reason to undo a real dispatch.
+    #
+    # Confirmed live, and the reason these are no longer throws: a customer
+    # refunded an order minutes before the supplier fulfilled it, which closed
+    # Shopify's fulfillment orders, so nothing matched and this threw. The throw
+    # unwound the whole request -- Sales Order, both Purchase Orders and the
+    # Delivery Note all gone -- while FedEx had already issued a real label and
+    # the parcel was in the carrier's network. The tracking number existed at
+    # FedEx and nowhere in ERPNext, and the only trace was an Error Log nobody
+    # was watching.
     open_by_fulfillment_order, location_by_fulfillment_order = _open_fulfillment_order_line_items(client, order_gid)
     if not open_by_fulfillment_order:
-        frappe.throw(f"Shopify order for {so_name} has no open fulfillment orders left to fulfill.")
+        frappe.log_error(
+            title=f"Shopify: no open fulfillment orders for {dn.name}",
+            message=(
+                f"Sales Order: {so_name}\n"
+                "Shopify has no open fulfillment orders left on this order, so this shipment "
+                "could not be pushed. Usually the order was refunded, cancelled, or already "
+                "fulfilled on Shopify's side. The Delivery Note stands and the goods have "
+                "shipped -- the fulfillment needs recording on Shopify by hand."
+            ),
+        )
+        return {"ok": False, "reason": "no_open_fulfillment_orders"}
 
     fulfillment_input_per_order, unmatched = _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order)
     if unmatched:
@@ -181,7 +203,16 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
             message=f"Sales Order: {so_name}\nUnmatched item codes (no linked Shopify variant/SKU, or nothing left open there): {unmatched}",
         )
     if not fulfillment_input_per_order:
-        frappe.throw(f"{dn.name}'s items could not be matched to any open Shopify fulfillment order line.")
+        frappe.log_error(
+            title=f"Shopify: fulfillment push for {dn.name} matched nothing",
+            message=(
+                f"Sales Order: {so_name}\n"
+                "None of this Delivery Note's items matched an open Shopify fulfillment order "
+                "line, so nothing was pushed. The Delivery Note stands and the goods have "
+                "shipped -- the fulfillment needs recording on Shopify by hand."
+            ),
+        )
+        return {"ok": False, "reason": "no_matching_lines", "unmatched": unmatched}
 
     tracking_info = None
     if tracking_number:
@@ -219,9 +250,16 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         if errors:
             frappe.log_error(
                 title=f"Shopify: fulfillment push failed for {dn.name}",
-                message=f"Sales Order: {so_name}\nLocation: {location_id}\n{errors}",
+                message=(
+                    f"Sales Order: {so_name}\nLocation: {location_id}\n{errors}\n\n"
+                    "The Delivery Note stands and the goods have shipped -- the fulfillment "
+                    "needs recording on Shopify by hand."
+                ),
             )
-            frappe.throw(f"Shopify rejected the fulfillment push: {errors}")
+            # Logged, not raised: see the note above. Shopify rejecting one
+            # location's bucket must not undo the dispatch, and must not stop
+            # the remaining buckets from being pushed.
+            continue
         fulfillment = result.get("fulfillment") or {}
         if fulfillment:
             fulfillments.append(fulfillment)
