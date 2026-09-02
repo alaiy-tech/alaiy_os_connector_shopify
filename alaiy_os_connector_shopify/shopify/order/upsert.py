@@ -143,10 +143,30 @@ def _upsert_order_unlocked(order, order_id):
         })
 
     if not line_items:
-        frappe.log_error(
-            title=f"Shopify order {order.get('name')}: no mappable items",
-            message=str(order.get("line_items")),
+        # Say WHICH of the two very different reasons this is. A cancelled or
+        # fully refunded order comes back with every line at quantity 0, and
+        # reporting that as "no mappable items" reads as a catalogue problem --
+        # it sent two separate investigations looking for a missing item mapping
+        # that did not exist.
+        raw_lines = order.get("line_items") or []
+        all_zero = bool(raw_lines) and all(
+            _line_item_qty(li) <= 0 for li in raw_lines
         )
+        if all_zero:
+            title = f"Shopify order {order.get('name')}: every line refunded or cancelled"
+            reason = (
+                "Every line on this order has quantity 0, so there is nothing to import. "
+                "This is the normal shape of a cancelled or fully refunded order, not a "
+                "catalogue gap."
+            )
+        else:
+            title = f"Shopify order {order.get('name')}: no mappable items"
+            reason = (
+                "None of this order's lines resolved to a local Item, by SKU, variant id or "
+                "title. The products are missing from the catalogue, or their Shopify ids "
+                "were never linked."
+            )
+        frappe.log_error(title=title, message=f"{reason}\n\n{raw_lines}")
         return False
 
     line_items = _merge_duplicate_item_rows(line_items)
