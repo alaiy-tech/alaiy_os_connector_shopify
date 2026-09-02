@@ -78,6 +78,15 @@ scheduler_events = {
         # only; the outbound push is run_inventory_push, scheduled separately
         # via sync_jobs and gated by its own interval setting.
         "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
+        # Shopify announces a parcel's delivery state on a fulfillments webhook
+        # only when it feels like it -- marking an order delivered from its own
+        # admin changes displayStatus and emits nothing at all. Confirmed live
+        # with the topic subscribed, dispatched and erroring nowhere. Since a
+        # supplier's order only reads "delivered" once that field lands, and
+        # only a delivered order can be invoiced, a delivery Shopify never
+        # announced left the supplier unable to invoice. Asking is the only
+        # reliable way to find out.
+        "alaiy_os_connector_shopify.shopify.order.delivery_status.sync_delivery_status",
     ],
     "daily": [
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
