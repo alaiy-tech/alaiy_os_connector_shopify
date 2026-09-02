@@ -20,7 +20,27 @@ def handle_webhook():
     settings = frappe.get_single("Shopify Connector Settings")
 
     if not settings.is_enabled:
-        frappe.response.status_code = 200
+        # 503, not 200. A 2xx tells Shopify the event was delivered, so it is
+        # dropped from their queue and never retried -- and there is no
+        # scheduled order pull to find it later, so every order, refund and
+        # fulfillment arriving while the connector was switched off was lost
+        # permanently, with nothing written down anywhere.
+        #
+        # Shopify retries a 5xx on its own schedule over roughly 48 hours, so a
+        # brief disable (a deploy, a credential rotation) now catches up by
+        # itself once the connector is back on. Beyond that window the event is
+        # still lost, which is why the payload is recorded here as well: a
+        # human can replay it from the Error Log.
+        frappe.log_error(
+            title=f"Shopify: webhook {topic} refused, connector disabled",
+            message=(
+                "The connector is disabled, so this event was refused with 503 for Shopify to "
+                "retry. If it stays disabled past Shopify's retry window the event is gone, so "
+                "the raw payload is kept here to be replayed by hand.\n\n"
+                f"Topic: {topic}\n\n{(raw_body or b'')[:5000]}"
+            ),
+        )
+        frappe.response.status_code = 503
         return {"ok": False, "reason": "connector disabled"}
 
     # Fail CLOSED: this endpoint is allow_guest -- at least one secret must
