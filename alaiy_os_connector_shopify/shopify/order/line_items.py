@@ -188,8 +188,17 @@ def _sync_order_line_items(so_name: str, order: dict):
                     message=frappe.get_traceback(),
                 )
             return
-    frappe.db.commit()
-
+    # Deliberately NOT committed here. Committing the cancel before its
+    # replacement exists makes it permanent on its own: any failure between
+    # that commit and amended.submit() below -- a validation error, a mandatory
+    # field, a killed worker -- left the order cancelled with nothing replacing
+    # it, and the caller in webhook.py swallows the exception, so it happened
+    # with only an Error Log entry to show for it.
+    #
+    # Both halves now ride the same transaction. Frappe rolls the request back
+    # on an exception, so a failure to build the replacement leaves the original
+    # submitted and untouched, and Shopify's next webhook retries the whole
+    # exchange from a consistent starting point.
     amended = frappe.copy_doc(so)
     amended.amended_from = so.name
     _apply_line_item_diff(amended, order, warehouse)
@@ -200,6 +209,11 @@ def _sync_order_line_items(so_name: str, order: dict):
         # though `so` was already correctly cancelled just above. Nothing
         # left to amend into; the cancelled original IS the right end
         # state here, so stop instead of trying to insert an empty one.
+        #
+        # This is the one path where the cancel alone is the correct outcome,
+        # so it is committed here rather than above -- everywhere else the
+        # cancel only becomes permanent once its replacement is submitted.
+        frappe.db.commit()
         return
     amended.flags.ignore_permissions = True
     amended.flags.from_shopify_sync = True
