@@ -69,3 +69,36 @@ class TestCancelledFulfillmentContract(unittest.TestCase):
         after = src[cancel_call:]
         self.assertIn("set_value", after)
         self.assertIn("continue", after)
+
+    def test_three_outcomes_are_distinguished(self):
+        """None / True / False must each be handled separately.
+
+        None (the order itself was cancelled) and True (cancelled
+        successfully) both mark the status terminal so the poll stops asking.
+        False (a paid invoice needing a human) must NOT, so it is retried once
+        the payment is resolved. Collapsing None into False was what made 5
+        cancelled orders fail on every tick.
+        """
+        import inspect
+        from alaiy_os_connector_shopify.shopify.order import delivery_status
+
+        src = inspect.getsource(delivery_status.sync_delivery_status)
+        self.assertIn("outcome is None", src)
+        self.assertIn("elif outcome", src)
+        # The needs_human branch must not write the status.
+        needs_human = src.index("needs_human")
+        self.assertIn("rollback", src[needs_human:needs_human + 200])
+
+    def test_cancelled_order_is_detected_before_cancelling(self):
+        """A cancelled Sales Order must short-circuit before any cancel runs.
+
+        ERPNext throws InvalidStatusError from update_reserved_qty when the
+        order is cancelled, so attempting it is guaranteed to fail.
+        """
+        import inspect
+        from alaiy_os_connector_shopify.shopify.order import delivery_status
+
+        src = inspect.getsource(delivery_status._cancel_for_cancelled_fulfillment)
+        guard = src.index('"docstatus": 2')
+        cancel = src.index("dn.cancel()")
+        self.assertLess(guard, cancel, "the cancelled-order guard must come first")

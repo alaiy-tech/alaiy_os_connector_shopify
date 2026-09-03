@@ -117,7 +117,44 @@ def _cancel_for_cancelled_fulfillment(dn_name, status):
     from_shopify_sync suppresses on_delivery_note_cancel's push-back: Shopify
     cancelled this fulfillment, so sending it a second cancellation for the
     same one is both wrong and noisy.
+
+    Returns None -- neither done nor needing a human -- when the whole order
+    was cancelled rather than just its fulfillment. See below.
     """
+    # A cancelled Sales Order is a different situation entirely, and ERPNext
+    # will not allow this cancel at all: DeliveryNote.on_cancel runs
+    # update_reserved_qty, which throws InvalidStatusError ("Sales Order ... is
+    # cancelled or closed") because there is no live order left to adjust a
+    # reservation against.
+    #
+    # Nothing here should fight that. "Return the order to pending" is
+    # meaningless for an order nobody can ship, and forcing a stock reversal
+    # against a dead order is how a ledger ends up wrong. The Delivery Note
+    # stays as the historical record that goods did go out before the order was
+    # cancelled -- which is usually exactly what happened.
+    #
+    # Measured live: 5 of 7 cancelled fulfillments were this case, not an
+    # unfulfil. Without this they retried and failed every scheduler tick,
+    # burying real failures in the Error Log.
+    so_names = frappe.get_all(
+        "Delivery Note Item",
+        filters={"parent": dn_name, "against_sales_order": ["is", "set"]},
+        pluck="against_sales_order",
+        distinct=True,
+    )
+    cancelled_orders = frappe.get_all(
+        "Sales Order",
+        filters={"name": ["in", list(set(so_names))], "docstatus": 2},
+        pluck="name",
+    ) if so_names else []
+    if cancelled_orders:
+        frappe.logger().info(
+            f"Shopify reported fulfillment {status} for {dn_name}, but its order "
+            f"{', '.join(cancelled_orders)} is already cancelled -- leaving the "
+            f"Delivery Note as the record that the goods shipped."
+        )
+        return None
+
     invoices = frappe.get_all(
         "Sales Invoice Item",
         filters={"delivery_note": dn_name, "docstatus": 1},
@@ -174,7 +211,8 @@ def sync_delivery_status(limit=None):
 
     pending = _pending_delivery_notes(limit)
     summary = {"ok": True, "checked": len(pending), "updated": 0, "delivered": 0,
-               "cancelled": 0, "reverted": 0, "needs_human": 0, "failed": 0}
+               "cancelled": 0, "reverted": 0, "order_cancelled": 0,
+               "needs_human": 0, "failed": 0}
     if not pending:
         return summary
 
@@ -218,7 +256,20 @@ def sync_delivery_status(limit=None):
                 # the DN submitted and never be retried. That is the exact
                 # stuck-forever state this whole path exists to end.
                 try:
-                    if _cancel_for_cancelled_fulfillment(dn.name, status):
+                    outcome = _cancel_for_cancelled_fulfillment(dn.name, status)
+                    if outcome is None:
+                        # The whole order was cancelled, not just its
+                        # fulfillment. There is nothing to do and nothing a
+                        # human can act on, so mark it terminal: this must not
+                        # come back on every tick.
+                        frappe.db.set_value(
+                            "Delivery Note", dn.name, "sh_delivery_status", status,
+                            update_modified=False,
+                        )
+                        summary["updated"] += 1
+                        summary["order_cancelled"] += 1
+                        frappe.db.commit()
+                    elif outcome:
                         frappe.db.set_value(
                             "Delivery Note", dn.name, "sh_delivery_status", status,
                             update_modified=False,
