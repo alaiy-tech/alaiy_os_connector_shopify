@@ -842,7 +842,8 @@ def pull_stock_for_items(item_codes, dry_run=False):
     item_codes = [c for c in (item_codes or []) if c]
     if not item_codes:
         return {"checked": 0, "corrections": [], "applied": None,
-                "unlinked": [], "unmapped": [], "queue_cleared": 0}
+                "unlinked": [], "unmapped": [], "queue_cleared": 0,
+                "unchanged": 0}
 
     # Clear any queued webhook quantities for these items first. Those rows
     # hold whatever Shopify reported when the webhook fired, and this function
@@ -878,6 +879,7 @@ def pull_stock_for_items(item_codes, dry_run=False):
 
     corrections = []
     unmapped = []
+    unchanged = []
     ids = list(by_inventory_id)
     for start in range(0, len(ids), _INVENTORY_BATCH):
         chunk = ids[start:start + _INVENTORY_BATCH]
@@ -910,10 +912,23 @@ def pull_stock_for_items(item_codes, dry_run=False):
                     # place.
                     unmapped.append((item_code, str(location_id)))
                     continue
+                shopify_qty = flt(quantities[0].get("quantity") or 0)
+                # Only send what actually differs. run_inventory_pull already
+                # works this way; without it every refresh built a row for
+                # every item and reported them all as updated, so a second
+                # click on an unchanged catalogue still claimed 17 products
+                # updated. ERPNext drops the no-change rows itself, so the
+                # count was wrong rather than the stock.
+                current = flt(frappe.db.get_value(
+                    "Bin", {"item_code": item_code, "warehouse": warehouse},
+                    "actual_qty") or 0)
+                if current == shopify_qty:
+                    unchanged.append(item_code)
+                    continue
                 corrections.append({
                     "item_code": item_code,
                     "warehouse": warehouse,
-                    "qty": flt(quantities[0].get("quantity") or 0),
+                    "qty": shopify_qty,
                 })
 
     result = {
@@ -923,6 +938,9 @@ def pull_stock_for_items(item_codes, dry_run=False):
         "unmapped": unmapped,
         "applied": None,
         "queue_cleared": len(queued),
+        # Items Shopify agrees with. Reported so a caller can say "no changes"
+        # honestly rather than counting every row it looked at as an update.
+        "unchanged": len(unchanged),
     }
     if corrections and not dry_run:
         result["applied"] = apply_pulled_stock(corrections)
