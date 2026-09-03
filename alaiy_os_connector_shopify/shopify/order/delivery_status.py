@@ -178,3 +178,144 @@ def sync_delivery_status(limit=None):
 
     frappe.db.commit()
     return summary
+
+
+# ── Order status reconcile ────────────────────────────────────────────────────
+#
+# Same reasoning as the delivery poll above, one level up: an order's own state
+# on Shopify does not reliably reach us either, and for orders the failure is
+# worse than a stale field.
+#
+# The orders/* webhooks are not a guarantee:
+#   - A cancel can lose a write race. A concurrent orders/updated for the same
+#     order saves it mid-cancel and so.cancel() raises TimestampMismatchError.
+#     Retrying helps, but a retry that loses again leaves nothing behind.
+#   - handle_order_webhook catches every exception, logs it and answers 200, so
+#     Shopify counts the delivery as successful and never redelivers. A failed
+#     cancel is therefore permanent, not deferred.
+#   - A webhook can simply not arrive.
+#
+# Confirmed live on an order (a Sales Order): cancelled on Shopify at
+# 15:52Z, the webhook fired hours later, lost the race twice 30ms apart, and
+# the Sales Order stayed Completed against an order Shopify had cancelled.
+# Nothing anywhere would ever have corrected it.
+#
+# So order state is reconciled rather than trusted. Asking turns a lost race
+# from permanent corruption into a delay of one scheduler tick.
+#
+# One-directional: this only applies to Alaiy OS what Shopify already says,
+# and never pushes a state back out.
+
+# Newer than this and a webhook still has a fair chance of arriving on its own;
+# older and the order is cold. Keeps each run bounded on years of history.
+_ORDER_LOOKBACK_DAYS = 30
+
+_ORDER_STATUS_QUERY = """
+query($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on Order {
+      id
+      legacyResourceId
+      cancelledAt
+      cancelReason
+      displayFinancialStatus
+      displayFulfillmentStatus
+    }
+  }
+}
+"""
+
+
+def _open_shopify_orders(limit=None):
+    """Submitted Sales Orders from Shopify whose state could still change here.
+
+    docstatus 1 only: a draft was never submitted and a 2 is already cancelled,
+    so neither needs asking about. Least-recently-touched first so a large
+    backlog spreads across runs instead of re-asking about the same rows.
+    """
+    return frappe.get_all(
+        "Sales Order",
+        filters={
+            "docstatus": 1,
+            "sh_shopify_order_id": ["is", "set"],
+            "transaction_date": [
+                ">=", frappe.utils.add_days(frappe.utils.nowdate(), -_ORDER_LOOKBACK_DAYS)
+            ],
+        },
+        fields=["name", "sh_shopify_order_id"],
+        order_by="modified asc",
+        limit=limit,
+    )
+
+
+def sync_order_status(limit=None):
+    """Apply Shopify's own order state to Sales Orders. Safe on a schedule.
+
+    Today this cancels what Shopify has cancelled -- the one divergence that
+    silently corrupts state rather than just delaying it. The financial and
+    fulfillment statuses are fetched alongside so adding a check for either is
+    a branch here rather than another Shopify round-trip.
+
+    Returns a summary rather than raising: runs unattended, and a Shopify-side
+    failure must not take down the rest of the scheduler tick.
+    """
+    settings = frappe.get_cached_doc("Shopify Connector Settings")
+    if not settings.is_enabled:
+        return {"ok": False, "reason": "connector disabled"}
+
+    open_orders = _open_shopify_orders(limit)
+    summary = {"ok": True, "checked": len(open_orders), "cancelled": 0, "failed": 0}
+    if not open_orders:
+        return summary
+
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.order.webhook import _cancel_sales_order
+
+    client = ShopifyGraphQLClient()
+    by_legacy_id = {str(o.sh_shopify_order_id): o.name for o in open_orders}
+    ids = list(by_legacy_id)
+
+    for start in range(0, len(ids), _BATCH):
+        chunk = ids[start:start + _BATCH]
+        gids = [f"gid://shopify/Order/{oid}" for oid in chunk]
+        try:
+            data = client.execute(_ORDER_STATUS_QUERY, {"ids": gids})
+        except Exception:
+            summary["failed"] += len(chunk)
+            frappe.log_error(
+                title="Shopify: order status poll failed for a batch",
+                message=f"Order ids: {chunk}\n\n{frappe.get_traceback()}",
+            )
+            continue
+
+        for node in data.get("nodes") or []:
+            if not node or not node.get("cancelledAt"):
+                continue
+            so_name = by_legacy_id.get(str(node.get("legacyResourceId") or ""))
+            if not so_name:
+                continue
+            # Re-read rather than trusting the list: a webhook may have
+            # cancelled it since, and cancelling twice throws.
+            if frappe.db.get_value("Sales Order", so_name, "docstatus") != 1:
+                continue
+            try:
+                _cancel_sales_order(so_name)
+                summary["cancelled"] += 1
+                frappe.logger().info(
+                    f"Shopify order reconcile: cancelled {so_name} "
+                    f"(Shopify cancelledAt {node['cancelledAt']}, "
+                    f"reason {node.get('cancelReason')})"
+                )
+            except Exception:
+                # _cancel_sales_order already logs what it can explain (a
+                # linked invoice that cannot be cancelled, a lost race).
+                # Anything here is unexpected and must not stop the remaining
+                # orders in this run from being corrected.
+                summary["failed"] += 1
+                frappe.db.rollback()
+                frappe.log_error(
+                    title=f"Shopify: order reconcile failed for {so_name}",
+                    message=frappe.get_traceback(),
+                )
+
+    return summary

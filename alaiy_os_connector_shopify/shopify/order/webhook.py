@@ -49,6 +49,13 @@ def handle_fulfillment_webhook(topic, payload):
         )
 
 
+# A cancel racing a concurrent orders/updated webhook for the same order can
+# lose that race more than once, so one retry is not enough -- but the loser
+# must also roll back before reloading, or every retry re-reads the same stale
+# row. Both halves confirmed live.
+_MAX_TIMESTAMP_RETRIES = 3
+
+
 def _cancel_order(order):
     order_id = str(order.get("id", ""))
     so_name = get_active_sales_order(order_id)
@@ -65,15 +72,23 @@ def _cancel_order(order):
             _cancel_sales_order(so_name)
 
 
-def _cancel_sales_order(so_name, _timestamp_retry_done=False, _po_retry_done=False, _si_retry_done=False):
+def _cancel_sales_order(so_name, _timestamp_retries=0, _po_retry_done=False, _si_retry_done=False):
     """Cancel this Sales Order, working around the real failure modes
     seen live on a genuine Shopify cancellation:
 
     - TimestampMismatchError: another job (e.g. line_items.py's own
       _sync_order_line_items, firing concurrently off a related
       orders/updated webhook for the same order) saved the document in
-      between -- always reload and retry once against the fresh copy
-      rather than treating a real, expected race as a hard failure.
+      between -- reload and retry against the fresh copy rather than
+      treating a real, expected race as a hard failure.
+
+      The retry MUST roll back first. Confirmed live on an order
+      (a Sales Order): the failed cancel left its own aborted
+      transaction open, so the reload inside the retry read the same stale
+      timestamp and raised again 30ms later, and the order stayed
+      Completed against an order Shopify had cancelled hours earlier.
+      Retried a few times, not once: the racing writer is another webhook
+      for the same order, and one retry can lose the race twice.
     - LinkExistsError: a Sales Invoice or Purchase Order already linked
       against this order blocks the Sales Order's own cancel. If either
       is still safe to cancel itself (nothing paid/received/billed
@@ -103,15 +118,27 @@ def _cancel_sales_order(so_name, _timestamp_retry_done=False, _po_retry_done=Fal
         so.cancel()
         frappe.db.commit()
     except frappe.TimestampMismatchError:
-        if _timestamp_retry_done:
-            raise  # already retried once for this same reason; a second race is unexpected
-        _cancel_sales_order(so_name, _timestamp_retry_done=True, _po_retry_done=_po_retry_done, _si_retry_done=_si_retry_done)
+        # Roll back the aborted transaction before reloading -- without this
+        # the retry re-reads the same stale row and fails identically.
+        frappe.db.rollback()
+        if _timestamp_retries >= _MAX_TIMESTAMP_RETRIES:
+            frappe.log_error(
+                title=f"Shopify: cannot cancel {so_name} -- lost the write race {_timestamp_retries} times",
+                message=frappe.get_traceback(),
+            )
+            return
+        _cancel_sales_order(
+            so_name,
+            _timestamp_retries=_timestamp_retries + 1,
+            _po_retry_done=_po_retry_done,
+            _si_retry_done=_si_retry_done,
+        )
     except frappe.LinkExistsError:
         if not _si_retry_done and _cancel_linked_sales_invoices(so_name):
-            _cancel_sales_order(so_name, _timestamp_retry_done=_timestamp_retry_done, _po_retry_done=_po_retry_done, _si_retry_done=True)
+            _cancel_sales_order(so_name, _timestamp_retries=_timestamp_retries, _po_retry_done=_po_retry_done, _si_retry_done=True)
             return
         if not _po_retry_done and _cancel_linked_purchase_orders(so_name):
-            _cancel_sales_order(so_name, _timestamp_retry_done=_timestamp_retry_done, _po_retry_done=True, _si_retry_done=_si_retry_done)
+            _cancel_sales_order(so_name, _timestamp_retries=_timestamp_retries, _po_retry_done=True, _si_retry_done=_si_retry_done)
             return
         frappe.log_error(
             title=f"Shopify: cannot cancel {so_name} -- Sales Invoice or Purchase Order already linked",
