@@ -794,6 +794,122 @@ def enqueue_reconcile_inventory():
     )
 
 
+_ITEMS_INVENTORY_QUERY = """
+query ItemsInventory($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on InventoryItem {
+      id
+      legacyResourceId
+      inventoryLevels(first: 20) {
+        nodes {
+          location { legacyResourceId }
+          quantities(names: ["available"]) { quantity }
+        }
+      }
+    }
+  }
+}
+"""
+
+# One Shopify call per batch of inventory items rather than per item. The
+# per-variant query above costs one round trip each, which is why the only
+# existing pull was either a full catalogue sweep or a manual one-off script.
+_INVENTORY_BATCH = 50
+
+
+def pull_stock_for_items(item_codes, dry_run=False):
+    """Refresh these specific items' stock from Shopify. Scoped, not a sweep.
+
+    reconcile_inventory_from_shopify walks the whole catalogue, which is right
+    for a nightly backstop and far too slow behind a button. This asks only
+    about the items given, batched, so a supplier refreshing their own products
+    gets an answer in one or two API calls instead of hundreds.
+
+    Writes through apply_pulled_stock like every other pull, so each correction
+    lands as a real Stock Reconciliation with ledger entries -- never a direct
+    Bin write.
+
+    Items with no sh_shopify_inventory_item_id are reported rather than
+    skipped silently: that field is what links a local Item to Shopify's stock
+    at all, and a missing one means this item's stock can never be pulled.
+
+    Returns {"checked", "corrections", "applied", "unlinked", "unmapped"}.
+    """
+    settings = frappe.get_single("Shopify Connector Settings")
+    if not settings.is_enabled:
+        return {"skipped": "connector disabled"}
+
+    item_codes = [c for c in (item_codes or []) if c]
+    if not item_codes:
+        return {"checked": 0, "corrections": [], "applied": None,
+                "unlinked": [], "unmapped": []}
+
+    rows = frappe.get_all(
+        "Item",
+        filters={"name": ["in", item_codes]},
+        fields=["name", "sh_shopify_inventory_item_id"],
+    )
+    by_inventory_id = {
+        str(r.sh_shopify_inventory_item_id): r.name
+        for r in rows if r.sh_shopify_inventory_item_id
+    }
+    unlinked = [r.name for r in rows if not r.sh_shopify_inventory_item_id]
+
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    client = ShopifyGraphQLClient()
+
+    corrections = []
+    unmapped = []
+    ids = list(by_inventory_id)
+    for start in range(0, len(ids), _INVENTORY_BATCH):
+        chunk = ids[start:start + _INVENTORY_BATCH]
+        gids = [f"gid://shopify/InventoryItem/{i}" for i in chunk]
+        try:
+            data = client.execute(_ITEMS_INVENTORY_QUERY, {"ids": gids})
+        except Exception:
+            frappe.log_error(
+                title="Shopify: scoped stock pull failed for a batch",
+                message=f"Inventory item ids: {chunk}\n\n{frappe.get_traceback()}",
+            )
+            continue
+
+        for node in (data.get("nodes") or []):
+            if not node:
+                continue
+            item_code = by_inventory_id.get(str(node.get("legacyResourceId") or ""))
+            if not item_code:
+                continue
+            for level in ((node.get("inventoryLevels") or {}).get("nodes") or []):
+                location_id = ((level.get("location") or {}).get("legacyResourceId"))
+                quantities = level.get("quantities") or []
+                if not location_id or not quantities:
+                    continue
+                warehouse = _resolve_warehouse_for_location(str(location_id))
+                if not warehouse:
+                    # Shopify holds stock at a location this site has no
+                    # warehouse for. Reported, never guessed at -- applying it
+                    # to the default warehouse would invent stock in the wrong
+                    # place.
+                    unmapped.append((item_code, str(location_id)))
+                    continue
+                corrections.append({
+                    "item_code": item_code,
+                    "warehouse": warehouse,
+                    "qty": flt(quantities[0].get("quantity") or 0),
+                })
+
+    result = {
+        "checked": len(by_inventory_id),
+        "corrections": corrections,
+        "unlinked": unlinked,
+        "unmapped": unmapped,
+        "applied": None,
+    }
+    if corrections and not dry_run:
+        result["applied"] = apply_pulled_stock(corrections)
+    return result
+
+
 def reconcile_inventory_from_shopify(dry_run=False, query=None):
     """PULL leg, full sweep. Ask Shopify for every linked product's current
     per-location quantity and apply the differences as audited Stock
