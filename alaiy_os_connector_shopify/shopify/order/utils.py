@@ -23,13 +23,36 @@ def _as_administrator():
     flags.ignore_permissions actually takes effect. Elevate just for this
     one call, then restore -- RQ workers reuse the same process across
     multiple jobs, so leaving this elevated would leak into unrelated ones.
+
+    Restores sid and session data too, not just the user. frappe.set_user does
+    more than change who you are:
+
+        local.session.user = username
+        local.session.sid  = username      # the real sid is gone
+        local.session.data = _dict()       # session data wiped
+
+    so set_user(original_user) does not put a session back -- sid is left as
+    the literal user name rather than the real session id, and the data empty.
+    For a Guest webhook that costs nothing, since there is no session worth
+    keeping. But these helpers also run inside a real signed-in request
+    whenever a user submits a Delivery Note from a storefront portal, and there
+    it signed that user out mid-task: the work committed, then the next request
+    arrived as Guest. Nothing raises, which is why it reads as a cookie or
+    cache problem rather than a permission one.
     """
-    original_user = frappe.session.user
+    session = frappe.session
+    original_user = session.user
+    original_sid = session.sid
+    original_data = session.data
     frappe.set_user("Administrator")
     try:
         yield
     finally:
+        # set_user first so role and permission caches rebuild for the real
+        # user, then restore the two fields it overwrites.
         frappe.set_user(original_user)
+        session.sid = original_sid
+        session.data = original_data
 
 
 def _order_node_to_rest_shape(node: dict) -> dict:
