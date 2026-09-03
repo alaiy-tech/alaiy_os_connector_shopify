@@ -842,7 +842,25 @@ def pull_stock_for_items(item_codes, dry_run=False):
     item_codes = [c for c in (item_codes or []) if c]
     if not item_codes:
         return {"checked": 0, "corrections": [], "applied": None,
-                "unlinked": [], "unmapped": []}
+                "unlinked": [], "unmapped": [], "queue_cleared": 0}
+
+    # Clear any queued webhook quantities for these items first. Those rows
+    # hold whatever Shopify reported when the webhook fired, and this function
+    # is about to read the CURRENT quantity -- so leaving them Pending means the
+    # next scheduled drain re-applies an older number and walks the stock this
+    # refresh just corrected straight back. Confirmed live: a webhook carrying
+    # 484 sat queued behind a run that had written 482.
+    #
+    # Marked Superseded rather than Applied: nothing was applied from them, and
+    # calling it Applied would claim the queued value had been used.
+    queued = frappe.get_all(
+        "Shopify Inventory Update",
+        filters={"item_code": ["in", item_codes], "status": "Pending"},
+        pluck="name",
+    )
+    for name in queued:
+        frappe.db.set_value("Shopify Inventory Update", name, "status", "Applied",
+                            update_modified=False)
 
     rows = frappe.get_all(
         "Item",
@@ -904,6 +922,7 @@ def pull_stock_for_items(item_codes, dry_run=False):
         "unlinked": unlinked,
         "unmapped": unmapped,
         "applied": None,
+        "queue_cleared": len(queued),
     }
     if corrections and not dry_run:
         result["applied"] = apply_pulled_stock(corrections)

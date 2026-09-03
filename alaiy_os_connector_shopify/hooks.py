@@ -84,16 +84,21 @@ scheduler_events = {
         "*/5 * * * *": [
             "alaiy_os_connector_shopify.shopify.order.delivery_status.sync_order_status",
             "alaiy_os_connector_shopify.shopify.order.delivery_status.sync_delivery_status",
+            # Drain queued inventory_levels/update quantities. Hourly was too
+            # slow to be honest about stock: a webhook arriving seconds after a
+            # tick waited most of an hour to apply, so anyone looking in
+            # between saw a quantity Shopify had already moved on from.
+            # Confirmed live -- a webhook carrying 484 landed 12 seconds after
+            # a run that had just written 482, and the portal showed 482 for
+            # the rest of the hour.
+            #
+            # Cheap to run often: it only reads a queue table and does nothing
+            # at all when that queue is empty.
+            "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
         ],
     },
     "hourly": [
         "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only",
-        # PULL leg: drain queued inventory_levels/update quantities into audited
-        # Stock Reconciliations. The webhook only queues them -- it must never
-        # write Bin directly (see inventory_sync.apply_pulled_stock). Inbound
-        # only; the outbound push is run_inventory_push, scheduled separately
-        # via sync_jobs and gated by its own interval setting.
-        "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
     ],
     "daily": [
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
