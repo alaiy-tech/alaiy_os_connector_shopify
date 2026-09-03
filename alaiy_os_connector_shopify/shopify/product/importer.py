@@ -873,27 +873,23 @@ def _apply_existing_template_content(template_name: str, product_meta: dict, ima
     _dedupe_item_uoms(template)
     template.flags.from_shopify_sync = True
     template.flags.ignore_permissions = True
-    try:
-        template.save()
-    except frappe.ValidationError as e:
-        # ERPNext's own Item.on_update cascades the template's is_stock_item
-        # (always 0 -- templates aren't stocked, see _import_simple_product)
-        # onto every variant via update_variants(), and refuses when a
-        # variant already has real stock transactions against it. That
-        # variant is correctly stocked and the template is correctly not --
-        # nothing here is actually wrong, ERPNext's blanket cascade is just
-        # too strict for the template/variant split this connector uses.
-        # Confirmed live: this crashed the entire product's sync (SEO/tags/
-        # category never applied) over a stock flag nobody asked to change.
-        if "Maintain Stock" not in str(e):
-            raise
-        frappe.log_error(
-            title=f"Shopify: could not update template {template_name} -- variant stock-flag conflict",
-            message=frappe.get_traceback(),
-        )
-        frappe.db.rollback()
-    else:
-        frappe.db.commit()
+    # ERPNext's Item.on_update cascades the template's own fields onto every
+    # variant and refuses when a variant already carries submitted stock
+    # transactions ("you can not change the value of Maintain Stock"). A
+    # template holds is_stock_item = 0 (templates are not stocked, see
+    # _import_simple_product) while its variants hold 1 and have real Stock
+    # Entries, so the cascade can never succeed here -- a permanent conflict,
+    # not a transient one.
+    #
+    # It used to be caught and logged, which meant the whole product's sync was
+    # discarded: SEO, tags and category never applied, every run, for the same
+    # products. dont_update_variants is ERPNext's own opt-out, checked on the
+    # first line of Item.update_variants, and skipping the cascade is what this
+    # path wants regardless -- it is applying template fields pulled from
+    # Shopify, not re-templating variants.
+    template.flags.dont_update_variants = True
+    template.save()
+    frappe.db.commit()
 
     if images and not skip_abstracted:
         _set_item_image(template_name, images[0])

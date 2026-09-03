@@ -322,67 +322,29 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
     # already uses for its own Guest-context saves: elevate for the call.
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
+    # ERPNext's Item.on_update cascades the template's own fields onto every
+    # variant (copy_attributes_to_variant + variant.save() per variant), and
+    # refuses outright when a variant already carries submitted stock
+    # transactions: "you can not change the value of Maintain Stock".
+    #
+    # A template holds is_stock_item = 0 (templates are not stocked) while its
+    # variants hold 1 and have real Stock Entries against them, so that
+    # cascade can never succeed on this catalogue -- it is a permanent
+    # conflict, not a transient one. It used to take the whole inbound update
+    # with it: title, price, status, everything Shopify actually changed was
+    # discarded. Measured live at ~60 dropped product webhooks in 36 hours,
+    # the same variant-heavy templates every time.
+    #
+    # dont_update_variants is ERPNext's own documented opt-out, checked on the
+    # first line of Item.update_variants. Skipping the cascade is also what
+    # this path wants regardless: it is writing template fields pulled from
+    # Shopify, not re-templating variants, and every field a variant needs
+    # from Shopify arrives on its own webhook.
+    item.flags.dont_update_variants = True
     from alaiy_os_connector_shopify.shopify.order_sync import _as_administrator
     try:
         with _as_administrator():
             item.save()
-    except frappe.ValidationError as e:
-        # Same class of bug as importer.py's _apply_existing_template_content:
-        # ERPNext's own Item.on_update cascades this template's is_stock_item
-        # (always 0 -- templates aren't stocked) onto every variant via
-        # update_variants(), and refuses when a variant already has real
-        # stock transactions against it. Nothing here is actually wrong,
-        # ERPNext's blanket cascade is just too strict for the
-        # template/variant split this connector uses. Confirmed live: this
-        # crashed the products/update webhook job outright over a stock
-        # flag nobody asked to change -- the import path already catches
-        # this exact error, the webhook path never did.
-        if "Maintain Stock" not in str(e):
-            raise
-        # Returning here DROPPED the whole product update -- title, price,
-        # status, every field Shopify actually changed -- over a stock flag
-        # nobody touched. Measured live: ~60 of these in 36 hours, the same
-        # products every time, because the conflict is permanent (the variant
-        # has submitted Stock Entries against it and always will). So each
-        # webhook for those products was silently discarded forever.
-        #
-        # The cascade only refuses because is_stock_item DIFFERS from what the
-        # variant already holds. Restoring the stored value removes the change
-        # ERPNext objects to, and everything else in the update then saves
-        # normally. is_stock_item is not a Shopify-owned field -- it is not in
-        # the payload and this function never means to set it -- so keeping the
-        # database value loses nothing.
-        frappe.db.rollback()
-        # Deliberately NOT item.reload() -- that would discard every field this
-        # function just applied from the payload, which is the update we are
-        # trying to save. Only the one flag is reverted, and the modified
-        # timestamp is refreshed so the save is not rejected as stale.
-        stored, modified = frappe.db.get_value(
-            "Item", item.name, ["is_stock_item", "modified"]
-        )
-        item.modified = modified
-        if item.is_stock_item == stored:
-            # Not the flag after all -- a sibling variant conflicts on its own.
-            # Nothing here can fix that, so report it rather than loop.
-            frappe.log_error(
-                title=f"Shopify: product webhook could not update {item.name} -- variant stock-flag conflict",
-                message=frappe.get_traceback(),
-            )
-            return
-        item.is_stock_item = stored
-        try:
-            with _as_administrator():
-                item.save()
-        except Exception:
-            # The retry is best-effort: this path exists to rescue an update
-            # that was being thrown away, so a second failure must report and
-            # stop rather than take down the webhook job.
-            frappe.db.rollback()
-            frappe.log_error(
-                title=f"Shopify: product webhook could not update {item.name} -- variant stock-flag conflict",
-                message=frappe.get_traceback(),
-            )
-            return
     except frappe.TimestampMismatchError:
         # Confirmed live: this Item got saved by something else (our own
         # outbound push, a sibling-variant cascade, another webhook for
