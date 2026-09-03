@@ -25,10 +25,16 @@ Note then still stands here, its stock movement stands, and its supplier remains
 invoiceable for goods Shopify now says were never shipped. So a delivered parcel
 is still asked about; only a cancelled fulfillment is finished.
 
-A cancellation is reported rather than acted on. Cancelling a submitted Delivery
-Note reverses real stock, can be refused outright by a linked Sales Invoice, and
-would push a second cancellation back to Shopify for a fulfillment it has
-already cancelled -- so what to do about it is left to a human.
+A cancellation is acted on, not just reported. Shopify is the source of truth
+for whether a fulfillment exists, and there is no unfulfil action anywhere in
+the UI -- so a Delivery Note left submitted against a cancelled fulfillment
+stayed shipped forever, with its stock movement standing and its supplier still
+holding a shipment to invoice for goods that never went out. It is cancelled
+instead, which returns the order to pending: the state it is actually in.
+
+The one case still left to a human is a Sales Invoice with a payment against
+it. Money arriving for an order Shopify says never shipped is a real books
+decision, so that is reported and nothing is unwound.
 """
 
 import frappe
@@ -89,36 +95,70 @@ def _pending_delivery_notes(limit=None):
     )
 
 
-def _report_cancelled_fulfillment(dn_name, status):
-    """Flag a Delivery Note whose Shopify fulfillment has been cancelled.
+def _cancel_for_cancelled_fulfillment(dn_name, status):
+    """Cancel the Delivery Note behind a fulfillment Shopify has cancelled.
 
-    Deliberately does NOT cancel the Delivery Note. Cancelling a submitted one
-    reverses its Stock Ledger Entries and can be blocked outright by a linked
-    Sales Invoice, so doing it automatically on a Shopify signal would either
-    move real stock without anyone deciding to, or fail halfway and leave the
-    documents inconsistent. It would also feed straight back: cancelling a
-    Delivery Note fires on_delivery_note_cancel, which pushes a cancel BACK to
-    Shopify for the fulfillment Shopify has already cancelled.
+    Shopify is the source of truth for whether a fulfillment exists. Once it
+    says CANCELED, keeping the Delivery Note submitted here means the order
+    reads as shipped in a portal, its stock movement stands, and its supplier
+    still has a shipment to invoice against -- for goods Shopify says never
+    went out. There is no unfulfil action anywhere in the UI, so nothing could
+    correct that by hand either; the order was stuck shipped forever.
 
-    What actually needs deciding -- whether the goods really did not ship,
-    whether stock returns, whether an invoice is reversed -- is a books
-    decision, so this raises it where a human will see it and stops.
+    Cancelling returns the order to pending, which is the state it is actually
+    in: nobody has shipped it and it needs fulfilling again.
+
+    A submitted Sales Invoice against the Delivery Note blocks its cancel, so
+    that is cancelled first -- but only when nothing has been paid against it.
+    A paid invoice is a real books situation (money arrived for an order
+    Shopify now says never shipped) and is reported for a human rather than
+    unwound automatically.
+
+    from_shopify_sync suppresses on_delivery_note_cancel's push-back: Shopify
+    cancelled this fulfillment, so sending it a second cancellation for the
+    same one is both wrong and noisy.
     """
-    frappe.log_error(
-        title=f"Shopify cancelled the fulfillment behind {dn_name}",
-        message=(
-            f"Shopify now reports this fulfillment as {status}, but the Delivery Note is still "
-            f"submitted here -- so its stock movement stands and its supplier remains "
-            f"invoiceable for it.\n\n"
-            f"This usually means someone marked the order unfulfilled in Shopify's admin. "
-            f"Decide whether the goods genuinely did not ship: if so the Delivery Note needs "
-            f"cancelling here (which reverses the stock), and any invoice raised against it "
-            f"needs reversing too.\n\n"
-            f"Not done automatically: cancelling a submitted Delivery Note moves real stock, "
-            f"can be refused by a linked Sales Invoice, and would push a second cancellation "
-            f"back to Shopify for a fulfillment it has already cancelled."
-        ),
+    invoices = frappe.get_all(
+        "Sales Invoice Item",
+        filters={"delivery_note": dn_name, "docstatus": 1},
+        pluck="parent",
+        distinct=True,
     )
+    for si_name in set(invoices):
+        paid = frappe.get_all(
+            "Payment Entry Reference",
+            filters={"reference_doctype": "Sales Invoice",
+                     "reference_name": si_name, "docstatus": 1},
+            limit=1,
+        )
+        if paid:
+            frappe.log_error(
+                title=f"Shopify cancelled a fulfillment that is already paid -- {dn_name}",
+                message=(
+                    f"Shopify now reports this fulfillment as {status}, but "
+                    f"{si_name} has a payment against it, so neither it nor the "
+                    f"Delivery Note can be reversed automatically.\n\n"
+                    f"Money has arrived for an order Shopify says never shipped. "
+                    f"Decide what should happen to the payment and the invoice, "
+                    f"then cancel them by hand -- the Delivery Note is still "
+                    f"submitted until that is done."
+                ),
+            )
+            return False
+        si = frappe.get_doc("Sales Invoice", si_name)
+        si.flags.from_shopify_sync = True
+        si.flags.ignore_permissions = True
+        si.cancel()
+
+    dn = frappe.get_doc("Delivery Note", dn_name)
+    dn.flags.from_shopify_sync = True
+    dn.flags.ignore_permissions = True
+    dn.cancel()
+    frappe.logger().info(
+        f"Shopify reported fulfillment {status} for {dn_name}: cancelled it "
+        f"(and {len(set(invoices))} invoice(s)), order returns to pending."
+    )
+    return True
 
 
 def sync_delivery_status(limit=None):
@@ -134,7 +174,7 @@ def sync_delivery_status(limit=None):
 
     pending = _pending_delivery_notes(limit)
     summary = {"ok": True, "checked": len(pending), "updated": 0, "delivered": 0,
-               "cancelled": 0, "failed": 0}
+               "cancelled": 0, "reverted": 0, "failed": 0}
     if not pending:
         return summary
 
@@ -174,7 +214,26 @@ def sync_delivery_status(limit=None):
                 summary["delivered"] += 1
             elif status in _CANCELLED:
                 summary["cancelled"] += 1
-                _report_cancelled_fulfillment(dn.name, status)
+                # Commit the status write before attempting the cancel. The
+                # cancel can fail (a linked document refusing it), and its
+                # rollback would otherwise discard every status this run had
+                # already written -- including for unrelated parcels earlier
+                # in the batch -- leaving the poll to re-ask and re-attempt
+                # the same failure on every tick.
+                frappe.db.commit()
+                try:
+                    if _cancel_for_cancelled_fulfillment(dn.name, status):
+                        summary["reverted"] += 1
+                        frappe.db.commit()
+                except Exception:
+                    # Must not stop the rest of the batch: every other parcel
+                    # in this run still needs its real status.
+                    summary["failed"] += 1
+                    frappe.db.rollback()
+                    frappe.log_error(
+                        title=f"Shopify: could not cancel {dn.name} after its fulfillment was cancelled",
+                        message=frappe.get_traceback(),
+                    )
 
     frappe.db.commit()
     return summary
