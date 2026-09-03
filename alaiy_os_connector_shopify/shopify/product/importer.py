@@ -689,7 +689,7 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     original use) should ever set it.
     """
     item = frappe.get_doc("Item", item_code)
-    _apply_variant_physical(item, variant)
+    _apply_variant_physical(item, variant, product_meta)
     if product_meta:
         _apply_product_meta(item, product_meta)
     _dedupe_item_uoms(item)
@@ -1007,7 +1007,7 @@ def _import_simple_product(
 
     if product_meta:
         _apply_product_meta(item, product_meta)
-    _apply_variant_physical(item, variant)
+    _apply_variant_physical(item, variant, product_meta)
 
     # from_shopify_sync marks this as inbound so the Item after_insert hook
     # (listing_hooks.sync_new_variant_to_listing) no-ops for it -- an imported
@@ -1287,7 +1287,7 @@ def _import_product_with_variants(
         # Link to Shopify
         variant_item.sh_shopify_product_id = product_id
         variant_item.sh_shopify_variant_id = variant.get("legacyResourceId")
-        _apply_variant_physical(variant_item, variant)
+        _apply_variant_physical(variant_item, variant, product_meta)
 
         default_warehouse_row = _default_warehouse_row(settings)
         if default_warehouse_row:

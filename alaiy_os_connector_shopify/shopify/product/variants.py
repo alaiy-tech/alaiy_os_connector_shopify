@@ -4,6 +4,8 @@ available qty, and the variant payload/canonical builders -- moved
 verbatim from product_import.py and product_sync.py, unchanged.
 """
 
+import re
+
 import frappe
 from frappe.utils import flt
 
@@ -31,10 +33,85 @@ _REST_WEIGHT_UNIT_TO_UOM = {
     "g": "Gram", "kg": "Kg", "oz": "Ounce", "lb": "Pound",
 }
 
+# Product metafields that carry a real physical weight when Shopify's own
+# shipping weight is 0.
+#
+# A jewellery catalog routinely leaves inventoryItem.measurement.weight unset
+# -- nobody prices a ring by its shipping weight -- while the piece's actual
+# gram weight lives in a metafield the merchant fills in. Live on The Solist:
+# every sampled active jewellery product had shipping weight 0.0 POUNDS and a
+# populated gram weight in these, so weight_per_unit was empty catalog-wide.
+# That is not just a missing-content badge: a Delivery Note with no net weight
+# cannot produce a FedEx label at all.
+#
+# uploadify_product.total_weight is preferred because it is already a
+# number_decimal. custom.weight is the same value as free text ("10.59 g",
+# sometimes "1.81 g. ") and is only parsed as a fallback -- it is the more
+# widely populated of the two, and where both exist they agree exactly.
+_WEIGHT_METAFIELDS = (
+    ("uploadify_product", "total_weight"),
+    ("custom", "weight"),
+)
 
-def _apply_variant_physical(doc, variant: dict):
+# custom.weight is free text, so its unit suffix is whatever a human typed.
+# The canonical abbreviations are already mapped for the REST payload; this
+# only adds the spellings actually seen in this field on top of those, rather
+# than inventing a vocabulary. Anything outside it is not guessed -- see
+# _weight_from_metafields.
+_TEXT_WEIGHT_UNIT_TO_UOM = {
+    **_REST_WEIGHT_UNIT_TO_UOM,   # g, kg, oz, lb
+    "gr": "Gram",
+    "gm": "Gram",
+    "lbs": "Pound",
+}
+
+# One number, optional unit, optional trailing dot ("3.1 g."). Deliberately
+# strict: a field holding two weights ("13.8g, 13g") or anything else
+# unrecognised is skipped rather than guessed at, since this number ends up on
+# a shipping label.
+_TEXT_WEIGHT_RE = re.compile(r"^([0-9]*\.?[0-9]+)\s*([a-zA-Z]*)\.?$")
+
+
+def _metafield_map(product_node):
+    """{(namespace, key): value} for a product node from _PRODUCTS_QUERY."""
+    nodes = (product_node or {}).get("metafields") or {}
+    return {
+        (n.get("namespace"), n.get("key")): n.get("value")
+        for n in (nodes.get("nodes") or [])
+    }
+
+
+def _weight_from_metafields(product_node):
+    """(value, uom_name) parsed out of the product's weight metafields.
+
+    Returns (None, None) when nothing usable is present -- an unreadable value
+    must leave weight unset rather than put a guessed number on a label.
+    Defaults to grams only when a bare number carries no unit, which is what
+    the numeric total_weight field always is.
+    """
+    values = _metafield_map(product_node)
+    for ns, key in _WEIGHT_METAFIELDS:
+        raw = (values.get((ns, key)) or "").strip()
+        if not raw:
+            continue
+        match = _TEXT_WEIGHT_RE.match(raw)
+        if not match:
+            continue
+        value = flt(match.group(1))
+        if value <= 0:
+            continue
+        unit = (match.group(2) or "").lower()
+        return value, _TEXT_WEIGHT_UNIT_TO_UOM.get(unit, "Gram")
+    return None, None
+
+
+def _apply_variant_physical(doc, variant: dict, product_node: dict = None):
     """
     Weight lives under Shopify's inventoryItem, not the variant itself.
+
+    product_node is the parent product from _PRODUCTS_QUERY, needed only to
+    reach its metafields when Shopify carries no shipping weight. Optional so
+    a caller without it keeps the previous behaviour rather than failing.
     Sets plain Item fields -- call BEFORE insert. Unit cost is handled
     separately by _set_item_variant_cost since it requires the Item to
     already exist (Item Price validates item_code) -- call that one AFTER
@@ -45,6 +122,16 @@ def _apply_variant_physical(doc, variant: dict):
     if weight and weight.get("value"):
         doc.weight_per_unit = flt(weight["value"])
         doc.weight_uom = _ensure_uom(_WEIGHT_UNIT_TO_UOM.get(weight.get("unit"), "Kg"))
+    else:
+        # Shopify's shipping weight is authoritative when set; this only fills
+        # the gap it leaves. See _WEIGHT_METAFIELDS -- a jewellery catalog
+        # keeps the real gram weight in a product metafield and leaves the
+        # shipping weight at 0, which left every item unweighed and every
+        # FedEx label unbuildable.
+        value, uom = _weight_from_metafields(product_node)
+        if value:
+            doc.weight_per_unit = value
+            doc.weight_uom = _ensure_uom(uom)
 
     # Read-only mirrors of Shopify-side variant settings. Stored because each one
     # changes how a number from Shopify should be read: CONTINUE means stock can
