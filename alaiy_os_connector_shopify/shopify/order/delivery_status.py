@@ -174,7 +174,7 @@ def sync_delivery_status(limit=None):
 
     pending = _pending_delivery_notes(limit)
     summary = {"ok": True, "checked": len(pending), "updated": 0, "delivered": 0,
-               "cancelled": 0, "reverted": 0, "failed": 0}
+               "cancelled": 0, "reverted": 0, "needs_human": 0, "failed": 0}
     if not pending:
         return summary
 
@@ -208,32 +208,46 @@ def sync_delivery_status(limit=None):
             status = (node.get("displayStatus") or "").upper()
             if not dn or not status or status == (dn.sh_delivery_status or "").upper():
                 continue
-            frappe.db.set_value("Delivery Note", dn.name, "sh_delivery_status", status)
-            summary["updated"] += 1
-            if status == "DELIVERED":
-                summary["delivered"] += 1
-            elif status in _CANCELLED:
+            if status in _CANCELLED:
                 summary["cancelled"] += 1
-                # Commit the status write before attempting the cancel. The
-                # cancel can fail (a linked document refusing it), and its
-                # rollback would otherwise discard every status this run had
-                # already written -- including for unrelated parcels earlier
-                # in the batch -- leaving the poll to re-ask and re-attempt
-                # the same failure on every tick.
-                frappe.db.commit()
+                # The status is written only AFTER the cancel succeeds.
+                # CANCELED is in _TERMINAL, so writing it first would drop
+                # this Delivery Note out of _pending_delivery_notes forever --
+                # and a cancel that failed (a paid invoice refusing it, a
+                # linked Purchase Invoice, a locked Stock Ledger) would leave
+                # the DN submitted and never be retried. That is the exact
+                # stuck-forever state this whole path exists to end.
                 try:
                     if _cancel_for_cancelled_fulfillment(dn.name, status):
+                        frappe.db.set_value(
+                            "Delivery Note", dn.name, "sh_delivery_status", status,
+                            update_modified=False,
+                        )
+                        summary["updated"] += 1
                         summary["reverted"] += 1
                         frappe.db.commit()
+                    else:
+                        # Reported for a human and deliberately NOT marked
+                        # terminal, so the next tick asks again -- once the
+                        # payment is dealt with it resolves on its own.
+                        summary["needs_human"] += 1
+                        frappe.db.rollback()
                 except Exception:
                     # Must not stop the rest of the batch: every other parcel
-                    # in this run still needs its real status.
+                    # in this run still needs its real status. Status stays
+                    # unwritten so this is retried next tick.
                     summary["failed"] += 1
                     frappe.db.rollback()
                     frappe.log_error(
                         title=f"Shopify: could not cancel {dn.name} after its fulfillment was cancelled",
                         message=frappe.get_traceback(),
                     )
+                continue
+
+            frappe.db.set_value("Delivery Note", dn.name, "sh_delivery_status", status)
+            summary["updated"] += 1
+            if status == "DELIVERED":
+                summary["delivered"] += 1
 
     frappe.db.commit()
     return summary
