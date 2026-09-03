@@ -339,12 +339,50 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
         # this exact error, the webhook path never did.
         if "Maintain Stock" not in str(e):
             raise
-        frappe.log_error(
-            title=f"Shopify: product webhook could not update {item.name} -- variant stock-flag conflict",
-            message=frappe.get_traceback(),
-        )
+        # Returning here DROPPED the whole product update -- title, price,
+        # status, every field Shopify actually changed -- over a stock flag
+        # nobody touched. Measured live: ~60 of these in 36 hours, the same
+        # products every time, because the conflict is permanent (the variant
+        # has submitted Stock Entries against it and always will). So each
+        # webhook for those products was silently discarded forever.
+        #
+        # The cascade only refuses because is_stock_item DIFFERS from what the
+        # variant already holds. Restoring the stored value removes the change
+        # ERPNext objects to, and everything else in the update then saves
+        # normally. is_stock_item is not a Shopify-owned field -- it is not in
+        # the payload and this function never means to set it -- so keeping the
+        # database value loses nothing.
         frappe.db.rollback()
-        return
+        # Deliberately NOT item.reload() -- that would discard every field this
+        # function just applied from the payload, which is the update we are
+        # trying to save. Only the one flag is reverted, and the modified
+        # timestamp is refreshed so the save is not rejected as stale.
+        stored, modified = frappe.db.get_value(
+            "Item", item.name, ["is_stock_item", "modified"]
+        )
+        item.modified = modified
+        if item.is_stock_item == stored:
+            # Not the flag after all -- a sibling variant conflicts on its own.
+            # Nothing here can fix that, so report it rather than loop.
+            frappe.log_error(
+                title=f"Shopify: product webhook could not update {item.name} -- variant stock-flag conflict",
+                message=frappe.get_traceback(),
+            )
+            return
+        item.is_stock_item = stored
+        try:
+            with _as_administrator():
+                item.save()
+        except Exception:
+            # The retry is best-effort: this path exists to rescue an update
+            # that was being thrown away, so a second failure must report and
+            # stop rather than take down the webhook job.
+            frappe.db.rollback()
+            frappe.log_error(
+                title=f"Shopify: product webhook could not update {item.name} -- variant stock-flag conflict",
+                message=frappe.get_traceback(),
+            )
+            return
     except frappe.TimestampMismatchError:
         # Confirmed live: this Item got saved by something else (our own
         # outbound push, a sibling-variant cascade, another webhook for
