@@ -106,6 +106,18 @@ query PullOrders($after: String, $queryString: String!) {
             variant {
               legacyResourceId
             }
+            # The product survives its variant. Shopify returns a null variant
+            # once the variant has been deleted -- ordinary for one-of-a-kind
+            # stock after it sells -- while still naming the product the line
+            # sold, and that product is reachable by id even when archived.
+            # Without this the line had no identifier left at all: the SKU is
+            # not searchable for an archived product (confirmed live: every
+            # form of sku: query, on products AND productVariants, returns
+            # nothing), so the line collapsed onto the shared placeholder item
+            # and took its supplier, its cost and its fulfillment with it.
+            product {
+              legacyResourceId
+            }
             originalUnitPriceSet {
               shopMoney {
                 amount

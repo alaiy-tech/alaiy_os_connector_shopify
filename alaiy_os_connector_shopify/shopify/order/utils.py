@@ -83,6 +83,10 @@ def _order_node_to_rest_shape(node: dict) -> dict:
             "title": li.get("title"),
             "quantity": li.get("quantity"),
             "variant_id": variant.get("legacyResourceId"),
+            # Outlives the variant, and stays fetchable by id after the
+            # product is archived -- the only identifier left on a line whose
+            # variant Shopify has deleted.
+            "product_id": (li.get("product") or {}).get("legacyResourceId"),
             "price": money.get("amount"),
         })
     def _addr(a):
@@ -213,15 +217,16 @@ def _resolve_item_code(line_item):
     # An order referencing a product is proof it was real, so the status
     # filter does not apply here the way it does to a bulk sweep -- this
     # fetches exactly one product, only when an order needs it.
-    if variant_id or sku:
-        imported = _import_product_for_order_line(variant_id, sku)
+    product_id = str(line_item.get("product_id") or "")
+    if variant_id or sku or product_id:
+        imported = _import_product_for_order_line(variant_id, sku, product_id)
         if imported:
             return imported
 
     return None
 
 
-def _import_product_for_order_line(variant_id: str, sku: str = None):
+def _import_product_for_order_line(variant_id: str, sku: str = None, product_id: str = None):
     """Import the single product this order line refers to, whatever its status.
 
     Found by variant id, or by SKU when the line carries no variant id --
@@ -247,8 +252,13 @@ def _import_product_for_order_line(variant_id: str, sku: str = None):
         from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 
         client = ShopifyGraphQLClient()
-        product_id = ""
-        if variant_id:
+        # The order line names its product outright. Preferred over both
+        # lookups below because it is the only one that reaches an ARCHIVED
+        # product: confirmed live, every form of sku: query returns nothing
+        # for one, on products and productVariants alike, while fetching the
+        # same product by id succeeds.
+        product_id = str(product_id or "")
+        if not product_id and variant_id:
             found = client.execute(
                 """query($id: ID!){ productVariant(id:$id){ product{ legacyResourceId } } }""",
                 {"id": f"gid://shopify/ProductVariant/{variant_id}"},
