@@ -87,13 +87,17 @@ def get_webhook_address():
     return f"{site_url}/api/method/alaiy_os_connector_shopify.api.webhooks.handle_webhook"
 
 
-def ensure_webhooks_registered():
+def ensure_webhooks_registered(connection=None):
     """
     Fill in any webhook topic that isn't currently registered for this
     site's address, without touching topics that already are.
 
+    `connection` is the store to register with. Every bench points its topics
+    at the one shared address; the receiver tells the deliveries apart by the
+    shop domain Shopify sends with each of them.
+
     This is normally only ever called once, automatically, on the exact
-    moment Shopify Connector Settings.is_enabled flips from unchecked to
+    moment a Shopify Connection's Enable Shopify flips from unchecked to
     checked. If that single attempt fails for any reason
     (confirmed in production: the Shop URL field wasn't filled in yet at
     that instant, so ShopifyGraphQLClient's __init__ raised immediately),
@@ -106,7 +110,7 @@ def ensure_webhooks_registered():
     for whatever's actually missing.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connection)
     address = get_webhook_address()
 
     existing_topics = set()
@@ -144,11 +148,13 @@ def ensure_webhooks_registered():
     return registered
 
 
-def unregister_webhooks():
-    """Remove all webhooks pointing to this site's handle_webhook endpoint."""
+def unregister_webhooks(connection=None):
+    """Remove this store's webhooks pointing to this site's handle_webhook
+    endpoint. Scoped to the one connection: on a bench with several, tearing
+    down a store's subscriptions must not silence anybody else's."""
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connection)
         address = get_webhook_address()
         variables = {"after": None}
         for page_nodes in client.execute_paginated(_LIST_QUERY, variables, ["webhookSubscriptions"]):

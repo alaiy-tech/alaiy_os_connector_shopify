@@ -24,6 +24,8 @@ import frappe
 from alaiy_os_connector_shopify.shopify.product.pricing import _price_rate, _variant_price
 from alaiy_os_connector_shopify.shopify.product.media import _item_images, _absolute_file_url
 
+from alaiy_os_connector_shopify import connections
+
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
@@ -314,7 +316,7 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
         # listing_price is only ever read for a simple product (variant_price()'s
         # override chain); a template's own price never applies, so there's
         # nothing meaningful to prefill for one.
-        settings = frappe.get_single("Shopify Connector Settings")
+        settings = connections.require_enabled()
         price = _variant_price(template_name, settings)
         if price is not None:
             listing.listing_price = price
@@ -345,7 +347,7 @@ def get_item_children(item):
         as_dict=True)
     if not tmpl:
         return {"images": [], "variants": []}
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     images = [
         {"image": url, "source": "Original", "sort_order": i}
         for i, url in enumerate(_template_image_urls(tmpl))
@@ -474,7 +476,7 @@ def fill_children_from_item(listing):
             listing.append("images", {"image": url, "source": "Original", "sort_order": order})
 
     if not listing.variants:
-        settings = frappe.get_single("Shopify Connector Settings")
+        settings = connections.require_enabled()
         for v in _template_variant_items(tmpl.name, tmpl.has_variants):
             listing.append("variants", {
                 "item_variant": v.name, "is_enabled": 1,
@@ -566,7 +568,7 @@ def effective_values(listing_name: str) -> dict:
     if not listing.item or not frappe.db.exists("Item", listing.item):
         return {}
     item = frappe.get_doc("Item", listing.item)
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     seo = effective_seo(listing, item)
     return {
         "title": effective_title(listing, item),

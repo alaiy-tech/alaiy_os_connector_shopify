@@ -1,6 +1,9 @@
 [pre_model_sync]
 
 [post_model_sync]
+# First: everything after it reads the store's configuration, which until
+# this runs is still stranded in tabSingles.
+alaiy_os_connector_shopify.patches.single_to_multiple_connections
 alaiy_os_connector_shopify.patches.create_shopify_product_listings
 alaiy_os_connector_shopify.patches.drop_sync_to_shopify_field
 alaiy_os_connector_shopify.patches.backfill_listing_ids

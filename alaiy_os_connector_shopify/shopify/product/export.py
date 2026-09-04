@@ -40,6 +40,8 @@ from alaiy_os_connector_shopify.shopify.product.canonical import _product_canoni
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 from alaiy_os_connector_shopify.shopify.product import status as status_map
 
+from alaiy_os_connector_shopify import connections
+
 LOCK_TIMEOUT_SECONDS = 30
 
 
@@ -62,7 +64,7 @@ def push_item(item_code: str, allowed_statuses=None):
         _push_product(item)
 
 
-def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
+def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None, connection=None):
     """
     One-off bulk push of every local (not-yet-linked) product to Shopify --
     for manually-created Alaiy OS Items that predate any Shopify connection,
@@ -75,7 +77,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
     """
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync, is_cancel_requested
 
-    log = load_or_create_log("product_export", trigger, log_name)
+    log = load_or_create_log("product_export", trigger, log_name, connection=connection)
 
     if has_active_sync("product_export", exclude_name=log.name):
         log.status = "skipped"
@@ -213,7 +215,7 @@ def _save_throttled(listing, log, listing_name, max_wait=180):
             listing.reload()
 
 
-def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
+def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None, connection=None):
     """
     Bulk-enable every disabled Shopify Product Listing whose own status
     matches one of the caller's chosen statuses -- for switching on a batch
@@ -227,7 +229,7 @@ def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
     """
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync, is_cancel_requested
 
-    log = load_or_create_log("listing_bulk_enable", trigger, log_name)
+    log = load_or_create_log("listing_bulk_enable", trigger, log_name, connection=connection)
 
     if has_active_sync("listing_bulk_enable", exclude_name=log.name):
         log.status = "skipped"
@@ -353,7 +355,7 @@ def _push_product_unlocked(item):
     # were waiting for the lock, and we must build the payload from that,
     # not from what `item` looked like before we acquired it.
     item = frappe.get_doc("Item", item.name)
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     listing = listing_resolver.get_listing(item.name)
     if not listing:
         return  # gate already checked is_enabled, but stay defensive
@@ -381,7 +383,7 @@ def _push_product_unlocked(item):
     if entity and entity.erpnext_fingerprint == fp:
         return  # unchanged since our own last push -- avoid spamming the API
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     product_input = _product_set_input(item, variants, settings, listing, client)
 
     identifier = None
@@ -624,7 +626,7 @@ def _clear_stale_locks(max_age_seconds=300):
         frappe.logger().info(f"Cleared {removed} stale document lock(s)")
 
 
-def push_changed_items_only():
+def push_changed_items_only(connection=None):
     """
     Hourly reconciliation: push every template with an enabled Listing.
 

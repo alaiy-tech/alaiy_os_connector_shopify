@@ -12,6 +12,8 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
     load_or_create_log, close_log, is_cancel_requested, append_log as _append_log,
 )
 
+from alaiy_os_connector_shopify import connections
+
 _NODES_PER_CALL = 250  # Shopify's node-by-id bulk lookup cap, same as any other connection page size here.
 
 
@@ -159,7 +161,7 @@ def _save_taxonomy_node(node):
     return False
 
 
-def scheduled_fetch_shopify_taxonomy():
+def scheduled_fetch_shopify_taxonomy(connection=None):
     """
     hooks.py's daily scheduler entry point. Frappe's own scheduled-job
     runner enqueues the method it's given with ITS default timeout (300s
@@ -171,7 +173,7 @@ def scheduled_fetch_shopify_taxonomy():
     frappe.enqueue(fetch_shopify_taxonomy, queue="long", timeout=3600, trigger="scheduled")
 
 
-def fetch_shopify_taxonomy(trigger="manual", log_name=None):
+def fetch_shopify_taxonomy(trigger="manual", log_name=None, connection=None):
     """
     Fetch the full Shopify Standard Product Taxonomy tree and populate
     the Shopify Category doctype. Called on demand (see
@@ -195,14 +197,14 @@ def fetch_shopify_taxonomy(trigger="manual", log_name=None):
     tree (one UPDATE per node, hours not minutes) -- once that phase
     starts, it can't be interrupted, only the walk before it can.
     """
-    log = load_or_create_log("taxonomy", trigger, log_name)
+    log = load_or_create_log("taxonomy", trigger, log_name, connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)
     frappe.db.commit()
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connection)
     saved = 0
     total = 0
     seen_ids = set()

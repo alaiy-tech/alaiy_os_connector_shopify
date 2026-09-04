@@ -9,6 +9,8 @@ from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClie
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_UPDATE_MUTATION
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
+from alaiy_os_connector_shopify import connections
+
 LOCK_TIMEOUT_SECONDS = 30
 
 
@@ -38,7 +40,7 @@ def archive_item(item_code: str):
 
     try:
         item = frappe.get_doc("Item", item.name)
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connections.require_enabled())
 
         data = client.execute(_PRODUCT_UPDATE_MUTATION, {
             "input": {

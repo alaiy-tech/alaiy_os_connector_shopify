@@ -26,6 +26,8 @@ import re
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 _CATALOG_QUERY = """
 query Catalog($first: Int!, $after: String) {
   products(first: $first, after: $after) {
@@ -142,7 +144,7 @@ def run(show=10):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     print("Pulling Shopify's real catalog (products + nested variants, one pass)...")
-    shopify_products, shopify_variants = _pull_catalog(ShopifyGraphQLClient())
+    shopify_products, shopify_variants = _pull_catalog(ShopifyGraphQLClient(connections.require_enabled()))
 
     print(f"\nSHOPIFY")
     print(f"  products: {len(shopify_products)}")

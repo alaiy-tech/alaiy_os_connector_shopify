@@ -1,6 +1,8 @@
 import frappe
 from frappe.utils import now_datetime, add_to_date
 
+from alaiy_os_connector_shopify import connections
+
 _INTERVAL_MINUTES = {
     "5 min": 5,
     "15 min": 15,
@@ -19,23 +21,41 @@ def check_and_enqueue():
     """
     Called every minute by the Frappe scheduler.
     Checks whether the inventory push or a proactive token refresh is due.
+
+    Split in two, because the two halves are due for different sets of stores.
+    The inventory push and webhook registration are ERPNext-side work and only
+    concern the enabled store; keeping an access token alive concerns every
+    store the bench holds credentials for, including the self-serve
+    connections that are deliberately never enabled and would otherwise have
+    their tokens quietly expire.
     """
     if not frappe.db.exists("DocType", "Shopify Sync Log"):
         return
 
-    settings = frappe.get_single("Shopify Connector Settings")
-    if not settings.is_enabled:
+    for name in connections.connected_names():
+        settings = frappe.get_cached_doc(connections.DOCTYPE, name)
+        try:
+            _maybe_refresh_token(settings)
+        except Exception:
+            frappe.log_error(
+                title=f"Shopify: token refresh check failed ({name})"[:140],
+                message=frappe.get_traceback(),
+            )
+
+    settings = connections.enabled_connection()
+    if not settings:
         return
 
-    _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
-    _maybe_refresh_token(settings)
+    _maybe_enqueue_inventory(
+        settings.sh_inventory_sync_interval or "Disabled", settings
+    )
     _maybe_ensure_webhooks(settings)
 
 
 def _maybe_ensure_webhooks(settings):
     """
     Self-healing check for webhook registration, which otherwise only
-    ever runs once automatically (on Shopify Connector Settings.is_enabled
+    ever runs once automatically (on Shopify Connection.is_enabled
     flipping on) with no retry if that single attempt fails -- confirmed
     in production: it failed because the Shop URL field wasn't filled in
     yet at that exact instant, and inbound sync then silently never
@@ -46,7 +66,7 @@ def _maybe_ensure_webhooks(settings):
         return
     from alaiy_os_connector_shopify.shopify.webhooks import ensure_webhooks_registered
     try:
-        ensure_webhooks_registered()
+        ensure_webhooks_registered(settings)
     except Exception:
         frappe.log_error(
             title="Shopify: webhook self-heal check failed",
@@ -76,24 +96,26 @@ def _maybe_refresh_token(settings):
 
     from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_token
     try:
-        refresh_and_store_access_token()
+        refresh_and_store_access_token(settings)
     except Exception:
         frappe.log_error(
-            title="Shopify: scheduled token refresh failed",
+            title=f"Shopify: scheduled token refresh failed ({settings.name})"[:140],
             message=frappe.get_traceback(),
         )
 
 
-def _maybe_enqueue_inventory(interval_setting):
+def _maybe_enqueue_inventory(interval_setting, settings):
     interval_minutes = _INTERVAL_MINUTES.get(interval_setting)
     if not interval_minutes:
         return
 
     now = now_datetime()
 
+    # Both reads are scoped to this store. Bench-wide, another store's run
+    # would look like this one's and the push would never come due.
     running = frappe.db.get_value(
         "Shopify Sync Log",
-        {"sync_type": "inventory", "status": "running"},
+        {"sync_type": "inventory", "status": "running", "connection": settings.name},
         "started_at",
         order_by="started_at desc",
     )
@@ -104,7 +126,7 @@ def _maybe_enqueue_inventory(interval_setting):
 
     last_success = frappe.db.get_value(
         "Shopify Sync Log",
-        {"sync_type": "inventory", "status": "success"},
+        {"sync_type": "inventory", "status": "success", "connection": settings.name},
         "started_at",
         order_by="started_at desc",
     )
@@ -118,4 +140,5 @@ def _maybe_enqueue_inventory(interval_setting):
         queue="long",
         timeout=3600,
         trigger="scheduled",
+        connection=settings.name,
     )

@@ -6,7 +6,7 @@ The plumbing shared across every domain: how the connector authenticates, talks 
 
 ## Connector pattern
 
-A standalone Frappe app registered into `alaiy_os`'s `OS Connector Registry` on every `after_migrate` (`setup/install.py::sync_connector_registry`, from `connector_meta.py`). Core calls this app's methods via dotted paths in the registry; it holds no Shopify-specific code. Settings live in the `Shopify Connector Settings` Single DocType; sync history in `Shopify Sync Log`.
+A standalone Frappe app registered into `alaiy_os`'s `OS Connector Registry` on every `after_migrate` (`setup/install.py::sync_connector_registry`, from `connector_meta.py`). Core calls this app's methods via dotted paths in the registry; it holds no Shopify-specific code. Store configuration and credentials live in the `Shopify Connection` DocType — **one row per store**, resolved through `connections.py`; sync history in `Shopify Sync Log`, stamped with the connection each run was for.
 
 ---
 
@@ -14,9 +14,9 @@ A standalone Frappe app registered into `alaiy_os`'s `OS Connector Registry` on 
 
 `shopify/auth.py`:
 - `get_client_credentials_token(shop_url, client_id, client_secret)` — mints an access token via the **client-credentials grant**.
-- `refresh_and_store_access_token()` — mints a fresh token and persists `sh_access_token` / `sh_token_refreshed_at` / `sh_token_expires_at`.
+- `refresh_and_store_access_token(connection=None)` — mints a fresh token for one store and persists `sh_access_token` / `sh_token_refreshed_at` / `sh_token_expires_at`. The token goes to `__Auth` encrypted; the column keeps the masked placeholder. (The Single it replaced was written with `frappe.db.set_single_value`, which left the token in `tabSingles` in plaintext.)
 
-`shopify/graphql_client.py` — `ShopifyGraphQLClient`:
+`shopify/graphql_client.py` — `ShopifyGraphQLClient(connection=None)`, scoped to one store and carrying it on `.connection`:
 - POSTs to `{shop_url}/admin/api/{SHOPIFY_API_VERSION}/graphql.json` (`SHOPIFY_API_VERSION = "2026-07"`), timeout `(10, 60)`.
 - `execute()` — runs a query/mutation, auto-refreshes the token on 401, and retries once on a `THROTTLED` error after waiting the throttle window (`_is_throttled` / `_throttle_wait_seconds`).
 - `execute_paginated(query, variables, connection_path)` — cursor-pagination generator yielding each page's `edges[].node`, following `pageInfo.hasNextPage` / `endCursor`.

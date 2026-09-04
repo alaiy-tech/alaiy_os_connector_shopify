@@ -1,11 +1,24 @@
 {
- "creation": "2026-07-02 00:00:00.000000",
- "docstatus": 0,
+ "actions": [],
+ "autoname": "field:connection_id",
+ "creation": "2026-09-04 00:00:00.000000",
+ "description": "One Shopify store connection. A single-store bench has exactly one, named 'default'; a multi-tenant bench has one per seller. Holds the store's credentials, its Alaiy OS defaults, and its sync settings.",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
   "is_enabled",
+  "identity_section",
+  "connection_id",
+  "label",
+  "is_default",
+  "column_break_identity",
+  "owner_app",
+  "status_section",
+  "last_status",
+  "last_status_message",
+  "column_break_status",
+  "connected_at",
   "sb_connection",
   "sh_shop_url",
   "sh_client_id",
@@ -49,6 +62,73 @@
    "label": "Enable Shopify"
   },
   {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
+  {
+   "fieldname": "connection_id",
+   "fieldtype": "Data",
+   "label": "Connection ID",
+   "set_only_once": 1,
+   "unique": 1,
+   "description": "Stable id used by callers and by the app that manages this store. A bench upgraded from the single-connection version keeps its one connection as 'default'.",
+   "reqd": 1
+  },
+  {
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "label": "Label",
+   "description": "Human-readable name, e.g. the store or brand."
+  },
+  {
+   "default": "0",
+   "fieldname": "is_default",
+   "fieldtype": "Check",
+   "label": "Default Connection",
+   "description": "Used when a caller names no connection. A bench with exactly one connection does not need this set."
+  },
+  {
+   "fieldname": "column_break_identity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "owner_app",
+   "fieldtype": "Data",
+   "label": "Created By App",
+   "read_only": 1,
+   "description": "Set by whichever app created this connection, so a multi-tenant bench can tell its own rows from ones made by hand."
+  },
+  {
+   "fieldname": "status_section",
+   "fieldtype": "Section Break",
+   "label": "Connection Status"
+  },
+  {
+   "default": "not_configured",
+   "fieldname": "last_status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "not_configured\nconnected\nerror",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_status_message",
+   "fieldtype": "Small Text",
+   "label": "Status Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "connected_at",
+   "fieldtype": "Datetime",
+   "label": "Connected At",
+   "read_only": 1
+  },
+  {
    "fieldname": "sb_connection",
    "fieldtype": "Section Break",
    "label": "API Connection"
@@ -58,21 +138,21 @@
    "fieldname": "sh_shop_url",
    "fieldtype": "Data",
    "label": "Shop URL",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Client ID from your Shopify custom app (Developer Dashboard)",
    "fieldname": "sh_client_id",
    "fieldtype": "Data",
    "label": "Client ID",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Client Secret from your Shopify custom app",
    "fieldname": "sh_client_secret",
    "fieldtype": "Password",
    "label": "Client Secret",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Access token (auto-managed by Test Connection)",
@@ -100,7 +180,7 @@
    "fieldname": "sh_webhook_secret",
    "fieldtype": "Password",
    "label": "Webhook Secret",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "fieldname": "sb_defaults",
@@ -112,7 +192,7 @@
    "fieldtype": "Link",
    "label": "Company",
    "options": "Company",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Warehouse for fulfilling Shopify orders",
@@ -120,7 +200,7 @@
    "fieldtype": "Link",
    "label": "Default Warehouse",
    "options": "Warehouse",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Where a Shopify refund's Sales Return lands. Leave blank to use Default Warehouse instead -- someone downstream (e.g. a supplier portal's own returns routing) decides where it really ends up from there.",
@@ -134,7 +214,7 @@
    "fieldtype": "Link",
    "label": "Default Customer Group",
    "options": "Customer Group",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Territory assigned to Customers auto-created from Shopify orders. Falls back to any existing Territory if left blank -- there's no guarantee a site has one named 'All Territories'.",
@@ -148,14 +228,14 @@
    "fieldtype": "Link",
    "label": "Selling Price List",
    "options": "Price List",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "fieldname": "sh_cost_center",
    "fieldtype": "Link",
    "label": "Cost Center",
    "options": "Cost Center",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Account that tax lines pulled from Shopify orders (e.g. CGST, SGST, VAT) are booked against. Leave blank to auto-resolve/create a 'Shopify Tax' account under the company.",
@@ -204,7 +284,7 @@
    "fieldtype": "Select",
    "label": "Sync Orders With Status",
    "options": "Open\nAny\nClosed\nCancelled",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "default": "Shopify → Alaiy OS (default)",
@@ -213,7 +293,7 @@
    "fieldtype": "Select",
    "label": "Fulfillment Sync Direction",
    "options": "Shopify → Alaiy OS (default)\nAlaiy OS → Shopify (two-way)",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "default": "30 min",
@@ -222,7 +302,7 @@
    "fieldtype": "Select",
    "label": "Inventory Sync Interval",
    "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "default": "12 hours",
@@ -231,7 +311,7 @@
    "fieldtype": "Select",
    "label": "Token Refresh Interval",
    "options": "Disabled\n6 hours\n12 hours\n24 hours",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "fieldname": "sb_product_status",
@@ -282,12 +362,14 @@
    "label": "Export Archived products"
   }
  ],
- "is_single": 1,
+ "index_web_pages_for_search": 0,
+ "issingle": 0,
  "links": [],
- "modified": "2026-07-02 00:00:00.000000",
+ "modified": "2026-09-04 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Alaiy OS Connector Shopify",
- "name": "Shopify Connector Settings",
+ "name": "Shopify Connection",
+ "naming_rule": "By fieldname",
  "owner": "Administrator",
  "permissions": [
   {
@@ -303,8 +385,10 @@
    "write": 1
   }
  ],
- "sort_field": "modified",
+ "show_title_field_in_link": 1,
+ "sort_field": "creation",
  "sort_order": "DESC",
  "states": [],
+ "title_field": "label",
  "track_changes": 0
 }

@@ -17,6 +17,8 @@ from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
 )
 from alaiy_os_connector_shopify.shopify.order.tax import _append_tax_lines
 
+from alaiy_os_connector_shopify import connections
+
 
 def get_active_sales_order(order_id: str):
     """
@@ -93,7 +95,7 @@ def _upsert_order_unlocked(order, order_id):
     if get_active_sales_order(order_id):
         return False  # already processed
 
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     # A missing default Address Template makes Alaiy OS throw while rendering the
     # customer's address during Sales Order validate -- ensure one exists first.
     from alaiy_os_connector_shopify.shopify.order.address import ensure_default_address_template

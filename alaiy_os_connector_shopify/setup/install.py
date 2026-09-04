@@ -11,28 +11,12 @@ def sync_connector_registry():
     but custom fields are ensured on every migrate (idempotent) so a newly
     added field lands on sites that already had the connector enabled.
     """
-    _fix_settings_as_single()
     setup_custom_fields()
     _unlock_disabled_field_on_variants()
-    _backfill_singles_defaults("Shopify Connector Settings", [
-        "sh_token_refresh_interval",
-        "sh_auto_sales_invoice", "sh_invoice_trigger",
-        # Confirmed live: never backfilled on a site whose Settings singleton
-        # predated these fields -- read back as 0, not None, so status.py's
-        # own _selected() safeguard (written for the None case) didn't catch
-        # it, and every export was silently blocked regardless of status.
-        "sh_import_status_active", "sh_import_status_draft", "sh_import_status_archived",
-        "sh_export_status_active", "sh_export_status_draft", "sh_export_status_archived",
-    ])
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_description")
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_vendor")
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_product_type")
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_images")
     _ensure_list_view_column("Sales Order", "sh_shopify_order_name", "Shopify Order #")
     _ensure_list_view_column("Sales Order", "sh_fulfillment_status", "Shopify Fulfillment Status")
     _ensure_list_view_column("Sales Order", "sh_financial_status", "Shopify Financial Status")
     _ensure_list_view_column("Delivery Note", "sh_delivery_status", "Shopify Delivery Status")
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_api_version")
 
     if not frappe.db.exists("DocType", "OS Connector Registry"):
         return
@@ -86,57 +70,6 @@ def _update_alaiy_os_sidebar():
             title="Shopify connector: sidebar update failed",
             message=frappe.get_traceback(),
         )
-
-
-def _fix_settings_as_single():
-    frappe.db.sql(
-        "UPDATE `tabDocType` SET issingle=1 WHERE name='Shopify Connector Settings' AND issingle=0"
-    )
-    frappe.db.commit()
-
-
-def _backfill_singles_defaults(doctype, fieldnames):
-    """
-    A field's `default` in its DocType/Custom Field JSON only applies when a
-    NEW document is created. For a Single doctype's one pre-existing row,
-    adding a field with a default later does not retroactively populate it --
-    it silently reads back empty forever unless the admin happens to open
-    and save the form. Backfill it here instead, once, idempotently.
-
-    Checks row EXISTENCE in tabSingles directly rather than via
-    get_single_value()/the ORM -- for a Check field, "never set" and
-    "explicitly set to 0" both read back as plain 0, indistinguishable by
-    value alone. Only an actual missing row means "never set".
-    """
-    meta = frappe.get_meta(doctype)
-    for fieldname in fieldnames:
-        already_set = frappe.db.sql(
-            "SELECT 1 FROM `tabSingles` WHERE doctype=%s AND field=%s LIMIT 1",
-            (doctype, fieldname),
-        )
-        if already_set:
-            continue
-        field = meta.get_field(fieldname)
-        if not field or field.default in (None, ""):
-            continue
-        frappe.db.set_single_value(doctype, fieldname, field.default)
-    frappe.db.commit()
-
-
-def _drop_orphaned_singles_value(doctype, fieldname):
-    """
-    Removing a field from a DocType's JSON doesn't clean up its old stored
-    value on a site that already had one -- it just becomes an orphaned,
-    invisible row in tabSingles. Delete it explicitly (e.g. sh_api_version,
-    removed in favor of a hardcoded SHOPIFY_API_VERSION constant -- it was
-    merchant-editable, which meant a stale/wrong value could silently break
-    every API call without any code change to point to).
-    """
-    frappe.db.sql(
-        "DELETE FROM `tabSingles` WHERE doctype=%s AND field=%s",
-        (doctype, fieldname),
-    )
-    frappe.db.commit()
 
 
 def _ensure_list_view_column(doctype, fieldname, label):

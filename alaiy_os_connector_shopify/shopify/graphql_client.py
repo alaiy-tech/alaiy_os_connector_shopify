@@ -4,6 +4,7 @@ import uuid
 import requests
 import frappe
 
+from alaiy_os_connector_shopify import connections
 from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_token
 
 SHOPIFY_API_VERSION = "2026-07"
@@ -16,10 +17,18 @@ REQUEST_TIMEOUT = (10, 60)
 
 
 class ShopifyGraphQLClient:
-    """Thin wrapper over the Shopify Admin GraphQL API."""
+    """
+    Thin wrapper over the Shopify Admin GraphQL API, scoped to one store.
 
-    def __init__(self):
-        settings = frappe.get_single("Shopify Connector Settings")
+    `connection` is a Shopify Connection, its id, or None. None means "the only
+    store on this bench", which is every single-store site and is why callers
+    that predate multiple connections did not have to change; on a bench with
+    several it refuses rather than guessing (see connections.resolve).
+    """
+
+    def __init__(self, connection=None):
+        self.connection = connections.resolve(connection)
+        settings = self.connection
         if not settings.sh_shop_url:
             raise RuntimeError("Shopify Shop URL is not configured.")
         if not settings.sh_access_token:
@@ -42,7 +51,7 @@ class ShopifyGraphQLClient:
         """Same pattern as the old REST client: mint a fresh token and
         update both the stored setting and this client's own session
         header in place."""
-        self.token = refresh_and_store_access_token()
+        self.token = refresh_and_store_access_token(self.connection)
         self.session.headers.update({"X-Shopify-Access-Token": self.token})
 
     def execute(self, query: str, variables: dict = None, _retried_throttle: bool = False) -> dict:

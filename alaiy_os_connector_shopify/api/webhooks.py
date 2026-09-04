@@ -5,21 +5,48 @@ import json
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 
 @frappe.whitelist(allow_guest=True)
 def handle_webhook():
     """
     HMAC-validated webhook endpoint. Shopify calls this for registered topics.
     Validates the signature then enqueues the appropriate handler.
+
+    Which store a delivery is for comes from X-Shopify-Shop-Domain, and the
+    signature is then checked against THAT store's secrets and no others. On a
+    bench holding several connections, trying every store's secret in turn
+    would make any one seller's secret enough to have a payload accepted and
+    processed as any other seller's order -- the header is the only thing in
+    the request that says whose store it is, so it has to pick the key rather
+    than merely be recorded.
     """
     request = frappe.request
     topic = request.headers.get("X-Shopify-Topic", "")
     hmac_header = request.headers.get("X-Shopify-Hmac-Sha256", "")
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
     raw_body = request.data
 
-    settings = frappe.get_single("Shopify Connector Settings")
+    connection = connections.by_shop(shop_domain) if shop_domain else None
+    if connection is None and len(connections.names()) == 1:
+        # A bench whose one connection has no shop domain saved yet still
+        # works, because there is only one store it could be. Deliberately not
+        # `resolve_optional`, which would also answer with the *default* on a
+        # bench holding several -- an unattributable delivery there has to be
+        # refused, since nothing in the request says whose order it is and the
+        # default store is just a guess wearing a flag.
+        connection = connections.resolve_optional()
 
-    if not settings.is_enabled:
+    if connection is None:
+        frappe.log_error(
+            title="Shopify webhook rejected: unknown store",
+            message=f"topic={topic!r} shop={shop_domain!r}",
+        )
+        frappe.response.status_code = 401
+        return {"ok": False, "reason": "unknown store"}
+
+    if not connection.is_enabled:
         frappe.response.status_code = 200
         return {"ok": False, "reason": "connector disabled"}
 
@@ -34,15 +61,18 @@ def handle_webhook():
     # shown on that page. Confirmed live: "Order edit" (orders/edited)
     # is only ever delivered via the Notifications-page mechanism --
     # Shopify has no GraphQL-subscribable topic for order-edit diffs --
-    # so both secrets must be accepted, not just one.
+    # so both secrets must be accepted, not just one. Both belong to the
+    # one store resolved above.
     candidate_secrets = [
-        settings.get_password("sh_client_secret", raise_exception=False),
-        settings.get_password("sh_webhook_secret", raise_exception=False),
+        connection.get_password("sh_client_secret", raise_exception=False),
+        connection.get_password("sh_webhook_secret", raise_exception=False),
     ]
     candidate_secrets = [s for s in candidate_secrets if s]
     if not candidate_secrets:
         frappe.log_error(
-            title="Shopify webhook rejected: no secret configured")
+            title="Shopify webhook rejected: no secret configured",
+            message=f"connection={connection.name!r}",
+        )
         frappe.response.status_code = 401
         return {"ok": False, "reason": "no secret configured"}
 
@@ -56,7 +86,7 @@ def handle_webhook():
     if not valid:
         frappe.log_error(
             title="Shopify webhook rejected: HMAC mismatch (diagnostic)",
-            message=f"topic={topic!r}",
+            message=f"topic={topic!r} connection={connection.name!r}",
         )
         frappe.response.status_code = 401
         return {"ok": False, "reason": "HMAC validation failed"}
@@ -71,6 +101,9 @@ def handle_webhook():
         frappe.response.status_code = 400
         return {"ok": False, "reason": "invalid JSON"}
 
+    # The handlers resolve the enabled store themselves. That is the same
+    # document as `connection` -- only one connection may be enabled at a time,
+    # and this delivery was checked against that one above.
     _dispatch(topic, payload)
 
     frappe.response.status_code = 200

@@ -5,6 +5,8 @@ unchanged.
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 
 def _resolve_default_warehouse(settings):
     """
@@ -24,7 +26,7 @@ def _resolve_default_warehouse(settings):
     if configured:
         frappe.log_error(
             title="Shopify: Default Warehouse is a Group Warehouse, falling back",
-            message=f"Configured: {configured}. Set a leaf warehouse in Shopify Connector Settings to silence this.",
+            message=f"Configured: {configured}. Set a leaf warehouse in Shopify Connection to silence this.",
         )
 
     fallback = frappe.db.get_value(
@@ -34,7 +36,7 @@ def _resolve_default_warehouse(settings):
     if not fallback:
         frappe.throw(
             "No usable (non-Group) Warehouse exists for this company. "
-            "Create one, then set it as 'Default Warehouse' on Shopify Connector Settings."
+            "Create one, then set it as 'Default Warehouse' on Shopify Connection."
         )
     return fallback
 
@@ -44,7 +46,7 @@ def _resolve_warehouse_for_location(location_id, settings):
     Look up the real per-supplier warehouse for a Shopify location id
     (the fulfillment's own location_id, REST-shaped -- a plain legacy
     numeric id, matching Shopify Location.sh_location_id), via
-    Shopify Connector Settings.sh_location_map.
+    Shopify Connection.sh_location_map.
 
     Confirmed live: this map (Warehouse to Location Map, 70+ real rows,
     one per supplier) was populated and correct, but nothing in order/
@@ -90,7 +92,7 @@ def _force_valid_warehouse(dn, location_id=None):
     or the caller didn't pass one at all (the full-order-fallback path
     has no per-fulfillment location to work with).
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     warehouse = _resolve_warehouse_for_location(location_id, settings) or _resolve_default_warehouse(settings)
     for item in dn.items:
         item.warehouse = warehouse

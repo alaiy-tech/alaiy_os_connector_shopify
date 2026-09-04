@@ -18,6 +18,8 @@ from alaiy_os_connector_shopify.shopify.order.queries import (
 )
 from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
 
+from alaiy_os_connector_shopify import connections
+
 
 def _line_item_discount_total(li: dict) -> float:
     """
@@ -79,7 +81,7 @@ def _apply_shopify_line_item_changes(
     # already denominated in whatever currency it was placed in.
     order_currency = frappe.db.get_value("Sales Order", sales_order, "currency") or "USD"
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     try:
         begin_data = client.execute(_ORDER_EDIT_BEGIN_MUTATION, {"id": _to_gid(order_id)})
         begin = begin_data.get("orderEditBegin") or {}

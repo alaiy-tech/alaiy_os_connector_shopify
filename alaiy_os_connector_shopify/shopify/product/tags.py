@@ -7,6 +7,8 @@ import frappe
 
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_TAGS_QUERY
 
+from alaiy_os_connector_shopify import connections
+
 
 def _normalize_tags(tags) -> list:
     """
@@ -89,7 +91,7 @@ def copy_template_tags_to_variant(doc, method=None):
 
 
 @frappe.whitelist()
-def sync_shopify_tags():
+def sync_shopify_tags(connection=None):
     """
     Fetch every tag ever used across the store's products and cache it
     locally as a Shopify Tag record -- the master list the Item Shopify
@@ -100,7 +102,7 @@ def sync_shopify_tags():
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connection)
     created = 0
     total = 0
     skipped = 0

@@ -12,6 +12,8 @@ import frappe
 
 from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
+from alaiy_os_connector_shopify import connections
+
 _QUERY = """
 query GetOrderTracking($id: ID!, $after: String) {
   order(id: $id) {
@@ -52,7 +54,7 @@ def execute():
         frappe.logger().info("Tracking backfill: nothing to do")
         return
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     fixed = 0
     # Group by order id -- one GraphQL call covers every fulfillment/DN on
     # that order, not one call per Delivery Note.

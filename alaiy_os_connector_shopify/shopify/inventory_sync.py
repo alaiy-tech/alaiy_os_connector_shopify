@@ -6,6 +6,8 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
     append_log as _append_log, close_log as _close_log,
 )
 
+from alaiy_os_connector_shopify import connections
+
 _LOCATIONS_QUERY = """
 query GetLocations($after: String) {
   locations(first: 250, after: $after) {
@@ -92,20 +94,21 @@ def _fulfillment_services_by_location(client, log=None):
 
 
 @frappe.whitelist()
-def sync_shopify_locations(trigger="manual", log_name=None):
+def sync_shopify_locations(trigger="manual", log_name=None, connection=None):
     """
     Cache every Shopify location as a Shopify Location doc -- the list the
     warehouse-to-location map picks from. Logged (sync_type "locations").
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    log = load_or_create_log("locations", trigger, log_name)
+    connection = connection or connections.require_enabled()
+    log = load_or_create_log("locations", trigger, log_name, connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)
     frappe.db.commit()
 
     try:
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connection)
         services, services_available = _fulfillment_services_by_location(client, log)
         has_next_page = True
         after_cursor = None
@@ -234,13 +237,18 @@ def _backfill_missing_default_warehouse(warehouse):
         frappe.db.commit()
 
 
-def run_inventory_push(trigger="manual", log_name=None):
+def run_inventory_push(trigger="manual", log_name=None, connection=None):
     """
     Push current Alaiy OS bin quantities to Shopify inventory levels
     for all items that have a sh_shopify_variant_id set.
+
+    `connection` is the store to push to, defaulting to the one this bench has
+    Shopify switched on for. Everything this walks -- Item.sh_shopify_variant_id,
+    the Shopify Location rows, the warehouse map -- describes that one store.
     """
-    log = load_or_create_log("inventory", trigger, log_name)
-    if has_active_sync("inventory", exclude_name=log.name):
+    connection = connection or connections.require_enabled()
+    log = load_or_create_log("inventory", trigger, log_name, connection=connection)
+    if has_active_sync("inventory", exclude_name=log.name, connection=connection):
         _close_log(log, "skipped",
                    error="Skipped: another inventory sync is already running.")
         return log.name
@@ -251,8 +259,8 @@ def run_inventory_push(trigger="manual", log_name=None):
 
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient()
-        settings = frappe.get_single("Shopify Connector Settings")
+        settings = connections.resolve(connection)
+        client = ShopifyGraphQLClient(settings)
 
         # Build the (warehouse, location_gid) pairs to push. If the merchant
         # mapped warehouses to Shopify locations, push each pair (multi-location);
@@ -265,7 +273,11 @@ def run_inventory_push(trigger="manual", log_name=None):
 
         last_success_time = frappe.db.get_value(
             "Shopify Sync Log",
-            {"sync_type": "inventory", "status": "success"},
+            {
+                "sync_type": "inventory",
+                "status": "success",
+                "connection": settings.name,
+            },
             "finished_at",
             order_by="finished_at desc",
         )

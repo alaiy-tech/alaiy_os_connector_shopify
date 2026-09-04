@@ -27,12 +27,14 @@ Apply for real:
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 
 def run(dry_run=True):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
 
     sos = frappe.db.sql("""
         SELECT name, sh_shopify_order_id FROM `tabSales Order`

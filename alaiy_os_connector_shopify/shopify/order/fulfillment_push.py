@@ -6,7 +6,7 @@ Shopify -- create, tracking edits, and cancel were all a ground-up gap. This
 module builds all three, reusing the same sh_tracking_number/sh_tracking_company
 fields _sync_tracking already writes for the inbound direction.
 
-Gated by Shopify Connector Settings.sh_fulfillment_sync_direction: creating a
+Gated by Shopify Connection.sh_fulfillment_sync_direction: creating a
 NEW Shopify fulfillment from a Delivery Note submit only happens when that
 setting is "Alaiy OS -> Shopify (two-way)" (default is inbound-only, byte-
 for-byte unchanged from before this module existed). Once a fulfillment has
@@ -24,6 +24,8 @@ from alaiy_os_connector_shopify.shopify.order.queries import (
 )
 from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+
+from alaiy_os_connector_shopify import connections
 
 _TWO_WAY = "Alaiy OS → Shopify (two-way)"
 
@@ -153,7 +155,7 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         frappe.throw(f"{so_name} has no Shopify order linked -- nothing to push fulfillment to.")
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     order_gid = _to_gid(shopify_order_id)
 
     open_by_fulfillment_order, location_by_fulfillment_order = _open_fulfillment_order_line_items(client, order_gid)
@@ -276,14 +278,14 @@ def on_delivery_note_submit(doc, method=None):
     """
     Generic outbound hook for any Delivery Note submitted in Alaiy OS (e.g. a
     warehouse scanning items out against a Sales Order) -- gated by
-    Shopify Connector Settings.sh_fulfillment_sync_direction so existing
+    Shopify Connection.sh_fulfillment_sync_direction so existing
     inbound-only installs see no behavior change by default.
     """
     if doc.flags.from_shopify_sync:
         return  # mirrors a fulfillment Shopify already knows about
     if doc.sh_shopify_fulfillment_id:
         return  # already linked (defensive -- from_shopify_sync should have caught this)
-    if (frappe.db.get_single_value("Shopify Connector Settings", "sh_fulfillment_sync_direction") or "") != _TWO_WAY:
+    if (connections.enabled_value("sh_fulfillment_sync_direction") or "") != _TWO_WAY:
         return
     so_name = _sales_order_of(doc)
     if not so_name or not frappe.db.get_value("Sales Order", so_name, "sh_shopify_order_id"):
@@ -340,7 +342,7 @@ def push_tracking_update_job(fulfillment_gid: str, tracking_number: str, carrier
 def _push_tracking_update(fulfillment_gid: str, tracking_number: str, carrier: str, delivery_note: str, raise_on_error: bool):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     try:
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connections.require_enabled())
         data = client.execute(_FULFILLMENT_TRACKING_UPDATE_MUTATION, {
             "fulfillmentId": fulfillment_gid,
             "trackingInfoInput": {"number": tracking_number, "company": carrier},
@@ -387,7 +389,7 @@ def on_delivery_note_cancel(doc, method=None):
 def push_fulfillment_cancel_job(fulfillment_gid: str, delivery_note: str):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     try:
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connections.require_enabled())
         data = client.execute(_FULFILLMENT_CANCEL_MUTATION, {"id": fulfillment_gid})
         errors = (data.get("fulfillmentCancel") or {}).get("userErrors") or []
         if errors:

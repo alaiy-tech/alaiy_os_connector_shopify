@@ -6,7 +6,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	});
 
 	page.set_secondary_action("Settings", function() {
-		frappe.set_route("Form", "Shopify Connector Settings");
+		// The list, not a form: a bench can hold several stores now, and
+		// there is no one connection this button could mean.
+		frappe.set_route("List", "Shopify Connection");
 	}, "settings");
 
 	$(page.body).html(`
