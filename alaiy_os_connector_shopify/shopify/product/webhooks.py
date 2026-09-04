@@ -13,6 +13,8 @@ from alaiy_os_connector_shopify.shopify.product.canonical import _product_canoni
 from alaiy_os_connector_shopify.shopify.product.export import _variants_of
 from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
 
+from alaiy_os_connector_shopify import connections
+
 
 def handle_product_webhook(topic: str, payload: dict):
     """
@@ -201,7 +203,7 @@ def _handle_product_update(product_id: str, product: dict):
     # this inbound-driven change as "different from last push" and push it
     # straight back to Shopify.
     item = frappe.get_doc("Item", item.name)
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
     listing = listing_resolver.get_listing(item.name)
     # Only re-fingerprint when a Listing exists (i.e. this product is
@@ -236,7 +238,7 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     _retried is internal only -- see the TimestampMismatchError handling
     at the bottom of this function.
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
 
     from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
     listing = listing_resolver.get_listing(item.name)

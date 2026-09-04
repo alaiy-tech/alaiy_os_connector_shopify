@@ -25,6 +25,8 @@ import re
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 _INTROSPECT = """
 query IntrospectType($name: String!) {
   __type(name: $name) {
@@ -78,7 +80,7 @@ def run(show_descriptions=False):
     )
     from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     selected = _selected_field_names(_PRODUCTS_QUERY)
 
     print(f"[query_audit] API version {SHOPIFY_API_VERSION}")
@@ -161,7 +163,7 @@ def probe():
     )
     from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     print(f"[probe] API version {SHOPIFY_API_VERSION}\n")
 
     out = {}
@@ -219,7 +221,7 @@ def sample(count=3):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 
-    data = ShopifyGraphQLClient().execute(_PRODUCTS_QUERY, {"after": None})
+    data = ShopifyGraphQLClient(connections.require_enabled()).execute(_PRODUCTS_QUERY, {"after": None})
     edges = (data.get("products") or {}).get("edges") or []
 
     for edge in edges[:int(count)]:

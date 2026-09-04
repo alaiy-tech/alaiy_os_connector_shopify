@@ -11,6 +11,8 @@ Item-level concern.
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 
 def resolve_shopify_category_gid(doc, method=None):
     """
@@ -97,7 +99,7 @@ def ensure_listing_for_new_item(doc, method=None):
     """
     if doc.variant_of:
         return
-    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+    if not connections.enabled_value("is_enabled"):
         return
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
     ensure_listing(doc.name, default_enabled=0)
@@ -194,7 +196,7 @@ def backfill_missing_listings(batch=None):
 
 
 def backfill_listings_on_enable(doc, method=None):
-    """Shopify Connector Settings on_update: backfill Listings when switched on.
+    """Shopify Connection on_update: backfill Listings when switched on.
 
     Only acts on the save that flips is_enabled from off to on -- comparing
     against the pre-save value, so re-saving an already-enabled settings doc does
@@ -229,10 +231,12 @@ def check_listing_gating():
     created = []
     enqueued = []
 
-    real_get_single_value = frappe.db.get_single_value
+    # The gate reads the enabled connection now, not a Single's field, so
+    # that is what this stands in for.
+    real_enabled_value = connections.enabled_value
     real_enqueue = frappe.enqueue
     enabled = {"value": 0}
-    frappe.db.get_single_value = lambda dt, f: enabled["value"]
+    connections.enabled_value = lambda fieldname: enabled["value"]
     frappe.enqueue = lambda method, **kw: enqueued.append(method)
 
     import sys
@@ -261,7 +265,7 @@ def check_listing_gating():
         backfill_listings_on_enable(_Doc(is_enabled=1, before=None))
         assert len(enqueued) == 2, enqueued
     finally:
-        frappe.db.get_single_value = real_get_single_value
+        connections.enabled_value = real_enabled_value
         frappe.enqueue = real_enqueue
 
     print("listing gating self-check passed")

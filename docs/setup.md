@@ -13,9 +13,9 @@ This connector is a standalone Frappe app that plugs into `alaiy_os`'s `OS Conne
 
 ## 2. Shopify custom app credentials
 
-From the Shopify custom app you need three secrets, entered into Shopify Connector Settings:
+From the Shopify custom app you need three secrets, entered into a **Shopify Connection**:
 
-| Shopify admin value | Settings field |
+| Shopify admin value | Connection field |
 |---|---|
 | Client ID (API key) | `sh_client_id` |
 | Client secret (API secret key) | `sh_client_secret` |
@@ -26,33 +26,63 @@ The connector uses the **client-credentials grant** (`shopify/auth.py::get_clien
 
 ---
 
-## 3. Shopify Connector Settings — every field
+## 3. Shopify Connection — every field
 
-`Shopify Connector Settings` is a **Single** DocType (one row site-wide). Fields, grouped by section:
+`Shopify Connection` is a normal DocType: **one row per store**. A bench that
+sells through one store has exactly one, named `default` — which is what a
+bench upgraded from the old `Shopify Connector Settings` Single is left with,
+migrated automatically (`patches/single_to_multiple_connections.py`).
+
+Holding several is what makes a multi-tenant bench possible: each row carries
+one seller's credentials and answers API reads for that store alone. Callers
+name the store they mean; one that names none gets the row flagged
+`is_default`, or the only row when there is one, and otherwise a refusal
+rather than a guess (`connections.py`).
+
+**Only one connection at a time may be `is_enabled`**, and the DocType enforces
+it. Enabling a store arms this connector's ERPNext side — the Item and Sales
+Order document events, the order import, the inventory push — and the records
+those write (`Shopify Location`, `Item.sh_shopify_product_id`,
+`Sales Order.sh_shopify_order_id`) have nowhere to record which store they came
+from. Two enabled stores would overwrite each other in every one of them.
+Connections that are never enabled are unaffected and are the normal case on a
+multi-tenant bench.
+
+### Identity
+
+| Field | Type | Purpose |
+|---|---|---|
+| `connection_id` | Data (reqd, unique) | Stable id callers address. `default` on an upgraded bench. |
+| `label` | Data | Human-readable name, e.g. the store or brand. |
+| `is_default` | Check | Answers callers that name no connection. Unnecessary when there is only one. |
+| `owner_app` | Data (RO) | Which app created the row, so hand-made rows are distinguishable. |
+| `last_status` / `last_status_message` / `connected_at` | RO | Result of the last Test Connection. |
+
+Fields, grouped by section:
 
 ### API Connection
 
 | Field | Type | Purpose |
 |---|---|---|
 | `is_enabled` | Check | Master switch. 0→1 transition provisions custom fields + registers webhooks; 1→0 unregisters them. |
-| `sh_shop_url` | Data (reqd) | Store domain. |
-| `sh_client_id` | Data (reqd) | Custom-app Client ID. |
-| `sh_client_secret` | Password (reqd) | Custom-app secret. |
+| `sh_shop_url` | Data | Store domain. Unique across connections, and normalised to a bare lowercase host — inbound webhooks are attributed by matching it against `X-Shopify-Shop-Domain`. |
+| `sh_client_id` | Data (reqd when enabled) | Custom-app Client ID. |
+| `sh_client_secret` | Password (reqd when enabled) | Custom-app secret. |
 | `sh_access_token` | Password (hidden) | Auto-minted; never hand-edited. |
 | `sh_token_refreshed_at` | Datetime (RO) | When the token was last minted. |
 | `sh_token_expires_at` | Datetime (RO) | Token expiry reported by Shopify. |
-| `sh_webhook_secret` | Password (reqd) | Validates the `X-Shopify-Hmac-Sha256` header on inbound webhooks. |
+| `sh_webhook_secret` | Password (reqd when enabled) | Validates the `X-Shopify-Hmac-Sha256` header on inbound webhooks. |
 
 ### Alaiy OS Defaults
 
 | Field | Type | Purpose |
 |---|---|---|
-| `sh_company` | Link Company (reqd) | Company for imported orders/items. |
-| `sh_default_warehouse` | Link Warehouse (reqd) | Stock warehouse; validated to be a non-Group (leaf) warehouse. |
-| `sh_customer_group` | Link Customer Group (reqd) | Group for auto-created customers. |
+| `sh_company` | Link Company (reqd when enabled) | Company for imported orders/items. |
+| `sh_default_warehouse` | Link Warehouse (reqd when enabled) | Stock warehouse; validated to be a non-Group (leaf) warehouse. |
+| `sh_customer_group` | Link Customer Group (reqd when enabled) | Group for auto-created customers. |
 | `sh_default_territory` | Link Territory | Territory for auto-created customers; self-heals if blank. |
-| `sh_selling_price_list` | Link Price List (reqd) | Price list product prices are read from / written to. |
-| `sh_cost_center` | Link Cost Center (reqd) | Cost center on orders/invoices. |
+| `sh_selling_price_list` | Link Price List (reqd when enabled) | Price list product prices are read from / written to. |
+| `sh_cost_center` | Link Cost Center (reqd when enabled) | Cost center on orders/invoices. |
 | `sh_tax_account` | Link Account | Account order tax lines are booked against. **Blank → auto-resolved / created** ("Shopify Tax" under Duties and Taxes). |
 | `sh_auto_sales_invoice` | Check (default 1) | Auto-create + submit a Sales Invoice when an order qualifies; submitting it also marks the Shopify order paid. |
 | `sh_invoice_trigger` | Select (default "Paid and Fulfilled") | When to invoice: `Paid and Fulfilled` (COD-correct) or `Paid`. |

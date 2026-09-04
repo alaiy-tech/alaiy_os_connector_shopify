@@ -13,10 +13,12 @@ from alaiy_os_connector_shopify.shopify.order.queries import _ORDERS_COUNT_QUERY
 from alaiy_os_connector_shopify.shopify.order.utils import _order_node_to_rest_shape
 from alaiy_os_connector_shopify.shopify.order.upsert import _upsert_order
 
+from alaiy_os_connector_shopify import connections
 
-def run_orders_sync(trigger="manual", log_name=None):
-    log = load_or_create_log("orders", trigger, log_name)
-    settings = frappe.get_single("Shopify Connector Settings")
+
+def run_orders_sync(trigger="manual", log_name=None, connection=None):
+    log = load_or_create_log("orders", trigger, log_name, connection=connection)
+    settings = connections.require_enabled()
     # NOTE: "status:<open|closed|cancelled|any>" mirrors the old REST
     # `status` param's values 1:1 but wasn't independently verified
     # against Shopify's order search-syntax docs -- if a live pull
@@ -74,7 +76,7 @@ def _run_orders_pull(log, query_string, skip_existing=False):
 
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connections.require_enabled())
         variables = {"after": None, "queryString": query_string}
 
         processed = created = failed = skipped_existing = pages = 0
@@ -150,12 +152,12 @@ def get_shopify_orders_count() -> int:
     """Cheap count-only query, used to decide up front whether a full
     import has anything left to do, without paging through every order."""
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     data = client.execute(_ORDERS_COUNT_QUERY)
     return int((data.get("ordersCount") or {}).get("count") or 0)
 
 
-def import_existing_orders(date_from=None, date_to=None):
+def import_existing_orders(date_from=None, date_to=None, connection=None):
     """
     Entry point for the "Import Orders from Shopify" button. With no date
     range, it's the full-historical import: a fast pre-check against
@@ -200,7 +202,7 @@ def import_existing_orders(date_from=None, date_to=None):
     }
 
 
-def run_full_import(log_name=None, date_from=None, date_to=None):
+def run_full_import(log_name=None, date_from=None, date_to=None, connection=None):
     """
     Pulls every order regardless of status/financial_status (unlike
     run_orders_sync, which respects the configured filter for routine

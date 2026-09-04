@@ -104,7 +104,7 @@ doc_events = {
     },
     # Enabling the connector has to backfill the Listings that
     # ensure_listing_for_new_item skipped while it was off.
-    "Shopify Connector Settings": {
+    "Shopify Connection": {
         "on_update": "alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_listings_on_enable",
     },
     "Shopify Product Listing": {

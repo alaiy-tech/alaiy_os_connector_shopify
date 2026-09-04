@@ -40,6 +40,8 @@ from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_
 from alaiy_os_connector_shopify.shopify.order.delivery_notes import _fill_expense_accounts
 from alaiy_os_connector_shopify.shopify.order.invoice import _fill_item_accounts, _resolve_bank_cash_account
 
+from alaiy_os_connector_shopify import connections
+
 
 def handle_refund_webhook(topic, payload):
     """refunds/create -- payload is the Shopify Refund object (REST-shaped)."""
@@ -215,7 +217,7 @@ def _land_return_in_warehouse(dn):
     a manual quality check) decides where the item really ends up from
     here -- this just gives it somewhere valid to land first.
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     warehouse = settings.sh_return_warehouse or _resolve_default_warehouse(settings)
     for item in dn.items:
         item.warehouse = warehouse
@@ -333,7 +335,7 @@ def _make_credit_note(so_name, qty_by_item, refund_id):
         if frappe.db.exists("Sales Invoice", {"sh_shopify_refund_id": refund_id}):
             return None
         from erpnext.controllers.sales_and_purchase_return import make_return_doc
-        settings = frappe.get_single("Shopify Connector Settings")
+        settings = connections.require_enabled()
         si = make_return_doc("Sales Invoice", si_name)
         if not _trim_return_items(si, qty_by_item):
             return None

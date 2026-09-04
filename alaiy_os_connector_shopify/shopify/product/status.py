@@ -1,4 +1,6 @@
 """
+
+from alaiy_os_connector_shopify import connections
 The single mapping between Shopify's product status and `sh_shopify_status`.
 
 Kept in one place because three call sites need to agree: the importer writing the
@@ -103,7 +105,7 @@ def _selected(field_map, local_status):
         # as a guard, and permissive: a status with no checkbox is one nobody
         # chose to exclude.
         return True
-    value = frappe.db.get_single_value("Shopify Connector Settings", field)
+    value = connections.enabled_value(field)
     # A field added to the settings after the single row already existed reads
     # back as None, not its declared default -- Frappe only applies a default
     # when a document is created. None means "never set", which for these

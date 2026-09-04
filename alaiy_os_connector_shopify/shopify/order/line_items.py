@@ -8,6 +8,8 @@ from frappe.utils import flt
 
 from alaiy_os_connector_shopify.shopify.order.utils import _line_item_qty, _resolve_item_code
 
+from alaiy_os_connector_shopify import connections
+
 
 def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
     """
@@ -118,7 +120,7 @@ def _sync_order_line_items(so_name: str, order: dict):
     if so.docstatus not in (0, 1):
         return
 
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     warehouse = _resolve_default_warehouse(settings)
 
     if so.docstatus == 0:

@@ -3,43 +3,59 @@ import frappe
 from alaiy_os_connector_shopify.shopify.product import status as status_map
 from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
 
+from alaiy_os_connector_shopify import connections
 
-def _enqueue_sync(sync_type, method, timeout=600, **kwargs):
+
+def _enqueue_sync(sync_type, method, timeout=600, connection=None, **kwargs):
+    """
+    Queue one sync for one store.
+
+    The connection is resolved here rather than inside the job so that naming a
+    store that does not exist fails in the caller's own request, where it can
+    be reported, instead of as a background job that quietly never runs. It is
+    then passed to the job by name, because a document does not survive being
+    serialised onto the queue.
+    """
+    connection = connections.resolve(connection)
+
     # Log row created here (not inside the job) so it's visible as "queued"
     # immediately, even if the shared long queue is busy and the job itself
     # doesn't start running for a while.
-    log = load_or_create_log(sync_type, "manual")
+    log = load_or_create_log(sync_type, "manual", connection=connection)
     frappe.enqueue(
         method,
         queue="long",
         timeout=timeout,
         trigger="manual",
         log_name=log.name,
+        connection=connection.name,
         **kwargs,
     )
     return {"queued": True, "log_name": log.name}
 
 
 @frappe.whitelist()
-def trigger_orders_sync():
+def trigger_orders_sync(connection=None):
     return _enqueue_sync(
-        "orders", "alaiy_os_connector_shopify.shopify.order_sync.run_orders_sync")
+        "orders", "alaiy_os_connector_shopify.shopify.order_sync.run_orders_sync",
+        connection=connection)
 
 
 @frappe.whitelist()
-def import_existing_orders(date_from=None, date_to=None):
+def import_existing_orders(date_from=None, date_to=None, connection=None):
     from alaiy_os_connector_shopify.shopify.order_sync import import_existing_orders as _import
-    return _import(date_from=date_from, date_to=date_to)
+    return _import(date_from=date_from, date_to=date_to, connection=connection)
 
 
 @frappe.whitelist()
-def trigger_inventory_push():
+def trigger_inventory_push(connection=None):
     return _enqueue_sync(
-        "inventory", "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_push")
+        "inventory", "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_push",
+        connection=connection)
 
 
 @frappe.whitelist()
-def trigger_product_import(statuses=None):
+def trigger_product_import(statuses=None, connection=None):
     """
     Import products from Shopify. First run (nothing imported yet) wipes
     first as a safety net, then imports everything. Every run after that
@@ -55,11 +71,12 @@ def trigger_product_import(statuses=None):
         # to blow the old ceiling partway through a ~3000-item catalog.
         timeout=14400,  # 4 hours
         statuses=statuses,
+        connection=connection,
     )
 
 
 @frappe.whitelist()
-def trigger_product_export(statuses=None):
+def trigger_product_export(statuses=None, connection=None):
     """
     Bulk push every local (not-yet-linked) product to Shopify in one go --
     for manually-created Alaiy OS Items that predate any Shopify connection.
@@ -70,11 +87,12 @@ def trigger_product_export(statuses=None):
         "alaiy_os_connector_shopify.shopify.product_sync.run_bulk_export_to_shopify",
         timeout=1800,
         statuses=statuses,
+        connection=connection,
     )
 
 
 @frappe.whitelist()
-def enable_listings_by_status(statuses=None):
+def enable_listings_by_status(statuses=None, connection=None):
     """
     Bulk-enable every currently-disabled Shopify Product Listing whose own
     status matches one of the caller's chosen statuses (any combination --
@@ -88,12 +106,18 @@ def enable_listings_by_status(statuses=None):
         "alaiy_os_connector_shopify.shopify.product.export.run_bulk_enable_listings",
         timeout=1800,
         statuses=statuses,
+        connection=connection,
     )
 
 
 @frappe.whitelist()
-def get_sync_status(sync_type=None):
+def get_sync_status(sync_type=None, connection=None):
+    """Recent sync runs. Scoped to one store when the bench has more than one,
+    so a seller's dashboard never shows somebody else's last import."""
     filters = {}
+    connection_name = connections.resolve_optional_name(connection)
+    if connection_name:
+        filters["connection"] = connection_name
     if sync_type:
         # "categories" maps to "orders", "items" maps to "inventory", "products" maps to "products"
         type_map = {"categories": "orders", "items": "inventory", "products": "products"}
@@ -181,7 +205,7 @@ def get_dashboard_stats():
 
 
 @frappe.whitelist()
-def get_shopify_side_stats():
+def get_shopify_side_stats(connection=None):
     """
     Real counts from Shopify itself -- separate call from
     get_dashboard_stats since this hits the live API (slower, and pointless
@@ -193,7 +217,7 @@ def get_shopify_side_stats():
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connection)
     products = client.execute("query { productsCount { count } }")
     orders = client.execute("query { ordersCount { count } }")
 
@@ -229,7 +253,7 @@ def get_shopify_side_stats():
 
 
 @frappe.whitelist()
-def refresh_shopify_taxonomy():
+def refresh_shopify_taxonomy(connection=None):
     """
     Manually trigger a refresh of Shopify's Standard Product Taxonomy tree.
     Fetches the full taxonomy from Shopify GraphQL and populates/updates
@@ -244,11 +268,12 @@ def refresh_shopify_taxonomy():
         # mid-node, leaving a transaction to roll back. An hour is generous
         # headroom; the walk itself is idempotent/resumable via re-run.
         timeout=3600,
+        connection=connection,
     )
 
 
 @frappe.whitelist()
-def refresh_shopify_tags():
+def refresh_shopify_tags(connection=None):
     """
     Manually trigger a refresh of the cached Shopify Tag list -- every
     tag ever used across the store's products, paginated in from
@@ -264,7 +289,7 @@ def refresh_shopify_tags():
 
 
 @frappe.whitelist()
-def refresh_shopify_collections():
+def refresh_shopify_collections(connection=None):
     """
     Manually trigger a refresh of the cached Shopify Collection list -- every
     collection on the store, paginated in. Populates the Shopify Collection
@@ -274,11 +299,12 @@ def refresh_shopify_collections():
     return _enqueue_sync(
         "collections",
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_collections",
+        connection=connection,
     )
 
 
 @frappe.whitelist()
-def refresh_shopify_locations():
+def refresh_shopify_locations(connection=None):
     """
     Manually refresh the cached Shopify Location list -- what the
     warehouse-to-location map picks from for multi-location inventory sync.
@@ -286,4 +312,5 @@ def refresh_shopify_locations():
     return _enqueue_sync(
         "locations",
         "alaiy_os_connector_shopify.shopify.inventory_sync.sync_shopify_locations",
+        connection=connection,
     )

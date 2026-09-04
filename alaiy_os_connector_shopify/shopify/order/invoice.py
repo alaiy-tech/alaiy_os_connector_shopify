@@ -5,7 +5,7 @@ Shopify order -> Sales Order is the authoritative flow; this adds the billing
 document. On financial_status "paid" we make + submit a Sales Invoice from the
 submitted Sales Order (tax lines carry over via Alaiy OS's own mapping).
 
-Gated by Shopify Connector Settings.sh_auto_sales_invoice (default on).
+Gated by Shopify Connection.sh_auto_sales_invoice (default on).
 Idempotent: never a second invoice for a Sales Order already invoiced.
 Non-stock invoice (update_stock=0) -- stock moves via the Delivery Note, not here.
 """
@@ -15,6 +15,8 @@ import frappe
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _to_gid
 from alaiy_os_connector_shopify.shopify.order.queries import _ORDER_MARK_PAID_MUTATION
 
+from alaiy_os_connector_shopify import connections
+
 
 def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillment_status: str = ""):
     """
@@ -22,14 +24,14 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillmen
     configured trigger. Logs and returns on any problem rather than breaking
     the webhook/pull that calls it.
 
-    Trigger (Shopify Connector Settings.sh_invoice_trigger):
+    Trigger (Shopify Connection.sh_invoice_trigger):
     - "Paid and Fulfilled" (default): invoice only when the order is paid AND
       shipped. This is what makes COD work correctly -- a COD order is pending
       until the merchant marks it paid on delivery, and only then (paid +
       fulfilled) does it invoice. Prepaid orders wait until shipped.
     - "Paid": invoice as soon as it's paid, regardless of fulfillment.
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     if not settings.get("sh_auto_sales_invoice"):
         return
 
@@ -341,7 +343,7 @@ def push_order_paid(order_id: str, sales_invoice: str):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     try:
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connections.require_enabled())
         data = client.execute(_ORDER_MARK_PAID_MUTATION, {"input": {"id": _to_gid(order_id)}})
         errors = (data.get("orderMarkAsPaid") or {}).get("userErrors") or []
         if errors:

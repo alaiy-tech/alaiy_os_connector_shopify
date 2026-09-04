@@ -1,12 +1,15 @@
 import frappe
 from frappe.utils import now_datetime, add_to_date
 
+from alaiy_os_connector_shopify import connections
+
 STALE_ACTIVE_THRESHOLD_MINUTES = 120
 
 
-def has_active_sync(sync_type: str, exclude_name: str = None) -> bool:
+def has_active_sync(sync_type: str, exclude_name: str = None, connection=None) -> bool:
     """
-    True if another sync of this type is genuinely still queued/running. A
+    True if another sync of this type is genuinely still queued/running for
+    THIS store. A
     queued/running log older than the stale threshold is treated as orphaned
     -- e.g. its worker was killed mid-run by a deploy/restart -- and is
     marked failed so it stops permanently blocking future runs.
@@ -17,7 +20,13 @@ def has_active_sync(sync_type: str, exclude_name: str = None) -> bool:
     read "no active rows" before either flips a row to running, letting two
     pushes run at once.
     """
-    lock_name = f"shopify_sync_guard_{sync_type}"
+    # The lock and the query are both per (connection, sync_type). Named on
+    # sync_type alone, one store's inventory push would block every other
+    # store's -- and, worse, the "is one already running?" answer would come
+    # back yes because of somebody else's run, so a multi-store bench would
+    # quietly sync whichever store happened to go first and no other.
+    connection_name = connections.resolve_optional_name(connection)
+    lock_name = f"shopify_sync_guard_{connection_name or ''}_{sync_type}"
     got_lock = frappe.db.sql("SELECT GET_LOCK(%s, 5)", (lock_name,))[0][0]
     if not got_lock:
         # Another caller is mid-check right now -- treat as active rather
@@ -27,7 +36,11 @@ def has_active_sync(sync_type: str, exclude_name: str = None) -> bool:
         cutoff = add_to_date(now_datetime(), minutes=-STALE_ACTIVE_THRESHOLD_MINUTES)
         active_rows = frappe.get_all(
             "Shopify Sync Log",
-            filters={"sync_type": sync_type, "status": ["in", ["queued", "running"]]},
+            filters={
+                "sync_type": sync_type,
+                "status": ["in", ["queued", "running"]],
+                **({"connection": connection_name} if connection_name else {}),
+            },
             fields=["name", "started_at"],
         )
         active = False
@@ -49,7 +62,7 @@ def has_active_sync(sync_type: str, exclude_name: str = None) -> bool:
         frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock_name,))
 
 
-def load_or_create_log(sync_type: str, trigger: str, log_name: str = None):
+def load_or_create_log(sync_type: str, trigger: str, log_name: str = None, connection=None):
     """
     Reuse the Sync Log row created at enqueue time (so it's visible as
     "queued" even before the job starts), or create one on the spot for
@@ -58,6 +71,10 @@ def load_or_create_log(sync_type: str, trigger: str, log_name: str = None):
     if log_name and frappe.db.exists("Shopify Sync Log", log_name):
         return frappe.get_doc("Shopify Sync Log", log_name)
     log = frappe.new_doc("Shopify Sync Log")
+    # Stamped so the dashboard, the sync guard and the "when did this last
+    # succeed?" scheduling question are all answered per store rather than
+    # per bench.
+    log.connection = connections.resolve_optional_name(connection)
     log.sync_type = sync_type
     log.trigger = trigger
     log.status = "queued"

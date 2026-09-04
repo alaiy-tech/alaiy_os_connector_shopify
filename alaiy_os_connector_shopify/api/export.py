@@ -50,6 +50,8 @@ from frappe.utils import cint
 
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
+from alaiy_os_connector_shopify import connections
+
 _COLUMNS = [
     "item_code", "title", "description", "category", "category_id", "item_group",
     "product_type", "brand", "tags", "seo_title", "seo_description",
@@ -181,7 +183,7 @@ def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=Non
     unfiltered All/Enabled/Disabled export always goes through
     trigger_background_export instead, so this path never sees the whole
     site's Listings by accident."""
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     names = _resolve_names(listing_names, only_enabled, only_disabled)
 
     frappe.response.filename = "shopify_listings_export.csv"
@@ -190,7 +192,7 @@ def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=Non
 
 
 def _run_background_export(listing_names, only_enabled, only_disabled, user):
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     names = _resolve_names(listing_names, only_enabled, only_disabled)
     content = _build_csv(names, settings)
 

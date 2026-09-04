@@ -62,7 +62,7 @@ def _create_tax_account(company):
     if not parent:
         frappe.log_error(
             title=f"Shopify: no Liability group to create a Tax account under for {company}",
-            message="Set 'Tax Account' on Shopify Connector Settings manually to book order tax.",
+            message="Set 'Tax Account' on Shopify Connection manually to book order tax.",
         )
         return None
 

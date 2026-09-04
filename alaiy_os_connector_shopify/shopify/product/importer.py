@@ -37,8 +37,10 @@ from alaiy_os_connector_shopify.shopify.product.taxonomy import ensure_shopify_c
 from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _set_item_tags
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
+from alaiy_os_connector_shopify import connections
 
-def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
+
+def run_full_product_import(trigger="manual", log_name=None, connection=None, wipe_existing=None,
                             statuses=None):
     """
     Import products from Shopify into Alaiy OS. First run (no product ever
@@ -65,7 +67,7 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
     if wipe_existing is None:
         wipe_existing = not frappe.db.exists("Shopify Synced Entity", {"entity_type": "product"})
 
-    log = load_or_create_log("products", trigger, log_name)
+    log = load_or_create_log("products", trigger, log_name, connection=connection)
 
     # Concurrency check. This is the ONLY guard -- a separate
     # settings.lock()/unlock() document lock used to run alongside this,
@@ -98,7 +100,7 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
 
         # Import phase
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connection)
         variables = {"after": None}
 
         processed = created = updated = skipped = failed = pages = 0
@@ -312,7 +314,7 @@ def _update_existing_product(entity, node: dict) -> tuple:
     if entity.external_fingerprint == new_fp:
         return False, "already imported, unchanged"
 
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     template_name = entity.erpnext_name
     variants = node.get("variants", {}).get("nodes", [])
     images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
@@ -441,7 +443,7 @@ def _sync_product_metafields(template_name: str, node: dict, product_id: str):
     from alaiy_os_connector_shopify.shopify.product.metafields import (
         all_metafields_of, sync_listing_metafields,
     )
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     product_gid = f"gid://shopify/Product/{product_id}"
     nodes = all_metafields_of(node, client, product_gid=product_gid)
     sync_listing_metafields(listing, nodes)
@@ -483,7 +485,7 @@ def _import_product_inner(node: dict) -> tuple:
     if existing_entity:
         return _update_existing_product(existing_entity, node)
 
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     title = node.get("title", f"Product {product_id}").strip()
     description = node.get("descriptionHtml", "")
     vendor = node.get("vendor", "")

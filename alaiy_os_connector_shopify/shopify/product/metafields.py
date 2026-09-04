@@ -13,6 +13,8 @@ from alaiy_os_connector_shopify.shopify.product.queries import (
     _PRODUCT_METAFIELDS_PAGE_QUERY, _METAFIELDS_SET_MUTATION,
 )
 
+from alaiy_os_connector_shopify import connections
+
 
 def fetch_all_metafields_for_product(product_gid: str, client) -> list:
     """Every metafield for a product, fetched fresh (no bulk-query inline
@@ -131,7 +133,7 @@ def backfill_all_product_metafields():
     if not listings:
         return {"done": 0, "failed": 0}
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     done = failed = 0
     for row in listings:
         try:

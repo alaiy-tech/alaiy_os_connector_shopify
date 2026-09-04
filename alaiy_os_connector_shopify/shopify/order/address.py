@@ -5,6 +5,8 @@ link it to the customer + Sales Order.
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 _ADDRESS_TEMPLATE = """{{ address_line1 }}<br>
 {% if address_line2 %}{{ address_line2 }}<br>{% endif -%}
 {{ city }}<br>
@@ -26,7 +28,7 @@ def ensure_default_address_template():
     if frappe.db.exists("Address Template", {"is_default": 1}):
         return
     try:
-        company = (frappe.get_single("Shopify Connector Settings").sh_company
+        company = (connections.require_enabled().sh_company
                    or frappe.defaults.get_global_default("company"))
         country = frappe.db.get_value("Company", company, "country") or "India"
         if not frappe.db.exists("Country", country):
@@ -81,7 +83,7 @@ def sync_order_address(order, customer_name):
         if not country or not frappe.db.exists("Country", country):
             country = frappe.db.get_value(
                 "Company",
-                frappe.get_single("Shopify Connector Settings").sh_company
+                connections.require_enabled().sh_company
                 or frappe.defaults.get_global_default("company"),
                 "country",
             ) or "India"

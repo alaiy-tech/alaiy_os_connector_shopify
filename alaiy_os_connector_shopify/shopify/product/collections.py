@@ -20,6 +20,8 @@ import frappe
 
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
+from alaiy_os_connector_shopify import connections
+
 # ── GraphQL ──────────────────────────────────────────────────────────────────
 
 _COLLECTIONS_LIST_QUERY = """
@@ -243,7 +245,7 @@ def _upsert_collection_cache(node: dict):
 
 
 @frappe.whitelist()
-def sync_shopify_collections(trigger="manual", log_name=None):
+def sync_shopify_collections(trigger="manual", log_name=None, connection=None):
     """
     Fetch every collection on the store and cache it locally as a Shopify
     Collection doc -- the master list the Item collections multi-select picks
@@ -253,12 +255,12 @@ def sync_shopify_collections(trigger="manual", log_name=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, is_cancel_requested, append_log as _append_log
 
-    log = load_or_create_log("collections", trigger, log_name)
+    log = load_or_create_log("collections", trigger, log_name, connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)
     frappe.db.commit()
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connection)
     total = 0
     cancelled = False
     try:
@@ -314,7 +316,7 @@ def get_collection_products(collection_name: str):
     if not gid:
         return []
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     products = []
     try:
         for page in client.execute_paginated(
@@ -361,7 +363,7 @@ def get_collection_channels(collection_name: str):
     gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
     if not gid:
         return []
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     try:
         # ALL publications = the master list, so an unpublished channel still
         # shows (as a not-published chip) and can be re-published. Then mark
@@ -404,7 +406,7 @@ def toggle_collection_channel(collection_name: str, publication_id: str, publish
     mutation = _PUBLISH_MUTATION if do_publish else _UNPUBLISH_MUTATION
     key = "publishablePublish" if do_publish else "publishableUnpublish"
     try:
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connections.require_enabled())
         data = client.execute(mutation, {
             "id": gid,
             "input": [{"publicationId": publication_id}],
@@ -583,7 +585,7 @@ def push_collection(collection_name: str):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     doc = frappe.get_doc("Shopify Collection", collection_name)
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     payload = _collection_input(doc)
 
     try:
@@ -619,7 +621,7 @@ def push_collection(collection_name: str):
 def delete_collection(collection_gid: str):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.require_enabled())
     try:
         data = client.execute(_COLLECTION_DELETE_MUTATION, {"input": {"id": collection_gid}})
         errors = (data.get("collectionDelete") or {}).get("userErrors") or []
