@@ -278,9 +278,19 @@ def _resolve_opening_stock_rows(qty: float, settings, location_levels=None) -> l
         from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_warehouse_for_location
         rows = {}
         disabled = []
+        negative = []
         for location_id, level_qty in location_levels:
             warehouse = _resolve_warehouse_for_location(location_id, settings)
             if not warehouse or not level_qty:
+                continue
+            # Shopify reports a negative available quantity for an oversold
+            # location. ERPNext refuses a negative opening-stock row and throws
+            # from inside validate_item, which takes the whole entry with it --
+            # so one oversold location left the item with no opening stock at
+            # ANY of its locations. There is no opening quantity that
+            # represents "minus two", so the row is dropped and reported.
+            if level_qty < 0:
+                negative.append((warehouse, level_qty))
                 continue
             # ERPNext refuses any stock transaction against a disabled
             # warehouse, and it throws from inside the Stock Ledger Entry --
@@ -293,6 +303,15 @@ def _resolve_opening_stock_rows(qty: float, settings, location_levels=None) -> l
                 disabled.append(warehouse)
                 continue
             rows[warehouse] = rows.get(warehouse, 0) + level_qty
+        if negative:
+            frappe.log_error(
+                title="Shopify import: skipped opening stock for a negative quantity",
+                message=f"Shopify reports a negative available quantity for {sorted(negative)}, "
+                "which usually means the location is oversold. Opening stock cannot be "
+                "negative, so that location was left out of this item's opening stock "
+                "rather than failing every other location on the same item. Reconcile the "
+                "quantity in Shopify.",
+            )
         if disabled:
             frappe.log_error(
                 title="Shopify import: skipped opening stock for a disabled warehouse",
