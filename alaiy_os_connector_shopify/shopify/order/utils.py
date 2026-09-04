@@ -285,6 +285,7 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
         if not product_id:
             return None
 
+        product_variants = []
         for page in client.execute_paginated(
                 _PRODUCTS_QUERY, {"first": 5, "query": f"id:{product_id}"}, ["products"]):
             for node in page:
@@ -295,10 +296,29 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
                 # products, which is a different question from an order
                 # needing the one product it actually sold.
                 importer._import_product_inner(node)
+                product_variants = (node.get("variants") or {}).get("nodes") or []
 
         item_code = (listing_resolver.item_by_variant_id(variant_id) if variant_id else None)
         if not item_code and sku and frappe.db.exists("Item", sku):
             item_code = sku
+
+        if not item_code:
+            # The order line's SKU is the SKU AS IT WAS WHEN IT SOLD, and a
+            # merchant is free to change it afterwards -- confirmed live: a
+            # line carrying 202445 belongs to a product whose variant now
+            # reads 551454, so the import above reported "already imported,
+            # unchanged" while the lookup by the line's own SKU found nothing
+            # and the line still collapsed onto the placeholder.
+            #
+            # Ask the product what its variants are today instead. One
+            # variant is unambiguous; several are not, since nothing on the
+            # line says which of them it sold once the variant id is gone.
+            if len(product_variants) == 1:
+                only = product_variants[0]
+                item_code = (
+                    listing_resolver.item_by_variant_id(str(only.get("legacyResourceId") or ""))
+                    or (only.get("sku") if frappe.db.exists("Item", only.get("sku")) else None)
+                )
         if item_code:
             # Routine, not a failure: importing history for a catalogue that
             # archives what it sells means most order lines take this path. It
