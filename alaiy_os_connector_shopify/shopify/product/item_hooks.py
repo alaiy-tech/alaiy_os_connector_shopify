@@ -97,12 +97,20 @@ def ensure_listing_for_new_item(doc, method=None):
     the settings save that switches it on, so the gap this hook exists to close
     stays closed.
     """
-    if doc.variant_of:
-        return
-    if not connections.enabled_value("is_enabled"):
+    if not should_create_listing(doc.variant_of, connections.enabled_value("is_enabled")):
         return
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
     ensure_listing(doc.name, default_enabled=0)
+
+
+def should_create_listing(variant_of, connector_enabled) -> bool:
+    """The after_insert gate, as a function of plain values.
+
+    Split out of the hook so check_listing_gating can exercise the rule
+    directly. `connector_enabled` is whatever connections.enabled_value
+    returned, so None ("no store switched on") has to read as off.
+    """
+    return not variant_of and bool(connector_enabled)
 
 
 def validate_item_uoms(doc, method=None):
@@ -203,9 +211,11 @@ def backfill_listings_on_enable(doc, method=None):
     not walk the whole Item table again.
     """
     if not doc.is_enabled:
+        # Cheap short-circuit: a save that is not switching anything on does not
+        # need its before-image loaded.
         return
     before = doc.get_doc_before_save()
-    if before and before.is_enabled:
+    if not should_backfill_on_enable(doc.is_enabled, before.is_enabled if before else None):
         return
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_missing_listings",
@@ -213,59 +223,44 @@ def backfill_listings_on_enable(doc, method=None):
     )
 
 
+def should_backfill_on_enable(is_enabled, was_enabled) -> bool:
+    """Backfill only on the off -> on transition.
+
+    `was_enabled` is None when the settings doc has no before-image at all --
+    its first-ever save -- which is a transition into enabled.
+    """
+    return bool(is_enabled) and not was_enabled
+
+
 def check_listing_gating():
-    """Self-check for the enable gating. No DB access.
+    """Self-check for the enable gating. No DB, no API, nothing patched.
 
     bench --site <site> execute \
         alaiy_os_connector_shopify.shopify.product.item_hooks.check_listing_gating
     """
-    class _Doc(dict):
-        def __init__(self, before=None, **kw):
-            super().__init__(**kw)
-            self.__dict__.update(kw)
-            self._before = before
+    # A variant never gets a Listing, connector on or off -- Listing is 1:1 with
+    # the template.
+    assert should_create_listing("TEMPLATE", 1) is False
+    assert should_create_listing("TEMPLATE", 0) is False
 
-        def get_doc_before_save(self):
-            return self._before
+    # Connector off: a template gets nothing. This is the whole fix -- a
+    # catalogue import on a non-Shopify tenant must not leave a Listing per item
+    # behind. No enabled store at all reads back as None, and means off too.
+    assert should_create_listing(None, 0) is False
+    assert should_create_listing(None, None) is False
+    assert should_create_listing("", 0) is False
 
-    created = []
-    enqueued = []
+    # Connector on: a template gets its Listing (created disabled by the caller).
+    assert should_create_listing(None, 1) is True
+    assert should_create_listing("", 1) is True
 
-    # The gate reads the enabled connection now, not a Single's field, so
-    # that is what this stands in for.
-    real_enabled_value = connections.enabled_value
-    real_enqueue = frappe.enqueue
-    enabled = {"value": 0}
-    connections.enabled_value = lambda fieldname: enabled["value"]
-    frappe.enqueue = lambda method, **kw: enqueued.append(method)
-
-    import sys
-    module = sys.modules[__name__]
-    real_ensure = None
-    try:
-        # A variant never gets a Listing, enabled or not.
-        ensure_listing_for_new_item(_Doc(variant_of="TEMPLATE", name="V1"))
-        assert created == [], created
-
-        # Connector off: a template gets nothing. This is the whole fix -- a
-        # catalogue import on a non-Shopify tenant must not leave a Listing per
-        # item behind.
-        enabled["value"] = 0
-        ensure_listing_for_new_item(_Doc(variant_of=None, name="T1"))
-        assert created == [], created
-
-        # Switching the connector on backfills, but only on the transition.
-        backfill_listings_on_enable(_Doc(is_enabled=0))
-        assert enqueued == [], enqueued
-        backfill_listings_on_enable(_Doc(is_enabled=1, before=_Doc(is_enabled=1)))
-        assert enqueued == [], enqueued
-        backfill_listings_on_enable(_Doc(is_enabled=1, before=_Doc(is_enabled=0)))
-        assert len(enqueued) == 1, enqueued
-        # First-ever save of the settings doc has no before-image.
-        backfill_listings_on_enable(_Doc(is_enabled=1, before=None))
-        assert len(enqueued) == 2, enqueued
-    finally:
-        connections.enabled_value = real_enabled_value
-        frappe.enqueue = real_enqueue
+    # Switching the connector on backfills, but only on the transition, so
+    # re-saving an already-enabled settings doc does not walk the Item table.
+    assert should_backfill_on_enable(0, 0) is False
+    assert should_backfill_on_enable(0, 1) is False
+    assert should_backfill_on_enable(1, 1) is False
+    assert should_backfill_on_enable(1, 0) is True
+    # First-ever save of the settings doc has no before-image.
+    assert should_backfill_on_enable(1, None) is True
 
     print("listing gating self-check passed")
