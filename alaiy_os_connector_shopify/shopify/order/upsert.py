@@ -88,6 +88,39 @@ def _upsert_order(order):
         _release_order_lock(order_id)
 
 
+def _attribute_fulfilled_locations(order):
+    """Record where each fulfilled line shipped from, before routing runs.
+
+    Same write _record_fulfilled_from_location performs when a Delivery Note
+    is created, done earlier because the Delivery Note cannot exist yet: it
+    requires a submitted Sales Order, and submit is what fires routing. Only
+    ever fills a blank, so a location the import already resolved wins.
+
+    Never raises. Ownership bookkeeping must not stop an order importing.
+    """
+    from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
+        _record_fulfilled_from_location,
+    )
+    for fulfillment in (order.get("fulfillments") or []):
+        location_id = fulfillment.get("location_id")
+        if not location_id:
+            continue
+        for li in (fulfillment.get("line_items") or []):
+            try:
+                item_code = _resolve_item_code({
+                    "sku": li.get("sku"),
+                    "variant_id": li.get("variant_id"),
+                    "title": li.get("title") or li.get("name"),
+                })
+                if item_code:
+                    _record_fulfilled_from_location(item_code, location_id)
+            except Exception:
+                frappe.log_error(
+                    title="Shopify: could not attribute a fulfilled line's location",
+                    message=frappe.get_traceback(),
+                )
+
+
 def _upsert_order_unlocked(order, order_id):
     """Returns True if a new Sales Order was created, False if skipped."""
     if get_active_sales_order(order_id):
@@ -256,6 +289,16 @@ def _upsert_order_unlocked(order, order_id):
     order_name = order.get("name", "")
     is_draft_order = order_name.startswith("#D")
     if not is_draft_order:
+        # Attribute every fulfilled line to the location that shipped it
+        # BEFORE submitting. Submit is what fires order routing, and routing
+        # reads Item.shopify_location to decide who fulfils the line. The
+        # Delivery Notes that normally record this cannot run until AFTER
+        # submit -- a Delivery Note needs a submitted Sales Order -- so on a
+        # historical import routing always ran against an item that had not
+        # learned its location yet, and raised a decision request for a line
+        # that would have routed itself moments later. The daily sweep closed
+        # them afterwards, but the order sat unrouted until it ran.
+        _attribute_fulfilled_locations(order)
         so.submit()
 
     frappe.db.commit()
