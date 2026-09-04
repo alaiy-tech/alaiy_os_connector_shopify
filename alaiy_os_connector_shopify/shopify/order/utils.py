@@ -222,9 +222,12 @@ def _import_product_for_order_line(variant_id: str):
     Returns the resolved item_code, or None. Never raises: an order import
     must not fail because a product fetch did.
 
-    The product is left disabled, since it is archived or draft on Shopify and
-    so is not for sale -- it exists here for order history, supplier
-    attribution and fulfillment matching, not to be sold again.
+    The product keeps whatever status Shopify reports it at. It is NOT
+    disabled: Item.disabled makes ERPNext refuse the item on the very Sales
+    Order this import exists to build (plain frappe.throw, no flag to skip),
+    so disabling here breaks the order it was called to rescue. A non-Active
+    product is held out of selling by sh_shopify_status, which the importer
+    already writes and which the portal already filters on.
     """
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
@@ -255,12 +258,11 @@ def _import_product_for_order_line(variant_id: str):
 
         item_code = listing_resolver.item_by_variant_id(variant_id)
         if item_code:
-            frappe.db.set_value("Item", item_code, "disabled", 1)
             frappe.log_error(
                 title="Shopify: imported an out-of-catalogue product for an order line",
                 message=f"variant {variant_id} -> product {product_id} -> Item {item_code}. "
-                        "Imported disabled: it is archived or draft on Shopify, so it exists "
-                        "for order history and supplier attribution, not for sale.",
+                        "Imported at whatever status Shopify reports; sh_shopify_status is "
+                        "what keeps a non-Active product out of the portal and out of selling.",
             )
         return item_code
     except Exception:
