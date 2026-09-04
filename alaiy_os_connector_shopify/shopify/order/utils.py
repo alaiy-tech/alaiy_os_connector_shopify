@@ -126,6 +126,11 @@ def _order_node_to_rest_shape(node: dict) -> dict:
         fulfillments.append({
             "id": f.get("legacyResourceId"),
             "display_status": (f.get("displayStatus") or "").upper(),
+            # Named location_id to match the REST webhook payload this shape
+            # mirrors, so the delivery path reads one field either way. Without
+            # it a pulled order carried no shipping location at all, and every
+            # sold-out item on it stayed unattributed to any supplier.
+            "location_id": ((f.get("location") or {}).get("legacyResourceId") or ""),
             "tracking_number": ",".join(t.get("number") or "" for t in tracking).strip(","),
             "tracking_company": first.get("company") or "",
             "tracking_url": ",".join(t.get("url") or "" for t in tracking).strip(","),

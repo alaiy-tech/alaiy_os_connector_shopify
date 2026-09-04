@@ -52,6 +52,14 @@ query PullOrders($after: String, $queryString: String!) {
         fulfillments(first: 10) {
           legacyResourceId
           displayStatus
+          # Which location the goods physically shipped from. This is the only
+          # thing that attributes a SOLD-OUT item to a supplier: import-time
+          # resolution reads present-day stock, and an item that has sold has
+          # none anywhere, so a historical order for it resolves no supplier
+          # at all unless the shipment itself says where it came from.
+          location {
+            legacyResourceId
+          }
           trackingInfo {
             number
             company
