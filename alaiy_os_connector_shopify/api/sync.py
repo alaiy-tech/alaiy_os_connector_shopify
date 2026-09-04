@@ -4,6 +4,7 @@ from alaiy_os_connector_shopify.shopify.product import status as status_map
 from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
 
 from alaiy_os_connector_shopify import connections
+from alaiy_os_connector_shopify.api import require_access
 
 
 def _enqueue_sync(sync_type, method, timeout=600, connection=None, **kwargs):
@@ -17,6 +18,10 @@ def _enqueue_sync(sync_type, method, timeout=600, connection=None, **kwargs):
     serialised onto the queue.
     """
     connection = connections.resolve(connection)
+    # Naming a store in the request is not the same as being allowed to run its
+    # sync: this writes a log row, mutates ERPNext data and pushes to somebody's
+    # Shopify. Checked after resolve so the refusal names a real store.
+    require_access(connection.name, "write")
 
     # Log row created here (not inside the job) so it's visible as "queued"
     # immediately, even if the shared long queue is busy and the job itself
@@ -43,6 +48,7 @@ def trigger_orders_sync(connection=None):
 
 @frappe.whitelist()
 def import_existing_orders(date_from=None, date_to=None, connection=None):
+    require_access(connections.resolve_optional_name(connection), "write")
     from alaiy_os_connector_shopify.shopify.order_sync import import_existing_orders as _import
     return _import(date_from=date_from, date_to=date_to, connection=connection)
 
@@ -114,15 +120,21 @@ def enable_listings_by_status(statuses=None, connection=None):
 def get_sync_status(sync_type=None, connection=None):
     """Recent sync runs. Scoped to one store when the bench has more than one,
     so a seller's dashboard never shows somebody else's last import."""
-    filters = {}
     connection_name = connections.resolve_optional_name(connection)
+    require_access(connection_name)
+
+    filters = {}
     if connection_name:
         filters["connection"] = connection_name
     if sync_type:
         # "categories" maps to "orders", "items" maps to "inventory", "products" maps to "products"
         type_map = {"categories": "orders", "items": "inventory", "products": "products"}
         filters["sync_type"] = type_map.get(sync_type, sync_type)
-    return frappe.get_all(
+    # get_list, not get_all: get_all ignores permissions outright, so the rows
+    # would come back for any logged-in user even though the doctype grants read
+    # to System Manager alone. get_list also applies User Permissions, which is
+    # what scopes a seller to their own store's runs.
+    return frappe.get_list(
         "Shopify Sync Log",
         filters=filters,
         fields=[
@@ -142,7 +154,12 @@ def get_dashboard_stats():
     """
     Stat cards for the Shopify desk page -- plain counts, no Shopify API
     calls, so this stays fast even with the catalog at 20k+ items.
+
+    Bench-wide, so there is no store to scope to -- but the numbers are the
+    connector's, and frappe.db.count answers regardless of who is asking, so the
+    endpoint is gated on being allowed to read a Shopify Connection at all.
     """
+    require_access()
     items_total = frappe.db.count("Item")
     templates_total = frappe.db.count("Item", {"variant_of": ["in", ["", None]]})
     templates_pushed = frappe.db.count("Item", {
@@ -177,7 +194,7 @@ def get_dashboard_stats():
     # is "synced with Shopify" overall, not split by direction.
     orders_synced = frappe.db.count("Sales Order", {"sh_shopify_order_id": ["is", "set"]})
 
-    last_runs = frappe.get_all(
+    last_runs = frappe.get_list(
         "Shopify Sync Log",
         fields=["sync_type", "status", "started_at"],
         order_by="started_at desc",
@@ -215,6 +232,7 @@ def get_shopify_side_stats(connection=None):
     stale local ids made our own counts look right when the store itself
     didn't match.
     """
+    require_access(connections.resolve_optional_name(connection))
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     client = ShopifyGraphQLClient(connection)
@@ -280,6 +298,7 @@ def refresh_shopify_tags(connection=None):
     productTags. Populates the Shopify Tag doctype the tags multi-select
     field picks from.
     """
+    require_access(connections.resolve_optional_name(connection), "write")
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
         queue="long",
