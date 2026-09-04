@@ -52,6 +52,26 @@ class TestWeightFromMetafields(unittest.TestCase):
         node = _node(**{TOTAL: "", CUSTOM: "4.93 g"})
         self.assertEqual(_weight_from_metafields(node), (4.93, "Gram"))
 
+    def test_reads_one_weight_restated_in_two_units(self):
+        # Live values: a merchant writes the same weight twice, in their own
+        # unit and its conversion. Refusing these left a real shipping weight
+        # unread on products that had one all along.
+        for raw, expected in (
+            ("2.62 kg/5 lb", (2.62, "Kg")),
+            ("0.52 kg/1.14 lb", (0.52, "Kg")),
+            ("0.84 kg/1.85 lb", (0.84, "Kg")),
+            ("0.52 kg / 1.14 lb", (0.52, "Kg")),
+            ("1 lb/16 oz", (1.0, "Pound")),
+        ):
+            self.assertEqual(_weight_from_metafields(_node(**{CUSTOM: raw})), expected, raw)
+
+    def test_refuses_two_different_weights_split_by_a_slash(self):
+        # A slash is only a restatement when the unit changes. Same unit on
+        # both sides is a pair or a range, and close enough numerically to
+        # slip past the agreement check, so it is rejected on shape.
+        for raw in ("13.8g/13g", "5g/7g", "2 kg/50 lb", "1 kg/2.2 xyz", "0 kg/0 lb"):
+            self.assertEqual(_weight_from_metafields(_node(**{CUSTOM: raw})), (None, None), raw)
+
     def test_refuses_ambiguous_values(self):
         # Every one of these must leave weight unset -- never guessed.
         for raw in ("13.8g, 13g", "5-7 g", "approx 5g", "heavy", "", "0", "0 g"):

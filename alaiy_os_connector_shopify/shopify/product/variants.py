@@ -71,6 +71,24 @@ _TEXT_WEIGHT_UNIT_TO_UOM = {
 # a shipping label.
 _TEXT_WEIGHT_RE = re.compile(r"^([0-9]*\.?[0-9]+)\s*([a-zA-Z]*)\.?$")
 
+# The same weight written twice in two units, e.g. "2.62 kg/5 lb" or
+# "0.52 kg / 1.14 lb". Both halves must carry a unit and must agree once
+# converted, so this stays a restatement of one weight rather than the
+# genuinely ambiguous "13.8g, 13g" case, which is still refused. The first
+# half is taken because it is the one the merchant typed in their own unit.
+_DUAL_UNIT_WEIGHT_RE = re.compile(
+    r"^([0-9]*\.?[0-9]+)\s*([a-zA-Z]+)\s*/\s*([0-9]*\.?[0-9]+)\s*([a-zA-Z]+)\.?$"
+)
+
+# Grams per unit, for checking the two halves of a dual-unit value agree.
+_UOM_IN_GRAMS = {"Gram": 1.0, "Kg": 1000.0, "Ounce": 28.3495, "Pound": 453.592}
+
+# How far the two halves may disagree and still count as the same weight.
+# "2.62 kg/5 lb" is 2620g vs 2268g -- 13% out, because the second half is
+# rounded to a whole pound. Anything beyond this is two different weights,
+# not a restatement, and is refused.
+_DUAL_UNIT_TOLERANCE = 0.20
+
 
 def _metafield_map(product_node):
     """{(namespace, key): value} for a product node from _PRODUCTS_QUERY."""
@@ -94,15 +112,57 @@ def _weight_from_metafields(product_node):
         raw = (values.get((ns, key)) or "").strip()
         if not raw:
             continue
+
         match = _TEXT_WEIGHT_RE.match(raw)
-        if not match:
-            continue
-        value = flt(match.group(1))
-        if value <= 0:
-            continue
-        unit = (match.group(2) or "").lower()
-        return value, _TEXT_WEIGHT_UNIT_TO_UOM.get(unit, "Gram")
+        if match:
+            value = flt(match.group(1))
+            if value <= 0:
+                continue
+            unit = (match.group(2) or "").lower()
+            return value, _TEXT_WEIGHT_UNIT_TO_UOM.get(unit, "Gram")
+
+        parsed = _parse_dual_unit_weight(raw)
+        if parsed:
+            return parsed
     return None, None
+
+
+def _parse_dual_unit_weight(raw):
+    """(value, uom_name) for one weight restated in two units, else None.
+
+    "2.62 kg/5 lb" is not two weights, it is one weight written twice, so
+    refusing it leaves a real shipping weight unread. Both halves are
+    converted and compared, and the pair is only accepted when they agree --
+    so "13.8g/13g" style noise, or a slash between two genuinely different
+    weights, still returns None rather than putting a guess on a label.
+    """
+    match = _DUAL_UNIT_WEIGHT_RE.match(raw)
+    if not match:
+        return None
+
+    first_value, first_unit, second_value, second_unit = match.groups()
+    first_uom = _TEXT_WEIGHT_UNIT_TO_UOM.get(first_unit.lower())
+    second_uom = _TEXT_WEIGHT_UNIT_TO_UOM.get(second_unit.lower())
+    if not first_uom or not second_uom:
+        return None
+
+    # Same unit on both sides is a list of two weights, not one weight
+    # restated -- "13.8g/13g" is a size range or a pair, and close enough
+    # numerically to slip past the tolerance below. A restatement always
+    # changes unit.
+    if first_uom == second_uom:
+        return None
+
+    first_value, second_value = flt(first_value), flt(second_value)
+    if first_value <= 0 or second_value <= 0:
+        return None
+
+    first_grams = first_value * _UOM_IN_GRAMS[first_uom]
+    second_grams = second_value * _UOM_IN_GRAMS[second_uom]
+    if abs(first_grams - second_grams) / max(first_grams, second_grams) > _DUAL_UNIT_TOLERANCE:
+        return None
+
+    return first_value, first_uom
 
 
 def _apply_variant_physical(doc, variant: dict, product_node: dict = None):
