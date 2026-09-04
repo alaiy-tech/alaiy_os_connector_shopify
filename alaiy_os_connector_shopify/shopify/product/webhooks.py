@@ -219,6 +219,26 @@ def _handle_product_update(product_id: str, product: dict):
     frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
  
 
+def _save_listing_with_retry(listing, _attempt=0):
+    """Save a Shopify Product Listing, retrying once if it went stale."""
+    listing.flags.from_shopify_sync = True
+    listing.flags.ignore_permissions = True
+    try:
+        with _as_administrator():
+            listing.save()
+    except frappe.TimestampMismatchError:
+        if _attempt:
+            raise
+        frappe.db.rollback()
+        fresh = frappe.get_doc("Shopify Product Listing", listing.name)
+        # Carry over only what this run changed; anything the other writer
+        # landed in the meantime stays as it left it.
+        for field, value in listing.as_dict().items():
+            if field not in ("name", "modified", "creation", "owner", "modified_by", "idx", "doctype"):
+                fresh.set(field, value)
+        _save_listing_with_retry(fresh, _attempt=1)
+
+
 def _update_item_from_shopify(item, product: dict, _retry_count=0):
     """
     Update Alaiy OS Item from Shopify product (inbound sync).
@@ -488,10 +508,19 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
     # price/variant enable) in one save. from_shopify_sync so on_listing_update
     # doesn't echo a push back to Shopify for a change that came FROM Shopify.
     if listing and listing_dirty:
-        listing.flags.from_shopify_sync = True
-        listing.flags.ignore_permissions = True
-        with _as_administrator():
-            listing.save()
+        # Retried once on a lost write race. Shopify sends products/update in
+        # bursts -- confirmed live, two for the same product 9ms apart -- and
+        # this listing is loaded near the top of the function, before the
+        # prices, weights and images below it. A concurrent job saving the
+        # same listing in that window makes this copy stale and
+        # check_if_latest refuses it, throwing away everything Shopify
+        # actually changed: the title, the description, the images.
+        #
+        # Rolling back BEFORE reloading matters. The failed save leaves an
+        # aborted transaction, so a reload without it re-reads the same stale
+        # timestamp and fails identically -- the same mistake the order-cancel
+        # retry had to fix. Same shape as line_items.py and pull.py.
+        _save_listing_with_retry(listing)
         frappe.db.commit()
 
     # Log variant inventory data (for inventory_sync to use later)
