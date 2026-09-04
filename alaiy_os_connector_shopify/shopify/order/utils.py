@@ -200,7 +200,7 @@ def _resolve_item_code(line_item):
     # The catalogue import only takes the statuses the site asked for --
     # Active, typically -- but an order can reference a product that was
     # ARCHIVED or set to DRAFT after it sold. That is ordinary retail
-    # behaviour for one-of-a-kind stock. Confirmed live: real jewellery lines
+    # behaviour for one-of-a-kind stock. Confirmed live: real single-unit lines
     # (a Roberto Coin earring, a Rapport London box) collapsed onto the
     # placeholder, which left the order with no supplier to pay, no cost, and
     # a fulfillment that could not be mapped to any line.

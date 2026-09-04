@@ -1,6 +1,6 @@
 """Weight fallback: Shopify's shipping weight, else a product metafield.
 
-A jewellery catalog leaves inventoryItem.measurement.weight at 0 and keeps the
+Some catalogs leave inventoryItem.measurement.weight at 0 and keep the
 real gram weight in a metafield, so without this every item imports unweighed
 -- and a Delivery Note with no net weight cannot produce a FedEx label.
 

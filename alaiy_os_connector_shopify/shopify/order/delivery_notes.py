@@ -152,7 +152,7 @@ def _record_fulfilled_from_location(item_code, location_id):
     one-off) must not silently reassign ownership of the whole item.
 
     Deliberately does not touch fulfillment TYPE. Which location shipped it
-    is a fact; whether HQ owns that stock or holds it for a supplier is a
+    is a fact; whether the default location owns that stock or holds it for a supplier is a
     commercial arrangement, and inferring one from the other is what the
     routing rewrite deliberately stopped doing.
     """

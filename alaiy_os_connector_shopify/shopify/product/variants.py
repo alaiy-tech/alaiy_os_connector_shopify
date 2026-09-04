@@ -36,10 +36,10 @@ _REST_WEIGHT_UNIT_TO_UOM = {
 # Product metafields that carry a real physical weight when Shopify's own
 # shipping weight is 0.
 #
-# A jewellery catalog routinely leaves inventoryItem.measurement.weight unset
+# Some catalogs routinely leave inventoryItem.measurement.weight unset
 # -- nobody prices a ring by its shipping weight -- while the piece's actual
-# gram weight lives in a metafield the merchant fills in. Live on The Solist:
-# every sampled active jewellery product had shipping weight 0.0 POUNDS and a
+# real weight lives in a metafield the merchant fills in. Confirmed live on a
+# real store: every sampled active product had shipping weight 0.0 POUNDS and a
 # populated gram weight in these, so weight_per_unit was empty catalog-wide.
 # That is not just a missing-content badge: a Delivery Note with no net weight
 # cannot produce a FedEx label at all.
@@ -124,7 +124,7 @@ def _apply_variant_physical(doc, variant: dict, product_node: dict = None):
         doc.weight_uom = _ensure_uom(_WEIGHT_UNIT_TO_UOM.get(weight.get("unit"), "Kg"))
     else:
         # Shopify's shipping weight is authoritative when set; this only fills
-        # the gap it leaves. See _WEIGHT_METAFIELDS -- a jewellery catalog
+        # the gap it leaves. See _WEIGHT_METAFIELDS -- such a catalog
         # keeps the real gram weight in a product metafield and leaves the
         # shipping weight at 0, which left every item unweighed and every
         # FedEx label unbuildable.

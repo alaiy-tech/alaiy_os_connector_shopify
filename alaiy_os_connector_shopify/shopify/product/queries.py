@@ -22,7 +22,7 @@ query { productsCount { count } }
 # above it.
 #
 # Three is enough for the intended case -- an item at one supplier location,
-# optionally also at the default/HQ location. An item at more locations than
+# optionally also at the store's default location. An item at more locations than
 # this comes back truncated, and Shopify reports no error for it, so
 # variants._variant_location_levels logs whenever a variant returns exactly
 # this many.

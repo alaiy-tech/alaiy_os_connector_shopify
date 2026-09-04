@@ -507,7 +507,7 @@ def handle_inventory_level_webhook(topic, payload):
     # Stock Ledger Entry, so the quantity is invisible to stock reports, gets
     # silently recomputed away by the next real stock movement, and drifts Bin
     # away from the ledger for good. That is not theoretical: this webhook did
-    # exactly that, and 12,140 of 13,653 Bin rows on thesolist ended up
+    # exactly that, and the large majority of Bin rows on a live store ended up
     # disagreeing with their own ledger, with Bin showing stock in supplier
     # warehouses the ledger had never recorded.
     #
@@ -625,7 +625,7 @@ def apply_pulled_stock(corrections):
     directly (which the inventory webhook used to do) leaves no Stock Ledger
     Entry, so the quantity is invisible to every stock report, is silently
     recomputed away by the next real stock movement, and drifts Bin away from
-    the ledger permanently. Confirmed live on thesolist: 12,140 of 13,653 Bin
+    the ledger permanently. Confirmed live on a real store: the large majority of Bin
     rows disagreed with their own ledger, and Bin showed stock in supplier
     warehouses that the ledger had no record of at all.
 

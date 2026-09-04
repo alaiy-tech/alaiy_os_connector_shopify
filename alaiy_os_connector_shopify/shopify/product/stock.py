@@ -27,6 +27,36 @@ def _default_warehouse_row(settings) -> dict:
     return {"company": company, "default_warehouse": warehouse}
 
 
+def _default_location(settings, stocked):
+    """The store's own default location, when it is one of the locations
+    actually holding this item.
+
+    An item held in two places is ambiguous only in the abstract. In practice
+    a store already names the location it operates from -- that is what
+    sh_default_warehouse is -- and stock sitting there is the store's own,
+    whoever else also holds the product. So the default location owns a shared
+    item, and no separate flag or manual tick is needed to say so.
+
+    Nothing here is site-specific: a store that has not set a default
+    warehouse, or whose default is not among the holders, gets None and the
+    ambiguity is logged exactly as before.
+    """
+    warehouse = settings.get("sh_default_warehouse") if settings else None
+    if not warehouse:
+        return None
+
+    # sh_location_map is the same location -> warehouse mapping opening stock
+    # and order routing already resolve through, so the default warehouse
+    # names a location without the connector knowing which one it is.
+    mapped = {
+        row.shopify_location
+        for row in (settings.get("sh_location_map") or [])
+        if row.warehouse == warehouse
+    }
+    holders = sorted(stocked & mapped)
+    return holders[0] if len(holders) == 1 else None
+
+
 def _resolve_item_shopify_location(location_levels, settings=None, item_code=None) -> str:
     """
     Real Shopify Location docname to write onto Item.shopify_location, or
@@ -54,13 +84,14 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     Resolution order:
       - one location listed at all: that one, whatever its quantity
       - stock at exactly one location: that one owns it
-      - stock at two or more locations: unresolved and logged, with no
-        exception for one of them being the default (HQ) warehouse. Stock
-        genuinely sitting in two places is a real question about who
-        fulfils it and who gets paid, and answering that in the importer
-        would be actively wrong rather than merely incomplete
+      - stock at two or more locations: the store's own default location
+        when it is one of the holders (see _default_location), since stock
+        sitting where the store operates from is the store's own. Otherwise
+        unresolved and logged -- between two locations that are BOTH someone
+        else's, who fulfils and who gets paid is a real question the
+        connector must not answer by guessing
       - listed in several places, held nowhere: also unresolved and
-        logged. On a store where selling out archives the product this
+        logged. Where a store archives a product as it sells out this
         should never reach an Active import, so it is worth seeing
     """
     if not location_levels:
@@ -95,11 +126,14 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
         return next(iter(stocked))
 
     if len(stocked) >= 2:
-        # No exception for the default (HQ) warehouse being one of the two.
-        # Stock genuinely sitting in two places is a real question about who
-        # fulfils and who gets paid, and resolving it to the non-HQ location
-        # would quietly answer that question in the importer. Flag it and let
-        # a human decide.
+        # The store's own default location owns what it shares -- see
+        # _default_location. Beyond that the connector must not guess: two
+        # locations that are both someone else's is a real question about who
+        # fulfils and who gets paid, so it is flagged rather than resolved.
+        default_location = _default_location(settings, stocked)
+        if default_location:
+            return default_location
+
         frappe.log_error(
             title="Shopify import: item stocked at multiple locations, can't resolve shopify_location",
             message=f"item_code={item_code}, stocked at={sorted(stocked)} "
@@ -109,9 +143,10 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
         return None
 
     if not stocked and len(candidates) >= 2:
-        # Listed in several places, held nowhere. On a store where selling out
-        # archives the product this should not reach an Active import at all,
-        # so it is worth seeing rather than guessing an owner from listing.
+        # Listed in several places, held nowhere. Where a store archives a
+        # product as it sells out this should not reach an Active import at
+        # all, so it is worth seeing rather than guessing an owner from
+        # listing.
         frappe.log_error(
             title="Shopify import: item has no stock at any location, can't resolve shopify_location",
             message=f"item_code={item_code}, listed at={sorted(candidates)} but held at "
