@@ -90,9 +90,9 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
         unresolved and logged -- between two locations that are BOTH someone
         else's, who fulfils and who gets paid is a real question the
         connector must not answer by guessing
-      - listed in several places, held nowhere: the store's own default
-        location again when it is one of them, since a sold-out item still
-        belongs to whoever owned it. Otherwise unresolved and logged
+      - listed in several places, held nowhere: also unresolved and
+        logged. Where a store archives a product as it sells out this
+        should never reach an Active import, so it is worth seeing
     """
     if not location_levels:
         return None
@@ -143,22 +143,15 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
         return None
 
     if not stocked and len(candidates) >= 2:
-        # Listed in several places, held nowhere -- which is what a sold-out
-        # item looks like, and every item on a historical order is sold out by
-        # definition. Ownership does not disappear when the stock does, so fall
-        # back to where it is LISTED: the store's own default location owns a
-        # product listed against it, exactly as it owns one stocked at it.
-        default_location = _default_location(settings, candidates)
-        if default_location:
-            return default_location
-
-        # Listed only at other people's locations, held nowhere. Nothing here
-        # says whose it is, so it is flagged rather than guessed.
+        # Listed in several places, held nowhere. Where a store archives a
+        # product as it sells out this should not reach an Active import at
+        # all, so it is worth seeing rather than guessing an owner from
+        # listing.
         frappe.log_error(
             title="Shopify import: item has no stock at any location, can't resolve shopify_location",
             message=f"item_code={item_code}, listed at={sorted(candidates)} but held at "
-            "none of them, and none of them is this store's default location. Ownership "
-            "cannot be resolved automatically -- see Item Supplier / manual review.",
+            "none of them. Ownership cannot be resolved from stock, so this needs a "
+            "human decision -- see Item Supplier / manual review.",
         )
 
     return None
