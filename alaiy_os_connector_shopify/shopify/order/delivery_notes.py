@@ -177,6 +177,37 @@ def _record_fulfilled_from_location(item_code, location_id):
         )
 
 
+def _item_on_order_by_title(so, title):
+    """The Sales Order line whose description matches this fulfillment line.
+
+    A fulfillment line identifies its product by sku, variant id and title.
+    All three can be useless: Shopify returns a null variant once the variant
+    has been deleted, and a one-off line carries a generated placeholder sku.
+    _resolve_item_code then finds nothing, the fulfillment maps to no items,
+    and no Delivery Note is created -- so the shipment is unrecorded and the
+    item never learns which location shipped it.
+
+    The order itself already answers this. Its lines were resolved when the
+    order was imported, from the same payload but with the full line item to
+    work from, so the title on the fulfillment names a product this order
+    demonstrably carries. Matching within the order is a much narrower claim
+    than matching across the catalogue.
+
+    Returns None unless exactly one line matches, so an order holding the same
+    title twice stays unresolved rather than sending a shipment to whichever
+    row came first.
+    """
+    title = (title or "").strip().lower()
+    if not title:
+        return None
+    matched = {
+        row.item_code for row in (so.items or [])
+        if title in ((row.item_name or "").strip().lower(),
+                     (row.description or "").strip().lower())
+    }
+    return matched.pop() if len(matched) == 1 else None
+
+
 def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_items, location_id=None):
     qty_by_item = {}
     for li in fulfillment_line_items:
@@ -185,6 +216,8 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             "variant_id": li.get("variant_id"),
             "title": li.get("title") or li.get("name"),
         })
+        if not item_code:
+            item_code = _item_on_order_by_title(so, li.get("title") or li.get("name"))
         if not item_code:
             continue
         qty_by_item[item_code] = qty_by_item.get(item_code, 0) + flt(li.get("quantity", 0))
@@ -216,6 +249,23 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             dn.items = kept_items
             if not dn.items:
                 return
+
+            # make_delivery_note copies the ORDER's discount across whole, and
+            # the trim above just removed the lines that discount was computed
+            # over. On a partial fulfillment that leaves a discount larger than
+            # the note it sits on -- ERPNext refuses it ("cannot exceed the
+            # total before such discount"), the Delivery Note is never created,
+            # and the shipment goes unrecorded. Confirmed live: a $104,881
+            # order discount landed on a $36,945 partial shipment.
+            #
+            # A per-line discount is already inside each kept row's own rate,
+            # so only the order-level amount has to go. It is dropped rather
+            # than apportioned: what share of an order discount belongs to one
+            # shipment is a commercial question, and a Delivery Note moves
+            # stock rather than money.
+            if dn.get("discount_amount"):
+                dn.discount_amount = 0
+                dn.additional_discount_percentage = 0
 
             dn.sh_shopify_fulfillment_id = fulfillment_id
             for row in dn.items:

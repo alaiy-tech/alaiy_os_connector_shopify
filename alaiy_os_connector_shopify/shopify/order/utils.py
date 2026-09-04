@@ -213,16 +213,23 @@ def _resolve_item_code(line_item):
     # An order referencing a product is proof it was real, so the status
     # filter does not apply here the way it does to a bulk sweep -- this
     # fetches exactly one product, only when an order needs it.
-    if variant_id:
-        imported = _import_product_for_order_line(variant_id)
+    if variant_id or sku:
+        imported = _import_product_for_order_line(variant_id, sku)
         if imported:
             return imported
 
     return None
 
 
-def _import_product_for_order_line(variant_id: str):
-    """Import the single product owning variant_id, whatever its status.
+def _import_product_for_order_line(variant_id: str, sku: str = None):
+    """Import the single product this order line refers to, whatever its status.
+
+    Found by variant id, or by SKU when the line carries no variant id --
+    Shopify returns a null variant once the variant has been deleted, which is
+    ordinary for one-of-a-kind stock that has sold. Without the SKU path such a
+    line resolved to nothing, collapsed onto the shared placeholder item, and
+    took its fulfillment with it: no supplier, no cost, and a shipment that
+    could not be mapped back to any line.
 
     Returns the resolved item_code, or None. Never raises: an order import
     must not fail because a product fetch did.
@@ -240,13 +247,31 @@ def _import_product_for_order_line(variant_id: str):
         from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 
         client = ShopifyGraphQLClient()
-        found = client.execute(
-            """query($id: ID!){ productVariant(id:$id){ product{ legacyResourceId } } }""",
-            {"id": f"gid://shopify/ProductVariant/{variant_id}"},
-        )
-        product_id = str(
-            (((found or {}).get("productVariant") or {}).get("product") or {}).get("legacyResourceId") or ""
-        )
+        product_id = ""
+        if variant_id:
+            found = client.execute(
+                """query($id: ID!){ productVariant(id:$id){ product{ legacyResourceId } } }""",
+                {"id": f"gid://shopify/ProductVariant/{variant_id}"},
+            )
+            product_id = str(
+                (((found or {}).get("productVariant") or {}).get("product") or {}).get("legacyResourceId") or ""
+            )
+
+        if not product_id and sku:
+            # Shopify's own product search. Quoted because a real SKU can carry
+            # spaces and punctuation that would otherwise split the query.
+            escaped = sku.replace("\\", "").replace('"', "")
+            by_sku = client.execute(
+                """query($q: String!){ products(first: 2, query: $q){
+                     nodes{ legacyResourceId } } }""",
+                {"q": f'sku:"{escaped}"'},
+            )
+            nodes = ((by_sku or {}).get("products") or {}).get("nodes") or []
+            # Exactly one, or it is not an identification. A SKU shared by two
+            # products cannot say which one this line sold.
+            if len(nodes) == 1:
+                product_id = str(nodes[0].get("legacyResourceId") or "")
+
         if not product_id:
             return None
 
@@ -261,7 +286,9 @@ def _import_product_for_order_line(variant_id: str):
                 # needing the one product it actually sold.
                 importer._import_product_inner(node)
 
-        item_code = listing_resolver.item_by_variant_id(variant_id)
+        item_code = (listing_resolver.item_by_variant_id(variant_id) if variant_id else None)
+        if not item_code and sku and frappe.db.exists("Item", sku):
+            item_code = sku
         if item_code:
             frappe.log_error(
                 title="Shopify: imported an out-of-catalogue product for an order line",
