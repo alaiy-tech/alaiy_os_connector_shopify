@@ -147,11 +147,14 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
         # product as it sells out this should not reach an Active import at
         # all, so it is worth seeing rather than guessing an owner from
         # listing.
-        frappe.log_error(
-            title="Shopify import: item has no stock at any location, can't resolve shopify_location",
-            message=f"item_code={item_code}, listed at={sorted(candidates)} but held at "
-            "none of them. Ownership cannot be resolved from stock, so this needs a "
-            "human decision -- see Item Supplier / manual review.",
+        # Not an error, and usually not even unresolved for long: a sold-out
+        # item holds stock nowhere by definition, and the fulfillment that sold
+        # it records the location it shipped from moments later. Logged at info
+        # so a real backfill does not bury genuine failures under thousands of
+        # these.
+        frappe.logger("shopify").info(
+            f"no stock at any location for {item_code}; listed at {sorted(candidates)}. "
+            "Waiting on a fulfillment to attribute it."
         )
 
     return None

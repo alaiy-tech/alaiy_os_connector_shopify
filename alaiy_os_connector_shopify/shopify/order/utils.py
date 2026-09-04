@@ -290,11 +290,13 @@ def _import_product_for_order_line(variant_id: str, sku: str = None):
         if not item_code and sku and frappe.db.exists("Item", sku):
             item_code = sku
         if item_code:
-            frappe.log_error(
-                title="Shopify: imported an out-of-catalogue product for an order line",
-                message=f"variant {variant_id} -> product {product_id} -> Item {item_code}. "
-                        "Imported at whatever status Shopify reports; sh_shopify_status is "
-                        "what keeps a non-Active product out of the portal and out of selling.",
+            # Routine, not a failure: importing history for a catalogue that
+            # archives what it sells means most order lines take this path. It
+            # went to the Error Log, which on a real backfill buries every
+            # genuine failure under thousands of successes.
+            frappe.logger("shopify").info(
+                f"imported out-of-catalogue product for an order line: "
+                f"variant {variant_id} sku {sku} -> product {product_id} -> Item {item_code}"
             )
         return item_code
     except Exception:
