@@ -1,0 +1,111 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "warehouse",
+  "shopify_qty",
+  "status",
+  "column_break_1",
+  "location_id",
+  "inventory_item_id",
+  "stock_reconciliation",
+  "error"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "options": "Item",
+   "label": "Item",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "options": "Warehouse",
+   "label": "Warehouse",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "shopify_qty",
+   "fieldtype": "Float",
+   "label": "Shopify Quantity",
+   "in_list_view": 1,
+   "description": "The quantity Shopify reported for this item at this location."
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "options": "Pending\nApplied\nSkipped\nFailed",
+   "default": "Pending",
+   "label": "Status",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "location_id",
+   "fieldtype": "Data",
+   "label": "Shopify Location ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_item_id",
+   "fieldtype": "Data",
+   "label": "Shopify Inventory Item ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_reconciliation",
+   "fieldtype": "Link",
+   "options": "Stock Reconciliation",
+   "label": "Applied Via",
+   "read_only": 1,
+   "description": "The audited Stock Reconciliation that actually applied this quantity."
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Error",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Alaiy OS Connector Shopify",
+ "name": "Shopify Inventory Update",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

@@ -18,7 +18,7 @@ match, needs a human to pick manually) or whose confidence is NO_MATCH.
 
 Run (after reviewing the CSV from resolve_uncategorized.py):
     bench --site <site> console
-    exec(open("/home/ubuntu/alaiy_os_bench/apps/alaiy_os_connector_shopify/scripts/apply_category_fixes.py").read(), globals())
+    exec(open("/home/ubuntu/alaiy_os_bench/apps/alaiy_os_connector_shopify/scripts/fixes/apply_category_fixes.py").read(), globals())
     apply_category_fixes(dry_run=True)   # review counts first
     apply_category_fixes(dry_run=False)  # then apply + push
 """

@@ -219,7 +219,27 @@ def _handle_product_update(product_id: str, product: dict):
     frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
  
 
-def _update_item_from_shopify(item, product: dict, _retried=False):
+def _save_listing_with_retry(listing, _attempt=0):
+    """Save a Shopify Product Listing, retrying once if it went stale."""
+    listing.flags.from_shopify_sync = True
+    listing.flags.ignore_permissions = True
+    try:
+        with _as_administrator():
+            listing.save()
+    except frappe.TimestampMismatchError:
+        if _attempt:
+            raise
+        frappe.db.rollback()
+        fresh = frappe.get_doc("Shopify Product Listing", listing.name)
+        # Carry over only what this run changed; anything the other writer
+        # landed in the meantime stays as it left it.
+        for field, value in listing.as_dict().items():
+            if field not in ("name", "modified", "creation", "owner", "modified_by", "idx", "doctype"):
+                fresh.set(field, value)
+        _save_listing_with_retry(fresh, _attempt=1)
+
+
+def _update_item_from_shopify(item, product: dict, _retry_count=0):
     """
     Update Alaiy OS Item from Shopify product (inbound sync).
 
@@ -233,7 +253,7 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     GraphQL-based one-time import/pull does. Also NOT updated: stock
     levels (separate feature), variant structure (add/remove variants).
 
-    _retried is internal only -- see the TimestampMismatchError handling
+    _retry_count is internal only -- see the TimestampMismatchError handling
     at the bottom of this function.
     """
     settings = frappe.get_single("Shopify Connector Settings")
@@ -297,6 +317,22 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     from alaiy_os_connector_shopify.shopify.product.masters import _dedupe_item_uoms
     _dedupe_item_uoms(item)
 
+    # Populated BEFORE item.save() below, and committed on its own -- the
+    # save can throw and roll back (e.g. the Maintain-Stock cascade on a
+    # sibling variant with real stock transactions), which would otherwise
+    # wipe this out even though it's unrelated to whatever the save failed
+    # on. Uses the payload's own sku directly (matches item_code) rather
+    # than the variant-creation helper below, which only runs after the
+    # save and would never be reached on that same failure path.
+    for variant in (product.get("variants") or []):
+        sku = str(variant.get("sku") or "").strip()
+        inventory_item_id = str(variant.get("inventory_item_id") or "")
+        if not sku or not inventory_item_id or not frappe.db.exists("Item", sku):
+            continue
+        if frappe.db.get_value("Item", sku, "sh_shopify_inventory_item_id") != inventory_item_id:
+            frappe.db.set_value("Item", sku, "sh_shopify_inventory_item_id", inventory_item_id)
+            frappe.db.commit()
+
     # Save item. item.flags.ignore_permissions only covers this save --
     # Alaiy OS's Item.on_update() cascades into update_variants(), which
     # fetches fresh sibling variant Item docs and calls variant.save() on
@@ -306,6 +342,25 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     # already uses for its own Guest-context saves: elevate for the call.
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
+    # ERPNext's Item.on_update cascades the template's own fields onto every
+    # variant (copy_attributes_to_variant + variant.save() per variant), and
+    # refuses outright when a variant already carries submitted stock
+    # transactions: "you can not change the value of Maintain Stock".
+    #
+    # A template holds is_stock_item = 0 (templates are not stocked) while its
+    # variants hold 1 and have real Stock Entries against them, so that
+    # cascade can never succeed on this catalogue -- it is a permanent
+    # conflict, not a transient one. It used to take the whole inbound update
+    # with it: title, price, status, everything Shopify actually changed was
+    # discarded. Measured live at ~60 dropped product webhooks in 36 hours,
+    # the same variant-heavy templates every time.
+    #
+    # dont_update_variants is ERPNext's own documented opt-out, checked on the
+    # first line of Item.update_variants. Skipping the cascade is also what
+    # this path wants regardless: it is writing template fields pulled from
+    # Shopify, not re-templating variants, and every field a variant needs
+    # from Shopify arrives on its own webhook.
+    item.flags.dont_update_variants = True
     from alaiy_os_connector_shopify.shopify.order_sync import _as_administrator
     try:
         with _as_administrator():
@@ -320,11 +375,11 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
         # kept from the stale `item`), so it's safe to just reload a
         # current copy and replay the whole update once rather than lose
         # it entirely.
-        if _retried:
+        if _retry_count >= 2:
             raise
         frappe.db.rollback()
         fresh_item = frappe.get_doc("Item", item.name)
-        return _update_item_from_shopify(fresh_item, product, _retried=True)
+        return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1)
     frappe.db.commit()
 
     # Images are LISTING-scoped too. With a Listing, route Shopify's images
@@ -381,11 +436,28 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     from alaiy_os_connector_shopify.shopify.product.variants import _REST_WEIGHT_UNIT_TO_UOM
     from alaiy_os_connector_shopify.shopify.product.importer import _ensure_variant_exists_locally
     product_id = str(product.get("id", ""))
+    # Shopify's payload carries a distinct image_id per variant (color, in
+    # practice), but nothing anywhere in this sync ever wrote it down --
+    # confirmed live: Shopify Listing Variant.variant_image sat NULL for
+    # every real variant, so two different colors of the same product
+    # (e.g. Silver/Black) both fell back to the same shared template
+    # photo in the supplier portal, looking like a data error.
+    image_src_by_id = {
+        str(img.get("id")): img.get("src")
+        for img in (product.get("images") or [])
+        if img.get("id") and img.get("src")
+    }
     if listing and not listing.sh_shopify_product_id and product_id:
         listing.sh_shopify_product_id = product_id
         listing_dirty = True
     for variant in (product.get("variants") or []):
-        sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings)
+        # A single-variant product's Item IS the sellable item, not a
+        # template -- treating item.name as a template to create a child
+        # variant under crashes ERPNext's own validate_variant() ("Item ...
+        # is not a template item.") the moment Shopify sends any update for
+        # one of these (e.g. a plain "Default Title" watch, one SKU, no
+        # real variants).
+        sku = _ensure_variant_exists_locally(item.name, variant, product_id, settings) if item.has_variants else item.name
         row = None
         if listing:
             row = next((r for r in listing.variants if r.item_variant == sku), None)
@@ -404,6 +476,10 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
             elif v_id and row.sh_shopify_variant_id != v_id:
                 # Keep the Listing row's id in step with the Item's.
                 row.sh_shopify_variant_id = v_id
+                listing_dirty = True
+            variant_image_src = image_src_by_id.get(str(variant.get("image_id") or ""))
+            if variant_image_src and row.variant_image != variant_image_src:
+                row.variant_image = variant_image_src
                 listing_dirty = True
         price = flt(variant.get("price") or 0)
         if price > 0:
@@ -432,10 +508,19 @@ def _update_item_from_shopify(item, product: dict, _retried=False):
     # price/variant enable) in one save. from_shopify_sync so on_listing_update
     # doesn't echo a push back to Shopify for a change that came FROM Shopify.
     if listing and listing_dirty:
-        listing.flags.from_shopify_sync = True
-        listing.flags.ignore_permissions = True
-        with _as_administrator():
-            listing.save()
+        # Retried once on a lost write race. Shopify sends products/update in
+        # bursts -- confirmed live, two for the same product 9ms apart -- and
+        # this listing is loaded near the top of the function, before the
+        # prices, weights and images below it. A concurrent job saving the
+        # same listing in that window makes this copy stale and
+        # check_if_latest refuses it, throwing away everything Shopify
+        # actually changed: the title, the description, the images.
+        #
+        # Rolling back BEFORE reloading matters. The failed save leaves an
+        # aborted transaction, so a reload without it re-reads the same stale
+        # timestamp and fails identically -- the same mistake the order-cancel
+        # retry had to fix. Same shape as line_items.py and pull.py.
+        _save_listing_with_retry(listing)
         frappe.db.commit()
 
     # Log variant inventory data (for inventory_sync to use later)

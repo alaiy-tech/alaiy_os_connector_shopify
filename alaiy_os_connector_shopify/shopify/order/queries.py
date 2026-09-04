@@ -52,10 +52,30 @@ query PullOrders($after: String, $queryString: String!) {
         fulfillments(first: 10) {
           legacyResourceId
           displayStatus
+          # Which location the goods physically shipped from. This is the only
+          # thing that attributes a SOLD-OUT item to a supplier: import-time
+          # resolution reads present-day stock, and an item that has sold has
+          # none anywhere, so a historical order for it resolves no supplier
+          # at all unless the shipment itself says where it came from.
+          location {
+            legacyResourceId
+          }
           trackingInfo {
             number
             company
             url
+          }
+          fulfillmentLineItems(first: 50) {
+            nodes {
+              quantity
+              lineItem {
+                sku
+                title
+                variant {
+                  legacyResourceId
+                }
+              }
+            }
           }
         }
         shippingAddress {
@@ -84,6 +104,18 @@ query PullOrders($after: String, $queryString: String!) {
             title
             quantity
             variant {
+              legacyResourceId
+            }
+            # The product survives its variant. Shopify returns a null variant
+            # once the variant has been deleted -- ordinary for one-of-a-kind
+            # stock after it sells -- while still naming the product the line
+            # sold, and that product is reachable by id even when archived.
+            # Without this the line had no identifier left at all: the SKU is
+            # not searchable for an archived product (confirmed live: every
+            # form of sku: query, on products AND productVariants, returns
+            # nothing), so the line collapsed onto the shared placeholder item
+            # and took its supplier, its cost and its fulfillment with it.
+            product {
               legacyResourceId
             }
             originalUnitPriceSet {

@@ -25,6 +25,23 @@ def _download_to_file(url: str, doctype: str, name: str) -> str:
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     filename = url.split("?")[0].rsplit("/", 1)[-1] or f"{name}.jpg"
+    # File.file_name is a plain Data field (140-char DB limit). Shopify's own
+    # image filenames are the full slugified product title, easily over that
+    # for a long name -- confirmed live, this crashed the entire product
+    # import over just its image. Truncate the stem, keep the real extension.
+    #
+    # Leaving real headroom (100, not 140) rather than an exact-fit cut --
+    # confirmed live, save_file appends its own collision-avoidance suffix
+    # (e.g. "...282b") to a filename that already exists as a File, and an
+    # exact-140 truncation left zero room for that, crashing on the SECOND
+    # image to ever collide on the same truncated stem.
+    _FILENAME_MAX_LENGTH = 100
+    if len(filename) > _FILENAME_MAX_LENGTH:
+        stem, dot, ext = filename.rpartition(".")
+        if dot:
+            filename = stem[: _FILENAME_MAX_LENGTH - len(ext) - 1] + dot + ext
+        else:
+            filename = filename[:_FILENAME_MAX_LENGTH]
     return save_file(filename, resp.content, doctype, name, is_private=0).file_url
 
 

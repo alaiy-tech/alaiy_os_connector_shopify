@@ -1,5 +1,5 @@
 import frappe
-from frappe.utils import now_datetime, add_to_date
+from frappe.utils import now_datetime, add_to_date, get_datetime
 
 _INTERVAL_MINUTES = {
     "5 min": 5,
@@ -27,8 +27,24 @@ def check_and_enqueue():
     if not settings.is_enabled:
         return
 
-    _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
-    _maybe_refresh_token(settings)
+    # Each stage is independent and must not be able to take the others down.
+    # Confirmed live: a site ran for days with ZERO webhooks registered while
+    # this job completed every minute -- the webhook self-heal is last, so
+    # anything raising above it silently skipped the one check whose whole
+    # purpose is to recover from a failure. Calling the same function by hand
+    # registered all 17 topics immediately.
+    if (settings.sh_inventory_sync_direction or "") == "Alaiy OS → Shopify (two-way)":
+        try:
+            _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
+        except Exception:
+            frappe.log_error(title="Shopify: inventory enqueue check failed",
+                             message=frappe.get_traceback())
+    try:
+        _maybe_refresh_token(settings)
+    except Exception:
+        frappe.log_error(title="Shopify: token refresh check failed",
+                         message=frappe.get_traceback())
+
     _maybe_ensure_webhooks(settings)
 
 
@@ -69,8 +85,14 @@ def _maybe_refresh_token(settings):
         return
 
     if settings.sh_token_refreshed_at:
-        due_at = add_to_date(settings.sh_token_refreshed_at,
-                             minutes=interval_minutes)
+        # as_datetime, because add_to_date returns a STRING by default and
+        # comparing that to now_datetime() raises TypeError. Confirmed live:
+        # this threw every minute for days, and since it ran before the
+        # webhook self-heal in check_and_enqueue, it took that with it -- the
+        # site sat with zero webhook subscriptions registered while the job
+        # itself reported Complete on every run.
+        due_at = add_to_date(get_datetime(settings.sh_token_refreshed_at),
+                             minutes=interval_minutes, as_datetime=True)
         if now_datetime() < due_at:
             return
 
@@ -109,7 +131,10 @@ def _maybe_enqueue_inventory(interval_setting):
         order_by="started_at desc",
     )
     if last_success:
-        due_at = add_to_date(last_success, minutes=interval_minutes)
+        # Same as_datetime requirement as _maybe_refresh_token: add_to_date
+        # returns a string by default, and comparing it to a datetime raises.
+        due_at = add_to_date(get_datetime(last_success), minutes=interval_minutes,
+                             as_datetime=True)
         if now < due_at:
             return
 

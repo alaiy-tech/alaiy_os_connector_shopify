@@ -144,6 +144,7 @@ def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str
         return None
     parent = "All Item Groups"
     leaf = None
+    dirty = False
     for i, name in enumerate(parts):
         is_last = i == len(parts) - 1
         is_group = 1 if (not is_last or ancestors_only) else 0
@@ -151,6 +152,7 @@ def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str
             # A node that now needs children must be a group.
             if is_group and not frappe.db.get_value("Item Group", name, "is_group"):
                 frappe.db.set_value("Item Group", name, "is_group", 1)
+                dirty = True
         else:
             try:
                 doc = frappe.new_doc("Item Group")
@@ -159,6 +161,7 @@ def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str
                 doc.is_group = is_group
                 doc.flags.ignore_permissions = True
                 doc.insert()
+                dirty = True
             except Exception:
                 frappe.log_error(
                     title=f"Shopify import: failed to create Item Group {name}",
@@ -167,7 +170,13 @@ def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str
                 return leaf
         parent = name
         leaf = name
-    frappe.db.commit()
+    # Only when this call actually wrote something. Called once per product
+    # during an import, and after the first few hundred products every group
+    # in the taxonomy already exists -- so this was forcing a transaction
+    # commit (and its disk flush) thousands of times over for no writes at
+    # all, while the caller commits its own work anyway.
+    if dirty:
+        frappe.db.commit()
     return leaf
 
 
@@ -184,13 +193,22 @@ def _make_attribute_abbr(value: str, existing_abbrs: set) -> str:
     return abbr
 
 
-def _ensure_item_attribute(attribute_name: str, values: list):
+def _ensure_item_attribute(attribute_name: str, values: list) -> dict:
     """
     Ensure an Item Attribute exists with this name, and that every value
     in `values` is registered in its allowed Item Attribute Value list --
     Alaiy OS rejects a variant whose attribute_value isn't pre-registered
     on the attribute, separately from the template needing the attribute
     declared at all.
+
+    Returns a {title-cased key: actual registered casing} map. Confirmed
+    live: the dedup below treats "brown"/"Brown" as the same value and
+    keeps whichever casing was already registered -- a caller that then
+    writes the variant's own attribute_value using the RAW incoming
+    casing (not the registered one) gets InvalidItemAttributeValueError,
+    since ERPNext's variant validation is an exact-string match against
+    the registered list, not case-insensitive like the dedup above. Callers
+    must look up the canonical casing here before setting a variant's value.
     """
     if frappe.db.exists("Item Attribute", attribute_name):
         doc = frappe.get_doc("Item Attribute", attribute_name)
@@ -198,7 +216,32 @@ def _ensure_item_attribute(attribute_name: str, values: list):
         doc = frappe.new_doc("Item Attribute")
         doc.attribute_name = attribute_name
 
-    existing_values = {row.attribute_value for row in (doc.item_attribute_values or [])}
+    # Self-heal a stale duplicate row already sitting in the DB (confirmed
+    # live -- two concurrent syncs can each read "not yet present" before
+    # either commits, since a child table has no unique constraint, so both
+    # inserts succeed). Once that exists, ERPNext's own validate_duplication
+    # crashes doc.save() on EVERY future touch of this attribute, for any
+    # value, not just the duplicated one -- so this must be cleaned up here,
+    # not just prevented going forward.
+    #
+    # Compared via .title() throughout, matching ERPNext's own
+    # validate_duplication exactly -- confirmed live, an exact-string
+    # dedup here still let "brown" and "Brown" both through as "different"
+    # values, which ERPNext then rejected as the same duplicate on save.
+    canonical = {}  # title-cased key -> actual registered casing
+    deduped_rows = []
+    changed = False
+    for row in (doc.item_attribute_values or []):
+        key = (row.attribute_value or "").title()
+        if key in canonical:
+            changed = True
+            continue
+        canonical[key] = row.attribute_value
+        deduped_rows.append(row)
+    if changed:
+        doc.item_attribute_values = deduped_rows
+
+    existing_values = set(canonical.keys())
     # Uppercased on purpose: _make_attribute_abbr always generates an
     # uppercase candidate, but a legacy row can carry a lowercase abbr
     # (confirmed live -- attribute_value "ideal" stored with abbr "ideal").
@@ -209,12 +252,19 @@ def _ensure_item_attribute(attribute_name: str, values: list):
     existing_abbrs = {row.abbr.upper() for row in (doc.item_attribute_values or [])}
     changed = False
     for value in values:
-        if not value or value in existing_values:
+        # existing_values holds .title()-cased keys (see the dedup above) --
+        # compare the same way, or "brown" slips through as new when
+        # "Brown" is already registered, then crashes on save exactly like
+        # the stale-duplicate case this function already self-heals.
+        if not value:
+            continue
+        if value.title() in existing_values:
             continue
         abbr = _make_attribute_abbr(value, existing_abbrs)
         doc.append("item_attribute_values", {"attribute_value": value, "abbr": abbr})
-        existing_values.add(value)
+        existing_values.add(value.title())
         existing_abbrs.add(abbr.upper())
+        canonical[value.title()] = value
         changed = True
 
     if doc.is_new():
@@ -225,6 +275,8 @@ def _ensure_item_attribute(attribute_name: str, values: list):
         doc.flags.ignore_permissions = True
         doc.save()
         frappe.db.commit()
+
+    return canonical
 
 
 def _ensure_uom(name: str) -> str:

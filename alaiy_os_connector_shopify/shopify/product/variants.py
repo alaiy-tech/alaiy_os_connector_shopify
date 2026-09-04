@@ -4,6 +4,8 @@ available qty, and the variant payload/canonical builders -- moved
 verbatim from product_import.py and product_sync.py, unchanged.
 """
 
+import re
+
 import frappe
 from frappe.utils import flt
 
@@ -31,10 +33,145 @@ _REST_WEIGHT_UNIT_TO_UOM = {
     "g": "Gram", "kg": "Kg", "oz": "Ounce", "lb": "Pound",
 }
 
+# Product metafields that carry a real physical weight when Shopify's own
+# shipping weight is 0.
+#
+# Some catalogs routinely leave inventoryItem.measurement.weight unset
+# -- nobody prices a ring by its shipping weight -- while the piece's actual
+# real weight lives in a metafield the merchant fills in. Confirmed live on a
+# real store: every sampled active product had shipping weight 0.0 POUNDS and a
+# populated gram weight in these, so weight_per_unit was empty catalog-wide.
+# That is not just a missing-content badge: a Delivery Note with no net weight
+# cannot produce a FedEx label at all.
+#
+# uploadify_product.total_weight is preferred because it is already a
+# number_decimal. custom.weight is the same value as free text ("10.59 g",
+# sometimes "1.81 g. ") and is only parsed as a fallback -- it is the more
+# widely populated of the two, and where both exist they agree exactly.
+_WEIGHT_METAFIELDS = (
+    ("uploadify_product", "total_weight"),
+    ("custom", "weight"),
+)
 
-def _apply_variant_physical(doc, variant: dict):
+# custom.weight is free text, so its unit suffix is whatever a human typed.
+# The canonical abbreviations are already mapped for the REST payload; this
+# only adds the spellings actually seen in this field on top of those, rather
+# than inventing a vocabulary. Anything outside it is not guessed -- see
+# _weight_from_metafields.
+_TEXT_WEIGHT_UNIT_TO_UOM = {
+    **_REST_WEIGHT_UNIT_TO_UOM,   # g, kg, oz, lb
+    "gr": "Gram",
+    "gm": "Gram",
+    "lbs": "Pound",
+}
+
+# One number, optional unit, optional trailing dot ("3.1 g."). Deliberately
+# strict: a field holding two weights ("13.8g, 13g") or anything else
+# unrecognised is skipped rather than guessed at, since this number ends up on
+# a shipping label.
+_TEXT_WEIGHT_RE = re.compile(r"^([0-9]*\.?[0-9]+)\s*([a-zA-Z]*)\.?$")
+
+# The same weight written twice in two units, e.g. "2.62 kg/5 lb" or
+# "0.52 kg / 1.14 lb". Both halves must carry a unit and must agree once
+# converted, so this stays a restatement of one weight rather than the
+# genuinely ambiguous "13.8g, 13g" case, which is still refused. The first
+# half is taken because it is the one the merchant typed in their own unit.
+_DUAL_UNIT_WEIGHT_RE = re.compile(
+    r"^([0-9]*\.?[0-9]+)\s*([a-zA-Z]+)\s*/\s*([0-9]*\.?[0-9]+)\s*([a-zA-Z]+)\.?$"
+)
+
+# Grams per unit, for checking the two halves of a dual-unit value agree.
+_UOM_IN_GRAMS = {"Gram": 1.0, "Kg": 1000.0, "Ounce": 28.3495, "Pound": 453.592}
+
+# How far the two halves may disagree and still count as the same weight.
+# "2.62 kg/5 lb" is 2620g vs 2268g -- 13% out, because the second half is
+# rounded to a whole pound. Anything beyond this is two different weights,
+# not a restatement, and is refused.
+_DUAL_UNIT_TOLERANCE = 0.20
+
+
+def _metafield_map(product_node):
+    """{(namespace, key): value} for a product node from _PRODUCTS_QUERY."""
+    nodes = (product_node or {}).get("metafields") or {}
+    return {
+        (n.get("namespace"), n.get("key")): n.get("value")
+        for n in (nodes.get("nodes") or [])
+    }
+
+
+def _weight_from_metafields(product_node):
+    """(value, uom_name) parsed out of the product's weight metafields.
+
+    Returns (None, None) when nothing usable is present -- an unreadable value
+    must leave weight unset rather than put a guessed number on a label.
+    Defaults to grams only when a bare number carries no unit, which is what
+    the numeric total_weight field always is.
+    """
+    values = _metafield_map(product_node)
+    for ns, key in _WEIGHT_METAFIELDS:
+        raw = (values.get((ns, key)) or "").strip()
+        if not raw:
+            continue
+
+        match = _TEXT_WEIGHT_RE.match(raw)
+        if match:
+            value = flt(match.group(1))
+            if value <= 0:
+                continue
+            unit = (match.group(2) or "").lower()
+            return value, _TEXT_WEIGHT_UNIT_TO_UOM.get(unit, "Gram")
+
+        parsed = _parse_dual_unit_weight(raw)
+        if parsed:
+            return parsed
+    return None, None
+
+
+def _parse_dual_unit_weight(raw):
+    """(value, uom_name) for one weight restated in two units, else None.
+
+    "2.62 kg/5 lb" is not two weights, it is one weight written twice, so
+    refusing it leaves a real shipping weight unread. Both halves are
+    converted and compared, and the pair is only accepted when they agree --
+    so "13.8g/13g" style noise, or a slash between two genuinely different
+    weights, still returns None rather than putting a guess on a label.
+    """
+    match = _DUAL_UNIT_WEIGHT_RE.match(raw)
+    if not match:
+        return None
+
+    first_value, first_unit, second_value, second_unit = match.groups()
+    first_uom = _TEXT_WEIGHT_UNIT_TO_UOM.get(first_unit.lower())
+    second_uom = _TEXT_WEIGHT_UNIT_TO_UOM.get(second_unit.lower())
+    if not first_uom or not second_uom:
+        return None
+
+    # Same unit on both sides is a list of two weights, not one weight
+    # restated -- "13.8g/13g" is a size range or a pair, and close enough
+    # numerically to slip past the tolerance below. A restatement always
+    # changes unit.
+    if first_uom == second_uom:
+        return None
+
+    first_value, second_value = flt(first_value), flt(second_value)
+    if first_value <= 0 or second_value <= 0:
+        return None
+
+    first_grams = first_value * _UOM_IN_GRAMS[first_uom]
+    second_grams = second_value * _UOM_IN_GRAMS[second_uom]
+    if abs(first_grams - second_grams) / max(first_grams, second_grams) > _DUAL_UNIT_TOLERANCE:
+        return None
+
+    return first_value, first_uom
+
+
+def _apply_variant_physical(doc, variant: dict, product_node: dict = None):
     """
     Weight lives under Shopify's inventoryItem, not the variant itself.
+
+    product_node is the parent product from _PRODUCTS_QUERY, needed only to
+    reach its metafields when Shopify carries no shipping weight. Optional so
+    a caller without it keeps the previous behaviour rather than failing.
     Sets plain Item fields -- call BEFORE insert. Unit cost is handled
     separately by _set_item_variant_cost since it requires the Item to
     already exist (Item Price validates item_code) -- call that one AFTER
@@ -45,6 +182,16 @@ def _apply_variant_physical(doc, variant: dict):
     if weight and weight.get("value"):
         doc.weight_per_unit = flt(weight["value"])
         doc.weight_uom = _ensure_uom(_WEIGHT_UNIT_TO_UOM.get(weight.get("unit"), "Kg"))
+    else:
+        # Shopify's shipping weight is authoritative when set; this only fills
+        # the gap it leaves. See _WEIGHT_METAFIELDS -- such a catalog
+        # keeps the real gram weight in a product metafield and leaves the
+        # shipping weight at 0, which left every item unweighed and every
+        # FedEx label unbuildable.
+        value, uom = _weight_from_metafields(product_node)
+        if value:
+            doc.weight_per_unit = value
+            doc.weight_uom = _ensure_uom(uom)
 
     # Read-only mirrors of Shopify-side variant settings. Stored because each one
     # changes how a number from Shopify should be read: CONTINUE means stock can
@@ -82,17 +229,129 @@ def _set_item_variant_cost(item_code: str, variant: dict, settings):
 
 def _variant_available_qty(variant: dict) -> float:
     """
-    Extract available quantity from the inventoryItem.inventoryLevels
-    shape requested in _PRODUCTS_QUERY. Takes the first location Shopify
-    returns -- fine for the common single-location shop this bulk import
-    is aimed at; a multi-location shop's true total is a sum across
-    inventory_sync.py's own inventory push, not this one-time import.
+    Total available quantity across every location Shopify reports for
+    this variant (up to the 3 the query requests -- asking for more than
+    that per variant on a 100-variant product pushed Shopify's query
+    cost over its 1000 hard limit, confirmed live). Taking only the
+    first location undercounted every multi-location item's real total,
+    on top of routing its opening stock into one shared default
+    warehouse regardless of which real supplier it belongs to (see
+    _variant_location_levels for the per-location split
+    opening stock is now created from).
     """
     levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
-    if not levels:
-        return 0
-    quantities = levels[0].get("quantities") or []
-    return flt(quantities[0].get("quantity")) if quantities else 0
+    total = 0
+    for level in levels:
+        quantities = level.get("quantities") or []
+        if quantities:
+            total += flt(quantities[0].get("quantity"))
+    return total
+
+
+def _variant_location_levels(variant: dict) -> list:
+    """
+    [(shopify_location_id, qty), ...] for this variant, one pair per real
+    Shopify location it's stocked at -- lets opening stock be split into
+    each location's own real per-supplier warehouse (via
+    order.warehouse._resolve_warehouse_for_location, the same lookup the
+    fulfillment/Delivery Note path already uses) instead of always
+    landing in one shared default warehouse. A location with no
+    legacyResourceId is skipped -- nothing to resolve a warehouse from.
+    """
+    levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
+    pairs = []
+    for level in levels:
+        location_id = ((level.get("location") or {}).get("legacyResourceId"))
+        if not location_id:
+            continue
+        quantities = level.get("quantities") or []
+        qty = flt(quantities[0].get("quantity")) if quantities else 0
+        pairs.append((str(location_id), qty))
+
+    # inventoryLevels is capped hard inside the bulk products query -- nested
+    # under products x variants, its page size multiplies toward Shopify's
+    # 1000-point single-query cost limit, and measurement on a real store put
+    # even 10 over that limit (see INVENTORY_LEVELS_PAGE_SIZE). Shopify
+    # signals nothing when it truncates a connection, so a variant that comes
+    # back holding exactly the cap may well sit at more locations that simply
+    # never arrived -- confirmed live, real locations here hold items at 15,
+    # 20 and 50 places at once.
+    #
+    # Trusting that partial list would resolve shopify_location (ownership)
+    # and opening stock from an arbitrary subset. So when a variant hits the
+    # cap, re-fetch its levels on their own, where no multiplier applies and
+    # 50 is affordable. One extra API call, only for the variants that
+    # actually need it.
+    from alaiy_os_connector_shopify.shopify.product.queries import INVENTORY_LEVELS_PAGE_SIZE
+
+    if len(pairs) >= INVENTORY_LEVELS_PAGE_SIZE:
+        full = _fetch_variant_location_levels(variant.get("legacyResourceId"))
+        if full:
+            return full
+    return pairs or []
+
+
+_VARIANT_LEVELS_QUERY = """
+query VariantLevels($id: ID!) {
+  productVariant(id: $id) {
+    inventoryItem {
+      inventoryLevels(first: 50) {
+        nodes {
+          location { legacyResourceId }
+          quantities(names: ["available"]) { quantity }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _fetch_variant_location_levels(variant_id):
+    """Every location one variant is stocked at, fetched on its own.
+
+    Affords first: 50 because it queries a single variant -- there is no
+    products x variants multiplier above it, unlike the bulk import query.
+
+    Returns None (not an empty list) on any failure, so the caller keeps the
+    partial inline data rather than losing the locations it did get.
+    """
+    if not variant_id:
+        return None
+    try:
+        from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+        data = ShopifyGraphQLClient().execute(
+            _VARIANT_LEVELS_QUERY, {"id": f"gid://shopify/ProductVariant/{variant_id}"})
+        variant = (data.get("productVariant") or {})
+        levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
+        pairs = []
+        for level in levels:
+            location_id = ((level.get("location") or {}).get("legacyResourceId"))
+            if not location_id:
+                continue
+            quantities = level.get("quantities") or []
+            qty = flt(quantities[0].get("quantity")) if quantities else 0
+            pairs.append((str(location_id), qty))
+        return pairs
+    except Exception:
+        frappe.log_error(
+            title="Shopify import: could not re-fetch a variant's full location list",
+            message=f"variant={variant_id}\n{frappe.get_traceback()}",
+        )
+        return None
+
+
+def _variant_inventory_item_id(variant: dict) -> str:
+    """
+    Shopify's own inventory_item_id for this variant, or None.
+
+    This is the key the inventory_levels/update webhook reports quantity
+    changes against -- NOT the variant id -- so an Item without it can
+    never be matched to an inbound stock webhook
+    (inventory_sync.handle_inventory_level_webhook drops the payload).
+    """
+    return ((variant.get("inventoryItem") or {}).get("legacyResourceId")) or None
 
 
 def _variant_inventory_item_payload(variant) -> dict:

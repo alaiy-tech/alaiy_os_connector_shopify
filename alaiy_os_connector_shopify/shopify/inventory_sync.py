@@ -1,4 +1,7 @@
 import frappe
+from erpnext.stock.doctype.stock_reconciliation.stock_reconciliation import (
+    EmptyStockReconciliationItemsError,
+)
 from frappe.utils import flt, now_datetime
 
 from alaiy_os_connector_shopify.shopify.sync_guard import (
@@ -469,6 +472,252 @@ def _get_inventory_item_state(client, variant_id, location_id):
     return inventory_item_id, (current_qty or 0)
 
 
+def handle_inventory_level_webhook(topic, payload):
+    """Inbound leg: Shopify inventory_levels/update -> local Bin.actual_qty.
+    Sibling of run_inventory_push (local -> Shopify); no echo-loop guard
+    needed here because the outbound push already re-reads Shopify's own
+    current quantity and skips when it already matches (see
+    _push_warehouse_to_location above) -- writing the same value back here
+    just makes that push a no-op next run, not a duplicate push."""
+    inventory_item_id = str(payload.get("inventory_item_id") or "")
+    location_id = str(payload.get("location_id") or "")
+    available = payload.get("available")
+    frappe.logger().info(f"Shopify inventory_levels/update received: {payload}")
+    if not inventory_item_id or not location_id or available is None:
+        frappe.log_error(
+            title="Shopify inventory_levels/update: incomplete payload",
+            message=frappe.as_json(payload),
+        )
+        return
+
+    item_code = frappe.db.get_value("Item", {"sh_shopify_inventory_item_id": inventory_item_id}, "name")
+    if not item_code:
+        frappe.logger().info(f"Shopify inventory_levels/update: no local Item for inventory_item_id={inventory_item_id}")
+        return
+
+    warehouse = _resolve_warehouse_for_location(location_id)
+    if not warehouse:
+        frappe.log_error(
+            title="Shopify inventory_levels/update: no warehouse mapped for location",
+            message=f"location_id={location_id} item_code={item_code} available={available}",
+        )
+        return
+
+    # Queue it; do NOT write Bin.actual_qty here. A direct Bin write leaves no
+    # Stock Ledger Entry, so the quantity is invisible to stock reports, gets
+    # silently recomputed away by the next real stock movement, and drifts Bin
+    # away from the ledger for good. That is not theoretical: this webhook did
+    # exactly that, and the large majority of Bin rows on a live store ended up
+    # disagreeing with their own ledger, with Bin showing stock in supplier
+    # warehouses the ledger had never recorded.
+    #
+    # run_inventory_pull (scheduled) drains this queue into audited Stock
+    # Reconciliations. Only one Pending row is kept per item+warehouse -- the
+    # latest quantity Shopify reported is the only one worth applying, and
+    # Shopify sends these often, so superseding beats accumulating.
+    existing = frappe.db.get_value(
+        "Shopify Inventory Update",
+        {"item_code": item_code, "warehouse": warehouse, "status": "Pending"},
+        "name",
+    )
+    if existing:
+        frappe.db.set_value("Shopify Inventory Update", existing, {
+            "shopify_qty": flt(available),
+            "location_id": location_id,
+            "inventory_item_id": inventory_item_id,
+        })
+    else:
+        frappe.get_doc({
+            "doctype": "Shopify Inventory Update",
+            "item_code": item_code,
+            "warehouse": warehouse,
+            "shopify_qty": flt(available),
+            "location_id": location_id,
+            "inventory_item_id": inventory_item_id,
+            "status": "Pending",
+        }).insert(ignore_permissions=True)
+    frappe.db.commit()
+    frappe.logger().info(
+        f"Shopify inventory_levels/update: queued {item_code}@{warehouse} = {available}")
+
+
+def run_inventory_pull(trigger="manual", log_name=None):
+    """PULL leg (Shopify -> Alaiy OS). Drain queued inventory updates into
+    audited Stock Reconciliations.
+
+    Sibling of run_inventory_push (Alaiy OS -> Shopify). This one NEVER writes
+    to Shopify -- it only applies quantities Shopify already told us about via
+    the inventory_levels/update webhook, which queues them rather than touching
+    Bin directly.
+
+    A queued row whose quantity already matches the current Bin is marked
+    Applied without a reconciliation -- there is nothing to correct, and an
+    empty Stock Reconciliation would just be noise.
+    """
+    pending = frappe.get_all(
+        "Shopify Inventory Update",
+        filters={"status": "Pending"},
+        fields=["name", "item_code", "warehouse", "shopify_qty"],
+        limit_page_length=0,
+    )
+    if not pending:
+        return {"pending": 0, "applied": 0, "reconciliations": []}
+
+    corrections, already_correct, names_by_key = [], [], {}
+    for row in pending:
+        current = flt(frappe.db.get_value(
+            "Bin", {"item_code": row.item_code, "warehouse": row.warehouse}, "actual_qty") or 0)
+        if current == flt(row.shopify_qty):
+            already_correct.append(row.name)
+            continue
+        corrections.append({
+            "item_code": row.item_code,
+            "warehouse": row.warehouse,
+            "qty": flt(row.shopify_qty),
+        })
+        names_by_key[(row.item_code, row.warehouse)] = row.name
+
+    for name in already_correct:
+        frappe.db.set_value("Shopify Inventory Update", name, "status", "Applied")
+
+    result = {"reconciliations": [], "by_warehouse": {}, "skipped": []}
+    if corrections:
+        try:
+            result = apply_pulled_stock(corrections)
+        except Exception:
+            for name in names_by_key.values():
+                frappe.db.set_value("Shopify Inventory Update", name, {
+                    "status": "Failed", "error": frappe.get_traceback()[:2000],
+                })
+            frappe.db.commit()
+            frappe.log_error(
+                title="Shopify inventory pull: applying queued quantities failed",
+                message=frappe.get_traceback(),
+            )
+            raise
+
+    skipped_items = {item for item, _reason in result["skipped"]}
+    for (item_code, warehouse), name in names_by_key.items():
+        if item_code in skipped_items:
+            frappe.db.set_value("Shopify Inventory Update", name, {
+                "status": "Skipped", "error": "Item is disabled",
+            })
+        else:
+            frappe.db.set_value("Shopify Inventory Update", name, {
+                "status": "Applied",
+                "stock_reconciliation": result["by_warehouse"].get(warehouse),
+            })
+    frappe.db.commit()
+
+    return {
+        "pending": len(pending),
+        "already_correct": len(already_correct),
+        "applied": len(names_by_key) - len(skipped_items),
+        "reconciliations": result["reconciliations"],
+    }
+
+
+def apply_pulled_stock(corrections):
+    """PULL leg (Shopify -> Alaiy OS). Apply {item_code, warehouse, qty} rows
+    as audited Stock Reconciliations.
+
+    The ONLY correct way to change stock in this app. Writing Bin.actual_qty
+    directly (which the inventory webhook used to do) leaves no Stock Ledger
+    Entry, so the quantity is invisible to every stock report, is silently
+    recomputed away by the next real stock movement, and drifts Bin away from
+    the ledger permanently. Confirmed live on a real store: the large majority of Bin
+    rows disagreed with their own ledger, and Bin showed stock in supplier
+    warehouses that the ledger had no record of at all.
+
+    Never writes anything back to Shopify -- this is the inbound leg only.
+
+    Returns {"reconciliations": [...], "by_warehouse": {warehouse: name},
+    "skipped": [(item_code, reason)]}.
+    """
+    if not corrections:
+        return {"reconciliations": [], "by_warehouse": {}, "skipped": []}
+
+    skipped = []
+    rows_by_warehouse = {}
+    for c in corrections:
+        # ERPNext's Stock Reconciliation rejects the ENTIRE document if any row
+        # is a disabled Item -- confirmed live, one disabled item blocked every
+        # other real correction in the same batch. A disabled item can't be
+        # sold, so its stock number isn't meaningful to correct.
+        if frappe.db.get_value("Item", c["item_code"], "disabled"):
+            skipped.append((c["item_code"], "item disabled"))
+            continue
+        # Same reasoning as the disabled-item skip above: Stock Reconciliation
+        # rejects the ENTIRE document if any row has a negative qty, so one bad
+        # pulled value would otherwise block every other real correction in the
+        # same warehouse's batch.
+        if flt(c["qty"]) < 0:
+            skipped.append((c["item_code"], f"negative qty from Shopify: {c['qty']}"))
+            continue
+        rows_by_warehouse.setdefault(c["warehouse"], []).append(c)
+
+    reconciliations, by_warehouse = [], {}
+    # One document per warehouse: company is resolved per-warehouse, and this
+    # keeps a bad row in one warehouse from blocking another's correction.
+    for warehouse, rows in rows_by_warehouse.items():
+        sr = frappe.new_doc("Stock Reconciliation")
+        sr.company = frappe.db.get_value("Warehouse", warehouse, "company")
+        sr.purpose = "Stock Reconciliation"
+        for c in rows:
+            sr.append("items", {
+                "item_code": c["item_code"],
+                "warehouse": warehouse,
+                "qty": c["qty"],
+                # Without this, submit fails partway through (past the docstatus
+                # flip, before the ledger/GL entries exist) with "Valuation Rate
+                # required" for any item that never had a cost basis recorded --
+                # same reasoning as opening stock's allow_zero_valuation_rate.
+                "allow_zero_valuation_rate": 1,
+            })
+        sr.flags.ignore_permissions = True
+        try:
+            sr.insert()
+            sr.submit()
+            frappe.db.commit()
+        except EmptyStockReconciliationItemsError:
+            # Every row in this warehouse already matches. Not a failure:
+            # another process corrected them between the scan and this write,
+            # which is the normal outcome when slices run concurrently -- and
+            # running them concurrently is exactly what this script documents.
+            # Confirmed live: one slice lost all 12 of its corrections because
+            # a sibling slice had fixed some of the same items first, and the
+            # throw took the whole batch down rather than the settled rows.
+            frappe.db.rollback()
+            continue
+        except Exception:
+            # One warehouse's reconciliation failing must not discard every
+            # other warehouse's corrections in the same run.
+            frappe.db.rollback()
+            frappe.log_error(
+                title=f"Shopify: stock reconciliation failed for {warehouse}",
+                message=frappe.get_traceback(),
+            )
+            continue
+        reconciliations.append(sr.name)
+        by_warehouse[warehouse] = sr.name
+
+    return {"reconciliations": reconciliations, "by_warehouse": by_warehouse,
+            "skipped": skipped}
+
+
+def _resolve_warehouse_for_location(location_id):
+    """location_id here is Shopify's REST numeric id (what webhooks carry),
+    matched against Shopify Location.sh_location_id -- distinct from the
+    GraphQL gid the outbound push uses."""
+    location = frappe.db.get_value("Shopify Location", {"sh_location_id": location_id}, "name")
+    if not location:
+        return None
+    warehouse = frappe.db.get_value(
+        "Shopify Location Map", {"shopify_location": location}, "warehouse")
+    if warehouse:
+        return warehouse
+    settings = frappe.get_cached_doc("Shopify Connector Settings")
+    return settings.sh_default_warehouse
 
 
 def check_fulfillment_service_mapping():
@@ -524,3 +773,290 @@ def check_fulfillment_service_mapping():
     assert mapped == {} and available is True
 
     print("fulfillment service mapping self-check passed")
+
+
+def enqueue_reconcile_inventory():
+    """Scheduler entry point for the daily sweep.
+
+    Hands the work to the long queue with an hour's timeout instead of running
+    it inline. A scheduled_events entry runs inside the scheduler's own worker
+    under a 300s death penalty, which a full catalogue walk cannot finish --
+    confirmed live, every daily run was killed mid-page having written nothing,
+    so local stock drifted with no backstop under the webhook and no visible
+    failure beyond one Scheduled Job Log row.
+    """
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.inventory_sync.reconcile_inventory_from_shopify",
+        queue="long",
+        timeout=3600,
+        job_id="shopify_reconcile_inventory",
+        deduplicate=True,
+    )
+
+
+_ITEMS_INVENTORY_QUERY = """
+query ItemsInventory($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on InventoryItem {
+      id
+      legacyResourceId
+      inventoryLevels(first: 20) {
+        nodes {
+          location { legacyResourceId }
+          quantities(names: ["available"]) { quantity }
+        }
+      }
+    }
+  }
+}
+"""
+
+# One Shopify call per batch of inventory items rather than per item. The
+# per-variant query above costs one round trip each, which is why the only
+# existing pull was either a full catalogue sweep or a manual one-off script.
+_INVENTORY_BATCH = 50
+
+
+def pull_stock_for_items(item_codes, dry_run=False):
+    """Refresh these specific items' stock from Shopify. Scoped, not a sweep.
+
+    reconcile_inventory_from_shopify walks the whole catalogue, which is right
+    for a nightly backstop and far too slow behind a button. This asks only
+    about the items given, batched, so a supplier refreshing their own products
+    gets an answer in one or two API calls instead of hundreds.
+
+    Writes through apply_pulled_stock like every other pull, so each correction
+    lands as a real Stock Reconciliation with ledger entries -- never a direct
+    Bin write.
+
+    Items with no sh_shopify_inventory_item_id are reported rather than
+    skipped silently: that field is what links a local Item to Shopify's stock
+    at all, and a missing one means this item's stock can never be pulled.
+
+    Returns {"checked", "corrections", "applied", "unlinked", "unmapped"}.
+    """
+    settings = frappe.get_single("Shopify Connector Settings")
+    if not settings.is_enabled:
+        return {"skipped": "connector disabled"}
+
+    item_codes = [c for c in (item_codes or []) if c]
+    if not item_codes:
+        return {"checked": 0, "corrections": [], "applied": None,
+                "unlinked": [], "unmapped": [], "queue_cleared": 0,
+                "unchanged": 0}
+
+    # Clear any queued webhook quantities for these items first. Those rows
+    # hold whatever Shopify reported when the webhook fired, and this function
+    # is about to read the CURRENT quantity -- so leaving them Pending means the
+    # next scheduled drain re-applies an older number and walks the stock this
+    # refresh just corrected straight back. Confirmed live: a webhook carrying
+    # 484 sat queued behind a run that had written 482.
+    #
+    # Marked Superseded rather than Applied: nothing was applied from them, and
+    # calling it Applied would claim the queued value had been used.
+    queued = frappe.get_all(
+        "Shopify Inventory Update",
+        filters={"item_code": ["in", item_codes], "status": "Pending"},
+        pluck="name",
+    )
+    for name in queued:
+        frappe.db.set_value("Shopify Inventory Update", name, "status", "Applied",
+                            update_modified=False)
+
+    rows = frappe.get_all(
+        "Item",
+        filters={"name": ["in", item_codes]},
+        fields=["name", "sh_shopify_inventory_item_id"],
+    )
+    by_inventory_id = {
+        str(r.sh_shopify_inventory_item_id): r.name
+        for r in rows if r.sh_shopify_inventory_item_id
+    }
+    unlinked = [r.name for r in rows if not r.sh_shopify_inventory_item_id]
+
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    client = ShopifyGraphQLClient()
+
+    corrections = []
+    unmapped = []
+    unchanged = []
+    ids = list(by_inventory_id)
+    for start in range(0, len(ids), _INVENTORY_BATCH):
+        chunk = ids[start:start + _INVENTORY_BATCH]
+        gids = [f"gid://shopify/InventoryItem/{i}" for i in chunk]
+        try:
+            data = client.execute(_ITEMS_INVENTORY_QUERY, {"ids": gids})
+        except Exception:
+            frappe.log_error(
+                title="Shopify: scoped stock pull failed for a batch",
+                message=f"Inventory item ids: {chunk}\n\n{frappe.get_traceback()}",
+            )
+            continue
+
+        for node in (data.get("nodes") or []):
+            if not node:
+                continue
+            item_code = by_inventory_id.get(str(node.get("legacyResourceId") or ""))
+            if not item_code:
+                continue
+            for level in ((node.get("inventoryLevels") or {}).get("nodes") or []):
+                location_id = ((level.get("location") or {}).get("legacyResourceId"))
+                quantities = level.get("quantities") or []
+                if not location_id or not quantities:
+                    continue
+                warehouse = _resolve_warehouse_for_location(str(location_id))
+                if not warehouse:
+                    # Shopify holds stock at a location this site has no
+                    # warehouse for. Reported, never guessed at -- applying it
+                    # to the default warehouse would invent stock in the wrong
+                    # place.
+                    unmapped.append((item_code, str(location_id)))
+                    continue
+                shopify_qty = flt(quantities[0].get("quantity") or 0)
+                # Only send what actually differs. run_inventory_pull already
+                # works this way; without it every refresh built a row for
+                # every item and reported them all as updated, so a second
+                # click on an unchanged catalogue still claimed 17 products
+                # updated. ERPNext drops the no-change rows itself, so the
+                # count was wrong rather than the stock.
+                current = flt(frappe.db.get_value(
+                    "Bin", {"item_code": item_code, "warehouse": warehouse},
+                    "actual_qty") or 0)
+                if current == shopify_qty:
+                    unchanged.append(item_code)
+                    continue
+                corrections.append({
+                    "item_code": item_code,
+                    "warehouse": warehouse,
+                    "qty": shopify_qty,
+                })
+
+    result = {
+        "checked": len(by_inventory_id),
+        "corrections": corrections,
+        "unlinked": unlinked,
+        "unmapped": unmapped,
+        "applied": None,
+        "queue_cleared": len(queued),
+        # Items Shopify agrees with. Reported so a caller can say "no changes"
+        # honestly rather than counting every row it looked at as an update.
+        "unchanged": len(unchanged),
+    }
+    if corrections and not dry_run:
+        result["applied"] = apply_pulled_stock(corrections)
+    return result
+
+
+def reconcile_inventory_from_shopify(dry_run=False, query=None):
+    """PULL leg, full sweep. Ask Shopify for every linked product's current
+    per-location quantity and apply the differences as audited Stock
+    Reconciliations.
+
+    The webhook (handle_inventory_level_webhook) is the fast path and stays
+    the primary mechanism, but it cannot be the only one: a webhook that is
+    dropped, arrives while the connector is disabled, or fires for an Item
+    whose sh_shopify_inventory_item_id was never populated leaves a
+    difference behind that nothing else would ever correct. That difference
+    is silent -- local stock simply stays wrong. This is the periodic
+    backstop that closes it, the same way run_inventory_push re-reads
+    Shopify's own quantity before pushing rather than trusting local state.
+
+    Reuses the importer's bulk paginated product query rather than asking
+    per item: scripts/../pull_stock_from_shopify.py does one API call per
+    item, which takes hours on a real catalogue and is why it was only ever
+    a manual one-off. This pulls the same data a few hundred products at a
+    time.
+
+    Only writes through apply_pulled_stock, so every correction lands as a
+    real Stock Reconciliation with ledger entries -- never a direct Bin
+    write. Items Shopify reports at a location this site has no warehouse
+    mapping for are skipped and counted, not guessed at.
+
+    dry_run=True reports what would change without writing.
+    """
+    settings = frappe.get_single("Shopify Connector Settings")
+    if not settings.is_enabled:
+        return {"skipped": "connector disabled"}
+
+    # Shares the "inventory" sync slot with run_inventory_pull/push: all
+    # three write stock for the same items, and two of them applying
+    # corrections at once would race on the same Bins. A dry run reads
+    # nothing back, so it doesn't need (or take) the slot.
+    # A windowed run skips the shared slot on purpose: the point of taking a
+    # window is to run several at once, and they cannot collide when each one
+    # covers a different slice of the catalogue.
+    if not dry_run and not query and has_active_sync("inventory"):
+        return {"skipped": "another inventory sync is already running"}
+
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_STOCK_QUERY
+    from alaiy_os_connector_shopify.shopify.product.variants import _variant_location_levels
+
+    client = ShopifyGraphQLClient()
+    corrections = []
+    unmapped_locations = set()
+    unknown_variants = 0
+    checked = 0
+
+    # Stock-only query, not the full import one: this sweep reads variant ids
+    # and inventory levels and nothing else, and the heavyweight query could
+    # not walk the catalogue inside the scheduler's timeout -- confirmed live,
+    # every daily run died at 300s having written nothing.
+    # `query` is a Shopify search filter, so a caller can split the catalogue
+    # and run several windows side by side instead of one serial walk -- e.g.
+    # query="created_at:>=2026-01-01 created_at:<2026-04-01". Each window
+    # touches a disjoint set of products, so the concurrent runs never contend
+    # on the same Bins. None means the whole catalogue.
+    for page_nodes in client.execute_paginated(_PRODUCTS_STOCK_QUERY, {"after": None, "query": query}, ["products"]):
+        for node in page_nodes:
+            for variant in (node.get("variants", {}).get("nodes") or []):
+                variant_id = variant.get("legacyResourceId")
+                if not variant_id:
+                    continue
+                item_code = frappe.db.get_value(
+                    "Item", {"sh_shopify_variant_id": str(variant_id)}, "name")
+                if not item_code:
+                    unknown_variants += 1
+                    continue
+                for location_id, qty in _variant_location_levels(variant):
+                    # Deliberately NOT _resolve_warehouse_for_location: that
+                    # falls back to sh_default_warehouse for an unmapped
+                    # location, which is right for a single webhook (better
+                    # somewhere than nowhere) but wrong for a sweep -- it
+                    # would dump every unmapped supplier's stock into the
+                    # default warehouse and report success. Report it instead.
+                    location = frappe.db.get_value(
+                        "Shopify Location", {"sh_location_id": str(location_id)}, "name")
+                    warehouse = frappe.db.get_value(
+                        "Shopify Location Map", {"shopify_location": location},
+                        "warehouse") if location else None
+                    if not warehouse:
+                        unmapped_locations.add(str(location_id))
+                        continue
+                    checked += 1
+                    current = flt(frappe.db.get_value(
+                        "Bin", {"item_code": item_code, "warehouse": warehouse},
+                        "actual_qty") or 0)
+                    if current == flt(qty):
+                        continue
+                    corrections.append({
+                        "item_code": item_code,
+                        "warehouse": warehouse,
+                        "qty": flt(qty),
+                    })
+
+    summary = {
+        "checked": checked,
+        "mismatched": len(corrections),
+        "unknown_variants": unknown_variants,
+        "unmapped_locations": sorted(unmapped_locations),
+        "dry_run": bool(dry_run),
+    }
+    if dry_run or not corrections:
+        summary["sample"] = corrections[:20]
+        return summary
+
+    result = apply_pulled_stock(corrections)
+    summary["reconciliations"] = result.get("reconciliations", [])
+    summary["skipped_rows"] = result.get("skipped", [])
+    return summary

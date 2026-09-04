@@ -27,7 +27,7 @@ is recreated or renamed.
 
 Run:
     bench --site <site> console
-    exec(open("apps/alaiy_os_connector_shopify/scripts/reparent_item_groups_from_shopify_taxonomy.py").read(), globals())
+    exec(open("apps/alaiy_os_connector_shopify/scripts/fixes/reparent_item_groups_from_shopify_taxonomy.py").read(), globals())
     run(apply=False)   # dry run first -- review the printed mapping
     run(apply=True)    # then actually reparent
 """

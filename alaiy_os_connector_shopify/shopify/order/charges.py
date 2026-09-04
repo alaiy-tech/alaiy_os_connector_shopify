@@ -47,12 +47,18 @@ def apply_order_discount(so, order):
 
 def build_custom_line_item(li, warehouse, delivery_date=None):
     """
-    A Shopify line item that maps to no Alaiy OS Item (custom/one-off product) --
-    represent it with a single shared placeholder Item ("Shopify Custom Item"),
-    carrying the real title in the row description so nothing is silently
-    dropped. Returns a row dict, or None if it can't be built.
+    A Shopify line item that maps to no Alaiy OS Item -- a one-off typed onto
+    the order, or a product since deleted from Shopify -- represented by a
+    placeholder Item of its own, named after the product.
+
+    One placeholder PER PRODUCT, not one shared between them. ERPNext refuses
+    two rows with the same item_code on a Sales Order, so a shared placeholder
+    forced _merge_duplicate_item_rows to crush every unresolvable line into a
+    single row: confirmed live, six distinct Damiani products worth $26,960
+    arrived as one row of qty 6, and nothing downstream could tell them apart
+    again. Returns a row dict, or None if it can't be built.
     """
-    item_code = _ensure_custom_item()
+    item_code = _ensure_custom_item(li)
     if not item_code:
         return None
     from alaiy_os_connector_shopify.shopify.order.utils import _line_item_qty
@@ -73,15 +79,51 @@ def build_custom_line_item(li, warehouse, delivery_date=None):
     }
 
 
-def _ensure_custom_item():
-    """Single shared non-stock placeholder Item for Shopify custom line items."""
-    name = "Shopify Custom Item"
+#: Every placeholder Item's code starts with this. Downstream code identifies
+#: a placeholder line by the prefix rather than one exact name -- see
+#: CUSTOM_LINE_ITEM in the client app's order_routing.
+CUSTOM_ITEM_PREFIX = "Shopify Custom Item"
+
+
+def _custom_item_code(li):
+    """A stable, unique item_code for one unresolvable Shopify line.
+
+    Keyed on whatever identifies the line, in order of how much it is worth
+    trusting: the product id outlives its variant, the variant id is next, and
+    a generated placeholder SKU (Shopify invents "sku-<digits>" for a line with
+    no product at all) is last. The same product landing on two orders gets the
+    same code both times, so its history stays together instead of scattering
+    across a placeholder per order.
+    """
+    key = (
+        str((li.get("product") or {}).get("legacyResourceId") or "")
+        or str(li.get("product_id") or "")
+        or str(li.get("variant_id") or "")
+        or str(li.get("sku") or "")
+    )
+    if not key:
+        # Nothing identifies this line at all. Fall back to the shared
+        # placeholder rather than inventing a code that cannot be matched
+        # again on a later import.
+        return CUSTOM_ITEM_PREFIX
+    return f"{CUSTOM_ITEM_PREFIX} {key}"[:140]
+
+
+def _ensure_custom_item(li=None):
+    """The placeholder Item for this line, created on first use.
+
+    Non-stock, so it never touches the stock ledger -- there is no real
+    inventory behind a product Shopify no longer has.
+    """
+    name = _custom_item_code(li or {})
     if frappe.db.exists("Item", name):
         return name
     try:
         item = frappe.new_doc("Item")
         item.item_code = name
-        item.item_name = name
+        # The product's own title, so the Item is recognisable in a list
+        # rather than reading as an opaque id.
+        item.item_name = ((li or {}).get("title") or name)[:140]
         item.item_group = frappe.db.get_value("Item Group", {"is_group": 0}, "name") or "All Item Groups"
         item.stock_uom = "Nos"
         item.is_stock_item = 0
@@ -91,7 +133,7 @@ def _ensure_custom_item():
         return name
     except Exception:
         frappe.log_error(
-            title="Shopify: failed to create Shopify Custom Item placeholder",
+            title=f"Shopify: failed to create placeholder Item {name}",
             message=frappe.get_traceback(),
         )
         return None

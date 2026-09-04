@@ -197,7 +197,7 @@ def probe():
     # the one it is selected under.
     print("[probe] running the real product query...")
     try:
-        client.execute(_PRODUCTS_QUERY, {"after": None})
+        client.execute(_PRODUCTS_QUERY, {"after": None, "query": None})
         print("[probe] query is valid against this API version")
         out["query_valid"] = True
     except Exception as exc:
@@ -219,7 +219,7 @@ def sample(count=3):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 
-    data = ShopifyGraphQLClient().execute(_PRODUCTS_QUERY, {"after": None})
+    data = ShopifyGraphQLClient().execute(_PRODUCTS_QUERY, {"after": None, "query": None})
     edges = (data.get("products") or {}).get("edges") or []
 
     for edge in edges[:int(count)]:

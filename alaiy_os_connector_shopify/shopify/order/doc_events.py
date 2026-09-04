@@ -15,6 +15,16 @@ from alaiy_os_connector_shopify.shopify.order.snapshot import (
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 
+def _connector_enabled():
+    """None of the three functions below checked this -- confirmed live:
+    disabling Shopify Connector Settings.is_enabled did not stop a Sales
+    Order update/submit/cancel from still enqueuing a real push against the
+    live store, since none of them read this field. Same class of gap
+    found and fixed in product/listing_hooks.py's Listing update/trash --
+    checked once, used at the top of every function here."""
+    return bool(frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"))
+
+
 def on_sales_order_update(doc, method=None):
     # Plain logger, not frappe.log_error -- these are routine trace/skip
     # points, not failures. Leaving debug traces on log_error makes Error
@@ -22,6 +32,8 @@ def on_sales_order_update(doc, method=None):
     if doc.flags.from_shopify_sync:
         frappe.logger().debug(
             f"Shopify: on_sales_order_update {doc.name} skipped, from_shopify_sync flag set")
+        return
+    if not _connector_enabled():
         return
     if not doc.get("sh_shopify_order_id"):
         frappe.logger().debug(
@@ -69,6 +81,8 @@ def on_sales_order_submit(doc, method=None):
     """
     if doc.flags.from_shopify_sync:
         return
+    if not _connector_enabled():
+        return
     if doc.get("sh_shopify_order_id"):
         return  # already a Shopify-origin order, nothing to push
     # Listing Variant's copy first, Item as fallback.
@@ -87,6 +101,8 @@ def on_sales_order_submit(doc, method=None):
 
 def on_sales_order_cancel(doc, method=None):
     if doc.flags.from_shopify_sync:
+        return
+    if not _connector_enabled():
         return
     if not doc.get("sh_shopify_order_id"):
         return

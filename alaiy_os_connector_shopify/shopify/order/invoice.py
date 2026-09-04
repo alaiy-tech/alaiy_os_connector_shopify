@@ -325,6 +325,11 @@ def on_sales_invoice_submit(doc, method=None):
     """
     if doc.flags.from_shopify_sync:
         return
+    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+        # Same class of gap found and fixed across Listing update/trash,
+        # Sales Order update/submit/cancel, and Delivery Note push -- this
+        # never checked the master switch before enqueuing a real push.
+        return
     order_id = _linked_shopify_order_id(doc)
     if not order_id:
         return
@@ -345,10 +350,12 @@ def push_order_paid(order_id: str, sales_invoice: str):
         data = client.execute(_ORDER_MARK_PAID_MUTATION, {"input": {"id": _to_gid(order_id)}})
         errors = (data.get("orderMarkAsPaid") or {}).get("userErrors") or []
         if errors:
-            # Most common: order already fully paid on Shopify -- benign.
-            frappe.log_error(
-                title=f"Shopify: orderMarkAsPaid userErrors for {sales_invoice}",
-                message=str(errors),
+            # Most common: order already fully paid/refunded/cancelled on
+            # Shopify -- benign, and not something a human should be paged
+            # on. Logged quietly instead of as an Error Log entry, which
+            # otherwise reads as a real failure needing attention.
+            frappe.logger().info(
+                f"Shopify orderMarkAsPaid no-op for {sales_invoice}: {errors}"
             )
     except Exception:
         frappe.log_error(

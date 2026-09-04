@@ -5,7 +5,7 @@ before fulfillments/create and fulfillments/update webhooks existed.
 Manual, not a patch -- makes live Shopify GraphQL calls per order, so it
 must not run unattended during `bench migrate`.
 
-Run: bench --site <site> execute alaiy_os_connector_shopify.scripts.backfill_tracking_numbers.execute
+Run: bench --site <site> execute alaiy_os_connector_shopify.scripts.backfills.backfill_tracking_numbers.execute
 """
 
 import frappe

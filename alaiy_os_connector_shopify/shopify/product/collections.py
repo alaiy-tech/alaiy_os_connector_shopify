@@ -345,7 +345,12 @@ def get_collection_products(collection_name: str):
     # back 0 (seen live) while the live product set is non-empty. Reconcile it
     # to what we actually fetched.
     if frappe.db.get_value("Shopify Collection", collection_name, "product_count") != len(products):
-        frappe.db.set_value("Shopify Collection", collection_name, "product_count", len(products), update_modified=False)
+        # Named get_*, but it caches the count back onto the Collection. That
+        # write is why this endpoint needs a gate at all: db.set_value skips the
+        # doctype's permission rows, so any logged-in user could touch it.
+        if frappe.has_permission("Shopify Collection", "write"):
+            frappe.db.set_value("Shopify Collection", collection_name, "product_count",
+                                len(products), update_modified=False)
         frappe.db.commit()
     return products
 
@@ -557,6 +562,11 @@ def on_shopify_collection_update(doc, method=None):
         return
     if doc.is_smart:
         return
+    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+        # Same class of gap found and fixed across Listing/Sales Order/
+        # Delivery Note/Sales Invoice push paths -- this never checked the
+        # master switch before enqueuing a real push.
+        return
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.product_sync.push_collection",
         queue="short",
@@ -567,6 +577,8 @@ def on_shopify_collection_update(doc, method=None):
 
 def on_shopify_collection_trash(doc, method=None):
     if doc.flags.from_shopify_sync:
+        return
+    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
         return
     if not doc.sh_collection_gid:
         return

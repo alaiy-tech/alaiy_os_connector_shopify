@@ -28,6 +28,20 @@ from alaiy_os_connector_shopify.shopify.product import listing as listing_resolv
 _TWO_WAY = "Alaiy OS → Shopify (two-way)"
 
 
+def _connector_enabled():
+    """None of the three functions below checked this master switch --
+    only sh_fulfillment_sync_direction (create) or nothing at all (tracking
+    update, cancel). Same class of gap found and fixed in Listing update/
+    trash and the Sales Order doc_events: disabling the connector entirely
+    (is_enabled = 0) did not actually stop these from still enqueuing a
+    real push against the live store. Checked once, used at the top of
+    every function here -- kept separate from sh_fulfillment_sync_direction,
+    which is a real, deliberately independent business toggle (see
+    on_delivery_note_cancel's own docstring for why cancel/tracking-edit
+    intentionally ignore that one once a fulfillment already exists)."""
+    return bool(frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"))
+
+
 def _fulfillment_gid(fulfillment_id: str) -> str:
     """sh_shopify_fulfillment_id is always stored as the plain legacy
     numeric id -- rebuild the GID Shopify's mutations actually require."""
@@ -156,9 +170,31 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
     client = ShopifyGraphQLClient()
     order_gid = _to_gid(shopify_order_id)
 
+    # Nothing from here on may raise. By the time this runs the goods have
+    # physically shipped and the Delivery Note is submitted -- a Shopify-side
+    # mismatch is a sync problem, not a reason to undo a real dispatch.
+    #
+    # Confirmed live, and the reason these are no longer throws: a customer
+    # refunded an order minutes before the supplier fulfilled it, which closed
+    # Shopify's fulfillment orders, so nothing matched and this threw. The throw
+    # unwound the whole request -- Sales Order, both Purchase Orders and the
+    # Delivery Note all gone -- while FedEx had already issued a real label and
+    # the parcel was in the carrier's network. The tracking number existed at
+    # FedEx and nowhere in ERPNext, and the only trace was an Error Log nobody
+    # was watching.
     open_by_fulfillment_order, location_by_fulfillment_order = _open_fulfillment_order_line_items(client, order_gid)
     if not open_by_fulfillment_order:
-        frappe.throw(f"Shopify order for {so_name} has no open fulfillment orders left to fulfill.")
+        frappe.log_error(
+            title=f"Shopify: no open fulfillment orders for {dn.name}",
+            message=(
+                f"Sales Order: {so_name}\n"
+                "Shopify has no open fulfillment orders left on this order, so this shipment "
+                "could not be pushed. Usually the order was refunded, cancelled, or already "
+                "fulfilled on Shopify's side. The Delivery Note stands and the goods have "
+                "shipped -- the fulfillment needs recording on Shopify by hand."
+            ),
+        )
+        return {"ok": False, "reason": "no_open_fulfillment_orders"}
 
     fulfillment_input_per_order, unmatched = _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order)
     if unmatched:
@@ -167,7 +203,16 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
             message=f"Sales Order: {so_name}\nUnmatched item codes (no linked Shopify variant/SKU, or nothing left open there): {unmatched}",
         )
     if not fulfillment_input_per_order:
-        frappe.throw(f"{dn.name}'s items could not be matched to any open Shopify fulfillment order line.")
+        frappe.log_error(
+            title=f"Shopify: fulfillment push for {dn.name} matched nothing",
+            message=(
+                f"Sales Order: {so_name}\n"
+                "None of this Delivery Note's items matched an open Shopify fulfillment order "
+                "line, so nothing was pushed. The Delivery Note stands and the goods have "
+                "shipped -- the fulfillment needs recording on Shopify by hand."
+            ),
+        )
+        return {"ok": False, "reason": "no_matching_lines", "unmatched": unmatched}
 
     tracking_info = None
     if tracking_number:
@@ -205,9 +250,16 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         if errors:
             frappe.log_error(
                 title=f"Shopify: fulfillment push failed for {dn.name}",
-                message=f"Sales Order: {so_name}\nLocation: {location_id}\n{errors}",
+                message=(
+                    f"Sales Order: {so_name}\nLocation: {location_id}\n{errors}\n\n"
+                    "The Delivery Note stands and the goods have shipped -- the fulfillment "
+                    "needs recording on Shopify by hand."
+                ),
             )
-            frappe.throw(f"Shopify rejected the fulfillment push: {errors}")
+            # Logged, not raised: see the note above. Shopify rejecting one
+            # location's bucket must not undo the dispatch, and must not stop
+            # the remaining buckets from being pushed.
+            continue
         fulfillment = result.get("fulfillment") or {}
         if fulfillment:
             fulfillments.append(fulfillment)
@@ -283,14 +335,24 @@ def on_delivery_note_submit(doc, method=None):
         return  # mirrors a fulfillment Shopify already knows about
     if doc.sh_shopify_fulfillment_id:
         return  # already linked (defensive -- from_shopify_sync should have caught this)
+    if not _connector_enabled():
+        return
     if (frappe.db.get_single_value("Shopify Connector Settings", "sh_fulfillment_sync_direction") or "") != _TWO_WAY:
         return
     so_name = _sales_order_of(doc)
     if not so_name or not frappe.db.get_value("Sales Order", so_name, "sh_shopify_order_id"):
         return
+    # enqueue_after_commit=True -- confirmed live: without it, a fast
+    # worker could dequeue and start push_delivery_note_fulfillment_job
+    # before the caller's own frappe.db.commit() (e.g. fulfill_order's,
+    # right after dn.submit()) had made this DN visible to other DB
+    # connections yet, raising DoesNotExistError on a real, correctly
+    # submitted Delivery Note. Same idiom already used in
+    # listing_hooks.py for this exact class of race.
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order.fulfillment_push.push_delivery_note_fulfillment_job",
         queue="short", timeout=120, delivery_note=doc.name,
+        enqueue_after_commit=True,
     )
 
 
@@ -314,6 +376,8 @@ def on_delivery_note_update_after_submit(doc, method=None):
     """Editing sh_tracking_number/sh_tracking_company on a Delivery Note that
     already has a linked Shopify fulfillment pushes the change to Shopify."""
     if not doc.sh_shopify_fulfillment_id:
+        return
+    if not _connector_enabled():
         return
     if not (doc.has_value_changed("sh_tracking_number") or doc.has_value_changed("sh_tracking_company")):
         return
@@ -374,8 +438,11 @@ def on_delivery_note_cancel(doc, method=None):
     from_shopify_sync is never set on those) cancels that fulfillment on
     Shopify too. Kept independent of the current sync-direction setting: the
     fulfillment exists on Shopify because of something this app already did,
-    regardless of whether the setting has since been switched back."""
+    regardless of whether the setting has since been switched back. Still
+    respects the master is_enabled switch, unlike sh_fulfillment_sync_direction."""
     if doc.flags.from_shopify_sync or not doc.sh_shopify_fulfillment_id:
+        return
+    if not _connector_enabled():
         return
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order.fulfillment_push.push_fulfillment_cancel_job",

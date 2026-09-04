@@ -23,13 +23,36 @@ def _as_administrator():
     flags.ignore_permissions actually takes effect. Elevate just for this
     one call, then restore -- RQ workers reuse the same process across
     multiple jobs, so leaving this elevated would leak into unrelated ones.
+
+    Restores sid and session data too, not just the user. frappe.set_user does
+    more than change who you are:
+
+        local.session.user = username
+        local.session.sid  = username      # the real sid is gone
+        local.session.data = _dict()       # session data wiped
+
+    so set_user(original_user) does not put a session back -- sid is left as
+    the literal user name rather than the real session id, and the data empty.
+    For a Guest webhook that costs nothing, since there is no session worth
+    keeping. But these helpers also run inside a real signed-in request
+    whenever a user submits a Delivery Note from a storefront portal, and there
+    it signed that user out mid-task: the work committed, then the next request
+    arrived as Guest. Nothing raises, which is why it reads as a cookie or
+    cache problem rather than a permission one.
     """
-    original_user = frappe.session.user
+    session = frappe.session
+    original_user = session.user
+    original_sid = session.sid
+    original_data = session.data
     frappe.set_user("Administrator")
     try:
         yield
     finally:
+        # set_user first so role and permission caches rebuild for the real
+        # user, then restore the two fields it overwrites.
         frappe.set_user(original_user)
+        session.sid = original_sid
+        session.data = original_data
 
 
 def _order_node_to_rest_shape(node: dict) -> dict:
@@ -60,6 +83,10 @@ def _order_node_to_rest_shape(node: dict) -> dict:
             "title": li.get("title"),
             "quantity": li.get("quantity"),
             "variant_id": variant.get("legacyResourceId"),
+            # Outlives the variant, and stays fetchable by id after the
+            # product is archived -- the only identifier left on a line whose
+            # variant Shopify has deleted.
+            "product_id": (li.get("product") or {}).get("legacyResourceId"),
             "price": money.get("amount"),
         })
     def _addr(a):
@@ -76,21 +103,42 @@ def _order_node_to_rest_shape(node: dict) -> dict:
         shipping_lines.append({"title": ship_line.get("title") or "Shipping", "price": amt})
 
     # Reshaped to the REST webhook's own fulfillments shape so the delivery
-    # sync path doesn't have to care which source it came from. Only
-    # displayStatus + trackingInfo are carried -- the GraphQL pull query
-    # deliberately doesn't fetch per-fulfillment line items (see
-    # delivery_notes.py's _create_delivery_note_if_needed, which is the
-    # full-order fallback for exactly that reason).
+    # sync path doesn't have to care which source it came from. Now also
+    # carries line_items (from fulfillmentLineItems) -- confirmed live that
+    # an order shipped in more than one real Shopify fulfillment was being
+    # collapsed into a single local Delivery Note by the full-order
+    # fallback below, because this reshape used to drop per-fulfillment
+    # line items entirely (a pull-only order never had them to route
+    # through _sync_fulfillments). With line_items present, _upsert_order
+    # can route these into _sync_fulfillments just like a webhook payload,
+    # creating one Delivery Note per real fulfillment instead of one per
+    # order.
     fulfillments = []
     for f in (node.get("fulfillments") or []):
         tracking = f.get("trackingInfo") or []
         first = tracking[0] if tracking else {}
+        fulfillment_line_items = []
+        for fli_node in ((f.get("fulfillmentLineItems") or {}).get("nodes") or []):
+            li = fli_node.get("lineItem") or {}
+            variant = li.get("variant") or {}
+            fulfillment_line_items.append({
+                "sku": li.get("sku"),
+                "title": li.get("title"),
+                "quantity": fli_node.get("quantity"),
+                "variant_id": variant.get("legacyResourceId"),
+            })
         fulfillments.append({
             "id": f.get("legacyResourceId"),
             "display_status": (f.get("displayStatus") or "").upper(),
+            # Named location_id to match the REST webhook payload this shape
+            # mirrors, so the delivery path reads one field either way. Without
+            # it a pulled order carried no shipping location at all, and every
+            # sold-out item on it stayed unattributed to any supplier.
+            "location_id": ((f.get("location") or {}).get("legacyResourceId") or ""),
             "tracking_number": ",".join(t.get("number") or "" for t in tracking).strip(","),
             "tracking_company": first.get("company") or "",
             "tracking_url": ",".join(t.get("url") or "" for t in tracking).strip(","),
+            "line_items": fulfillment_line_items,
         })
 
     return {
@@ -154,7 +202,139 @@ def _resolve_item_code(line_item):
     if title and frappe.db.exists("Item", title):
         return title
 
+    # Nothing matched. Before giving up and letting the caller fall back to
+    # the shared "Shopify Custom Item" placeholder, try importing the product
+    # this line actually refers to.
+    #
+    # The catalogue import only takes the statuses the site asked for --
+    # Active, typically -- but an order can reference a product that was
+    # ARCHIVED or set to DRAFT after it sold. That is ordinary retail
+    # behaviour for one-of-a-kind stock. Confirmed live: real single-unit lines
+    # (a Roberto Coin earring, a Rapport London box) collapsed onto the
+    # placeholder, which left the order with no supplier to pay, no cost, and
+    # a fulfillment that could not be mapped to any line.
+    #
+    # An order referencing a product is proof it was real, so the status
+    # filter does not apply here the way it does to a bulk sweep -- this
+    # fetches exactly one product, only when an order needs it.
+    product_id = str(line_item.get("product_id") or "")
+    if variant_id or sku or product_id:
+        imported = _import_product_for_order_line(variant_id, sku, product_id)
+        if imported:
+            return imported
+
     return None
+
+
+def _import_product_for_order_line(variant_id: str, sku: str = None, product_id: str = None):
+    """Import the single product this order line refers to, whatever its status.
+
+    Found by variant id, or by SKU when the line carries no variant id --
+    Shopify returns a null variant once the variant has been deleted, which is
+    ordinary for one-of-a-kind stock that has sold. Without the SKU path such a
+    line resolved to nothing, collapsed onto the shared placeholder item, and
+    took its fulfillment with it: no supplier, no cost, and a shipment that
+    could not be mapped back to any line.
+
+    Returns the resolved item_code, or None. Never raises: an order import
+    must not fail because a product fetch did.
+
+    The product keeps whatever status Shopify reports it at. It is NOT
+    disabled: Item.disabled makes ERPNext refuse the item on the very Sales
+    Order this import exists to build (plain frappe.throw, no flag to skip),
+    so disabling here breaks the order it was called to rescue. A non-Active
+    product is held out of selling by sh_shopify_status, which the importer
+    already writes and which the portal already filters on.
+    """
+    try:
+        from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+        from alaiy_os_connector_shopify.shopify.product import importer
+        from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
+
+        client = ShopifyGraphQLClient()
+        # The order line names its product outright. Preferred over both
+        # lookups below because it is the only one that reaches an ARCHIVED
+        # product: confirmed live, every form of sku: query returns nothing
+        # for one, on products and productVariants alike, while fetching the
+        # same product by id succeeds.
+        product_id = str(product_id or "")
+        if not product_id and variant_id:
+            found = client.execute(
+                """query($id: ID!){ productVariant(id:$id){ product{ legacyResourceId } } }""",
+                {"id": f"gid://shopify/ProductVariant/{variant_id}"},
+            )
+            product_id = str(
+                (((found or {}).get("productVariant") or {}).get("product") or {}).get("legacyResourceId") or ""
+            )
+
+        if not product_id and sku:
+            # Shopify's own product search. Quoted because a real SKU can carry
+            # spaces and punctuation that would otherwise split the query.
+            escaped = sku.replace("\\", "").replace('"', "")
+            by_sku = client.execute(
+                """query($q: String!){ products(first: 2, query: $q){
+                     nodes{ legacyResourceId } } }""",
+                {"q": f'sku:"{escaped}"'},
+            )
+            nodes = ((by_sku or {}).get("products") or {}).get("nodes") or []
+            # Exactly one, or it is not an identification. A SKU shared by two
+            # products cannot say which one this line sold.
+            if len(nodes) == 1:
+                product_id = str(nodes[0].get("legacyResourceId") or "")
+
+        if not product_id:
+            return None
+
+        product_variants = []
+        for page in client.execute_paginated(
+                _PRODUCTS_QUERY, {"first": 5, "query": f"id:{product_id}"}, ["products"]):
+            for node in page:
+                if str(node.get("legacyResourceId")) != product_id:
+                    continue
+                # Bypasses _import_product's status gate deliberately: that
+                # gate exists to keep a bulk sweep from dragging in dead
+                # products, which is a different question from an order
+                # needing the one product it actually sold.
+                importer._import_product_inner(node)
+                product_variants = (node.get("variants") or {}).get("nodes") or []
+
+        item_code = (listing_resolver.item_by_variant_id(variant_id) if variant_id else None)
+        if not item_code and sku and frappe.db.exists("Item", sku):
+            item_code = sku
+
+        if not item_code:
+            # The order line's SKU is the SKU AS IT WAS WHEN IT SOLD, and a
+            # merchant is free to change it afterwards -- confirmed live: a
+            # line carrying 202445 belongs to a product whose variant now
+            # reads 551454, so the import above reported "already imported,
+            # unchanged" while the lookup by the line's own SKU found nothing
+            # and the line still collapsed onto the placeholder.
+            #
+            # Ask the product what its variants are today instead. One
+            # variant is unambiguous; several are not, since nothing on the
+            # line says which of them it sold once the variant id is gone.
+            if len(product_variants) == 1:
+                only = product_variants[0]
+                item_code = (
+                    listing_resolver.item_by_variant_id(str(only.get("legacyResourceId") or ""))
+                    or (only.get("sku") if frappe.db.exists("Item", only.get("sku")) else None)
+                )
+        if item_code:
+            # Routine, not a failure: importing history for a catalogue that
+            # archives what it sells means most order lines take this path. It
+            # went to the Error Log, which on a real backfill buries every
+            # genuine failure under thousands of successes.
+            frappe.logger("shopify").info(
+                f"imported out-of-catalogue product for an order line: "
+                f"variant {variant_id} sku {sku} -> product {product_id} -> Item {item_code}"
+            )
+        return item_code
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: could not import product for order line variant {variant_id}",
+            message=frappe.get_traceback(),
+        )
+        return None
 
 
 def _to_gid(shopify_order_id: str) -> str:

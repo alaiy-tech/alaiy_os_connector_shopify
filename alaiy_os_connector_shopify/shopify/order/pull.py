@@ -188,7 +188,14 @@ def import_existing_orders(date_from=None, date_to=None):
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order_sync.run_full_import",
         queue="long",
-        timeout=3600,
+        # A first-time backfill of a real store's history is thousands of
+        # orders, each creating a Sales Order, its Delivery Notes, its
+        # Purchase Orders and its invoice. An hour does not cover that:
+        # confirmed live at 1,545 of 1,729 orders, where RQ killed the job
+        # mid-write and the run had to be restarted by hand. Re-running is
+        # safe -- skip_existing makes it idempotent -- but it should not need
+        # a person watching for the stall.
+        timeout=21600,
         log_name=log.name,
         date_from=date_from,
         date_to=date_to,
