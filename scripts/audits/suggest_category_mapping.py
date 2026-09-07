@@ -12,7 +12,7 @@ cache to get each match's full breadcrumb path, not just its bare name.
 
 Run:
     bench --site <site> console
-    exec(open("/home/ubuntu/alaiy_os_bench/apps/alaiy_os_connector_shopify/scripts/suggest_category_mapping.py").read(), globals())
+    exec(open("/home/ubuntu/alaiy_os_bench/apps/alaiy_os_connector_shopify/scripts/audits/suggest_category_mapping.py").read(), globals())
     suggest_mappings()
 """
 import csv

@@ -13,11 +13,11 @@ whose id isn't in that live set, so export picks them up again as fresh
 candidates.
 
 Run backgrounded, dry-run first:
-    nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/clear_stale_shopify_product_ids.py <site_name> --dry-run > ~/clear_stale.log 2>&1 &
+    nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/fixes/clear_stale_shopify_product_ids.py <site_name> --dry-run > ~/clear_stale.log 2>&1 &
     tail -f ~/clear_stale.log
 
 Then apply:
-    nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/clear_stale_shopify_product_ids.py <site_name> --apply > ~/clear_stale_apply.log 2>&1 &
+    nohup ./env/bin/python -u apps/alaiy_os_connector_shopify/scripts/fixes/clear_stale_shopify_product_ids.py <site_name> --apply > ~/clear_stale_apply.log 2>&1 &
 """
 import os
 import sys

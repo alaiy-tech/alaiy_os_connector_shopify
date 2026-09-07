@@ -307,7 +307,11 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     # Copy title/description/price in explicitly so a disabled Listing
     # doesn't look empty on the form -- the resolver falls back to these
     # same Item fields (or the Item Price row) anyway, so this is just
-    # making the already-inherited value visible.
+    # making the already-inherited value visible. category/product_type/
+    # images/variants are NOT set here -- the doctype controller's own
+    # before_insert (fill_children_from_item) already fills all of those
+    # on every insert, confirmed live; setting them here too would be
+    # redundant, not wrong, but duplicated logic.
     listing.listing_title = tmpl.item_name
     listing.listing_description = tmpl.description or ""
     if not tmpl.has_variants:

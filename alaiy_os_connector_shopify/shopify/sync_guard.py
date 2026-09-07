@@ -1,4 +1,5 @@
 import frappe
+from frappe import _
 from frappe.utils import now_datetime, add_to_date
 
 STALE_ACTIVE_THRESHOLD_MINUTES = 120
@@ -91,6 +92,16 @@ def request_cancel(log_name: str):
     checks this and stops cleanly on its next poll, see is_cancel_requested.
     No effect on a log that's already finished (success/failed/skipped/
     cancelled), so a stale UI click after the job ended is harmless."""
+    # Shopify Sync Log grants READ only -- nothing is meant to write it through
+    # the permission model, and db.set_value skips those rows anyway. Cancelling
+    # someone else's running sync is an operational action, so gate it on the
+    # role that owns sync operations rather than on a doctype write right that
+    # deliberately does not exist.
+    if "System Manager" not in frappe.get_roles():
+        frappe.throw(
+            _("Only a System Manager can cancel a running sync."),
+            frappe.PermissionError,
+        )
     status = frappe.db.get_value("Shopify Sync Log", log_name, "status")
     if status not in ("queued", "running"):
         return {"cancelled": False, "reason": f"Job already {status}"}

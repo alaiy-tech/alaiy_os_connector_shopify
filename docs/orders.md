@@ -73,7 +73,7 @@ For an `orders/edited` / `orders/updated` on an order not yet shipped:
 ## Fulfillment → Delivery Note (`delivery_notes.py`)
 
 - `_sync_fulfillments` — one **Delivery Note per Shopify fulfillment id** (tagged `sh_shopify_fulfillment_id`, so redelivered webhooks and later partial shipments never duplicate). Each Delivery Note is trimmed to exactly the quantities that fulfillment shipped.
-- `_create_delivery_note_if_needed` — full-order fallback for the pull path (which has no per-fulfillment breakdown).
+- `_create_delivery_note_if_needed` — full-order fallback, only for an order Shopify reports fulfilled with an empty fulfillments array (e.g. a manual "Complete order" click). The pull path now fetches `fulfillmentLineItems` too, so any order with real fulfillment data — pull or webhook — routes through `_sync_fulfillments` instead.
 - `_sync_tracking` — carries `sh_tracking_number` / `sh_tracking_company` / `sh_tracking_url` from the `fulfillments/create`/`fulfillments/update` webhook payload onto the matching Delivery Note.
 - `_force_valid_warehouse` — re-resolves a real leaf warehouse onto every Delivery Note line, ignoring stale group-warehouse values baked into old orders.
 - `_fill_expense_accounts` — self-heals a valid Expense Account on any line missing one.

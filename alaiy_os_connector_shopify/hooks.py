@@ -68,17 +68,63 @@ scheduler_events = {
     "cron": {
         "* * * * *": [
             "alaiy_os_connector_shopify.shopify.sync_jobs.check_and_enqueue"
-        ]
+        ],
+        # Order and shipment state that Shopify does not reliably announce.
+        # Both of these correct real divergence rather than refreshing a
+        # cosmetic field, so an hour of being wrong is too long: a cancelled
+        # order still reads open here (and stays invoiceable and shippable),
+        # and a delivered parcel a supplier cannot invoice against.
+        #
+        # sync_order_status exists because the orders/* webhooks are not a
+        # guarantee -- a cancel can lose a write race to a concurrent
+        # orders/updated, and handle_order_webhook answers 200 regardless, so
+        # Shopify never redelivers and a failed cancel is permanent. Confirmed
+        # live: an order sat Completed for hours against a Shopify order that
+        # had been cancelled.
+        "*/5 * * * *": [
+            "alaiy_os_connector_shopify.shopify.order.delivery_status.sync_order_status",
+            "alaiy_os_connector_shopify.shopify.order.delivery_status.sync_delivery_status",
+            # Drain queued inventory_levels/update quantities. Hourly was too
+            # slow to be honest about stock: a webhook arriving seconds after a
+            # tick waited most of an hour to apply, so anyone looking in
+            # between saw a quantity Shopify had already moved on from.
+            # Confirmed live -- a webhook carrying 484 landed 12 seconds after
+            # a run that had just written 482, and the portal showed 482 for
+            # the rest of the hour.
+            #
+            # Cheap to run often: it only reads a queue table and does nothing
+            # at all when that queue is empty.
+            "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
+        ],
     },
     "hourly": [
-        "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only"
+        "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only",
     ],
     "daily": [
-        "alaiy_os_connector_shopify.shopify.product_sync.scheduled_fetch_shopify_taxonomy",
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_collections",
         "alaiy_os_connector_shopify.shopify.inventory_sync.sync_shopify_locations",
-    ]
+        # Full inventory sweep, the backstop under the webhook. A dropped
+        # webhook (or one that arrived while the connector was disabled)
+        # otherwise leaves local stock silently wrong forever, since nothing
+        # else ever re-asks Shopify. Daily, not hourly: the webhook is the
+        # fast path, this only catches what it missed.
+        # Enqueued rather than run inline: a scheduled_events entry executes in
+        # the scheduler's own worker on a 300s death penalty, and a full
+        # catalogue sweep cannot finish in that. Confirmed live -- every daily
+        # run died with JobTimeoutException having written nothing, so the one
+        # backstop under the webhook never actually ran.
+        "alaiy_os_connector_shopify.shopify.inventory_sync.enqueue_reconcile_inventory",
+    ],
+    # Shopify's Standard Product Taxonomy is a fixed, versioned reference
+    # tree Shopify itself only revises a couple of times a year -- confirmed
+    # live, a daily run re-walked the entire ~14,600-node tree from scratch
+    # every single day (no change-detection short-circuit exists in
+    # fetch_shopify_taxonomy) for a tree that was already fully synced.
+    # Weekly is still far more often than the tree actually changes.
+    "weekly": [
+        "alaiy_os_connector_shopify.shopify.product_sync.scheduled_fetch_shopify_taxonomy",
+    ],
 }
 
 doc_events = {
@@ -86,9 +132,21 @@ doc_events = {
         # Item saves NO LONGER push to Shopify -- the Shopify Product Listing
         # is the push trigger and enable gate now (see product.listing_hooks).
         # Only tags/collections/UOM validation (Item-level concepts) stay here.
+        # UOM dedupe has to run BEFORE the doctype's own validate(), not with
+        # the other hooks after it. Frappe runs Item.validate() first, so
+        # ERPNext's validate_conversion_factor threw "Unit of Measure ...
+        # entered more than once" and the heal registered on `validate` never
+        # got a turn -- it only ever appeared to work because the import path
+        # calls it explicitly before saving.
+        #
+        # Measured live: 1,860 of 3,517 items carry a duplicated UOM row, so
+        # over half the catalogue could not be saved from Desk or the supplier
+        # portal at all, including editing a title or description.
+        "before_validate": [
+            "alaiy_os_connector_shopify.shopify.product_sync.validate_item_uoms",
+        ],
         "validate": [
             "alaiy_os_connector_shopify.shopify.product_sync.resolve_shopify_category_gid",
-            "alaiy_os_connector_shopify.shopify.product_sync.validate_item_uoms",
             "alaiy_os_connector_shopify.shopify.product_sync.copy_template_tags_to_variant",
             "alaiy_os_connector_shopify.shopify.product_sync.copy_template_collections_to_variant",
         ],

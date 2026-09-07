@@ -30,6 +30,7 @@
   "sb_sync",
   "sh_order_status_filter",
   "sh_fulfillment_sync_direction",
+  "sh_inventory_sync_direction",
   "sh_inventory_sync_interval",
   "sh_token_refresh_interval",
   "sb_product_status",
@@ -216,8 +217,17 @@
    "reqd": 1
   },
   {
+   "default": "Shopify → Alaiy OS only",
+   "description": "Direction inventory sync runs in. 'Shopify → Alaiy OS only': a Shopify stock change updates the local Bin here; nothing is ever pushed from Alaiy OS to Shopify. 'Alaiy OS → Shopify (two-way)': in addition, the scheduled push below sends local Bin changes to Shopify. Safe to switch either way at any time.",
+   "fieldname": "sh_inventory_sync_direction",
+   "fieldtype": "Select",
+   "label": "Inventory Sync Direction",
+   "options": "Shopify → Alaiy OS only\nAlaiy OS → Shopify (two-way)",
+   "reqd": 1
+  },
+  {
    "default": "30 min",
-   "description": "How often to push Alaiy OS stock levels to Shopify",
+   "description": "How often to push Alaiy OS stock levels to Shopify (only used when Inventory Sync Direction is two-way)",
    "fieldname": "sh_inventory_sync_interval",
    "fieldtype": "Select",
    "label": "Inventory Sync Interval",
