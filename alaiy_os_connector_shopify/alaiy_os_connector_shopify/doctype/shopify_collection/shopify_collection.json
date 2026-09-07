@@ -116,6 +116,16 @@
       "read": 1,
       "role": "System Manager",
       "write": 1
+    },
+    {
+      "create": 1,
+      "read": 1,
+      "role": "Shopify Manager",
+      "write": 1
+    },
+    {
+      "read": 1,
+      "role": "Shopify Viewer"
     }
   ],
   "sort_field": "modified",
