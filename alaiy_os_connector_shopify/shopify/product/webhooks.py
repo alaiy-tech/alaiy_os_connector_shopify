@@ -9,6 +9,7 @@ from frappe.utils import flt
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
+from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical
 from alaiy_os_connector_shopify.shopify.product.export import _variants_of
 from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
@@ -361,7 +362,6 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
     # Shopify, not re-templating variants, and every field a variant needs
     # from Shopify arrives on its own webhook.
     item.flags.dont_update_variants = True
-    from alaiy_os_connector_shopify.shopify.order_sync import _as_administrator
     try:
         with _as_administrator():
             item.save()
