@@ -7,11 +7,11 @@ _PRODUCTS_COUNT_QUERY = """
 query { productsCount { count } }
 """
 
-_PRODUCTS_QUERY = """
-query PullProducts($after: String) {
-  products(first: 50, after: $after, sortKey: CREATED_AT) {
-    edges {
-      node {
+# The full product node, shared by the paged catalogue pull and the
+# single-product fetch below so the two cannot drift apart. `compare.py`
+# maps this shape onto `canonical._product_canonical`'s key set; a field
+# added here that the canonical also carries wants picking up there too.
+_PRODUCT_NODE_FIELDS = """
         legacyResourceId
         handle
         title
@@ -106,13 +106,28 @@ query PullProducts($after: String) {
             endCursor
           }
         }
-      }
+"""
+
+_PRODUCTS_QUERY = """
+query PullProducts($after: String) {
+  products(first: 50, after: $after, sortKey: CREATED_AT) {
+    edges {
+      node {""" + _PRODUCT_NODE_FIELDS + """      }
     }
     pageInfo {
       hasNextPage
       endCursor
     }
   }
+}
+"""
+
+# One product by its GID, for compare_listing. Same node as the pull, so a
+# diff is comparing like with like -- a narrower query here would report a
+# field as absent on Shopify when it was only absent from the question.
+_PRODUCT_BY_ID_QUERY = """
+query ProductById($id: ID!) {
+  product(id: $id) {""" + _PRODUCT_NODE_FIELDS + """  }
 }
 """
 
