@@ -1,0 +1,186 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "properties": {
+  "title": {
+   "type": "string",
+   "description": "The product title, for the listing's `listing_title`. It must READ naturally and at the same time contain the words a shopper would actually type to find this product \u2014 the product type and its one or two defining specs, in the shopper's own vocabulary. Front-load the most searched term. No keyword stuffing, no repetition, no ALL CAPS, no promotional words."
+  },
+  "description": {
+   "type": "string",
+   "description": "The product description, for the listing's `listing_description`. 2-4 short paragraphs of plain text (no HTML, no markdown). Say what the product is, what it is made of, how it is used, and what is included. The search terms a shopper would use must appear naturally in the prose \u2014 worked into real sentences, never listed or repeated for their own sake. Never invent specifications not supported by the data or the photos."
+  },
+  "category": {
+   "type": "string",
+   "description": "The product's category, for the listing's `listing_category`. Reuse a category from get_reference_values VERBATIM when one applies \u2014 it is a link to an existing Shopify Category, so a new spelling of an existing category is a broken value, and get_reference_values shows you the ones this store already uses. Only propose a different one when none of them genuinely fits, name it in the full Shopify taxonomy style, and say so in notes. Empty string if it cannot be determined."
+  },
+  "product_type": {
+   "type": "string",
+   "description": "The product type, for the listing's `listing_product_type` \u2014 the specific noun for what this product IS (e.g. 'Bracelet', 'Backpack', 'Fountain Pen'), not a category path. Reuse an existing product type from get_reference_values when one fits."
+  },
+  "seo_title": {
+   "type": "string",
+   "description": "For the listing's `listing_seo_title` \u2014 what shows in a search-engine result and browser tab. Short (aim for under 60 characters so it does not truncate), keyword-first, and may differ from `title` (which has to read well as on-page merchandising copy; this has to read well as a search snippet). Reuse the same search terms `title`/`description` are built around."
+  },
+  "seo_description": {
+   "type": "string",
+   "description": "For the listing's `listing_seo_description` \u2014 the search-result snippet. One or two plain-text sentences, no HTML, capped at 320 characters (Shopify's own limit). Summarise what the product is and its one or two most compelling, evidence-backed specifics \u2014 the same rule as `description` applies: never invent a spec not supported by the product data or photos."
+  },
+  "shopify_tags": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   },
+   "description": "For the listing's Shopify tags (published via the Item's tag list, not a listing field). Reuse existing tags from get_reference_values verbatim when they apply \u2014 tags are how shoppers filter/browse, so near-duplicate spellings fragment that. Add a new tag only when nothing existing covers a genuinely distinguishing fact (brand, material, category, standout attribute). Lowercase, hyphenated style to match existing tags unless the store's existing tags show otherwise. Empty array when nothing applies."
+  },
+  "attributes": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "string"
+   },
+   "description": "Structured product attributes as name -> value, which become the listing's Shopify metafields on publish. The named properties below are the ones nearly every listing needs; your instructions may name more, and unless they say otherwise you may ALSO add any other attribute that genuinely applies, using a lower_snake_case key and a plain-text value. Reuse an existing attribute key from get_reference_values when it means the same thing. Only include an attribute you can support from the product text or the photos. Always state the unit inside the value.",
+   "properties": {
+    "material": {
+     "type": "string",
+     "description": "What the product is made of. Include composition percentages when given."
+    },
+    "color": {
+     "type": "string",
+     "description": "Colour name. When the product has colour variants, list every variant's colour comma-separated, taken from the variants you actually saw (get_product's variants and their photos), not just the prose."
+    },
+    "size": {
+     "type": "string",
+     "description": "Size or size range. When the product has size variants, derive the range from the actual variants. Say which scale when it is regional."
+    },
+    "dimensions": {
+     "type": "string",
+     "description": "Measurements, with the unit stated in the value."
+    },
+    "weight": {
+     "type": "string",
+     "description": "Weight, with the unit stated in the value."
+    },
+    "style": {
+     "type": "string",
+     "description": "Style classification."
+    }
+   }
+  },
+  "images": {
+   "type": "array",
+   "description": "Images produced by the image step, for the listing's `images` table, in the order the tool returned them \u2014 copy its result entries verbatim, including each entry's `item_variant`. An empty array when no image step ran, when the product has no photos, or when the per-request image toggle was off.",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "kind": {
+      "type": "string",
+      "description": "What this image is, in the vocabulary your instructions give."
+     },
+     "item_variant": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "The variant item code this image belongs to, copied verbatim from the image step's result entry. Null for a listing-level image — which is the value unless the image step itself set it."
+     },
+     "source_url": {
+      "type": "string",
+      "description": "The input photo this image was derived from, when there was one."
+     },
+     "url": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "The resulting image, or null. Null is the normal case: the image step queues the work and it is rendered in the background after this run finishes, then attached to the listing. Copy null through as-is \u2014 it does not mean the image failed, and it does not belong in needs_review."
+     },
+     "note": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "What the image step said about this entry, copied verbatim when it gave one. Leave null otherwise; do not write your own explanation of a null url."
+     }
+    }
+   }
+  },
+  "variants": {
+   "type": "array",
+   "description": "One entry per variant returned by get_product; an empty array when the product has none. This is review material for the admin — nothing in it is published automatically, and you never propose prices.",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "item_variant": {
+      "type": "string",
+      "description": "The variant's item code, exactly as get_product returned it."
+     },
+     "observed": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "Option name -> value as you actually observed it for this variant, from its photo and the product text (e.g. {\"color\": \"Burgundy\"}). Only include options you can support with evidence."
+     },
+     "suggestions": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Human-readable discrepancies or improvements for the admin, e.g. the catalog says 'red' but the variant photo shows burgundy. Empty when there is nothing to flag."
+     },
+     "notes": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "Anything else the admin should know about this variant. Null when there is nothing."
+     }
+    },
+    "required": [
+     "item_variant",
+     "observed",
+     "suggestions"
+    ]
+   }
+  },
+  "needs_review": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   },
+   "description": "Human-readable names of fields that could NOT be confidently filled and must be completed by the admin before publish (e.g. 'Material', 'Product Type')."
+  },
+  "confidence": {
+   "type": "string",
+   "enum": [
+    "high",
+    "medium",
+    "low"
+   ],
+   "description": "Overall confidence in the enrichment given the quality of the source data and photos."
+  },
+  "notes": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   },
+   "description": "Anything the admin should know: assumptions made, ambiguities, a proposed new category, or conflicts between the product text and the photos."
+  }
+ },
+ "required": [
+  "title",
+  "description",
+  "category",
+  "product_type",
+  "seo_title",
+  "seo_description",
+  "shopify_tags",
+  "attributes",
+  "images",
+  "variants",
+  "needs_review",
+  "confidence"
+ ]
+}

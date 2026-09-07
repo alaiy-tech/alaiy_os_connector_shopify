@@ -1,0 +1,275 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:item_code",
+ "creation": "2026-07-23 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "source_section",
+  "item_code",
+  "status",
+  "category",
+  "product_type",
+  "confidence",
+  "col_break_source",
+  "title",
+  "content_section",
+  "description",
+  "seo_section",
+  "seo_title",
+  "seo_description",
+  "shopify_tags",
+  "attributes_section",
+  "attributes",
+  "images_section",
+  "image_status",
+  "image_error",
+  "image_tokens",
+  "images_preview",
+  "images",
+  "variants_section",
+  "variants",
+  "review_section",
+  "needs_review",
+  "notes",
+  "raw_section",
+  "attributes_json",
+  "variants_json",
+  "output_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "source_section",
+   "fieldtype": "Section Break",
+   "label": "Source"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Item",
+   "options": "Item",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "Needs Review",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nNeeds Review\nApproved"
+  },
+  {
+   "description": "Mirrors the listing's `listing_category` — an existing Shopify Category name.",
+   "fieldname": "category",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Category"
+  },
+  {
+   "description": "Mirrors the listing's `listing_product_type` — the specific noun for what the product is.",
+   "fieldname": "product_type",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Product Type"
+  },
+  {
+   "fieldname": "confidence",
+   "fieldtype": "Select",
+   "label": "Confidence",
+   "options": "\nhigh\nmedium\nlow"
+  },
+  {
+   "fieldname": "col_break_source",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title"
+  },
+  {
+   "fieldname": "content_section",
+   "fieldtype": "Section Break",
+   "label": "Listing Fields"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Text",
+   "label": "Description"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "seo_section",
+   "fieldtype": "Section Break",
+   "label": "SEO & Tags"
+  },
+  {
+   "description": "Mirrors the listing's `listing_seo_title` — the search-result snippet title, distinct from Title above.",
+   "fieldname": "seo_title",
+   "fieldtype": "Data",
+   "label": "SEO Title"
+  },
+  {
+   "description": "Mirrors the listing's `listing_seo_description` — the search-result snippet description, capped at 320 characters.",
+   "fieldname": "seo_description",
+   "fieldtype": "Small Text",
+   "label": "SEO Description"
+  },
+  {
+   "description": "One tag per line. Published to the Item's Shopify tag list (Item.sh_shopify_tags) on approval, self-healing any Shopify Tag master that does not exist locally yet.",
+   "fieldname": "shopify_tags",
+   "fieldtype": "Small Text",
+   "label": "Shopify Tags"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "attributes_section",
+   "fieldtype": "Section Break",
+   "label": "Attributes"
+  },
+  {
+   "description": "Structured product attributes. These become the listing's Shopify metafields (namespace `custom`) on approval, so edit them here before approving.",
+   "fieldname": "attributes",
+   "fieldtype": "Table",
+   "label": "Attributes",
+   "options": "Shopify Enriched Listing Attribute"
+  },
+  {
+   "description": "The attributes exactly as the agent returned them, kept for audit. The Attributes table is what gets published — editing this changes nothing.",
+   "fieldname": "attributes_json",
+   "fieldtype": "Code",
+   "label": "Attributes (JSON)",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "images_section",
+   "fieldtype": "Section Break",
+   "label": "Images"
+  },
+  {
+   "default": "Not Required",
+   "description": "Images are produced after the listing text is saved, so a listing can be ready to review while its imagery is still rendering.",
+   "fieldname": "image_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Image Status",
+   "options": "Not Required\nQueued\nRunning\nReady\nPartial\nFailed",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.image_status==\"Failed\" || doc.image_status==\"Partial\"",
+   "fieldname": "image_error",
+   "fieldtype": "Small Text",
+   "label": "Image Error",
+   "read_only": 1
+  },
+  {
+   "description": "Tokens the image service billed for this listing. Recorded here rather than on the run, because the imagery is produced after the run closes.",
+   "fieldname": "image_tokens",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Image Tokens",
+   "read_only": 1
+  },
+  {
+   "description": "Thumbnails of what the image step produced; the child table below is always the editable source.",
+   "fieldname": "images_preview",
+   "fieldtype": "HTML",
+   "label": "Image Preview"
+  },
+  {
+   "collapsible": 1,
+   "description": "Images this run produced. Source photos are never overwritten.",
+   "fieldname": "images",
+   "fieldtype": "Table",
+   "label": "Images",
+   "options": "Shopify Enriched Listing Image"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "variants_section",
+   "fieldtype": "Section Break",
+   "label": "Variants"
+  },
+  {
+   "description": "What the agent observed per variant — option values read from its own photo and text, and suggestions where they disagree with the catalog. Review material only: nothing here is pushed on approval, and the agent never renames a variant. Variant images live in the Images table above, tagged with their variant.",
+   "fieldname": "variants",
+   "fieldtype": "Table",
+   "label": "Variants",
+   "options": "Shopify Enriched Listing Variant"
+  },
+  {
+   "fieldname": "review_section",
+   "fieldtype": "Section Break",
+   "label": "Review"
+  },
+  {
+   "description": "Fields the agent could not confidently fill — complete these before approving.",
+   "fieldname": "needs_review",
+   "fieldtype": "Small Text",
+   "label": "Needs Review"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "raw_section",
+   "fieldtype": "Section Break",
+   "label": "Raw Agent Output"
+  },
+  {
+   "description": "The per-variant observations exactly as the agent returned them, kept for audit. The Variants table is the readable copy.",
+   "fieldname": "variants_json",
+   "fieldtype": "Code",
+   "label": "Variants (JSON)",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "description": "Verbatim JSON returned by the agent, kept for audit.",
+   "fieldname": "output_json",
+   "fieldtype": "Code",
+   "label": "Raw Agent Output (JSON)",
+   "options": "JSON",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-06 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Alaiy OS Connector Shopify",
+ "name": "Shopify Enriched Listing",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "track_changes": 1
+}
