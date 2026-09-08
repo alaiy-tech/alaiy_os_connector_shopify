@@ -9,14 +9,35 @@ tests pin both directions: a compliant listing must pass untouched (a validator
 with false positives would block every run), and each rule must actually fire.
 """
 
+import contextlib
+import json
 import unittest
 
-from alaiy_os_connector_shopify.listing import channel
+import frappe
+
+from alaiy_os_connector_shopify.listing import channel, handlers, matrix
 from alaiy_os_connector_shopify.listing.validate import (
     SEO_DESCRIPTION_MAX,
     SEO_TITLE_MAX,
     validate,
 )
+
+
+@contextlib.contextmanager
+def _matrix(spec):
+    """Run the block as if a client app had provided this attribute matrix.
+
+    The cache `matrix.load()` reads is set directly rather than the hook being
+    stubbed: what these tests are about is how the rest of the channel behaves
+    once a guideline exists, and going through `frappe.get_hooks` would need a
+    provider module registered under an installed app to say nothing more.
+    """
+    previous = getattr(frappe.local, "_listing_attribute_matrix", None)
+    frappe.local._listing_attribute_matrix = spec
+    try:
+        yield
+    finally:
+        frappe.local._listing_attribute_matrix = previous
 
 
 def _good_listing(**overrides):
@@ -251,3 +272,183 @@ class TestValidatorCatchesRealDefects(unittest.TestCase):
     def test_empty_required_copy(self):
         self.assertIn("category", self._defects(category=""))
         self.assertIn("product_type", self._defects(product_type=""))
+
+
+class TestPublishedMetafieldsReachTheModel(unittest.TestCase):
+    """`get_product` must show the model what the store already says.
+
+    Before it did, the agent enriched every product as if it were blank: it
+    re-derived values the store held and wrote "Not provided in source data" for
+    attributes that were live on the product. These pin the reading, not the
+    prompt — a value shown with its JSON brackets still on reaches a shopper's
+    screen, and an empty list metafield read as truthy tells the model a product
+    "has" a style whose value is the two characters `[]`.
+    """
+
+    def test_a_list_metafield_is_unwrapped(self):
+        self.assertEqual(handlers.metafield_text('["Black"]'), "Black")
+
+    def test_the_empty_shapes_are_not_values(self):
+        for empty in ("[]", "{}", "", "null", "  "):
+            self.assertIsNone(handlers.metafield_text(empty), empty)
+
+    def test_a_long_value_is_cut_not_dropped(self):
+        text = handlers.metafield_text("x" * (handlers.MAX_METAFIELD_CHARS + 50))
+        self.assertEqual(len(text), handlers.MAX_METAFIELD_CHARS + 1)
+        self.assertTrue(text.endswith("…"))
+
+    def test_namespaces_stay_apart(self):
+        """A key is only unique within a namespace — `custom.style` and
+        `uploadify_product.style` are two different facts."""
+        listing = {"metafields": [
+            {"namespace": "custom", "key": "style", "value": "Dress/Formal"},
+            {"namespace": "uploadify_product", "key": "style", "value": "[]"},
+            {"namespace": "uploadify_product", "key": "papers", "value": "Yes"},
+        ]}
+        self.assertEqual(
+            handlers.listing_metafields(listing),
+            {"custom": {"style": "Dress/Formal"}, "uploadify_product": {"papers": "Yes"}},
+        )
+
+    def test_published_attributes_is_the_namespace_approval_overwrites(self):
+        listing = {"metafields": [
+            {"namespace": handlers.ATTRIBUTE_NAMESPACE, "key": "material", "value": "18K Rose Gold"},
+            {"namespace": "other", "key": "material", "value": "Brass"},
+        ]}
+        self.assertEqual(handlers.published_attributes(listing), {"material": "18K Rose Gold"})
+
+
+class TestNothingTheModelSendsFailsTheSave(unittest.TestCase):
+    """One rejected field must not cost the listing.
+
+    A `confidence` of "high, because the photos agree" used to fail the save; the
+    model rebuilt the payload from scratch and its retry dropped six of the nine
+    attributes it had already got right. So both clamps read the DocType's own
+    meta — never a duplicated literal — and report what they corrected.
+    """
+
+    def test_a_qualified_enum_keeps_its_leading_token(self):
+        value, rejected = handlers._select_value(
+            channel.ENRICHED_DOCTYPE, "confidence", "high, because the photos agree"
+        )
+        self.assertEqual(value, "high")
+        self.assertEqual(rejected, "high, because the photos agree")
+
+    def test_a_clean_enum_is_not_reported(self):
+        self.assertEqual(
+            handlers._select_value(channel.ENRICHED_DOCTYPE, "confidence", "high"),
+            ("high", None),
+        )
+
+    def test_an_unrecognisable_enum_is_dropped_and_reported(self):
+        value, rejected = handlers._select_value(
+            channel.ENRICHED_DOCTYPE, "confidence", "reasonably sure"
+        )
+        self.assertIsNone(value)
+        self.assertEqual(rejected, "reasonably sure")
+
+    def test_an_overlong_title_is_cut_and_its_real_length_reported(self):
+        """140 is Data's own default, which is what applies here: the DocType
+        declares no explicit length on `title`, so `_clamp_data`'s fallback is
+        the cap that actually bites. Pinned rather than read back from the meta,
+        so raising the fallback without meaning to fails here."""
+        self.assertFalse(frappe.get_meta(channel.ENRICHED_DOCTYPE).get_field("title").length)
+
+        value, was = handlers._clamp_data(channel.ENRICHED_DOCTYPE, "title", "x" * 150)
+        self.assertEqual(len(value), 140)
+        self.assertEqual(was, 150)
+
+    def test_a_title_that_fits_is_not_reported(self):
+        self.assertEqual(
+            handlers._clamp_data(channel.ENRICHED_DOCTYPE, "title", "A short title"),
+            ("A short title", None),
+        )
+
+
+class TestAPlaceholderIsNotAValue(unittest.TestCase):
+    """"Not provided in source data" is a note about the absence of a fact.
+
+    Left in the attributes table it counts as filled, hides the gap from the
+    completeness check, and — because the metafield sync only skips falsy values
+    — publishes to the live storefront on approval.
+    """
+
+    def test_the_notes_about_absence(self):
+        for value in ("Not provided in source data", "TBD", "unknown",
+                      "To be determined upon manual review", "N/A", "Not applicable"):
+            self.assertTrue(matrix.is_placeholder(value), value)
+
+    def test_real_answers_survive(self):
+        for value in ("18K Rose Gold", "36.0 mm", "Small Second", "No", "Yes"):
+            self.assertFalse(matrix.is_placeholder(value), value)
+
+    def test_no_length_heuristic(self):
+        """`features` and `complications` are legitimately long, so "it reads
+        like a sentence" would blank real answers."""
+        long_answer = (
+            "Manual-wind movement with small seconds at six, blued steel hands and "
+            "a snap-on case back finished with Geneva stripes"
+        )
+        self.assertFalse(matrix.is_placeholder(long_answer))
+
+
+class TestTheSellersRulesAreTheSellers(unittest.TestCase):
+    """The matrix half, with no client app installed — which is every bench today.
+
+    All of it has to degrade to "no matrix" rather than to an empty rule set that
+    silently enforces nothing, and the two generic helpers have to work either
+    way because they are text handling, not policy.
+    """
+
+    def test_no_provider_means_no_matrix(self):
+        self.assertIsNone(matrix.load())
+        self.assertEqual(matrix.profiles(), [])
+        self.assertIsNone(matrix.category_field())
+        self.assertEqual(matrix.mandatory("Watches"), [])
+
+    def test_no_opinion_is_not_an_empty_allow_list(self):
+        """None and empty mean opposite things: None allows anything, a set is
+        closed. Confusing them drops every good value."""
+        self.assertIsNone(matrix.applicable("Watches"))
+
+    def test_the_channel_spec_gains_no_field_it_has_no_values_for(self):
+        fields = channel.channel()["spec"]["fields"]
+        self.assertNotIn("watch_category", fields["properties"])
+        self.assertEqual(
+            sorted(fields["required"]),
+            sorted(json.loads(
+                (channel._DIR / "fields.json").read_text(encoding="utf-8"))["required"]),
+        )
+
+    def test_the_same_value_in_different_clothes(self):
+        self.assertTrue(matrix.same_value("18K rose gold", "18K Rose Gold"))
+        self.assertTrue(matrix.same_value("Small seconds", "Small Seconds"))
+
+    def test_word_order_and_numeric_punctuation_are_not_normalised(self):
+        """A reviewer may well prefer one wording, and "1.68 ct" is not "168 ct"."""
+        self.assertFalse(matrix.same_value("Leather, Black", "Black leather"))
+        self.assertFalse(matrix.same_value("1.68 ct", "168 ct"))
+
+    def test_only_the_longest_label_on_a_line_matches(self):
+        """A plain substring test makes "Dial Color (not visible)" look like the
+        `color` attribute too, and then `Color` is reported as covered."""
+        labels = {"color": "Color", "dial_color": "Dial Color",
+                  "size": "Size", "case_size": "Case Size"}
+        with _matrix({"field_labels": labels}):
+            self.assertEqual(matrix.match_keys(["Dial Color (not visible)"]), ["dial_color"])
+            self.assertEqual(matrix.match_keys(["Case Size (see Dimensions)"]), ["case_size"])
+
+    def test_a_provided_matrix_puts_the_clients_field_in_front_of_the_model(self):
+        spec = {
+            "category_field": "watch_category",
+            "category_field_label": "Watch Category",
+            "field_labels": {"material": "Material"},
+            "profiles": {"Watches": {"mandatory": ["material"], "optional": []}},
+        }
+        with _matrix(spec):
+            fields = channel.channel()["spec"]["fields"]
+            self.assertIn("watch_category", fields["properties"])
+            self.assertIn("watch_category", fields["required"])
+            self.assertEqual(fields["properties"]["watch_category"]["enum"], ["Watches"])
+            # The one confusion worth spelling out: this is not `category`.
+            self.assertIn("NOT", fields["properties"]["watch_category"]["description"])
