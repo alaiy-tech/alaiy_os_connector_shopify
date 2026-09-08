@@ -64,7 +64,10 @@ def _run_orders_pull(log, query_string, skip_existing=False):
     cheap exists-check before upsert -- only the historical import needs it,
     and only it emits the "imported N / already existed" summary line.
     """
-    if has_active_sync("orders", exclude_name=log.name):
+    # Per store: keyed bench-wide, one seller's run answers "already
+    # syncing" for everybody and the rest silently skip themselves.
+    if has_active_sync("orders", exclude_name=log.name,
+                       connection=log.get("connection")):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another orders sync is already running."
@@ -177,7 +180,7 @@ def import_existing_orders(date_from=None, date_to=None, connection=None):
     a real store's history can be thousands of orders and must never run
     inline on the request that clicked the button.
     """
-    if has_active_sync("orders"):
+    if has_active_sync("orders", connection=connection):
         return {"status": "already_running", "message": "An orders sync is already in progress."}
 
     if not date_from and not date_to:

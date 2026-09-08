@@ -42,9 +42,16 @@ def check_and_enqueue():
                 message=frappe.get_traceback(),
             )
 
-    settings = connections.enabled_connection()
-    if not settings:
-        return
+    # Once per enabled store rather than once for "the" enabled store. Each
+    # store's failure is logged against that store and the rest still run --
+    # one seller's expired token or unreachable shop must not stop everybody
+    # else's inventory push, which is exactly what a single shared pass would
+    # have done.
+    connections.for_each("inventory and webhook check", _check_one_store)
+
+
+def _check_one_store(name):
+    settings = frappe.get_cached_doc(connections.DOCTYPE, name)
 
     # Each stage is independent and must not be able to take the others down.
     # Confirmed live: a site ran for days with ZERO webhooks registered while
@@ -54,16 +61,17 @@ def check_and_enqueue():
     # registered all 17 topics immediately.
     #
     # The token refresh that used to sit here is now the per-connection loop
-    # above, which carries its own isolation: it has to run for every store
-    # holding credentials, not only the enabled one.
+    # in check_and_enqueue, which carries its own isolation: it has to run for
+    # every store holding credentials, not only the enabled ones.
     if (settings.sh_inventory_sync_direction or "") == "Alaiy OS → Shopify (two-way)":
         try:
             _maybe_enqueue_inventory(
                 settings.sh_inventory_sync_interval or "Disabled", settings
             )
         except Exception:
-            frappe.log_error(title="Shopify: inventory enqueue check failed",
-                             message=frappe.get_traceback())
+            frappe.log_error(
+                title=f"Shopify: inventory enqueue check failed ({name})"[:140],
+                message=frappe.get_traceback())
 
     _maybe_ensure_webhooks(settings)
 
@@ -166,4 +174,54 @@ def _maybe_enqueue_inventory(interval_setting, settings):
         timeout=3600,
         trigger="scheduled",
         connection=settings.name,
+    )
+
+
+# ── Scheduled fan-out wrappers ────────────────────────────────────────────
+#
+# The cache syncs below are whitelisted endpoints as well as scheduled jobs,
+# and the two callers mean different things by "no connection". From the desk
+# it means "my store", which connections.resolve answers. From the scheduler
+# it means "every store", and resolving there would sync one seller's tags and
+# silently leave everyone else's stale.
+#
+# Rather than overload the endpoints, hooks.py points at these.
+
+
+def scheduled_sync_tags():
+    """Daily tag cache refresh, once per enabled store."""
+    from alaiy_os_connector_shopify.shopify.product.tags import sync_shopify_tags
+
+    connections.for_each("tag cache", lambda name: sync_shopify_tags(connection=name))
+
+
+def scheduled_sync_collections():
+    """Daily collection cache refresh, once per enabled store."""
+    from alaiy_os_connector_shopify.shopify.product.collections import (
+        sync_shopify_collections,
+    )
+
+    connections.for_each(
+        "collection cache",
+        lambda name: sync_shopify_collections(trigger="scheduled", connection=name),
+    )
+
+
+def scheduled_sync_locations():
+    """Daily location cache refresh, once per enabled store."""
+    from alaiy_os_connector_shopify.shopify.inventory_sync import sync_shopify_locations
+
+    connections.for_each(
+        "location cache",
+        lambda name: sync_shopify_locations(trigger="scheduled", connection=name),
+    )
+
+
+def scheduled_inventory_pull():
+    """The five-minute pull leg, once per enabled store."""
+    from alaiy_os_connector_shopify.shopify.inventory_sync import run_inventory_pull
+
+    connections.for_each(
+        "inventory pull",
+        lambda name: run_inventory_pull(trigger="scheduled", connection=name),
     )

@@ -519,12 +519,19 @@ def handle_inventory_level_webhook(topic, payload, connection=None):
         )
         return
 
-    item_code = frappe.db.get_value("Item", {"sh_shopify_inventory_item_id": inventory_item_id}, "name")
+    # Scoped to the store the webhook came from. A Shopify inventory item id
+    # is only unique inside one shop, so unscoped this resolves another
+    # seller's Item and writes this store's quantity onto their stock.
+    item_code = frappe.db.get_value(
+        "Item",
+        owned_by("Item", connection,
+                 {"sh_shopify_inventory_item_id": inventory_item_id}),
+        "name")
     if not item_code:
         frappe.logger().info(f"Shopify inventory_levels/update: no local Item for inventory_item_id={inventory_item_id}")
         return
 
-    warehouse = _resolve_warehouse_for_location(location_id)
+    warehouse = _resolve_warehouse_for_location(location_id, connection)
     if not warehouse:
         frappe.log_error(
             title="Shopify inventory_levels/update: no warehouse mapped for location",
@@ -546,7 +553,9 @@ def handle_inventory_level_webhook(topic, payload, connection=None):
     # Shopify sends these often, so superseding beats accumulating.
     existing = frappe.db.get_value(
         "Shopify Inventory Update",
-        {"item_code": item_code, "warehouse": warehouse, "status": "Pending"},
+        owned_by("Shopify Inventory Update", connection,
+                 {"item_code": item_code, "warehouse": warehouse,
+                  "status": "Pending"}),
         "name",
     )
     if existing:
@@ -558,6 +567,7 @@ def handle_inventory_level_webhook(topic, payload, connection=None):
     else:
         frappe.get_doc({
             "doctype": "Shopify Inventory Update",
+            "connection": getattr(connection, "name", connection),
             "item_code": item_code,
             "warehouse": warehouse,
             "shopify_qty": flt(available),
@@ -570,7 +580,7 @@ def handle_inventory_level_webhook(topic, payload, connection=None):
         f"Shopify inventory_levels/update: queued {item_code}@{warehouse} = {available}")
 
 
-def run_inventory_pull(trigger="manual", log_name=None):
+def run_inventory_pull(trigger="manual", log_name=None, connection=None):
     """PULL leg (Shopify -> Alaiy OS). Drain queued inventory updates into
     audited Stock Reconciliations.
 
@@ -582,10 +592,15 @@ def run_inventory_pull(trigger="manual", log_name=None):
     A queued row whose quantity already matches the current Bin is marked
     Applied without a reconciliation -- there is nothing to correct, and an
     empty Stock Reconciliation would just be noise.
+
+    `connection` drains one store's queue. The rows are per store -- each was
+    queued by that store's webhook -- and one Stock Reconciliation must not
+    mix two sellers' corrections, since it posts as a single stock document.
     """
     pending = frappe.get_all(
         "Shopify Inventory Update",
-        filters={"status": "Pending"},
+        filters=owned_by("Shopify Inventory Update", connection,
+                         {"status": "Pending"}),
         fields=["name", "item_code", "warehouse", "shopify_qty"],
         limit_page_length=0,
     )
@@ -734,11 +749,19 @@ def apply_pulled_stock(corrections):
             "skipped": skipped}
 
 
-def _resolve_warehouse_for_location(location_id):
+def _resolve_warehouse_for_location(location_id, connection=None):
     """location_id here is Shopify's REST numeric id (what webhooks carry),
     matched against Shopify Location.sh_location_id -- distinct from the
-    GraphQL gid the outbound push uses."""
-    location = frappe.db.get_value("Shopify Location", {"sh_location_id": location_id}, "name")
+    GraphQL gid the outbound push uses.
+
+    `connection` scopes it to one store. Shopify location ids are small
+    integers assigned per shop, so two sellers both have a location 1 --
+    unscoped, this maps one seller's location to the other's warehouse and
+    the stock lands in the wrong building."""
+    location = frappe.db.get_value(
+        "Shopify Location",
+        owned_by("Shopify Location", connection, {"sh_location_id": location_id}),
+        "name")
     if not location:
         return None
     warehouse = frappe.db.get_value(
@@ -814,12 +837,20 @@ def enqueue_reconcile_inventory():
     so local stock drifted with no backstop under the webhook and no visible
     failure beyond one Scheduled Job Log row.
     """
-    frappe.enqueue(
-        "alaiy_os_connector_shopify.shopify.inventory_sync.reconcile_inventory_from_shopify",
-        queue="long",
-        timeout=3600,
-        job_id="shopify_reconcile_inventory",
-        deduplicate=True,
+    # One queued job per store. The job_id carries the store too: with
+    # deduplicate=True a single shared id means the first store's queued sweep
+    # suppresses every other store's, and only one seller's stock is ever
+    # reconciled.
+    connections.for_each(
+        "inventory reconcile",
+        lambda name: frappe.enqueue(
+            "alaiy_os_connector_shopify.shopify.inventory_sync.reconcile_inventory_from_shopify",
+            queue="long",
+            timeout=3600,
+            job_id=f"shopify_reconcile_inventory_{name}",
+            deduplicate=True,
+            connection=name,
+        ),
     )
 
 
@@ -846,7 +877,7 @@ query ItemsInventory($ids: [ID!]!) {
 _INVENTORY_BATCH = 50
 
 
-def pull_stock_for_items(item_codes, dry_run=False):
+def pull_stock_for_items(item_codes, dry_run=False, connection=None):
     """Refresh these specific items' stock from Shopify. Scoped, not a sweep.
 
     reconcile_inventory_from_shopify walks the whole catalogue, which is right
@@ -904,7 +935,8 @@ def pull_stock_for_items(item_codes, dry_run=False):
     unlinked = [r.name for r in rows if not r.sh_shopify_inventory_item_id]
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    connection = connections.resolve(connection)
+    client = ShopifyGraphQLClient(connection)
 
     corrections = []
     unmapped = []
@@ -933,7 +965,7 @@ def pull_stock_for_items(item_codes, dry_run=False):
                 quantities = level.get("quantities") or []
                 if not location_id or not quantities:
                     continue
-                warehouse = _resolve_warehouse_for_location(str(location_id))
+                warehouse = _resolve_warehouse_for_location(str(location_id), connection)
                 if not warehouse:
                     # Shopify holds stock at a location this site has no
                     # warehouse for. Reported, never guessed at -- applying it
@@ -976,7 +1008,7 @@ def pull_stock_for_items(item_codes, dry_run=False):
     return result
 
 
-def reconcile_inventory_from_shopify(dry_run=False, query=None):
+def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None):
     """PULL leg, full sweep. Ask Shopify for every linked product's current
     per-location quantity and apply the differences as audited Stock
     Reconciliations.
@@ -1014,14 +1046,20 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None):
     # A windowed run skips the shared slot on purpose: the point of taking a
     # window is to run several at once, and they cannot collide when each one
     # covers a different slice of the catalogue.
-    if not dry_run and not query and has_active_sync("inventory"):
+    connection = connections.resolve(connection)
+
+    # Per store, not bench-wide: has_active_sync already keys on the
+    # connection, the call just never passed one -- so one seller's running
+    # push answered "yes, something is running" for everybody and every other
+    # store's sweep skipped itself.
+    if not dry_run and not query and has_active_sync("inventory", connection=connection):
         return {"skipped": "another inventory sync is already running"}
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_STOCK_QUERY
     from alaiy_os_connector_shopify.shopify.product.variants import _variant_location_levels
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connection)
     corrections = []
     unmapped_locations = set()
     unknown_variants = 0
@@ -1042,8 +1080,13 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None):
                 variant_id = variant.get("legacyResourceId")
                 if not variant_id:
                     continue
+                # Scoped: unscoped, this sweep reads one store's quantities
+                # from Shopify and writes them onto another store's Item.
                 item_code = frappe.db.get_value(
-                    "Item", {"sh_shopify_variant_id": str(variant_id)}, "name")
+                    "Item",
+                    owned_by("Item", connection.name,
+                             {"sh_shopify_variant_id": str(variant_id)}),
+                    "name")
                 if not item_code:
                     unknown_variants += 1
                     continue

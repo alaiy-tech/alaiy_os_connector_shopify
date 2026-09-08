@@ -49,7 +49,7 @@ def _fit_item_name(name: str) -> str:
     return (name or "")[:_ITEM_NAME_MAX_LENGTH]
 
 from alaiy_os_connector_shopify import connections
-from alaiy_os_connector_shopify.shopify.scoping import owned_by
+from alaiy_os_connector_shopify.shopify.scoping import item_code_for, owned_by
 from alaiy_os_connector_shopify.shopify import destructive
 
 
@@ -113,7 +113,8 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None, wi
     # manual console unlock every single time a worker was killed during
     # testing. Two guards for one job, only one of which self-heals, was
     # the actual bug. Removed the fragile one.
-    if has_active_sync("products", exclude_name=log.name):
+    if has_active_sync("products", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another products sync is already running."
@@ -232,7 +233,7 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None, wi
     return log.name
 
 
-def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
+def run_missing_product_import(trigger="manual", log_name=None, statuses=None, connection=None):
     """
     Catch-up import: only products never linked locally at all -- checked
     by Shopify product id BEFORE any real work (Item lookups, fingerprint
@@ -254,9 +255,10 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
         alaiy_os_connector_shopify.shopify.product.importer.run_missing_product_import
     """
     allowed_statuses = status_map.parse_statuses(statuses)
-    log = load_or_create_log("products", trigger, log_name)
+    log = load_or_create_log("products", trigger, log_name, connection=connection)
 
-    if has_active_sync("products", exclude_name=log.name):
+    if has_active_sync("products", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another products sync is already running."
@@ -280,7 +282,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
         _append_log(log, f"{len(existing_ids)} products already linked locally -- these will be skipped untouched.")
 
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connection)
         # Let Shopify filter by status rather than fetching every product
         # and discarding most locally. None when no explicit choice was
         # made, which leaves the query unfiltered exactly as before.
@@ -796,6 +798,12 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
         opt_title = (variant.get("option1") or variant.get("title") or "").strip()
         sku = f"{template_name}-{opt_title}" if opt_title else f"{template_name}-{v_id}"
 
+    # The Item code this store's SKU maps to. On the default store that is the
+    # bare SKU exactly as before; a second store gets its own namespaced code,
+    # because item_code is Item's primary key and two sellers stocking the
+    # same SKU cannot share one row.
+    sku = item_code_for(settings, sku)
+
     if frappe.db.exists("Item", sku):
         # Repoint whenever Shopify's ids differ from what's stored, not only
         # when the item has none. A merchant deleting a product and recreating
@@ -805,8 +813,27 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
         # the item keeps a dead product id, and the new template ends up with
         # zero children. Confirmed live on a duplicate-product cleanup.
         current = frappe.db.get_value(
-            "Item", sku, ["sh_shopify_variant_id", "sh_shopify_product_id", "variant_of"], as_dict=True
+            "Item", sku,
+            ["sh_shopify_variant_id", "sh_shopify_product_id", "variant_of",
+             "sh_shopify_connection"],
+            as_dict=True,
         ) or {}
+
+        # Never repoint across stores. Namespacing makes a collision unlikely,
+        # but an Item can still carry another store's ids -- imported before
+        # this existed, or hand-edited -- and rewriting them here would hand
+        # that seller's product to this one: their next stock push would go to
+        # this store's shop. Refusing leaves the row alone and reports it.
+        owner = current.get("sh_shopify_connection")
+        this_store = getattr(settings, "name", settings)
+        if owner and this_store and owner != this_store:
+            frappe.log_error(
+                title=f"Shopify: {sku} belongs to another store"[:140],
+                message=(f"Item {sku} is owned by connection {owner}, so the import "
+                         f"for {this_store} left it untouched rather than repointing "
+                         f"it at product {product_id}."),
+            )
+            return None
         if v_id and current.get("sh_shopify_variant_id") != v_id:
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", v_id)
         if product_id and current.get("sh_shopify_product_id") != product_id:
@@ -816,6 +843,8 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
         # from everything that walks the new one's children.
         if template_name and current.get("variant_of") and current["variant_of"] != template_name:
             frappe.db.set_value("Item", sku, "variant_of", template_name)
+        if this_store and not owner:
+            frappe.db.set_value("Item", sku, "sh_shopify_connection", this_store)
         if v_id:
             listing_resolver.set_product_id(template_name, product_id)
             listing_resolver.set_variant_id(template_name, sku, v_id)

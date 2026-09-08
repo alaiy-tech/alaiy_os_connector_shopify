@@ -70,3 +70,49 @@ def owned_by(doctype: str, connection, filters: dict = None) -> dict:
 		return filters
 	filters[connection_field(doctype)] = getattr(connection, "name", connection)
 	return filters
+
+
+# The store whose SKUs stay bare. Matches the id the upgrade patch gives the
+# connection it migrates out of the old Single, so every bench that has ever
+# run this connector keeps its Item codes unchanged.
+DEFAULT_ITEM_CODE_CONNECTION = "default"
+
+
+def item_code_for(connection, sku: str) -> str:
+    """
+    The Item code a store's SKU maps to.
+
+    item_code is Item's primary key, and the importer used the raw Shopify SKU
+    as-is. Two sellers both stocking TSHIRT-RED-M therefore wanted the same
+    row, and the importer resolved that by repointing whichever Item already
+    existed at the newer store's Shopify ids -- so the first seller's item
+    silently started pushing its stock to the second seller's shop.
+
+    Adding a connection field could not fix that on its own: two rows cannot
+    share a primary key however many other columns they carry. The key itself
+    has to differ.
+
+    The default store keeps bare SKUs. That is not cosmetic -- every existing
+    install is a single-store bench whose Item codes appear in Sales Orders,
+    Stock Entries, price lists, barcodes, reports and other apps' links, and
+    renaming them is not a migration anyone should run. So the first store's
+    codes are exactly what they are today, and only stores added afterwards
+    take a prefix.
+
+    A blank SKU is handed back untouched. The importer has its own fallbacks
+    for that case and this must not turn "no SKU" into a code that looks real.
+    """
+    if not sku:
+        return sku
+    name = getattr(connection, "name", connection)
+    if not name or name == DEFAULT_ITEM_CODE_CONNECTION:
+        return sku
+    return f"{name}::{sku}"
+
+
+
+def sku_from_item_code(item_code: str) -> str:
+    """The Shopify SKU behind an Item code, prefix removed if it has one."""
+    if not item_code or "::" not in item_code:
+        return item_code
+    return item_code.split("::", 1)[1]

@@ -94,16 +94,16 @@ scheduler_events = {
             #
             # Cheap to run often: it only reads a queue table and does nothing
             # at all when that queue is empty.
-            "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
+            "alaiy_os_connector_shopify.shopify.sync_jobs.scheduled_inventory_pull",
         ],
     },
     "hourly": [
         "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only",
     ],
     "daily": [
-        "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
-        "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_collections",
-        "alaiy_os_connector_shopify.shopify.inventory_sync.sync_shopify_locations",
+        "alaiy_os_connector_shopify.shopify.sync_jobs.scheduled_sync_tags",
+        "alaiy_os_connector_shopify.shopify.sync_jobs.scheduled_sync_collections",
+        "alaiy_os_connector_shopify.shopify.sync_jobs.scheduled_sync_locations",
         # Full inventory sweep, the backstop under the webhook. A dropped
         # webhook (or one that arrived while the connector was disabled)
         # otherwise leaves local stock silently wrong forever, since nothing

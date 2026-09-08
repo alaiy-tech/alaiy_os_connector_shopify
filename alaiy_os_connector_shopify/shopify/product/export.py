@@ -29,6 +29,8 @@ import time
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify.shopify.sync_guard import append_log as _append_export_log
 
 from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
@@ -79,7 +81,8 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None, c
 
     log = load_or_create_log("product_export", trigger, log_name, connection=connection)
 
-    if has_active_sync("product_export", exclude_name=log.name):
+    if has_active_sync("product_export", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = frappe.utils.now_datetime()
         log.error_message = "Skipped: another product export is already running."
@@ -231,7 +234,8 @@ def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None, con
 
     log = load_or_create_log("listing_bulk_enable", trigger, log_name, connection=connection)
 
-    if has_active_sync("listing_bulk_enable", exclude_name=log.name):
+    if has_active_sync("listing_bulk_enable", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = frappe.utils.now_datetime()
         log.error_message = "Skipped: another bulk-enable run is already in progress."
@@ -641,14 +645,21 @@ def push_changed_items_only(connection=None):
     """
     import time
 
-    if connections.enabled_connection() is None:
+    # Once per enabled store. Called from the scheduler with no argument, so
+    # without the fan-out this pushed every store's listings under whichever
+    # store happened to be enabled -- and the 240s budget below was shared
+    # across all of them, so the last store in the list never got a turn.
+    if connection is None:
+        connections.for_each("hourly product push", push_changed_items_only)
         return
+
+    connection = connections.resolve(connection)
 
     _clear_stale_locks()
 
     sync_items = frappe.get_all(
         "Shopify Product Listing",
-        filters={"is_enabled": 1},
+        filters=owned_by("Shopify Product Listing", connection.name, {"is_enabled": 1}),
         pluck="item",
     )
     # Time-box under the RQ 300s job timeout: each push commits its own
@@ -664,6 +675,9 @@ def push_changed_items_only(connection=None):
             stopped_early = True
             break
         try:
+            # push_item's second parameter is a status filter, not a store.
+            # The Listings were already narrowed to this connection above, so
+            # the items in this loop are this store's by construction.
             push_item(code)
             pushed += 1
         except Exception:
