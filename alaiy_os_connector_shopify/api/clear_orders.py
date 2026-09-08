@@ -186,6 +186,9 @@ def run(dry_run=True, since=None, until=None, limit=None, show=10, ack_multi_sto
         frappe.flags.in_test = False
         frappe.db.commit()
 
+    # Bench-wide on purpose: this run deletes bench-wide (that is what the
+    # guard above makes the operator acknowledge), so the number left has to
+    # be counted the same way or it would under-report what is still there.
     remaining = frappe.db.count("Sales Order", {"sh_shopify_order_id": ["is", "set"]})
     print(f"[clear_orders] deleted {done}, failed {failed}; "
           f"{remaining} Shopify Sales Order(s) left on the site")

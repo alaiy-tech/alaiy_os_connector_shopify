@@ -1,5 +1,7 @@
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify.shopify.product import status as status_map
 from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
 
@@ -150,20 +152,29 @@ def get_sync_status(sync_type=None, connection=None):
 
 
 @frappe.whitelist()
-def get_dashboard_stats():
+def get_dashboard_stats(connection=None):
     """
     Stat cards for the Shopify desk page -- plain counts, no Shopify API
     calls, so this stays fast even with the catalog at 20k+ items.
 
-    Bench-wide, so there is no store to scope to -- but the numbers are the
-    connector's, and frappe.db.count answers regardless of who is asking, so the
-    endpoint is gated on being allowed to read a Shopify Connection at all.
+    Scoped to one store. These counts used to be bench-wide, which read the
+    same on a bench with one store and became somebody else's numbers on a
+    bench with two -- a seller opening the page would see the total catalogue
+    and order count of every other seller sharing the site.
+
+    `connection` names the store; omitted, it resolves the usual way, which on
+    a single-store bench is the one store and on a multi-store bench is a
+    refusal rather than a guess. Item counts stay unfiltered for the totals
+    that are genuinely about the whole site (items_total, and the pending
+    count, which is "local items not yet pushed anywhere").
     """
-    require_access()
+    connection = connections.resolve(connection)
+    require_access(connection.name)
+    store = connection.name
     items_total = frappe.db.count("Item")
     templates_total = frappe.db.count("Item", {"variant_of": ["in", ["", None]]})
-    templates_pushed = frappe.db.count("Item", {
-        "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["is", "set"]})
+    templates_pushed = frappe.db.count("Item", owned_by("Item", store, {
+        "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["is", "set"]}))
     templates_pending = frappe.db.count("Item", {
         "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["in", ["", None]], "disabled": 0})
 
@@ -174,11 +185,19 @@ def get_dashboard_stats():
     # Listing Variant row is the actual source of truth for "how many
     # variants we're tracking", regardless of which pattern a given site
     # uses underneath.
-    variants_total = frappe.db.count("Shopify Listing Variant")
-    variants_pushed = frappe.db.count("Shopify Listing Variant", {"sh_shopify_variant_id": ["is", "set"]})
+    # Listing Variant is a child table, so the store is on its parent.
+    own_listings = frappe.get_all(
+        "Shopify Product Listing",
+        filters=owned_by("Shopify Product Listing", store), pluck="name")
+    variants_total = frappe.db.count(
+        "Shopify Listing Variant", {"parent": ["in", own_listings]})
+    variants_pushed = frappe.db.count("Shopify Listing Variant", {
+        "parent": ["in", own_listings], "sh_shopify_variant_id": ["is", "set"]})
 
-    listings_total = frappe.db.count("Shopify Product Listing")
-    listings_enabled = frappe.db.count("Shopify Product Listing", {"is_enabled": 1})
+    listings_total = len(own_listings)
+    listings_enabled = frappe.db.count(
+        "Shopify Product Listing",
+        owned_by("Shopify Product Listing", store, {"is_enabled": 1}))
 
     # Blank reads as Active -- same rule status.to_shopify/export_allows use for
     # an unset field, so these three always add up to templates_total.
@@ -192,10 +211,12 @@ def get_dashboard_stats():
     # Push and pull both stamp the same sh_shopify_order_id field -- nothing
     # in the schema distinguishes which direction created the link, so this
     # is "synced with Shopify" overall, not split by direction.
-    orders_synced = frappe.db.count("Sales Order", {"sh_shopify_order_id": ["is", "set"]})
+    orders_synced = frappe.db.count("Sales Order", owned_by(
+        "Sales Order", store, {"sh_shopify_order_id": ["is", "set"]}))
 
     last_runs = frappe.get_list(
         "Shopify Sync Log",
+        filters={"connection": store},
         fields=["sync_type", "status", "started_at"],
         order_by="started_at desc",
         limit=50,

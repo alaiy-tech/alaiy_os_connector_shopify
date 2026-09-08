@@ -4,6 +4,8 @@ order_sync.py, unchanged.
 """
 
 import frappe
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from frappe.utils import now_datetime
 
 from alaiy_os_connector_shopify.shopify.sync_guard import (
@@ -92,7 +94,13 @@ def _run_orders_pull(log, query_string, skip_existing=False):
                 processed += 1
                 if skip_existing:
                     order_id = str(order.get("id", ""))
-                    if order_id and frappe.db.exists("Sales Order", {"sh_shopify_order_id": order_id}):
+                    # Scoped to the store this run is for -- the log carries
+                    # it. Unscoped, another seller's order 1001 counts as
+                    # proof that this one is already imported, and it is
+                    # skipped forever.
+                    if order_id and frappe.db.exists("Sales Order", owned_by(
+                            "Sales Order", log.get("connection"),
+                            {"sh_shopify_order_id": order_id})):
                         skipped_existing += 1
                         continue
                 try:
