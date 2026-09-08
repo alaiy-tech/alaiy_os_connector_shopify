@@ -11,6 +11,7 @@ and how to read and write a listing -- arrives from here, through the
     listing/fields.json       Shopify's own output fields
     listing/validate.py       the same rules again, in Python, enforced on save
     listing/handlers.py       reading a product and writing the enriched one
+    listing/matrix.py         the seller's own attribute rules, from a hook
     doctype/shopify_enriched_listing/   the review record itself
 
 ## Why this lives in the connector
@@ -68,6 +69,17 @@ does not suppress them -- which is why `health` is an optional capability in the
 contract rather than part of it. `pack_meta.py`'s `get_listing_gaps` is the
 nearest thing and it is deliberately our own judgement, not the channel's.
 
+## The seller's attribute rules are not ours either
+
+What "mandatory" means for a luxury watch marketplace is nothing like what it
+means for a homeware store, so which attributes a listing must carry is the
+seller's policy, not this channel's. It arrives from whichever client app is
+installed through the `listing_attribute_matrix` hook, and `matrix.py` is the
+only module here that knows that hook exists. `_fields()` below adds the
+client's own category field to what the model is shown; `handlers.save_listing`
+is what enforces the rest. A bench with no client app gets neither, and the
+channel works exactly as it did.
+
 ## Why validate() and not a stricter schema
 
 JSON Schema cannot express most of what makes a Shopify listing bad. It can say
@@ -86,6 +98,8 @@ from pathlib import Path
 
 import frappe
 
+from alaiy_os_connector_shopify.listing import matrix
+
 _APP = "alaiy_os_connector_shopify"
 _DIR = Path(__file__).resolve().parent
 _SELF = f"{_APP}.listing.channel"
@@ -94,6 +108,42 @@ CHANNEL = "shopify"
 LABEL = "Shopify"
 LISTING_DOCTYPE = "Shopify Product Listing"
 ENRICHED_DOCTYPE = "Shopify Enriched Listing"
+
+
+def _fields():
+    """
+    fields.json plus whatever the installed client's field guideline adds.
+
+    One thing so far: the client's own category field, whose name and allowed
+    values are the client's, not ours (see matrix.py). It decides which
+    attributes are mandatory, so the model has to be able to declare it -- and a
+    site with no matrix gets the vanilla fields and no field it has no values
+    for.
+
+    The `enum` here is a HINT, not a guard. These fields reach the model as a
+    `get_channel_spec` tool result, and then as a function declaration whose
+    OpenAPI subset does not reliably enforce `enum` -- so `save_listing` clamps
+    whatever actually arrives rather than trusting this.
+    """
+    fields = json.loads((_DIR / "fields.json").read_text(encoding="utf-8"))
+
+    profiles = matrix.profiles()
+    if not profiles:
+        return fields
+
+    field = matrix.category_field()
+    fields["properties"][field] = {
+        "type": "string",
+        "enum": list(profiles),
+        "description": (
+            f"The {matrix.category_label()} this product belongs to — exactly one of "
+            f"{', '.join(profiles)}, copied verbatim. It decides which attributes are "
+            "mandatory, so settle it before filling anything else. This is NOT "
+            "`category`: that one is the Shopify taxonomy path."
+        ),
+    }
+    fields["required"] = list(fields["required"]) + [field]
+    return fields
 
 
 def channel():
@@ -107,7 +157,7 @@ def channel():
         "source_doctype": LISTING_DOCTYPE,
         "enriched_doctype": ENRICHED_DOCTYPE,
         "spec": {
-            "fields": json.loads((_DIR / "fields.json").read_text(encoding="utf-8")),
+            "fields": _fields(),
             "rules": (_DIR.parent / "prompts" / "listing.md").read_text(encoding="utf-8"),
         },
         "handlers": {
