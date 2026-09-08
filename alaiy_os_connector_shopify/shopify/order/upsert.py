@@ -84,21 +84,24 @@ def _merge_duplicate_item_rows(line_items: list) -> list:
     return [merged[key] for key in order]
 
 
-def _upsert_order(order):
-    """Acquires this order's lock, then defers to _upsert_order_unlocked."""
+def _upsert_order(order, connection=None):
+    """Acquires this order's lock, then defers to _upsert_order_unlocked.
+
+    `connection` scopes the lock to one store, so two sellers' unrelated
+    orders sharing an id do not wait on each other."""
     order_id = str(order.get("id", ""))
     if not order_id:
         return False
-    if not _acquire_order_lock(order_id):
+    if not _acquire_order_lock(order_id, connection=connection):
         frappe.log_error(
             title=f"Shopify order {order_id}: upsert lock timed out",
             message="Another process held this order's lock for 30s+ -- skipped to avoid a duplicate.",
         )
         return False
     try:
-        return _upsert_order_unlocked(order, order_id)
+        return _upsert_order_unlocked(order, order_id, connection)
     finally:
-        _release_order_lock(order_id)
+        _release_order_lock(order_id, connection)
 
 
 def _attribute_fulfilled_locations(order):
@@ -134,12 +137,12 @@ def _attribute_fulfilled_locations(order):
                 )
 
 
-def _upsert_order_unlocked(order, order_id):
+def _upsert_order_unlocked(order, order_id, connection=None):
     """Returns True if a new Sales Order was created, False if skipped."""
     # Resolved before the dedupe, not after: the dedupe has to ask "does THIS
     # store already have this order", and a Shopify order id is only unique
     # inside one shop.
-    settings = connections.require_enabled()
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
 
     if get_active_sales_order(order_id, settings.name):
         return False  # already processed

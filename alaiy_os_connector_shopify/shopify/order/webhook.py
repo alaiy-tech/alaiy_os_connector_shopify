@@ -26,7 +26,7 @@ def handle_order_webhook(topic, payload, connection=None):
         if topic in ("orders/cancelled", "orders/delete", "draft_orders/delete"):
             _cancel_order(payload, connection)
         elif topic in ("orders/create", "draft_orders/create"):
-            _upsert_order(payload)
+            _upsert_order(payload, connection)
         else:
             # orders/updated, orders/fulfilled, draft_orders/update
             _update_order(payload, connection)

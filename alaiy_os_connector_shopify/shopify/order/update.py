@@ -24,7 +24,7 @@ def _update_order(order, connection=None):
     order_id = str(order.get("id", ""))
     if not order_id:
         return False
-    if not _acquire_order_lock(order_id):
+    if not _acquire_order_lock(order_id, connection=connection):
         frappe.log_error(
             title=f"Shopify order {order_id}: update lock timed out",
             message="Another process held this order's lock for 30s+ -- skipped this update.",
@@ -33,7 +33,7 @@ def _update_order(order, connection=None):
     try:
         return _update_order_unlocked(order, order_id, connection)
     finally:
-        _release_order_lock(order_id)
+        _release_order_lock(order_id, connection)
 
 
 def _update_order_unlocked(order, order_id, connection=None):

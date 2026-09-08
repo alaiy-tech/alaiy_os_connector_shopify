@@ -104,7 +104,7 @@ def _run_orders_pull(log, query_string, skip_existing=False):
                         skipped_existing += 1
                         continue
                 try:
-                    if _upsert_order(order):
+                    if _upsert_order(order, log.get("connection")):
                         created += 1
                 except Exception as exc:
                     failed += 1

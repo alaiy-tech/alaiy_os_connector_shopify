@@ -49,6 +49,7 @@ def _fit_item_name(name: str) -> str:
     return (name or "")[:_ITEM_NAME_MAX_LENGTH]
 
 from alaiy_os_connector_shopify import connections
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from alaiy_os_connector_shopify.shopify import destructive
 
 
@@ -82,7 +83,22 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None, wi
     allowed_statuses = status_map.parse_statuses(statuses)
 
     if wipe_existing is None:
-        wipe_existing = not frappe.db.exists("Shopify Synced Entity", {"entity_type": "product"})
+        # "Has THIS store imported before", not "has anyone". Unscoped, the
+        # first seller's rows make every later seller's first import look like
+        # a re-run.
+        #
+        # Which is the safe direction as it happens -- it skips the wipe -- so
+        # this is not correcting a live data-loss bug. It is making the
+        # question the right one, because the answer also has to be right once
+        # the wipe itself is scoped to a store: at that point "no rows for me"
+        # genuinely means a first run for me, and wiping my own catalogue is
+        # correct where wiping the bench's never was.
+        wipe_existing = not frappe.db.exists(
+            "Shopify Synced Entity",
+            owned_by("Shopify Synced Entity",
+                     connections.resolve_optional_name(connection),
+                     {"entity_type": "product"}),
+        )
 
     log = load_or_create_log("products", trigger, log_name, connection=connection)
 
