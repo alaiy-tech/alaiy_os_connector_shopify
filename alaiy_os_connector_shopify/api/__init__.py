@@ -27,3 +27,31 @@ def require_access(connection_name: str | None = None, ptype: str = "read") -> N
     not resolve to a store; the doctype-level permission still has to hold.
     """
     frappe.has_permission(CONNECTION, ptype, doc=connection_name, throw=True)
+
+
+def require_access_to_record(doctype: str, name: str, ptype: str = "read") -> str | None:
+    """
+    Refuse a caller who may not act on the store a record belongs to.
+
+    Several endpoints are addressed by a record rather than by a store: a
+    Delivery Note to push, a Collection to publish, a Listing to read defaults
+    off. The store is not in the request at all -- it is on the row -- so the
+    check has to load it first and authorise against that.
+
+    Without this, naming somebody else's record is enough. The endpoints in
+    question call Shopify with the owning store's own credentials, so an
+    unauthorised call does not fail at the boundary: it succeeds, against the
+    wrong merchant's shop.
+
+    Returns the store's name so the caller can scope its own work to it, or
+    None for a record with no store yet -- an unmigrated row, or one created by
+    hand. None still goes through the doctype-level check.
+    """
+    from alaiy_os_connector_shopify.shopify.scoping import connection_field
+
+    connection_name = None
+    if name and frappe.db.exists(doctype, name):
+        connection_name = frappe.db.get_value(doctype, name, connection_field(doctype))
+
+    require_access(connection_name, ptype)
+    return connection_name

@@ -46,6 +46,8 @@ import csv
 import io
 
 import frappe
+
+from alaiy_os_connector_shopify.api import require_access
 from frappe.utils import cint
 
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
@@ -184,6 +186,9 @@ def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=Non
     trigger_background_export instead, so this path never sees the whole
     site's Listings by accident."""
     settings = connections.require_enabled()
+    # The export carries listing titles, SKUs and prices out of the site as
+    # a file, so reading them has to be allowed for the store first.
+    require_access(settings.name)
     names = _resolve_names(listing_names, only_enabled, only_disabled)
 
     frappe.response.filename = "shopify_listings_export.csv"
@@ -217,6 +222,8 @@ def trigger_background_export(listing_names=None, only_enabled=None, only_disabl
     """Enqueues the export on the long queue and notifies the browser via
     realtime with a download link once the File is ready -- the real path
     for exporting an entire site's Listings (thealtomoda alone has 1,577)."""
+    require_access(connections.require_enabled().name)
+
     frappe.enqueue(
         "alaiy_os_connector_shopify.api.export._run_background_export",
         queue="long",

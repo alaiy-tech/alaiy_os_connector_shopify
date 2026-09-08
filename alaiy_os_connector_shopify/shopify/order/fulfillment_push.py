@@ -18,6 +18,8 @@ something this app did; the setting only gates creating new ones.
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access_to_record
+
 from alaiy_os_connector_shopify.shopify.order.queries import (
     _FULFILLMENT_ORDERS_QUERY, _FULFILLMENT_CREATE_MUTATION,
     _FULFILLMENT_CANCEL_MUTATION, _FULFILLMENT_TRACKING_UPDATE_MUTATION,
@@ -322,6 +324,12 @@ def push_fulfillment_for_delivery_note(delivery_note: str, tracking_number: str 
     on an already-linked DN. An existing fulfillment gets a tracking UPDATE
     instead of a second create attempt.
     """
+    # Addressed by Delivery Note, not by store. This ships against a real
+    # merchant's shop with that merchant's credentials, so naming somebody
+    # else's Delivery Note must not be enough to do it. Server-side callers
+    # (the carrier connectors this exists for) run as Administrator and pass.
+    require_access_to_record("Delivery Note", delivery_note, "write")
+
     dn = frappe.get_doc("Delivery Note", delivery_note)
     if dn.sh_shopify_fulfillment_id:
         if not tracking_number:

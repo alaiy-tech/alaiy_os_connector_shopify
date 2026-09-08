@@ -18,6 +18,8 @@ Bidirectional, manual collections:
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access, require_access_to_record
+
 from alaiy_os_connector_shopify.shopify.scoping import owned_by
 
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
@@ -265,6 +267,11 @@ def sync_shopify_collections(trigger="manual", log_name=None, connection=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, is_cancel_requested, append_log as _append_log
 
+    # Resolved and authorised before the log row is written, so a refused call
+    # leaves no run recorded against a store the caller may not touch.
+    connection = connections.resolve(connection)
+    require_access(connection.name, "write")
+
     log = load_or_create_log("collections", trigger, log_name, connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)
@@ -320,6 +327,10 @@ def get_collection_products(collection_name: str):
     on demand -- not stored, since a collection's product set changes on
     Shopify's side and can be large. Also links any that map to a local Item.
     """
+
+    # Reads through the owning store's credentials, so the store has to
+    # be the caller's before the call is made.
+    require_access_to_record("Shopify Collection", collection_name)
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
@@ -373,6 +384,10 @@ def get_collection_channels(collection_name: str):
     Live-fetch the sales channels (Shopify Publications) a collection is
     published to, each with its published/not state. Read-only, on demand.
     """
+
+    # Reads through the owning store's credentials, so the store has to
+    # be the caller's before the call is made.
+    require_access_to_record("Shopify Collection", collection_name)
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
@@ -412,6 +427,11 @@ def toggle_collection_channel(collection_name: str, publication_id: str, publish
     Returns {"ok": bool, "error": str}.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    # Addressed by collection, not by store, and it publishes to a real sales
+    # channel using that store's own credentials -- so an unauthorised call is
+    # not refused by Shopify, it succeeds against the wrong merchant's shop.
+    require_access_to_record("Shopify Collection", collection_name, "write")
 
     gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
     if not gid:

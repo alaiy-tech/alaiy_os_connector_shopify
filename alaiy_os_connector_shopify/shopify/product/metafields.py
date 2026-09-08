@@ -9,6 +9,8 @@ Listing, never on the Item.
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access
+
 from alaiy_os_connector_shopify.shopify.product.queries import (
     _PRODUCT_METAFIELDS_PAGE_QUERY, _METAFIELDS_SET_MUTATION,
 )
@@ -124,6 +126,8 @@ def backfill_all_product_metafields():
     block a routine bench migrate. Run manually via bench execute instead.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    require_access(connections.require_enabled().name, "write")
 
     listings = frappe.get_all(
         "Shopify Product Listing",

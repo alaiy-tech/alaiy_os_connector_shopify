@@ -1,6 +1,8 @@
 import requests
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access
+
 from alaiy_os_connector_shopify import connections
 from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_token
 
@@ -17,6 +19,8 @@ def test_connection(connection=None):
     """
     try:
         settings = connections.resolve(connection)
+        # Minting a token is a write against the store's own credentials.
+        require_access(settings.name, "write")
     except Exception as e:
         return {"success": False, "message": str(e)}
 

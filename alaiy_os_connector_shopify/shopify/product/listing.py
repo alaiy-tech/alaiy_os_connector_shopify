@@ -21,6 +21,8 @@ on every write so the two never drift.
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access_to_record
+
 from alaiy_os_connector_shopify.shopify.scoping import owned_by
 
 from alaiy_os_connector_shopify.shopify.product.pricing import _price_rate, _variant_price
@@ -36,6 +38,19 @@ def item_without_listing_query(doctype, txt, searchfield, start, page_len, filte
     (never variants) that don't already have a Shopify Product Listing -- so
     the picker can't offer a variant or an already-listed product (both of
     which would fail on save)."""
+    # The picker offers Items to link, so it must only offer this store's --
+    # otherwise typing one letter into the field lists every other seller's
+    # product names and codes back to the caller.
+    #
+    # "This store's" is deliberately wider than "carries this connection". The
+    # point of the picker is Items not yet listed, and an Item created locally
+    # carries no connection at all -- filtering on equality alone would empty
+    # the picker on every site. So it offers this store's Shopify-linked Items
+    # plus every unattributed local one, and excludes only Items that belong
+    # to a different store.
+    from alaiy_os_connector_shopify import connections
+
+    store = connections.resolve_optional_name()
     like = f"%{txt}%"
     return frappe.db.sql(
         """
@@ -45,11 +60,15 @@ def item_without_listing_query(doctype, txt, searchfield, start, page_len, filte
           AND NOT EXISTS (
               SELECT 1 FROM `tabShopify Product Listing` l WHERE l.item = i.name
           )
+          AND (%(store)s IS NULL
+               OR i.sh_shopify_connection IS NULL
+               OR i.sh_shopify_connection = ''
+               OR i.sh_shopify_connection = %(store)s)
           AND (i.name LIKE %(txt)s OR i.item_name LIKE %(txt)s)
         ORDER BY i.modified DESC
         LIMIT %(start)s, %(page_len)s
         """,
-        {"txt": like, "start": start, "page_len": page_len},
+        {"txt": like, "start": start, "page_len": page_len, "store": store},
     )
 
 
@@ -610,6 +629,10 @@ def effective_values(listing_name: str) -> dict:
     anything into the fields -- filling them would freeze the value and stop it
     tracking a later change to the Item.
     """
+    # Resolves against the owning store's settings (price list, defaults), so
+    # the store has to be the caller's.
+    require_access_to_record("Shopify Product Listing", listing_name)
+
     if not frappe.db.exists("Shopify Product Listing", listing_name):
         return {}
     listing = frappe.get_doc("Shopify Product Listing", listing_name)

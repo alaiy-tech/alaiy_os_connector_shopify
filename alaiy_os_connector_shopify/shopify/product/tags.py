@@ -5,6 +5,8 @@ product_sync.py, unchanged.
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access
+
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_TAGS_QUERY
 
 from alaiy_os_connector_shopify import connections
@@ -101,6 +103,9 @@ def sync_shopify_tags(connection=None):
     Shopify's per-page connection limit.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    connection = connections.resolve(connection)
+    require_access(connection.name, "write")
 
     client = ShopifyGraphQLClient(connection)
     created = 0

@@ -1,5 +1,7 @@
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access
+
 from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from erpnext.stock.doctype.stock_reconciliation.stock_reconciliation import (
     EmptyStockReconciliationItemsError,
@@ -109,6 +111,9 @@ def sync_shopify_locations(trigger="manual", log_name=None, connection=None):
     connection = connection or connections.require_enabled()
     # A name, whichever form the caller passed -- the rows record the id.
     connection_name = getattr(connection, "name", connection)
+    # Naming a store is not the same as being allowed to sync it: this
+    # reads that store's locations with that store's credentials.
+    require_access(connection_name, "write")
     log = load_or_create_log("locations", trigger, log_name, connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)

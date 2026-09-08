@@ -41,6 +41,9 @@ import csv
 import io
 
 import frappe
+
+from alaiy_os_connector_shopify import connections
+from alaiy_os_connector_shopify.api import require_access
 from frappe.utils import cint, flt
 
 from alaiy_os_connector_shopify.shopify.product.tags import _set_item_tags
@@ -405,6 +408,10 @@ def trigger_update_listings(file_url):
     request/response cycle. Applies directly, no separate dry-run step --
     every change is logged as an explicit before -> after diff on the
     resulting Shopify Sync Log instead."""
+    # Applies a whole file of changes to Listings and pushes them, so it is a
+    # write against the store before a single row is read.
+    require_access(connections.require_enabled().name, "write")
+
     file_doc = frappe.get_doc("File", {"file_url": file_url})
     csv_content = file_doc.get_content()
     if isinstance(csv_content, bytes):
