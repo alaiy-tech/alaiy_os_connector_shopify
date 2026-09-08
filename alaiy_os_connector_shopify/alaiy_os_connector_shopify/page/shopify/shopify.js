@@ -240,6 +240,39 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 			return;
 		}
 
+		// The dates are only sent in Date range mode, and the mode lives in a
+		// variable the dates know nothing about. A visible, filled-in range
+		// while the mode still reads All orders sent {} and pulled the whole
+		// history instead -- so confirm rather than silently ignoring what is
+		// on screen.
+		if (order_import_mode !== 'Date range' && (date_from || date_to)) {
+			frappe.confirm(
+				'The date range is filled in but <b>All orders</b> is selected, so every '
+				+ 'order in the store will be imported and the dates ignored.<br><br>'
+				+ 'Import the selected range instead?',
+				function() {
+					order_import_mode = 'Date range';
+					$(page.body).find('.shopify-import-mode .shopify-mode-btn')
+						.removeClass('shopify-mode-active')
+						.filter('[data-mode="Date range"]').addClass('shopify-mode-active');
+					toggle_order_date_fields();
+					import_orders();
+				},
+				function() {
+					run_order_import(null, null);
+				}
+			);
+			return;
+		}
+
+		run_order_import(
+			order_import_mode === 'Date range' ? date_from : null,
+			order_import_mode === 'Date range' ? date_to : null
+		);
+	}
+
+	function run_order_import(date_from, date_to) {
+
 		var btn = document.getElementById('import-orders-btn');
 		var stop_btn = document.getElementById('import-orders-stop-btn');
 		var log_container = document.getElementById('orders-log');
@@ -249,9 +282,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 
 		frappe.call({
 			method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
-			args: order_import_mode === 'Date range'
-				? {date_from: date_from, date_to: date_to}
-				: {},
+			args: date_from && date_to ? {date_from: date_from, date_to: date_to} : {},
 			callback: function(r) {
 				if (r.message && r.message.log_name) {
 					log_container.innerHTML = '<div class="shopify-log-status-running">' + (r.message.message || 'Importing...') + '<span class="shopify-spinner"></span></div>';

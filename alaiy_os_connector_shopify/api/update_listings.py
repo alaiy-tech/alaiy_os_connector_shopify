@@ -252,7 +252,7 @@ def _apply_variant_fields(listing, variant_rows, report):
         row = listing_variants.get(variant_code)
         if not row:
             report["warnings"].append(
-                f"{variant_code}: no Listing Variant row yet -- run 'Populate from Item' on the Listing first")
+                f"{variant_code}: no Listing Variant row yet -- save the Listing to pull its Item's variants in")
             continue
 
         price_raw = vr.get("variant_price")

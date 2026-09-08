@@ -30,12 +30,23 @@ from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute, _dedupe_item_uoms
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
-from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty
-from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row
+from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty, _variant_location_levels, _variant_inventory_item_id
+from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row, _resolve_item_shopify_location, _sync_item_supplier_from_location, resolve_product_shopify_location
 from alaiy_os_connector_shopify.shopify.product.media import _set_item_image, _set_item_slideshow
 from alaiy_os_connector_shopify.shopify.product.taxonomy import ensure_shopify_category
 from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _set_item_tags
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+from alaiy_os_connector_shopify.shopify.product import status as status_map
+
+_ITEM_NAME_MAX_LENGTH = 140
+
+
+def _fit_item_name(name: str) -> str:
+    """Item.item_name is a plain Data field (140-char DB limit) -- a long
+    real product title (confirmed live) crashes the whole product's
+    import over a display name, same class of bug already fixed for
+    sh_seo_title and downloaded image filenames."""
+    return (name or "")[:_ITEM_NAME_MAX_LENGTH]
 
 
 def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
@@ -99,7 +110,10 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
         # Import phase
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
         client = ShopifyGraphQLClient()
-        variables = {"after": None}
+        # Let Shopify filter by status rather than fetching every product
+        # and discarding most locally. None when no explicit choice was
+        # made, which leaves the query unfiltered exactly as before.
+        variables = {"after": None, "query": status_map.search_filter(allowed_statuses)}
 
         processed = created = updated = skipped = failed = pages = 0
         skip_reason_counts = Counter()
@@ -180,6 +194,122 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
             ))
         for line in skip_examples:
             _append_log(log, f"SKIPPED {line}")
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    except Exception:
+        log.status = "failed"
+        log.error_message = frappe.get_traceback()[:500]
+        log.finished_at = now_datetime()
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        raise
+
+    return log.name
+
+
+def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
+    """
+    Catch-up import: only products never linked locally at all -- checked
+    by Shopify product id BEFORE any real work (Item lookups, fingerprint
+    diff, update_variants cascade), unlike run_full_product_import which
+    re-checks every already-imported product on every run.
+
+    Confirmed live: on a 14,270-product catalog with ~13,275 already
+    imported, run_full_product_import spent almost all its time
+    re-verifying unchanged products (and re-hitting known crash-classes
+    like the item_name length limit on products it had already seen many
+    times before) just to find the same few hundred genuinely new ones.
+    This skips that entirely -- existing products are never touched, not
+    even for a fingerprint comparison.
+
+    Uses the same "products" sync_type lock as run_full_product_import,
+    so the two can never run concurrently and race on the same Items.
+
+    bench --site <site> execute \
+        alaiy_os_connector_shopify.shopify.product.importer.run_missing_product_import
+    """
+    allowed_statuses = status_map.parse_statuses(statuses)
+    log = load_or_create_log("products", trigger, log_name)
+
+    if has_active_sync("products", exclude_name=log.name):
+        log.status = "skipped"
+        log.finished_at = now_datetime()
+        log.error_message = "Skipped: another products sync is already running."
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        return log.name
+
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    try:
+        existing_ids = {
+            row.sh_shopify_product_id
+            for row in frappe.db.sql(
+                "SELECT DISTINCT sh_shopify_product_id FROM `tabItem` "
+                "WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''",
+                as_dict=True,
+            )
+        }
+        _append_log(log, f"{len(existing_ids)} products already linked locally -- these will be skipped untouched.")
+
+        from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+        client = ShopifyGraphQLClient()
+        # Let Shopify filter by status rather than fetching every product
+        # and discarding most locally. None when no explicit choice was
+        # made, which leaves the query unfiltered exactly as before.
+        variables = {"after": None, "query": status_map.search_filter(allowed_statuses)}
+
+        processed = created = skipped = failed = pages = 0
+        cancelled = False
+
+        for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, variables, ["products"]):
+            if is_cancel_requested(log.name):
+                cancelled = True
+                _append_log(log, f"Stopped by user after {processed} products ({pages} pages).")
+                break
+            pages += 1
+            for node in page_nodes:
+                product_id = str(node.get("legacyResourceId", ""))
+                if product_id in existing_ids:
+                    continue  # already linked -- no fingerprint check, no write, no risk
+                processed += 1
+                if not status_map.import_allows(node.get("status"), allowed_statuses):
+                    skipped += 1
+                    continue
+                try:
+                    was_created, reason = _import_product(node)
+                    if was_created:
+                        created += 1
+                    else:
+                        skipped += 1
+                except Exception as exc:
+                    failed += 1
+                    product_name = node.get("title", "Unknown")
+                    _append_log(log, f"ERROR product={product_name}: {str(exc)[:200]}")
+                    frappe.log_error(
+                        title=f"Shopify: product {product_name} import failed (missing-only run)",
+                        message=frappe.get_traceback(),
+                    )
+
+            log.items_processed = processed
+            log.items_created = created
+            log.pages_done = pages
+            _append_log(log, f"...page {pages}: {processed} new-candidate products seen so far "
+                              f"({created} created, {skipped} skipped, {failed} failed)")
+            log.save(ignore_permissions=True)
+            frappe.db.commit()
+
+        log.status = "cancelled" if cancelled else "success"
+        log.items_processed = processed
+        log.items_created = created
+        log.items_failed = failed
+        log.pages_done = pages
+        log.finished_at = now_datetime()
+        _append_log(log, f"Missing-only import: {created} created, {skipped} skipped, {failed} failed "
+                          f"out of {processed} products not already linked locally.")
         log.save(ignore_permissions=True)
         frappe.db.commit()
 
@@ -303,10 +433,10 @@ def _update_existing_product(entity, node: dict) -> tuple:
     Shopify's current qty on top of the existing balance instead of
     correcting it. Stock reconciliation is inventory_sync.py's job.
 
-    Also does NOT add or remove variants -- only updates content on
-    variants that already exist locally by SKU. A variant added on
-    Shopify after the original import needs a manual re-link; this is
-    flagged in the returned reason rather than silently dropped.
+    Adds variants that are new on Shopify (via _ensure_variant_exists_locally,
+    which also re-links an existing SKU whose Shopify ids or template have
+    changed), but never REMOVES one that has disappeared from Shopify -- a
+    variant with stock or order history is not ours to delete on a sync.
     """
     new_fp = _shopify_node_fingerprint(node)
     if entity.external_fingerprint == new_fp:
@@ -331,9 +461,15 @@ def _update_existing_product(entity, node: dict) -> tuple:
         updated_skus = 0
         missing_skus = []
         variant_prices = {}
+        # Pooled across every variant, so a sold-out one still inherits the
+        # supplier that owns the product instead of resolving to nothing.
+        product_location = resolve_product_shopify_location(
+            variants, settings, entity.external_id)
         for variant in variants:
             sku = _ensure_variant_exists_locally(template_name, variant, entity.external_id, settings)
-            _apply_existing_variant_content(sku, variant, settings, set_stock=False, skip_abstracted=has_listing)
+            _apply_existing_variant_content(sku, variant, settings, set_stock=False,
+                                            skip_abstracted=has_listing,
+                                            product_location=product_location)
             price = flt(variant.get("price") or 0)
             if price > 0:
                 variant_prices[sku] = price
@@ -360,15 +496,25 @@ def _update_existing_product(entity, node: dict) -> tuple:
 
 
 def _warn_if_truncated(node: dict):
-    """Log when a product has more variants or images than the query asked for.
+    """Log when a product has more variants than the query asked for.
 
-    The query caps variants at 100 and images at 10 with no pagination, so a
-    product past either cap loses the remainder and Shopify reports no error --
-    the import looks entirely successful. variantsCount and mediaCount are the
-    store's own totals, so comparing them against what arrived turns a silent
-    partial import into something findable in the Error Log.
+    The query caps variants at 100 with no pagination, so a product past
+    that cap loses the remainder and Shopify reports no error -- the
+    import looks entirely successful. variantsCount is the store's own
+    total, so comparing it against what arrived turns a silent partial
+    import into something findable in the Error Log.
 
-    Reported, not fixed: following those cursors is a separate change.
+    Reported, not fixed: following the cursor to fetch the rest is a
+    separate change.
+
+    Deliberately doesn't do the same comparison for images: mediaCount
+    includes video and 3D models, which this connector never imports at
+    all, and the query has no way to learn how many of that total were
+    actually images. Confirmed live: this fired "images truncated" on
+    any product that simply had a video attached, correctly imported
+    every real image, and still flooded the Error Log as if something
+    was lost. A warning that fires on normal behavior is worse than no
+    warning.
     """
     product = node.get("title") or node.get("legacyResourceId") or "unknown product"
 
@@ -381,16 +527,6 @@ def _warn_if_truncated(node: dict):
                     f"returned {got_variants}. The remainder was not imported.",
         )
 
-    total_media = (node.get("mediaCount") or {}).get("count")
-    got_images = len((node.get("images") or {}).get("nodes") or [])
-    if total_media and got_images and total_media > got_images:
-        frappe.log_error(
-            title="Shopify import: images truncated",
-            message=f"{product}: Shopify reports {total_media} media item(s), the query "
-                    f"returned {got_images} image(s). Note mediaCount includes video and "
-                    f"3D models, which this connector does not import at all.",
-        )
-
 
 def _import_product(node: dict) -> tuple:
     """
@@ -400,6 +536,15 @@ def _import_product(node: dict) -> tuple:
     the Listing) sees it -- ensure_listing is idempotent, so re-imports and
     updates never duplicate or clobber merchant edits.
     """
+    # The status choice is applied as a Shopify SEARCH filter in the paginated
+    # runs, so a node arriving any other way -- a webhook, a targeted re-import
+    # of one product -- was never checked against it at all. Confirmed live: a
+    # product archived on Shopify was imported as a fresh, enabled Item on a
+    # site with archived import switched off. Re-check the node itself so the
+    # setting holds wherever a product comes from.
+    if not status_map.import_allows(node.get("status")):
+        return False, f"skipped ({(node.get('status') or 'unknown').lower()} not enabled for import)"
+
     _warn_if_truncated(node)
     created, reason = _import_product_inner(node)
     product_id = str(node.get("legacyResourceId", ""))
@@ -528,7 +673,7 @@ def _import_product_inner(node: dict) -> tuple:
         return False, "product has zero variants"
 
 
-def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None, set_stock: bool = True, skip_abstracted: bool = False):
+def _apply_existing_variant_content(item_code: str, variant: dict, settings, product_meta: dict = None, images: list = None, set_stock: bool = True, skip_abstracted: bool = False, product_location: str = None):
     """
     Populate price/stock/cost/weight (and, for a genuinely standalone
     item, tags/category/SEO/images) on an Item that was auto-linked to
@@ -544,13 +689,27 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     original use) should ever set it.
     """
     item = frappe.get_doc("Item", item_code)
-    _apply_variant_physical(item, variant)
+    _apply_variant_physical(item, variant, product_meta)
     if product_meta:
         _apply_product_meta(item, product_meta)
     _dedupe_item_uoms(item)
+    location_levels = _variant_location_levels(variant)
+    # product_location is the fallback for a variant holding no stock
+    # anywhere -- ownership is a product fact, not a stock reading.
+    resolved_location = _resolve_item_shopify_location(
+        location_levels, settings, item_code) or product_location
+    if resolved_location:
+        item.shopify_location = resolved_location
+    # The key inbound stock webhooks arrive on -- without it every
+    # inventory_levels/update for this item is dropped unmatched.
+    inventory_item_id = _variant_inventory_item_id(variant)
+    if inventory_item_id:
+        item.sh_shopify_inventory_item_id = inventory_item_id
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     item.save()
+    if resolved_location:
+        _sync_item_supplier_from_location(item_code, resolved_location)
     frappe.db.commit()
 
     # selling PRICE is an abstracted (per-marketplace) field -- on the update
@@ -569,7 +728,7 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     if set_stock:
         qty = _variant_available_qty(variant)
         if qty > 0:
-            _set_opening_stock(item_code, qty, settings)
+            _set_opening_stock(item_code, qty, settings, location_levels)
 
     # IMAGES are abstracted too -- skip the Item write on the update path.
     if images and not skip_abstracted:
@@ -612,9 +771,26 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
         sku = f"{template_name}-{opt_title}" if opt_title else f"{template_name}-{v_id}"
 
     if frappe.db.exists("Item", sku):
-        if v_id and not frappe.db.get_value("Item", sku, "sh_shopify_variant_id"):
+        # Repoint whenever Shopify's ids differ from what's stored, not only
+        # when the item has none. A merchant deleting a product and recreating
+        # it keeps the SKU but changes every Shopify id, so an item that
+        # already carried the OLD ids would otherwise stay bound to a product
+        # that no longer exists -- the import reports the variant as handled,
+        # the item keeps a dead product id, and the new template ends up with
+        # zero children. Confirmed live on a duplicate-product cleanup.
+        current = frappe.db.get_value(
+            "Item", sku, ["sh_shopify_variant_id", "sh_shopify_product_id", "variant_of"], as_dict=True
+        ) or {}
+        if v_id and current.get("sh_shopify_variant_id") != v_id:
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", v_id)
+        if product_id and current.get("sh_shopify_product_id") != product_id:
             frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
+        # Re-parent too: a variant whose template moved is still the same
+        # physical product, and leaving it under the old template hides it
+        # from everything that walks the new one's children.
+        if template_name and current.get("variant_of") and current["variant_of"] != template_name:
+            frappe.db.set_value("Item", sku, "variant_of", template_name)
+        if v_id:
             listing_resolver.set_product_id(template_name, product_id)
             listing_resolver.set_variant_id(template_name, sku, v_id)
         return sku
@@ -640,7 +816,7 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
     template = frappe.get_doc("Item", template_name)
     v_item = frappe.new_doc("Item")
     v_item.item_code = sku
-    v_item.item_name = f"{template.item_name} - {variant.get('title') or v_id}"
+    v_item.item_name = _fit_item_name(f"{template.item_name} - {variant.get('title') or v_id}")
     v_item.variant_of = template_name
     v_item.item_group = template.item_group
     v_item.brand = template.brand
@@ -659,19 +835,19 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
             name = opt.get("name")
             val = opt.get("value")
             if name and val:
-                _ensure_item_attribute(name, [val])
-                v_item.append("attributes", {"attribute": name, "attribute_value": val})
+                canonical = _ensure_item_attribute(name, [val])
+                v_item.append("attributes", {"attribute": name, "attribute_value": canonical.get(val.title(), val)})
     else:
         for i, name in enumerate(template_attrs):
             opt_val = variant.get(f"option{i+1}") or (variant.get("title") if i == 0 else "Default")
             if opt_val:
-                _ensure_item_attribute(name, [opt_val])
-                v_item.append("attributes", {"attribute": name, "attribute_value": opt_val})
+                canonical = _ensure_item_attribute(name, [opt_val])
+                v_item.append("attributes", {"attribute": name, "attribute_value": canonical.get(opt_val.title(), opt_val)})
     if not v_item.attributes:
         for name in (template_attrs or ["Title"]):
             val = variant.get("title") or "Default"
-            _ensure_item_attribute(name, [val])
-            v_item.append("attributes", {"attribute": name, "attribute_value": val})
+            canonical = _ensure_item_attribute(name, [val])
+            v_item.append("attributes", {"attribute": name, "attribute_value": canonical.get(val.title(), val)})
 
     default_wh = _default_warehouse_row(settings)
     if default_wh:
@@ -697,6 +873,21 @@ def _apply_existing_template_content(template_name: str, product_meta: dict, ima
     _dedupe_item_uoms(template)
     template.flags.from_shopify_sync = True
     template.flags.ignore_permissions = True
+    # ERPNext's Item.on_update cascades the template's own fields onto every
+    # variant and refuses when a variant already carries submitted stock
+    # transactions ("you can not change the value of Maintain Stock"). A
+    # template holds is_stock_item = 0 (templates are not stocked, see
+    # _import_simple_product) while its variants hold 1 and have real Stock
+    # Entries, so the cascade can never succeed here -- a permanent conflict,
+    # not a transient one.
+    #
+    # It used to be caught and logged, which meant the whole product's sync was
+    # discarded: SEO, tags and category never applied, every run, for the same
+    # products. dont_update_variants is ERPNext's own opt-out, checked on the
+    # first line of Item.update_variants, and skipping the cascade is what this
+    # path wants regardless -- it is applying template fields pulled from
+    # Shopify, not re-templating variants.
+    template.flags.dont_update_variants = True
     template.save()
     frappe.db.commit()
 
@@ -778,7 +969,7 @@ def _import_simple_product(
     # nothing distinguishing to add here, so just use the product title.
     item = frappe.new_doc("Item")
     item.item_code = item_name
-    item.item_name = title
+    item.item_name = _fit_item_name(title)
     item.description = description
     item.item_group = _ensure_item_group(item_group)
     # Shopify's real productType, NOT whatever won for item_group -- those
@@ -800,9 +991,19 @@ def _import_simple_product(
     if default_warehouse_row:
         item.append("item_defaults", default_warehouse_row)
 
+    location_levels = _variant_location_levels(variant)
+    resolved_location = _resolve_item_shopify_location(location_levels, settings, item_name)
+    if resolved_location:
+        item.shopify_location = resolved_location
+    # The key inbound stock webhooks arrive on -- see the same write in
+    # _apply_existing_variant_content.
+    inventory_item_id = _variant_inventory_item_id(variant)
+    if inventory_item_id:
+        item.sh_shopify_inventory_item_id = inventory_item_id
+
     if product_meta:
         _apply_product_meta(item, product_meta)
-    _apply_variant_physical(item, variant)
+    _apply_variant_physical(item, variant, product_meta)
 
     # from_shopify_sync marks this as inbound so the Item after_insert hook
     # (listing_hooks.sync_new_variant_to_listing) no-ops for it -- an imported
@@ -811,6 +1012,8 @@ def _import_simple_product(
     item.flags.from_shopify_sync = True
     item.flags.ignore_permissions = True
     item.insert()
+    if resolved_location:
+        _sync_item_supplier_from_location(item.name, resolved_location)
     frappe.db.commit()
 
     # Set pricing
@@ -825,7 +1028,7 @@ def _import_simple_product(
     # Set opening stock from Shopify's current available quantity
     qty = _variant_available_qty(variant)
     if qty > 0:
-        _set_opening_stock(item_name, qty, settings)
+        _set_opening_stock(item_name, qty, settings, location_levels)
 
     # Download and set images
     if images:
@@ -913,8 +1116,9 @@ def _import_product_with_variants(
             if value not in values_by_option[name]:
                 values_by_option[name].append(value)
 
+    canonical_by_option = {}
     for name in option_names:
-        _ensure_item_attribute(name, values_by_option[name])
+        canonical_by_option[name] = _ensure_item_attribute(name, values_by_option[name])
 
     # Some variant SKUs may already exist under a template created by
     # another connector (e.g. Cloudstore) before Shopify ever linked
@@ -962,7 +1166,7 @@ def _import_product_with_variants(
         # Create template Item
         template = frappe.new_doc("Item")
         template.item_code = template_name
-        template.item_name = title
+        template.item_name = _fit_item_name(title)
         template.description = description
         template.item_group = _ensure_item_group(item_group)
         # See _import_simple_product's matching comment: real productType,
@@ -992,6 +1196,13 @@ def _import_product_with_variants(
         template.insert()
         frappe.db.commit()
 
+    # Which location owns this PRODUCT, pooled across every variant. Used as
+    # the fallback for a variant that resolves to nothing on its own -- a
+    # sold-out size still belongs to the supplier that owns the product, and
+    # without this it would be left unmapped and invisible in that supplier's
+    # portal while its in-stock siblings showed up fine.
+    product_location = resolve_product_shopify_location(variants, settings, product_id)
+
     # Create variant Items
     for idx, variant in enumerate(variants):
         sku = (variant.get("sku") or "").strip()
@@ -1020,7 +1231,8 @@ def _import_product_with_variants(
                 # Auto-linking only ever wrote the Shopify IDs -- pull in
                 # this variant's own price/stock/weight the same as a
                 # freshly-created variant would get.
-                _apply_existing_variant_content(sku, variant, settings)
+                _apply_existing_variant_content(sku, variant, settings,
+                                                product_location=product_location)
 
                 # Create Synced Entity pairing for the template/product
                 entity = entities.get_or_new("product", "Item", variant_of, product_id)
@@ -1054,7 +1266,7 @@ def _import_product_with_variants(
 
         variant_item = frappe.new_doc("Item")
         variant_item.item_code = variant_name
-        variant_item.item_name = f"{title} - {variant_label}"
+        variant_item.item_name = _fit_item_name(f"{title} - {variant_label}")
         variant_item.variant_of = template_name
         variant_item.item_group = template.item_group
         variant_item.brand = template.brand
@@ -1065,16 +1277,30 @@ def _import_product_with_variants(
         variant_item.include_item_in_buying = 1
 
         for name, value in resolved.items():
-            variant_item.append("attributes", {"attribute": name, "attribute_value": value})
+            canonical = canonical_by_option.get(name, {})
+            variant_item.append("attributes", {"attribute": name, "attribute_value": canonical.get(value.title(), value)})
 
         # Link to Shopify
         variant_item.sh_shopify_product_id = product_id
         variant_item.sh_shopify_variant_id = variant.get("legacyResourceId")
-        _apply_variant_physical(variant_item, variant)
+        _apply_variant_physical(variant_item, variant, product_meta)
 
         default_warehouse_row = _default_warehouse_row(settings)
         if default_warehouse_row:
             variant_item.append("item_defaults", default_warehouse_row)
+
+        location_levels = _variant_location_levels(variant)
+        # Falls back to the product's own location for a variant holding no
+        # stock anywhere -- ownership is a product fact, not a stock reading.
+        resolved_location = _resolve_item_shopify_location(
+            location_levels, settings, variant_name) or product_location
+        if resolved_location:
+            variant_item.shopify_location = resolved_location
+        # The key inbound stock webhooks arrive on -- see the same write in
+        # _apply_existing_variant_content.
+        inventory_item_id = _variant_inventory_item_id(variant)
+        if inventory_item_id:
+            variant_item.sh_shopify_inventory_item_id = inventory_item_id
 
         if product_meta:
             _apply_product_meta(variant_item, product_meta)
@@ -1082,6 +1308,8 @@ def _import_product_with_variants(
         variant_item.flags.from_shopify_sync = True
         variant_item.flags.ignore_permissions = True
         variant_item.insert()
+        if resolved_location:
+            _sync_item_supplier_from_location(variant_item.name, resolved_location)
 
         # Set pricing
         price = flt(variant.get("price") or 0)
@@ -1095,7 +1323,7 @@ def _import_product_with_variants(
         # Set opening stock from Shopify's current available quantity
         qty = _variant_available_qty(variant)
         if qty > 0:
-            _set_opening_stock(variant_name, qty, settings)
+            _set_opening_stock(variant_name, qty, settings, location_levels)
 
     frappe.db.commit()
 
@@ -1142,7 +1370,12 @@ def _apply_product_meta(item, node: dict):
     # a product's public URL from here); publishedAt distinguishes "never
     # published" from "published and later hidden", which status alone does not.
     if node.get("handle"):
-        item.sh_shopify_handle = node["handle"]
+        # Data field, 140-char DB limit -- confirmed live, a long real
+        # product title makes Shopify's own auto-generated handle exceed
+        # it too, crashing item.insert() over a slug field on brand-new
+        # products (the update path never hits this -- the handle is only
+        # ever set once, here, at create time).
+        item.sh_shopify_handle = node["handle"][:_ITEM_NAME_MAX_LENGTH]
     if node.get("publishedAt"):
         item.sh_published_at = frappe.utils.get_datetime(node["publishedAt"]).replace(tzinfo=None)
 
@@ -1162,7 +1395,12 @@ def _apply_product_meta(item, node: dict):
         if cat_name:
             item.sh_shopify_category = ensure_shopify_category(cat_name)
     seo = node.get("seo") or {}
-    item.sh_seo_title = seo.get("title") or node.get("title") or item.item_name or ""
+    # sh_seo_title is a plain Data field (140-char DB limit) -- a long
+    # product title plus a brand-suffix Shopify's own SEO title
+    # often carries can exceed that and crash the entire item insert.
+    # Confirmed live: this took down products whose title alone was
+    # otherwise perfectly valid. Truncate rather than lose the whole import.
+    item.sh_seo_title = (seo.get("title") or node.get("title") or item.item_name or "")[:140]
 
     desc_val = seo.get("description")
     if not desc_val:

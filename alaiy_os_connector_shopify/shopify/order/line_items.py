@@ -7,6 +7,7 @@ import frappe
 from frappe.utils import flt
 
 from alaiy_os_connector_shopify.shopify.order.utils import _line_item_qty, _resolve_item_code
+from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_warehouse_for_item
 
 
 def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
@@ -14,7 +15,11 @@ def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
     Reconciles doc.items (a Sales Order's child table) against Shopify's
     current line items. Returns True if anything actually changed, so the
     caller can decide whether a save/amend is even needed.
+
+    `warehouse` is the order-level default, used only as the per-line
+    fallback -- each line resolves its own real warehouse below.
     """
+    settings = frappe.get_single("Shopify Connector Settings")
     current_items_by_variant = {item.get("sh_shopify_variant_id"): item for item in doc.items if item.get("sh_shopify_variant_id")}
     current_items_by_code = {item.item_code: item for item in doc.items if not item.get("sh_shopify_variant_id")}
     new_items_from_shopify = {}
@@ -36,7 +41,12 @@ def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
             "item_code": item_code,
             "qty": qty,
             "rate": flt(li.get("price", 0)),
-            "warehouse": warehouse,
+            # Per-line warehouse from the item's own Item.shopify_location,
+            # same resolution _upsert_order_unlocked uses when it first
+            # creates the order -- a line added later via Shopify's Order
+            # Editing must land on its real supplier's warehouse too, not
+            # on whichever single default the order happened to open with.
+            "warehouse": _resolve_warehouse_for_item(item_code, settings, warehouse),
         }
 
     # Detect changes: match by variant_id first, then by item_code (fallback for old items)
@@ -156,23 +166,39 @@ def _sync_order_line_items(so_name: str, order: dict):
                 raise
             so = frappe.get_doc("Sales Order", so_name)
         except frappe.LinkExistsError:
-            # Confirmed live: a Sales Order with a Purchase Order already
-            # routed against it (Solist's per-supplier PO routing -- see
-            # order_routing.py) can never be cancelled here, so the whole
-            # webhook crashed and aborted BEFORE any other field on this
-            # order (status, tags, delivery method, etc.) ever got applied
-            # -- a single line-item edit silently broke every other update
-            # to the order from that point on. Line items can't be
-            # reconciled while a PO is linked; log and let the caller's
-            # other field updates (already applied earlier in
-            # _update_order_unlocked) stand rather than crashing them too.
-            frappe.log_error(
-                title=f"Shopify: cannot reconcile line items for {so_name} -- Purchase Order already linked",
-                message=frappe.get_traceback(),
-            )
+            # A Sales Invoice or Purchase Order already linked against
+            # this order blocks a bare so.cancel() here. Reuse
+            # webhook.py's _cancel_sales_order, which already knows how
+            # to cascade-cancel a safe-to-cancel SI/PO and retry --
+            # confirmed live: this exact case (an order fully cancelled
+            # via an orders/updated webhook rather than orders/cancelled)
+            # used to hit this same LinkExistsError and give up
+            # permanently, since only the dedicated orders/cancelled path
+            # ever had the cascading retry.
+            from alaiy_os_connector_shopify.shopify.order.webhook import _cancel_sales_order
+            _cancel_sales_order(so_name)
+            if frappe.db.get_value("Sales Order", so_name, "docstatus") != 2:
+                # Cascade couldn't clear it either (e.g. SI already paid,
+                # or a PO already received/billed) -- _cancel_sales_order
+                # already logged the real reason; let the caller's other
+                # field updates (already applied earlier in
+                # _update_order_unlocked) stand rather than crashing them too.
+                frappe.log_error(
+                    title=f"Shopify: cannot reconcile line items for {so_name} -- still linked after cascade attempt",
+                    message=frappe.get_traceback(),
+                )
             return
-    frappe.db.commit()
-
+    # Deliberately NOT committed here. Committing the cancel before its
+    # replacement exists makes it permanent on its own: any failure between
+    # that commit and amended.submit() below -- a validation error, a mandatory
+    # field, a killed worker -- left the order cancelled with nothing replacing
+    # it, and the caller in webhook.py swallows the exception, so it happened
+    # with only an Error Log entry to show for it.
+    #
+    # Both halves now ride the same transaction. Frappe rolls the request back
+    # on an exception, so a failure to build the replacement leaves the original
+    # submitted and untouched, and Shopify's next webhook retries the whole
+    # exchange from a consistent starting point.
     amended = frappe.copy_doc(so)
     amended.amended_from = so.name
     _apply_line_item_diff(amended, order, warehouse)
@@ -183,6 +209,11 @@ def _sync_order_line_items(so_name: str, order: dict):
         # though `so` was already correctly cancelled just above. Nothing
         # left to amend into; the cancelled original IS the right end
         # state here, so stop instead of trying to insert an empty one.
+        #
+        # This is the one path where the cancel alone is the correct outcome,
+        # so it is committed here rather than above -- everywhere else the
+        # cancel only becomes permanent once its replacement is submitted.
+        frappe.db.commit()
         return
     amended.flags.ignore_permissions = True
     amended.flags.from_shopify_sync = True

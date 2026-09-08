@@ -307,7 +307,11 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     # Copy title/description/price in explicitly so a disabled Listing
     # doesn't look empty on the form -- the resolver falls back to these
     # same Item fields (or the Item Price row) anyway, so this is just
-    # making the already-inherited value visible.
+    # making the already-inherited value visible. category/product_type/
+    # images/variants are NOT set here -- the doctype controller's own
+    # before_insert (fill_children_from_item) already fills all of those
+    # on every insert, confirmed live; setting them here too would be
+    # redundant, not wrong, but duplicated logic.
     listing.listing_title = tmpl.item_name
     listing.listing_description = tmpl.description or ""
     if not tmpl.has_variants:
@@ -324,52 +328,6 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     listing.flags.from_shopify_sync = True
     listing.insert(ignore_permissions=True)
     return listing
-
-
-@frappe.whitelist()
-def get_item_children(item):
-    """Return a template Item's images + variant rows for the form's
-    'Populate from Item' button (client fills the grids so they're visible
-    before save). Mirrors fill_children_from_item, for the UI path.
-
-    Also returns the Item's current category/product_type as explicit
-    override values (not left blank-to-inherit) -- team decision: the
-    button is meant to snapshot the Item's current state onto the
-    Listing, same as it does for images/variants. A later Item category
-    change won't auto-propagate to a Listing whose override got filled
-    this way; clear the override field by hand if that's ever wanted.
-    """
-    tmpl = frappe.db.get_value(
-        "Item", item,
-        ["name", "image", "has_variants", "sh_shopify_category", "sh_shopify_product_type"],
-        as_dict=True)
-    if not tmpl:
-        return {"images": [], "variants": []}
-    settings = frappe.get_single("Shopify Connector Settings")
-    images = [
-        {"image": url, "source": "Original", "sort_order": i}
-        for i, url in enumerate(_template_image_urls(tmpl))
-    ]
-    variants = [
-        {
-            "item_variant": v.name, "is_enabled": 1,
-            "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
-            "variant_image": v.image or None,
-            # Snapshot the REAL resolved Item Price here instead of leaving
-            # variant_price blank -- a blank override just displays as a
-            # confusing "0.00" in the grid even though push-time logic
-            # correctly ignores it. Showing the real number the push would
-            # actually use is clearer than an empty-looking override field.
-            "variant_price": _variant_price(v.name, settings),
-        }
-        for v in _template_variant_items(tmpl.name, tmpl.has_variants)
-    ]
-    return {
-        "images": images,
-        "variants": variants,
-        "listing_category": tmpl.sh_shopify_category or None,
-        "listing_product_type": tmpl.sh_shopify_product_type or None,
-    }
 
 
 def sync_listing_variants(template_name):
@@ -442,13 +400,20 @@ def apply_inbound_from_shopify(template_name, images=None, variant_prices=None, 
 
 def fill_children_from_item(listing):
     """
-    Populate a listing's Images, Variants, category/product_type, and
-    variant prices from its Item when they're empty -- so both a manually
-    created listing (pick a template -> save) and an imported/backfilled
-    one end up fully populated automatically, without needing anyone to
-    click the separate "Populate from Item" button by hand. No-op for
-    anything that already exists (won't clobber merchant edits or an
-    explicit override, and won't re-add on every save).
+    Populate a listing's Images, Variants, category/product_type and
+    variant prices from its Item, adding whatever is missing.
+
+    Runs on every save (the doctype's validate), so a Listing tracks its
+    Item rather than being a snapshot of it at creation. That is what
+    replaced the form's "Populate from Item" button: keeping a Listing
+    current should not depend on somebody remembering to press something,
+    and a variant missing from a Listing is a variant that never reaches
+    Shopify.
+
+    Never clobbers. A field that already holds a value is left alone, an
+    existing variant row only has its blank fields backfilled, and no row
+    is ever removed -- so merchant edits, explicit overrides and a variant
+    deliberately switched off all survive.
     """
     if not listing.item:
         return
@@ -469,19 +434,55 @@ def fill_children_from_item(listing):
     if not listing.listing_product_type and tmpl.sh_shopify_product_type:
         listing.listing_product_type = tmpl.sh_shopify_product_type
 
-    if not listing.images:
-        for order, url in enumerate(_template_image_urls(tmpl)):
-            listing.append("images", {"image": url, "source": "Original", "sort_order": order})
+    # Merge, never rebuild. An "is the table empty" check would only ever
+    # fill a brand-new Listing: one that already holds a single row would
+    # never gain the variant its Item picked up afterwards, which is the gap
+    # the "Populate from Item" button existed to paper over.
+    #
+    # Adding only what is missing is also what makes this safe to run on
+    # every save. The Listing's own images can outnumber the Item's -- the
+    # upload path writes every parent image straight here, not via the Item
+    # -- so rebuilding the table from the Item's narrower view would silently
+    # drop real images that only ever lived on the Listing.
+    existing_images = {
+        (row.image or "").strip() for row in (listing.images or []) if row.image
+    }
+    next_sort_order = len(listing.images or [])
+    for url in _template_image_urls(tmpl):
+        if (url or "").strip() in existing_images:
+            continue
+        listing.append("images", {
+            "image": url, "source": "Original", "sort_order": next_sort_order,
+        })
+        existing_images.add((url or "").strip())
+        next_sort_order += 1
 
-    if not listing.variants:
-        settings = frappe.get_single("Shopify Connector Settings")
-        for v in _template_variant_items(tmpl.name, tmpl.has_variants):
+    rows_by_variant = {
+        (row.item_variant or "").strip(): row
+        for row in (listing.variants or []) if row.item_variant
+    }
+    settings = frappe.get_single("Shopify Connector Settings")
+    for v in _template_variant_items(tmpl.name, tmpl.has_variants):
+        existing = rows_by_variant.get((v.name or "").strip())
+        if existing is None:
             listing.append("variants", {
                 "item_variant": v.name, "is_enabled": 1,
                 "sh_shopify_variant_id": v.sh_shopify_variant_id or None,
                 "variant_image": v.image or None,
                 "variant_price": _variant_price(v.name, settings),
             })
+            continue
+        # Backfill only what is blank. is_enabled is deliberately left alone:
+        # a merchant switching one variant off must stay switched off, and
+        # re-enabling it here on the next save would undo that silently.
+        if not existing.sh_shopify_variant_id and v.sh_shopify_variant_id:
+            existing.sh_shopify_variant_id = v.sh_shopify_variant_id
+        if not existing.variant_image and v.image:
+            existing.variant_image = v.image
+        if not existing.variant_price:
+            price = _variant_price(v.name, settings)
+            if price is not None:
+                existing.variant_price = price
 
 
 def _template_image_urls(tmpl) -> list:

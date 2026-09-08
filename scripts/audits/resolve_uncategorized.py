@@ -23,7 +23,7 @@ Sync Categories, or fetch_shopify_taxonomy()).
 
 Run:
     bench --site <site> console
-    exec(open("/home/ubuntu/alaiy_os_bench/apps/alaiy_os_connector_shopify/scripts/resolve_uncategorized.py").read(), globals())
+    exec(open("/home/ubuntu/alaiy_os_bench/apps/alaiy_os_connector_shopify/scripts/audits/resolve_uncategorized.py").read(), globals())
     suggest_category_fixes()
 """
 import csv

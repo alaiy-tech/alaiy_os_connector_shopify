@@ -69,6 +69,43 @@ def _resolve_warehouse_for_location(location_id, settings):
     return None
 
 
+def _resolve_warehouse_for_item(item_code, settings, default_warehouse):
+    """
+    Real per-line-item warehouse for a Sales Order line, resolved from the
+    ITEM's own Item.shopify_location -- not the order-level default.
+
+    Confirmed live: _upsert_order_unlocked stamped every Sales Order Item
+    with the same single _resolve_default_warehouse(settings) result,
+    regardless of which real supplier actually owns that line. An order
+    with line items from 2+ different suppliers had every line recorded
+    against one shared warehouse -- order_routing.py's routing decision
+    still resolves the real supplier correctly (it reads Item.shopify_
+    location itself, independently), but the Sales Order Item's own stored
+    warehouse field was silently wrong from the moment of import, for
+    anyone/anything that reads that field directly rather than going
+    through routing.
+
+    Same resolution chain as the rest of this session's fixes: Item.
+    shopify_location -> Shopify Location docname -> Shopify Connector
+    Settings.sh_location_map -> real Warehouse. Falls back to the passed-in
+    default_warehouse when the item has no resolved location yet (a real,
+    expected gap for anything not yet imported through the fixed write
+    path, or an item this connector doesn't own at all).
+    """
+    if not frappe.get_meta("Item").get_field("shopify_location"):
+        return default_warehouse
+
+    location_name = frappe.db.get_value("Item", item_code, "shopify_location")
+    if not location_name:
+        return default_warehouse
+
+    for row in settings.get("sh_location_map") or []:
+        if row.shopify_location == location_name:
+            return row.warehouse
+
+    return default_warehouse
+
+
 def _force_valid_warehouse(dn, location_id=None):
     """
     make_delivery_note() copies each item's warehouse straight from the
@@ -85,13 +122,27 @@ def _force_valid_warehouse(dn, location_id=None):
 
     location_id (the fulfillment's own Shopify location, when the caller
     has one) takes priority: resolves through sh_location_map to the
-    real per-supplier warehouse. Falls back to the single generic
-    sh_default_warehouse when there's no location_id, no mapping for it,
-    or the caller didn't pass one at all (the full-order-fallback path
-    has no per-fulfillment location to work with).
+    real per-supplier warehouse, and applies to every row -- Shopify
+    itself is saying this whole shipment left that one location.
+
+    With no usable location_id, each row resolves its OWN warehouse from
+    its item's Item.shopify_location instead of all sharing one fallback.
+    A Delivery Note is the document that actually MOVES stock, so an
+    order containing items from two different suppliers would otherwise
+    draw every line out of the single default warehouse -- including the
+    lines whose stock physically sits in a supplier's warehouse and was
+    never in the default one at all. That both misstates the ledger and
+    drives the default warehouse negative (the internally-impossible
+    state scripts/fixes/fix_negative_bins.py exists to clean up).
+
+    dn.set_warehouse stays the single order-level default: it's only the
+    header default ERPNext applies to rows that don't set their own, and
+    every row here sets one explicitly.
     """
     settings = frappe.get_single("Shopify Connector Settings")
-    warehouse = _resolve_warehouse_for_location(location_id, settings) or _resolve_default_warehouse(settings)
+    default_warehouse = _resolve_default_warehouse(settings)
+    location_warehouse = _resolve_warehouse_for_location(location_id, settings)
     for item in dn.items:
-        item.warehouse = warehouse
-    dn.set_warehouse = warehouse
+        item.warehouse = location_warehouse or _resolve_warehouse_for_item(
+            item.item_code, settings, default_warehouse)
+    dn.set_warehouse = location_warehouse or default_warehouse

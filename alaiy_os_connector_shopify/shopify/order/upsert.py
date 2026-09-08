@@ -8,7 +8,7 @@ from frappe.utils import flt
 
 from alaiy_os_connector_shopify.shopify.order.locking import _acquire_order_lock, _release_order_lock
 from alaiy_os_connector_shopify.shopify.order.customer import _get_or_create_customer
-from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_warehouse
+from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_warehouse, _resolve_warehouse_for_item
 from alaiy_os_connector_shopify.shopify.order.utils import _resolve_item_code
 from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
     _sync_fulfillments,
@@ -88,6 +88,39 @@ def _upsert_order(order):
         _release_order_lock(order_id)
 
 
+def _attribute_fulfilled_locations(order):
+    """Record where each fulfilled line shipped from, before routing runs.
+
+    Same write _record_fulfilled_from_location performs when a Delivery Note
+    is created, done earlier because the Delivery Note cannot exist yet: it
+    requires a submitted Sales Order, and submit is what fires routing. Only
+    ever fills a blank, so a location the import already resolved wins.
+
+    Never raises. Ownership bookkeeping must not stop an order importing.
+    """
+    from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
+        _record_fulfilled_from_location,
+    )
+    for fulfillment in (order.get("fulfillments") or []):
+        location_id = fulfillment.get("location_id")
+        if not location_id:
+            continue
+        for li in (fulfillment.get("line_items") or []):
+            try:
+                item_code = _resolve_item_code({
+                    "sku": li.get("sku"),
+                    "variant_id": li.get("variant_id"),
+                    "title": li.get("title") or li.get("name"),
+                })
+                if item_code:
+                    _record_fulfilled_from_location(item_code, location_id)
+            except Exception:
+                frappe.log_error(
+                    title="Shopify: could not attribute a fulfilled line's location",
+                    message=frappe.get_traceback(),
+                )
+
+
 def _upsert_order_unlocked(order, order_id):
     """Returns True if a new Sales Order was created, False if skipped."""
     if get_active_sales_order(order_id):
@@ -132,16 +165,41 @@ def _upsert_order_unlocked(order, order_id):
             "item_code": item_code,
             "qty": qty,
             "rate": flt(li.get("price", 0)),
-            "warehouse": warehouse,
+            # Real per-line warehouse, not the order-level default -- an
+            # order with items from 2+ real suppliers needs each line
+            # recorded against its own supplier's warehouse, not one
+            # shared fallback. Falls back to the order-level default
+            # itself when the item has no resolved location yet.
+            "warehouse": _resolve_warehouse_for_item(item_code, settings, warehouse),
             "delivery_date": order_date,
             "sh_shopify_variant_id": str(li.get("variant_id", "")),
         })
 
     if not line_items:
-        frappe.log_error(
-            title=f"Shopify order {order.get('name')}: no mappable items",
-            message=str(order.get("line_items")),
+        # Say WHICH of the two very different reasons this is. A cancelled or
+        # fully refunded order comes back with every line at quantity 0, and
+        # reporting that as "no mappable items" reads as a catalogue problem --
+        # it sent two separate investigations looking for a missing item mapping
+        # that did not exist.
+        raw_lines = order.get("line_items") or []
+        all_zero = bool(raw_lines) and all(
+            _line_item_qty(li) <= 0 for li in raw_lines
         )
+        if all_zero:
+            title = f"Shopify order {order.get('name')}: every line refunded or cancelled"
+            reason = (
+                "Every line on this order has quantity 0, so there is nothing to import. "
+                "This is the normal shape of a cancelled or fully refunded order, not a "
+                "catalogue gap."
+            )
+        else:
+            title = f"Shopify order {order.get('name')}: no mappable items"
+            reason = (
+                "None of this order's lines resolved to a local Item, by SKU, variant id or "
+                "title. The products are missing from the catalogue, or their Shopify ids "
+                "were never linked."
+            )
+        frappe.log_error(title=title, message=f"{reason}\n\n{raw_lines}")
         return False
 
     line_items = _merge_duplicate_item_rows(line_items)
@@ -158,7 +216,7 @@ def _upsert_order_unlocked(order, order_id):
 
     conversion_rate = get_order_exchange_rate(order_currency, company_currency, order_date)
     if order_currency == company_currency and conversion_rate != 1.0:
-        # Caught live on Solist: ~1,481 same-currency orders got stamped with
+        # Caught live on a real site: ~1,481 same-currency orders got stamped with
         # a real exchange rate instead of 1.0 during a since-unexplained
         # window, silently blocking every refund/return on them months
         # later. get_order_exchange_rate's own same-currency guard should
@@ -231,23 +289,34 @@ def _upsert_order_unlocked(order, order_id):
     order_name = order.get("name", "")
     is_draft_order = order_name.startswith("#D")
     if not is_draft_order:
+        # Attribute every fulfilled line to the location that shipped it
+        # BEFORE submitting. Submit is what fires order routing, and routing
+        # reads Item.shopify_location to decide who fulfils the line. The
+        # Delivery Notes that normally record this cannot run until AFTER
+        # submit -- a Delivery Note needs a submitted Sales Order -- so on a
+        # historical import routing always ran against an item that had not
+        # learned its location yet, and raised a decision request for a line
+        # that would have routed itself moments later. The daily sweep closed
+        # them afterwards, but the order sat unrouted until it ran.
+        _attribute_fulfilled_locations(order)
         so.submit()
 
     frappe.db.commit()
 
     fulfillments = order.get("fulfillments") or []
-    # Only the REST webhook payload carries per-fulfillment line_items, which
-    # is what _sync_fulfillments needs to trim each Delivery Note to what
-    # that specific fulfillment shipped. The GraphQL pull reshapes
-    # fulfillments too (for delivery status/tracking) but deliberately
-    # without line items -- routing those into _sync_fulfillments would find
-    # nothing mappable and silently create no Delivery Note at all, so they
-    # take the full-order fallback and then get their status applied.
+    # Both the REST webhook payload and the GraphQL pull (via
+    # fulfillmentLineItems, added to fix a confirmed live bug -- an order
+    # shipped in more than one real Shopify fulfillment was being collapsed
+    # into a single Delivery Note by the full-order fallback below) now
+    # carry per-fulfillment line_items, so _sync_fulfillments can create one
+    # Delivery Note per real fulfillment regardless of source. The
+    # full-order fallback is now only for the rare case where Shopify
+    # itself reports the order fulfilled but with no fulfillments array at
+    # all (e.g. a quick manual "Complete order" -- see
+    # _create_delivery_note_if_needed's own docstring).
     if any(f.get("line_items") for f in fulfillments):
         _sync_fulfillments(so.name, fulfillments)
     elif so.sh_fulfillment_status == "fulfilled":
-        # GraphQL pull path has no per-fulfillment breakdown to work with
-        # (see _create_delivery_note_if_needed's note) -- full-order fallback.
         _create_delivery_note_if_needed(so.name)
 
     # Delivery status/tracking is independent of which path created the

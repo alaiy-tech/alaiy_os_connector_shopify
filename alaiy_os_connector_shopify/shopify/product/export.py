@@ -631,8 +631,16 @@ def push_changed_items_only():
     Each push fingerprint-guards itself (see _push_product_unlocked), so an
     unchanged item early-returns before any Shopify API call -- no separate
     pre-check needed here. Called by the scheduled job in hooks.py.
+
+    Confirmed live: unlike check_and_enqueue (sync_jobs.py), this never
+    checked Shopify Connector Settings.is_enabled at all -- runs
+    unconditionally every hour regardless of the master switch. Same class
+    of gap found and fixed across the doc_event push paths.
     """
     import time
+
+    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+        return
 
     _clear_stale_locks()
 
