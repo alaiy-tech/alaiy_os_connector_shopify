@@ -7,6 +7,7 @@
  "field_order": [
   "item",
   "is_enabled",
+  "disabled",
   "sh_shopify_status",
   "listing_title",
   "listing_description",
@@ -38,6 +39,14 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Enabled"
+  },
+  {
+   "default": "0",
+   "description": "Set when the portal's own Item behind this listing was archived (Item.disabled). Distinct from Enabled: this records WHY it's off, not whether it's actively synced -- Enabled stays admin-controlled independently via Move to Draft / Enable Sync.",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Disabled (Archived on Portal)"
   },
   {
    "default": "Active",

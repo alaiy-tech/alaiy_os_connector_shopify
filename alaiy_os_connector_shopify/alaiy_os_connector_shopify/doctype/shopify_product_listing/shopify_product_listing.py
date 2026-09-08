@@ -4,14 +4,25 @@ from frappe.model.document import Document
 
 
 class ShopifyProductListing(Document):
-    def before_insert(self):
-        # Auto-fill Images + Variants from the Item so a manually created
-        # listing (pick a template -> save) gets the same rows an imported one
-        # does. No-op if rows are already present.
+    def validate(self):
+        # Fill Images, Variants, category and product_type from the Item on
+        # every save, not only the first.
+        #
+        # This used to be before_insert, which left an existing Listing stale
+        # the moment its Item gained a variant or an image: the rows were
+        # filled once at creation and nothing refilled them afterwards. The
+        # only way to pick the new ones up was the form's "Populate from
+        # Item" button, so a Listing was only as current as the last time
+        # somebody remembered to press it -- and a variant missing from the
+        # Listing is a variant that never reaches Shopify.
+        #
+        # Safe to run repeatedly because fill_children_from_item only ever
+        # adds what is missing: it skips a field that already has a value and
+        # a child table that already has rows, so a merchant edit or an
+        # explicit override is never overwritten.
         from alaiy_os_connector_shopify.shopify.product.listing import fill_children_from_item
         fill_children_from_item(self)
 
-    def validate(self):
         self._validate_item_is_template()
         self._validate_variants()
         self._self_heal_all_variants_off()
