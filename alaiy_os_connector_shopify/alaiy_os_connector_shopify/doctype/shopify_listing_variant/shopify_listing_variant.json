@@ -6,6 +6,7 @@
   "field_order": [
     "item_variant",
     "is_enabled",
+    "disabled",
     "variant_price",
     "variant_image",
     "sh_shopify_variant_id"
@@ -25,6 +26,14 @@
       "fieldtype": "Check",
       "in_list_view": 1,
       "label": "Enabled"
+    },
+    {
+      "default": "0",
+      "description": "Set when this variant's own Item was archived on the portal. Distinct from Enabled -- see the parent Listing's Disabled field for why.",
+      "fieldname": "disabled",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Disabled (Archived on Portal)"
     },
     {
       "description": "Blank inherits the variant's Item Price on the connector's selling price list.",
