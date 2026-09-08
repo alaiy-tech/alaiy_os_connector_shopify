@@ -141,3 +141,41 @@ class TestItSkipsWhatIsNotThereYet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCoverageMatchesTheSchema(unittest.TestCase):
+    """
+    Every doctype that gained a connection field is backfilled.
+
+    The failure this catches is silent: someone adds the field to a new
+    doctype, forgets the patch, and that doctype's existing rows stay
+    unattributed forever -- invisible until a second store makes them wrong.
+    """
+
+    def _schema(self):
+        import json
+        import pathlib
+        # .../alaiy_os_connector_shopify/shopify/tests/ -> the app package,
+        # which holds both `shopify/` and the doctype folder.
+        root = pathlib.Path(__file__).resolve().parents[2]
+        doctypes = root / "alaiy_os_connector_shopify" / "doctype"
+        owned = []
+        for d in sorted(doctypes.iterdir()):
+            f = d / f"{d.name}.json"
+            if not f.exists():
+                continue
+            j = json.load(open(f, encoding="utf-8"))
+            if any(x.get("fieldname") == "connection" for x in j.get("fields", [])):
+                owned.append(j["name"])
+        return owned
+
+    def test_every_connector_doctype_with_the_field_is_backfilled(self):
+        mod, _ = _load(["default"])
+        covered = set(mod.OWNED) | {d for d, _ in mod.CORE}
+        for doctype in self._schema():
+            if doctype == "Shopify Sync Log":
+                # Attributed by the patch that created the connection it
+                # belongs to, before this one runs.
+                continue
+            self.assertIn(doctype, covered,
+                          f"{doctype} has a connection field but nothing backfills it")
