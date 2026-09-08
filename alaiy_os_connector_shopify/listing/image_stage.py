@@ -159,7 +159,6 @@ def run_step(item_code, step, work):
     if not frappe.db.exists(ENRICHED_DOCTYPE, item_code):
         # The only way here is a run that saved its listing and had it deleted
         # before this job ran. Nothing to patch, and nothing worth failing over.
-        _nudge_batches(item_code)
         return
 
     _set_state(item_code, "Running", None)
@@ -172,7 +171,6 @@ def run_step(item_code, step, work):
         frappe.log_error(title=f"Listing images {item_code}: {step} failed")
         _set_state(item_code, "Failed", _summary(str(exc)))
         _publish(item_code, "Failed")
-        _nudge_batches(item_code)
         return
 
     rendered = result["images"]
