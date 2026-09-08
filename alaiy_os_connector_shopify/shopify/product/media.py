@@ -6,6 +6,34 @@ product_sync.py, unchanged.
 import frappe
 
 
+def product_image_urls(node: dict) -> list:
+    """
+    Image URLs for a product node, featured image first.
+
+    Product.images is deprecated, so the query reads media instead. media
+    carries videos and 3D models too, and their preview is a poster frame
+    rather than a product photo, so only IMAGE entries are kept -- an Item's
+    image field is meant to be the product, not a video still.
+
+    Featured first because callers take [0] as the main image and Shopify
+    does not guarantee media order matches it.
+    """
+    def _url(preview_holder):
+        return (((preview_holder or {}).get("preview") or {}).get("image") or {}).get("url")
+
+    urls = []
+    featured = _url(node.get("featuredMedia"))
+    if featured:
+        urls.append(featured)
+    for m in ((node.get("media") or {}).get("nodes") or []):
+        if m.get("mediaContentType") != "IMAGE":
+            continue
+        url = _url(m)
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
 def _download_to_file(url: str, doctype: str, name: str) -> str:
     """
     Fetch an image URL and attach it as a File on (doctype, name); return the

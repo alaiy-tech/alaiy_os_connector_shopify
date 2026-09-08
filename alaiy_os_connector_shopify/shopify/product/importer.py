@@ -32,7 +32,7 @@ from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _e
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
 from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty, _variant_location_levels, _variant_inventory_item_id
 from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row, _resolve_item_shopify_location, _sync_item_supplier_from_location, resolve_product_shopify_location
-from alaiy_os_connector_shopify.shopify.product.media import _set_item_image, _set_item_slideshow
+from alaiy_os_connector_shopify.shopify.product.media import _set_item_image, _set_item_slideshow, product_image_urls
 from alaiy_os_connector_shopify.shopify.product.taxonomy import ensure_shopify_category
 from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _set_item_tags
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
@@ -413,7 +413,7 @@ def _shopify_node_fingerprint(node: dict) -> str:
         "status": node.get("status"),
         "tags": sorted(node.get("tags") or []),
         "category": (node.get("category") or {}).get("fullName"),
-        "images": [img.get("src") for img in (node.get("images", {}).get("nodes") or [])],
+        "images": product_image_urls(node),
         "variants": variants_fp,
     }
     return fingerprint.fingerprint(canonical)
@@ -445,7 +445,7 @@ def _update_existing_product(entity, node: dict) -> tuple:
     settings = frappe.get_single("Shopify Connector Settings")
     template_name = entity.erpnext_name
     variants = node.get("variants", {}).get("nodes", [])
-    images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
+    images = product_image_urls(node)
 
     # If this product has a Listing, its ABSTRACTED fields (images, price)
     # belong to the Listing -- a re-import must NOT overwrite the Item's
@@ -645,7 +645,7 @@ def _import_product_inner(node: dict) -> tuple:
         item_group = node.get("productType", "")
 
     variants = node.get("variants", {}).get("nodes", [])
-    images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
+    images = product_image_urls(node)
 
     # Case 1: Product has multiple variants → template + variant items
     if len(variants) > 1:
