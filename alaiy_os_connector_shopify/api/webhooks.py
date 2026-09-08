@@ -136,13 +136,26 @@ def handle_webhook():
     # The handlers resolve the enabled store themselves. That is the same
     # document as `connection` -- only one connection may be enabled at a time,
     # and this delivery was checked against that one above.
-    _dispatch(topic, payload)
+    _dispatch(topic, payload, connection.name)
 
     frappe.response.status_code = 200
     return {"ok": True}
 
 
-def _dispatch(topic, payload):
+def _dispatch(topic, payload, connection=None):
+    """
+    Hand the event to the right background job, naming the store it came from.
+
+    The receiver above has already established which store this is -- the shop
+    domain in the header is what the HMAC was checked against, and a delivery
+    it cannot attribute is refused outright. Passing that name down is what
+    lets the handlers scope their lookups: a Shopify order id is only unique
+    inside one shop, so a refund for store B's order 1001 must not resolve
+    store A's Sales Order and post a credit note against their books.
+
+    A name rather than the document, because a document does not survive being
+    serialised onto the queue.
+    """
     # Order webhooks (inbound order sync)
     order_topics = {
         "orders/create", "orders/updated", "orders/edited",
@@ -156,6 +169,7 @@ def _dispatch(topic, payload):
             timeout=300,
             topic=topic,
             payload=payload,
+            connection=connection,
         )
 
     # Refund webhooks (returns/credit notes, inbound)
@@ -167,6 +181,7 @@ def _dispatch(topic, payload):
             timeout=300,
             topic=topic,
             payload=payload,
+            connection=connection,
         )
 
     # Fulfillment webhooks (tracking number create/update)
@@ -178,6 +193,7 @@ def _dispatch(topic, payload):
             timeout=300,
             topic=topic,
             payload=payload,
+            connection=connection,
         )
 
     # Product webhooks (bidirectional product sync - inbound)
@@ -191,6 +207,7 @@ def _dispatch(topic, payload):
             timeout=300,
             topic=topic,
             payload=payload,
+            connection=connection,
         )
 
     # Collection webhooks (bidirectional collection sync - inbound)
@@ -204,6 +221,7 @@ def _dispatch(topic, payload):
             timeout=300,
             topic=topic,
             payload=payload,
+            connection=connection,
         )
 
     # Inventory webhooks (inbound leg of the bidirectional inventory sync)
@@ -215,4 +233,5 @@ def _dispatch(topic, payload):
             timeout=120,
             topic=topic,
             payload=payload,
+            connection=connection,
         )

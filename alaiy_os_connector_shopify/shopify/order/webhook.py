@@ -11,7 +11,7 @@ from alaiy_os_connector_shopify.shopify.order.update import _update_order
 from alaiy_os_connector_shopify.shopify.order.delivery_notes import _sync_tracking
 
 
-def handle_order_webhook(topic, payload):
+def handle_order_webhook(topic, payload, connection=None):
     """
     Routes by topic for both real orders (orders/*) and draft orders
     (draft_orders/*), which both create/update/cancel Sales Orders.
@@ -24,12 +24,12 @@ def handle_order_webhook(topic, payload):
     """
     try:
         if topic in ("orders/cancelled", "orders/delete", "draft_orders/delete"):
-            _cancel_order(payload)
+            _cancel_order(payload, connection)
         elif topic in ("orders/create", "draft_orders/create"):
             _upsert_order(payload)
         else:
             # orders/updated, orders/fulfilled, draft_orders/update
-            _update_order(payload)
+            _update_order(payload, connection)
     except Exception:
         frappe.log_error(
             title=f"Shopify: order webhook {topic} failed",
@@ -37,11 +37,11 @@ def handle_order_webhook(topic, payload):
         )
 
 
-def handle_fulfillment_webhook(topic, payload):
+def handle_fulfillment_webhook(topic, payload, connection=None):
     """fulfillments/create, fulfillments/update -- payload is the
     Fulfillment object itself, carrying tracking info. See _sync_tracking."""
     try:
-        _sync_tracking(payload)
+        _sync_tracking(payload, connection)
     except Exception:
         frappe.log_error(
             title=f"Shopify: fulfillment webhook {topic} failed",
@@ -56,9 +56,9 @@ def handle_fulfillment_webhook(topic, payload):
 _MAX_TIMESTAMP_RETRIES = 3
 
 
-def _cancel_order(order):
+def _cancel_order(order, connection=None):
     order_id = str(order.get("id", ""))
-    so_name = get_active_sales_order(order_id)
+    so_name = get_active_sales_order(order_id, connection)
     if so_name and not frappe.db.exists("Sales Order", so_name):
         # Mapping points at a Sales Order that no longer exists locally
         # (deleted directly, or the mapping otherwise went stale) -- nothing

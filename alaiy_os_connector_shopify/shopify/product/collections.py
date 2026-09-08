@@ -661,7 +661,7 @@ def delete_collection(collection_gid: str):
 
 # ── Webhook handler (Shopify -> Alaiy OS) ──────────────────────────────────────
 
-def handle_collection_webhook(topic, payload):
+def handle_collection_webhook(topic, payload, connection=None):
     """
     collections/create|update -> upsert the cache doc; collections/delete ->
     remove it. Webhook payload is REST-shaped (id, title, handle, body_html,
@@ -696,7 +696,7 @@ def handle_collection_webhook(topic, payload):
         # ponytail: webhook carries no connection yet -- the shop domain that
         # identifies the store is read in api/webhooks.py and not passed down.
         # Threading it through _dispatch is the webhook half of this work.
-        _upsert_collection_cache(node, _webhook_connection(payload))
+        _upsert_collection_cache(node, connection or _webhook_connection(payload))
         frappe.db.commit()
     except Exception:
         frappe.log_error(

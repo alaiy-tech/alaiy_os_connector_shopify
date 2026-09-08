@@ -496,7 +496,7 @@ def _get_inventory_item_state(client, variant_id, location_id):
     return inventory_item_id, (current_qty or 0)
 
 
-def handle_inventory_level_webhook(topic, payload):
+def handle_inventory_level_webhook(topic, payload, connection=None):
     """Inbound leg: Shopify inventory_levels/update -> local Bin.actual_qty.
     Sibling of run_inventory_push (local -> Shopify); no echo-loop guard
     needed here because the outbound push already re-reads Shopify's own

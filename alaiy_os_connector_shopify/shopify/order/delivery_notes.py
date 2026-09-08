@@ -291,7 +291,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         )
 
 
-def _sync_tracking(fulfillment):
+def _sync_tracking(fulfillment, connection=None):
     """
     fulfillments/create and fulfillments/update webhooks deliver the
     Fulfillment object directly (not wrapped in an order), carrying
@@ -327,7 +327,7 @@ def _sync_tracking(fulfillment):
         if not order_id:
             return
         from alaiy_os_connector_shopify.shopify.order.upsert import get_active_sales_order
-        so_name = get_active_sales_order(order_id)
+        so_name = get_active_sales_order(order_id, connection)
         if not so_name:
             return
         dn_name = frappe.db.get_value(

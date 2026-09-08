@@ -15,7 +15,7 @@ from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
 )
 
 
-def _update_order(order):
+def _update_order(order, connection=None):
     """
     Acquires the SAME per-order lock _upsert_order uses (see
     _acquire_order_lock's docstring) before doing anything, then defers to
@@ -31,12 +31,12 @@ def _update_order(order):
         )
         return False
     try:
-        return _update_order_unlocked(order, order_id)
+        return _update_order_unlocked(order, order_id, connection)
     finally:
         _release_order_lock(order_id)
 
 
-def _update_order_unlocked(order, order_id):
+def _update_order_unlocked(order, order_id, connection=None):
     """
     Applies an orders/updated or orders/fulfilled webhook to an existing
     Sales Order. Updates status-tracking fields always. If the order hasn't
@@ -45,7 +45,7 @@ def _update_order_unlocked(order, order_id):
     state. Falls back to a full create if we've never seen this order (e.g.
     Shopify redelivered orders/updated before orders/create ever arrived).
     """
-    so_name = get_active_sales_order(order_id)
+    so_name = get_active_sales_order(order_id, connection)
     if not so_name:
         # Already holding this order_id's lock -- call the unlocked upsert
         # directly rather than _upsert_order, which would try (harmlessly,

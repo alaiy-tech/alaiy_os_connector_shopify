@@ -17,7 +17,7 @@ from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
 from alaiy_os_connector_shopify import connections
 
 
-def handle_product_webhook(topic: str, payload: dict):
+def handle_product_webhook(topic: str, payload: dict, connection=None):
     """
     Handle product events from Shopify webhooks.
     Topics: products/create, products/update, products/delete

@@ -348,7 +348,7 @@ def _upsert_order_unlocked(order, order_id):
             # order_id is on the standalone fulfillments/* webhook payload but
             # not on a fulfillment nested inside an order -- _sync_tracking
             # needs it for its no-fulfillment-id fallback.
-            _sync_tracking({**fulfillment, "order_id": order_id})
+            _sync_tracking({**fulfillment, "order_id": order_id}, settings.name)
 
     # Orders often arrive already paid (and sometimes already fulfilled) at
     # create time -- invoice right away if the trigger is met.

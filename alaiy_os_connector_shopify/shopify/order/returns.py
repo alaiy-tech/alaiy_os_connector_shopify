@@ -45,10 +45,10 @@ from alaiy_os_connector_shopify.shopify.order.invoice import _fill_item_accounts
 from alaiy_os_connector_shopify import connections
 
 
-def handle_refund_webhook(topic, payload):
+def handle_refund_webhook(topic, payload, connection=None):
     """refunds/create -- payload is the Shopify Refund object (REST-shaped)."""
     try:
-        _process_refund(payload)
+        _process_refund(payload, connection)
     except Exception:
         frappe.log_error(
             title=f"Shopify: refund webhook {topic} failed",
@@ -56,19 +56,24 @@ def handle_refund_webhook(topic, payload):
         )
 
 
-def _process_refund(refund):
+def _process_refund(refund, connection=None):
     refund_id = str(refund.get("id") or "")
     if not refund_id:
         return
-    # The order first, because it is what says which store this refund is
-    # for: a Shopify refund id is only unique inside one shop, so the
-    # idempotency check below has to ask "has THIS store already processed
-    # this refund" rather than "has anyone".
+    # Resolve the order within the store the webhook came from. Both halves
+    # matter: a Shopify order id is only unique inside one shop, so an
+    # unscoped lookup can return another seller's Sales Order -- and this
+    # function goes on to post a Credit Note and a refund Payment Entry
+    # against whatever it finds, which would move real money on the wrong
+    # seller's books.
+    #
+    # Reading the store off the row it found would not help. That answers
+    # "whose order did I happen to land on", not "whose refund is this", and
+    # would faithfully scope every check below to the wrong store.
     order_id = str(refund.get("order_id") or "")
-    so_name = get_active_sales_order(order_id)
+    so_name = get_active_sales_order(order_id, connection)
     if not so_name or frappe.db.get_value("Sales Order", so_name, "docstatus") != 1:
         return
-    connection = frappe.db.get_value("Sales Order", so_name, "sh_shopify_connection")
 
     # Idempotent: Shopify redelivers webhooks, and a merchant edit on an
     # already-processed refund shouldn't create a second return. Check BOTH
