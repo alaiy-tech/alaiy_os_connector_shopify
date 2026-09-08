@@ -185,16 +185,15 @@ def get_dashboard_stats(connection=None):
     # Listing Variant row is the actual source of truth for "how many
     # variants we're tracking", regardless of which pattern a given site
     # uses underneath.
-    # Listing Variant is a child table, so the store is on its parent.
-    own_listings = frappe.get_all(
-        "Shopify Product Listing",
-        filters=owned_by("Shopify Product Listing", store), pluck="name")
-    variants_total = frappe.db.count(
-        "Shopify Listing Variant", {"parent": ["in", own_listings]})
-    variants_pushed = frappe.db.count("Shopify Listing Variant", {
-        "parent": ["in", own_listings], "sh_shopify_variant_id": ["is", "set"]})
+    # Listing Variant is a child table, so the store is on its parent. Counted
+    # with a join rather than by pulling every Listing name back and passing
+    # them as `parent in [...]`: that loads the whole catalogue into memory to
+    # count its children, and a store with no Listings yet -- a seller's state
+    # on their first import -- would build `parent IN ()`.
+    variants_total, variants_pushed = _variant_counts(store)
 
-    listings_total = len(own_listings)
+    listings_total = frappe.db.count(
+        "Shopify Product Listing", owned_by("Shopify Product Listing", store))
     listings_enabled = frappe.db.count(
         "Shopify Product Listing",
         owned_by("Shopify Product Listing", store, {"is_enabled": 1}))
@@ -354,3 +353,20 @@ def refresh_shopify_locations(connection=None):
         "alaiy_os_connector_shopify.shopify.inventory_sync.sync_shopify_locations",
         connection=connection,
     )
+
+
+def _variant_counts(store: str):
+    """(tracked, pushed) Shopify Listing Variant rows for one store."""
+    row = frappe.db.sql(
+        """
+        SELECT COUNT(*),
+               SUM(CASE WHEN v.sh_shopify_variant_id IS NOT NULL
+                         AND v.sh_shopify_variant_id != '' THEN 1 ELSE 0 END)
+        FROM `tabShopify Listing Variant` v
+        JOIN `tabShopify Product Listing` l ON l.name = v.parent
+        WHERE l.connection = %s
+        """,
+        store,
+    )
+    total, pushed = (row[0] if row else (0, 0))
+    return int(total or 0), int(pushed or 0)

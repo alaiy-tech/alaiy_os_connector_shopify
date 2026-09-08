@@ -195,10 +195,12 @@ def item_by_variant_id(variant_id: str, connection=None):
         return None
     # The Listing Variant row is a child table, so the store is recorded on
     # its parent Listing rather than on the row itself.
-    row_parent = frappe.db.get_value(
-        "Shopify Listing Variant",
-        _variant_row_filters(variant_id, connection),
-        "item_variant")
+    if connection is not None:
+        row_parent = _variant_row_by_store(variant_id, connection)
+    else:
+        row_parent = frappe.db.get_value(
+            "Shopify Listing Variant",
+            {"sh_shopify_variant_id": variant_id}, "item_variant")
     if row_parent:
         return row_parent
     return frappe.db.get_value(
@@ -207,17 +209,28 @@ def item_by_variant_id(variant_id: str, connection=None):
         "name")
 
 
-def _variant_row_filters(variant_id: str, connection):
-    """Listing Variant rows, narrowed to the store that owns their parent."""
-    filters = {"sh_shopify_variant_id": variant_id}
-    if connection is not None:
-        name = getattr(connection, "name", connection)
-        filters["parent"] = (
-            "in",
-            frappe.get_all("Shopify Product Listing",
-                           filters={"connection": name}, pluck="name"),
-        )
-    return filters
+def _variant_row_by_store(variant_id: str, connection):
+    """
+    The variant Item code for a Shopify variant id, within one store.
+
+    A Listing Variant is a child row, so it carries no store of its own -- the
+    Listing that owns it does. One join answers that; the obvious alternative,
+    collecting the store's Listing names and passing them as `parent in [...]`,
+    runs a second query on a path that is hit once per variant during an
+    import, and degenerates to `parent IN ()` for a store with no Listings yet
+    -- which is exactly the state a seller is in on their first import.
+    """
+    rows = frappe.db.sql(
+        """
+        SELECT v.item_variant
+        FROM `tabShopify Listing Variant` v
+        JOIN `tabShopify Product Listing` l ON l.name = v.parent
+        WHERE v.sh_shopify_variant_id = %s AND l.connection = %s
+        LIMIT 1
+        """,
+        (variant_id, getattr(connection, "name", connection)),
+    )
+    return rows[0][0] if rows else None
 
 
 def template_by_product_id(product_id: str, connection=None):
