@@ -32,6 +32,8 @@ flag? -- rather than being wired up by default.
 """
 
 import frappe
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from frappe.utils import flt
 
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _resolve_item_code
@@ -58,18 +60,24 @@ def _process_refund(refund):
     refund_id = str(refund.get("id") or "")
     if not refund_id:
         return
+    # The order first, because it is what says which store this refund is
+    # for: a Shopify refund id is only unique inside one shop, so the
+    # idempotency check below has to ask "has THIS store already processed
+    # this refund" rather than "has anyone".
+    order_id = str(refund.get("order_id") or "")
+    so_name = get_active_sales_order(order_id)
+    if not so_name or frappe.db.get_value("Sales Order", so_name, "docstatus") != 1:
+        return
+    connection = frappe.db.get_value("Sales Order", so_name, "sh_shopify_connection")
+
     # Idempotent: Shopify redelivers webhooks, and a merchant edit on an
     # already-processed refund shouldn't create a second return. Check BOTH
     # documents -- a no_restock refund never creates a Delivery Note at all,
     # so checking only that would let a redelivery duplicate the Credit Note.
     for doctype in ("Delivery Note", "Sales Invoice"):
-        if frappe.db.exists(doctype, {"sh_shopify_refund_id": refund_id}):
+        if frappe.db.exists(doctype, owned_by(
+                doctype, connection, {"sh_shopify_refund_id": refund_id})):
             return
-
-    order_id = str(refund.get("order_id") or "")
-    so_name = get_active_sales_order(order_id)
-    if not so_name or frappe.db.get_value("Sales Order", so_name, "docstatus") != 1:
-        return
 
     # Two separate maps, deliberately -- money and stock are different
     # questions on the same refund.
@@ -118,8 +126,8 @@ def _process_refund(refund):
     refund_amount = _settled_refund_amount(refund)
 
     with _as_administrator():
-        _make_sales_return(so_name, restock_qty, refund_id)
-        si_name = _make_credit_note(so_name, credit_qty, refund_id)
+        _make_sales_return(so_name, restock_qty, refund_id, connection)
+        si_name = _make_credit_note(so_name, credit_qty, refund_id, connection)
         if si_name:
             if refund_amount > 0:
                 _refund_payment_entry(si_name, refund_amount)
@@ -251,7 +259,7 @@ def _source_delivery_note(so_name, qty_by_item):
     return rows[0].parent if rows else None
 
 
-def _make_sales_return(so_name, qty_by_item, refund_id):
+def _make_sales_return(so_name, qty_by_item, refund_id, connection=None):
     dn_name = _source_delivery_note(so_name, qty_by_item)
     if not dn_name:
         return None  # nothing restockable shipped -- no stock to bring back
@@ -259,7 +267,9 @@ def _make_sales_return(so_name, qty_by_item, refund_id):
     try:
         # Same last-point re-check as _make_credit_note -- see that
         # function's comment for why.
-        if frappe.db.exists("Delivery Note", {"sh_shopify_refund_id": refund_id}):
+        if frappe.db.exists("Delivery Note", owned_by(
+                "Delivery Note", connection,
+                {"sh_shopify_refund_id": refund_id})):
             return None
         from erpnext.controllers.sales_and_purchase_return import make_return_doc
         dn = make_return_doc("Delivery Note", dn_name)
@@ -270,6 +280,7 @@ def _make_sales_return(so_name, qty_by_item, refund_id):
             row.allow_zero_valuation_rate = 1
         _fill_expense_accounts(dn)
         dn.sh_shopify_refund_id = refund_id
+        dn.sh_shopify_connection = connection
         # ERPNext's own validate_return_against requires a return's
         # conversion_rate to exactly match the document it's returning
         # against -- confirmed live that make_return_doc doesn't always
@@ -318,7 +329,7 @@ def _source_sales_invoice(so_name, qty_by_item):
     return None
 
 
-def _make_credit_note(so_name, qty_by_item, refund_id):
+def _make_credit_note(so_name, qty_by_item, refund_id, connection=None):
     si_name = _source_sales_invoice(so_name, qty_by_item)
     if not si_name:
         return None  # not invoiced yet -- nothing to credit
@@ -332,7 +343,9 @@ def _make_credit_note(so_name, qty_by_item, refund_id):
         # mechanism unconfirmed, but the failure mode is real). This is the
         # last point before an irreversible insert, so it's the last chance
         # to catch a redundant run regardless of cause.
-        if frappe.db.exists("Sales Invoice", {"sh_shopify_refund_id": refund_id}):
+        if frappe.db.exists("Sales Invoice", owned_by(
+                "Sales Invoice", connection,
+                {"sh_shopify_refund_id": refund_id})):
             return None
         from erpnext.controllers.sales_and_purchase_return import make_return_doc
         settings = connections.require_enabled()
@@ -342,6 +355,7 @@ def _make_credit_note(so_name, qty_by_item, refund_id):
         si.update_stock = 0  # stock already returned via the Sales Return above
         _fill_item_accounts(si, settings)
         si.sh_shopify_refund_id = refund_id
+        si.sh_shopify_connection = connection
         # Same reasoning as _make_sales_return: ERPNext requires an exact
         # conversion_rate match against the document being returned against,
         # and make_return_doc doesn't always carry it over.

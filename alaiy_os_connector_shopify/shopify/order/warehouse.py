@@ -5,6 +5,8 @@ unchanged.
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify import connections
 
 
@@ -62,7 +64,12 @@ def _resolve_warehouse_for_location(location_id, settings):
     """
     if not location_id:
         return None
-    location_name = frappe.db.get_value("Shopify Location", {"sh_location_id": str(location_id)}, "name")
+    location_name = frappe.db.get_value(
+        "Shopify Location",
+        owned_by("Shopify Location", getattr(settings, "name", None),
+                 {"sh_location_id": str(location_id)}),
+        "name",
+    )
     if not location_name:
         return None
     for row in settings.get("sh_location_map") or []:

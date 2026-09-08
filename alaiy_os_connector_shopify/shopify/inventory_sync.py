@@ -1,4 +1,6 @@
 import frappe
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from erpnext.stock.doctype.stock_reconciliation.stock_reconciliation import (
     EmptyStockReconciliationItemsError,
 )
@@ -105,6 +107,8 @@ def sync_shopify_locations(trigger="manual", log_name=None, connection=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     connection = connection or connections.require_enabled()
+    # A name, whichever form the caller passed -- the rows record the id.
+    connection_name = getattr(connection, "name", connection)
     log = load_or_create_log("locations", trigger, log_name, connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)
@@ -145,12 +149,20 @@ def sync_shopify_locations(trigger="manual", log_name=None, connection=None):
                         "fulfillment_service_type": service.get("type") or "",
                         "sh_fulfillment_service_gid": service.get("id") or "",
                     })
-                name = frappe.db.get_value("Shopify Location", {"sh_location_id": legacy}, "name")
+                # Scoped to this store: a Shopify location id is a small
+                # integer that is only unique inside one shop, so unscoped
+                # this updates whichever seller's location 1 was cached first.
+                name = frappe.db.get_value(
+                    "Shopify Location",
+                    owned_by("Shopify Location", connection_name,
+                             {"sh_location_id": legacy}),
+                    "name")
                 if name:
                     doc = frappe.get_doc("Shopify Location", name)
                     doc.update(values)
                 else:
-                    doc = frappe.get_doc(dict(doctype="Shopify Location", **values))
+                    doc = frappe.get_doc(dict(doctype="Shopify Location",
+                                              connection=connection_name, **values))
                 doc.flags.ignore_permissions = True
                 doc.save()
                 total += 1

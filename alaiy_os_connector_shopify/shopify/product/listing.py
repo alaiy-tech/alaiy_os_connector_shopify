@@ -21,6 +21,8 @@ on every write so the two never drift.
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify.shopify.product.pricing import _price_rate, _variant_price
 from alaiy_os_connector_shopify.shopify.product.media import _item_images, _absolute_file_url
 
@@ -179,30 +181,62 @@ def variant_price(listing, variant_code: str, settings):
 # Listing-based lookups, with the Item as fallback for any row that hasn't
 # been dual-written to yet.
 
-def item_by_variant_id(variant_id: str):
+def item_by_variant_id(variant_id: str, connection=None):
     """Shopify variant id -> the Alaiy OS variant Item code, via the Listing
     Variant row. Falls back to the Item-side lookup if the Listing doesn't
     have it (e.g. a row that hasn't been dual-written to). None if neither
-    has it."""
+    has it.
+
+    `connection` narrows both lookups to one store. A Shopify variant id is
+    only unique inside one shop, so without it a second seller importing the
+    same catalogue resolves to the first seller's Item. None searches every
+    store, which is what an unconverted caller still does."""
     if not variant_id:
         return None
+    # The Listing Variant row is a child table, so the store is recorded on
+    # its parent Listing rather than on the row itself.
     row_parent = frappe.db.get_value(
-        "Shopify Listing Variant", {"sh_shopify_variant_id": variant_id}, "item_variant")
+        "Shopify Listing Variant",
+        _variant_row_filters(variant_id, connection),
+        "item_variant")
     if row_parent:
         return row_parent
-    return frappe.db.get_value("Item", {"sh_shopify_variant_id": variant_id}, "name")
+    return frappe.db.get_value(
+        "Item",
+        owned_by("Item", connection, {"sh_shopify_variant_id": variant_id}),
+        "name")
 
 
-def template_by_product_id(product_id: str):
+def _variant_row_filters(variant_id: str, connection):
+    """Listing Variant rows, narrowed to the store that owns their parent."""
+    filters = {"sh_shopify_variant_id": variant_id}
+    if connection is not None:
+        name = getattr(connection, "name", connection)
+        filters["parent"] = (
+            "in",
+            frappe.get_all("Shopify Product Listing",
+                           filters={"connection": name}, pluck="name"),
+        )
+    return filters
+
+
+def template_by_product_id(product_id: str, connection=None):
     """Shopify product id -> the Alaiy OS template Item code, via the Listing.
-    Falls back to the Item-side lookup the same way."""
+    Falls back to the Item-side lookup the same way. `connection` narrows both
+    to one store, for the same reason as item_by_variant_id."""
     if not product_id:
         return None
     listing_item = frappe.db.get_value(
-        "Shopify Product Listing", {"sh_shopify_product_id": product_id}, "item")
+        "Shopify Product Listing",
+        owned_by("Shopify Product Listing", connection,
+                 {"sh_shopify_product_id": product_id}),
+        "item")
     if listing_item:
         return listing_item
-    return frappe.db.get_value("Item", {"sh_shopify_product_id": product_id}, "name")
+    return frappe.db.get_value(
+        "Item",
+        owned_by("Item", connection, {"sh_shopify_product_id": product_id}),
+        "name")
 
 
 def set_product_id(template_name: str, product_id):

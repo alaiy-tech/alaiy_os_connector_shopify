@@ -18,6 +18,8 @@ Bidirectional, manual collections:
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 from alaiy_os_connector_shopify import connections
@@ -209,11 +211,14 @@ def _collection_gid(collection_id: str) -> str:
 
 # ── Cache sync (Shopify -> local Shopify Collection docs) ─────────────────────
 
-def _upsert_collection_cache(node: dict):
+def _upsert_collection_cache(node: dict, connection=None):
     """
     Create or update one Shopify Collection doc from a GraphQL collection node.
-    Keyed on legacyResourceId (sh_collection_id). Sets from_shopify_sync so the
-    doc_events push-back hook doesn't echo this straight back to Shopify.
+    Keyed on legacyResourceId (sh_collection_id) paired with the store, since
+    that id is only unique inside one shop -- unscoped, a second seller's
+    collection 12345 overwrites the first seller's cached row. Sets
+    from_shopify_sync so the doc_events push-back hook doesn't echo this
+    straight back to Shopify.
     """
     legacy = str(node.get("legacyResourceId") or "")
     gid = node.get("id") or (_collection_gid(legacy) if legacy else "")
@@ -232,12 +237,17 @@ def _upsert_collection_cache(node: dict):
         "last_synced": frappe.utils.now_datetime(),
     }
 
-    name = frappe.db.get_value("Shopify Collection", {"sh_collection_id": legacy}, "name") if legacy else None
+    connection_name = getattr(connection, "name", connection)
+    name = frappe.db.get_value(
+        "Shopify Collection",
+        owned_by("Shopify Collection", connection_name, {"sh_collection_id": legacy}),
+        "name") if legacy else None
     if name:
         doc = frappe.get_doc("Shopify Collection", name)
         doc.update(values)
     else:
-        doc = frappe.get_doc(dict(doctype="Shopify Collection", **values))
+        doc = frappe.get_doc(dict(doctype="Shopify Collection",
+                                  connection=connection_name, **values))
     doc.flags.from_shopify_sync = True
     doc.flags.ignore_permissions = True
     doc.save()
@@ -269,7 +279,7 @@ def sync_shopify_collections(trigger="manual", log_name=None, connection=None):
                 cancelled = True
                 break
             for node in page_nodes:
-                _upsert_collection_cache(node)
+                _upsert_collection_cache(node, connection)
                 total += 1
             log.items_processed = total
             log.items_created = total
@@ -683,10 +693,30 @@ def handle_collection_webhook(topic, payload):
             "image": {"url": (payload.get("image") or {}).get("src")} if payload.get("image") else None,
             "ruleSet": {"rules": payload.get("rules")} if payload.get("rules") else None,
         }
-        _upsert_collection_cache(node)
+        # ponytail: webhook carries no connection yet -- the shop domain that
+        # identifies the store is read in api/webhooks.py and not passed down.
+        # Threading it through _dispatch is the webhook half of this work.
+        _upsert_collection_cache(node, _webhook_connection(payload))
         frappe.db.commit()
     except Exception:
         frappe.log_error(
             title=f"Shopify: collection webhook {topic} failed",
             message=frappe.get_traceback(),
         )
+
+
+def _webhook_connection(payload):
+    """
+    The store a collection webhook is for, when it can be told.
+
+    The shop domain that identifies it is checked in api/webhooks.py to pick
+    the secret the HMAC is verified against, but is not passed down to the
+    handlers yet. Until it is, this falls back to the bench's own answer:
+    unambiguous while one store is enabled, and None once several are, which
+    leaves the cache row unattributed rather than attributed to the wrong
+    seller.
+    """
+    from alaiy_os_connector_shopify import connections
+
+    doc = connections.enabled_connection()
+    return doc.name if doc else None

@@ -18,9 +18,10 @@ from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
 from alaiy_os_connector_shopify.shopify.order.tax import _append_tax_lines
 
 from alaiy_os_connector_shopify import connections
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 
 
-def get_active_sales_order(order_id: str):
+def get_active_sales_order(order_id: str, connection=None):
     """
     Look up the Sales Order for a Shopify order ID, preferring the latest
     non-cancelled document. Once _sync_order_line_items starts amending
@@ -28,10 +29,20 @@ def get_active_sales_order(order_id: str):
     amended replacement both carry the same sh_shopify_order_id -- a plain
     frappe.db.get_value with no docstatus/order_by picks whichever the DB
     happens to return first, which can silently resurrect the cancelled one.
+
+    `connection` narrows the search to one store. A Shopify order id is only
+    unique inside one shop, so two sellers both have an order 1001: without
+    it, the second seller's import finds the first seller's Sales Order,
+    treats their own order as already imported, and never creates it.
+
+    Optional, and None searches every store exactly as before -- this is also
+    the dedupe the importer relies on, so it has to keep answering for callers
+    that have not been given a connection to pass yet.
     """
     return frappe.db.get_value(
         "Sales Order",
-        {"sh_shopify_order_id": order_id, "docstatus": ["!=", 2]},
+        owned_by("Sales Order", connection,
+                 {"sh_shopify_order_id": order_id, "docstatus": ["!=", 2]}),
         "name",
         order_by="creation desc",
     )
@@ -125,10 +136,14 @@ def _attribute_fulfilled_locations(order):
 
 def _upsert_order_unlocked(order, order_id):
     """Returns True if a new Sales Order was created, False if skipped."""
-    if get_active_sales_order(order_id):
+    # Resolved before the dedupe, not after: the dedupe has to ask "does THIS
+    # store already have this order", and a Shopify order id is only unique
+    # inside one shop.
+    settings = connections.require_enabled()
+
+    if get_active_sales_order(order_id, settings.name):
         return False  # already processed
 
-    settings = connections.require_enabled()
     # A missing default Address Template makes Alaiy OS throw while rendering the
     # customer's address during Sales Order validate -- ensure one exists first.
     from alaiy_os_connector_shopify.shopify.order.address import ensure_default_address_template
@@ -247,6 +262,10 @@ def _upsert_order_unlocked(order, order_id):
     # is installed, so a site running Shopify + Amazon + Unicommerce can
     # filter/report on Sales Order.sales_channel uniformly.
     so.sales_channel = "Shopify"
+    # Which seller's store this order came from. Every later lookup pairs the
+    # Shopify order id with this, because the id alone is only unique inside
+    # one shop.
+    so.sh_shopify_connection = settings.name
     so.sh_shopify_order_id = order_id
     so.sh_shopify_order_name = order.get("name", "")
     so.sh_financial_status = order.get("financial_status", "")

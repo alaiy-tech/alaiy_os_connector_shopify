@@ -4,6 +4,8 @@ order_sync.py, unchanged.
 """
 
 import frappe
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from frappe.utils import flt
 
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _resolve_item_code
@@ -122,7 +124,13 @@ def _sync_fulfillments(so_name, fulfillments):
         fulfillment_id = str(fulfillment.get("id") or "")
         if not fulfillment_id:
             continue
-        if frappe.db.exists("Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}):
+        # Scoped to the order's own store: a Shopify fulfillment id is only
+        # unique inside one shop, so unscoped this reads another seller's
+        # Delivery Note as proof that this fulfillment is already handled and
+        # silently never creates it.
+        if frappe.db.exists("Delivery Note", owned_by(
+                "Delivery Note", so.get("sh_shopify_connection"),
+                {"sh_shopify_fulfillment_id": fulfillment_id})):
             continue
         _create_delivery_note_for_fulfillment(
             so, fulfillment_id, fulfillment.get("line_items") or [], fulfillment.get("location_id"))
