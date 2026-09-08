@@ -49,10 +49,11 @@ def _fit_item_name(name: str) -> str:
     return (name or "")[:_ITEM_NAME_MAX_LENGTH]
 
 from alaiy_os_connector_shopify import connections
+from alaiy_os_connector_shopify.shopify import destructive
 
 
 def run_full_product_import(trigger="manual", log_name=None, connection=None, wipe_existing=None,
-                            statuses=None):
+                            statuses=None, ack_multi_store=False):
     """
     Import products from Shopify into Alaiy OS. First run (no product ever
     imported yet) wipes first as a safety net against duplicates, then
@@ -69,6 +70,11 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None, wi
         wipe_existing: True/False to force the wipe phase explicitly; None
             (default) auto-detects first-run by checking whether any
             product Synced Entity exists yet.
+        ack_multi_store: the wipe phase deletes every Shopify-linked Item on
+            the bench, not just this connection's, because the rows carry
+            nothing yet that says which store they came from. On a bench with
+            more than one connection the wipe refuses unless this is set --
+            see shopify/destructive.py.
 
     Returns:
         Log name (for tracking progress)
@@ -106,7 +112,7 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None, wi
     try:
         # Wipe phase
         if wipe_existing:
-            _wipe_all_items()
+            _wipe_all_items(ack_multi_store=ack_multi_store)
             _append_log(log, "Wiped all Items for a fresh import.")
 
         # Import phase
@@ -326,7 +332,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
     return log.name
 
 
-def _wipe_all_items():
+def _wipe_all_items(ack_multi_store=False):
     """
     Full destructive wipe of every previously-imported Shopify Item (any
     Item with sh_shopify_product_id set) before a fresh import -- but
@@ -348,6 +354,8 @@ def _wipe_all_items():
     fires Item doc_events per row (and cascades) -- confirmed live to flood
     the job queue past its cap on a large catalog. Raw DELETE bypasses that.
     """
+    destructive.assert_safe("Import Products with the wipe phase", ack_multi_store)
+
     shopify_item = "(SELECT name FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != '')"
 
     # Opening-stock Stock Entries are ones _set_opening_stock itself
