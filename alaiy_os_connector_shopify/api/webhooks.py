@@ -39,6 +39,14 @@ def handle_webhook():
         connection = connections.resolve_optional()
 
     if connection is None:
+        # 401, not 503: an unattributable delivery is not a transient
+        # condition Shopify could retry its way out of. Either the header
+        # named a store this bench does not hold, or it named none and the
+        # bench holds several. Retrying would produce the same answer, so
+        # refuse outright rather than keeping it in Shopify's queue for 48
+        # hours. The payload is not kept: with no connection resolved there
+        # is no store to attribute it to, and an unauthenticated request
+        # must not be able to write arbitrary bytes into the Error Log.
         frappe.log_error(
             title="Shopify webhook rejected: unknown store",
             message=f"topic={topic!r} shop={shop_domain!r}",
@@ -47,7 +55,31 @@ def handle_webhook():
         return {"ok": False, "reason": "unknown store"}
 
     if not connection.is_enabled:
-        frappe.response.status_code = 200
+        # 503, not 200. A 2xx tells Shopify the event was delivered, so it is
+        # dropped from their queue and never retried -- and there is no
+        # scheduled order pull to find it later, so every order, refund and
+        # fulfillment arriving while the connector was switched off was lost
+        # permanently, with nothing written down anywhere.
+        #
+        # Shopify retries a 5xx on its own schedule over roughly 48 hours, so a
+        # brief disable (a deploy, a credential rotation) now catches up by
+        # itself once the connector is back on. Beyond that window the event is
+        # still lost, which is why the payload is recorded here as well: a
+        # human can replay it from the Error Log.
+        #
+        # Reached only once the store IS attributed, so the log names it --
+        # on a bench holding several connections, "which store was off" is
+        # the first thing anyone replaying this needs to know.
+        frappe.log_error(
+            title=f"Shopify: webhook {topic} refused, connection disabled",
+            message=(
+                "The connection is disabled, so this event was refused with 503 for Shopify to "
+                "retry. If it stays disabled past Shopify's retry window the event is gone, so "
+                "the raw payload is kept here to be replayed by hand.\n\n"
+                f"Connection: {connection.name}\nTopic: {topic}\n\n{(raw_body or b'')[:5000]}"
+            ),
+        )
+        frappe.response.status_code = 503
         return {"ok": False, "reason": "connector disabled"}
 
     # Fail CLOSED: this endpoint is allow_guest -- at least one secret must
@@ -170,6 +202,17 @@ def _dispatch(topic, payload):
             "alaiy_os_connector_shopify.shopify.product_sync.handle_collection_webhook",
             queue="short",
             timeout=300,
+            topic=topic,
+            payload=payload,
+        )
+
+    # Inventory webhooks (inbound leg of the bidirectional inventory sync)
+    inventory_topics = {"inventory_levels/update"}
+    if topic in inventory_topics:
+        frappe.enqueue(
+            "alaiy_os_connector_shopify.shopify.inventory_sync.handle_inventory_level_webhook",
+            queue="short",
+            timeout=120,
             topic=topic,
             payload=payload,
         )

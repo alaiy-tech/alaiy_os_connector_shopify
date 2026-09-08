@@ -45,14 +45,17 @@ def _resolve_expense_account(company):
 
 def _create_delivery_note_if_needed(so_name):
     """
-    Full-order fallback for the one path that has no per-fulfillment
-    breakdown to work with: an order pulled/imported that's already
-    fulfilled on Shopify (historical import, or orders/create arriving
-    after the order was already completed there) -- the GraphQL orders
-    query used for pulls doesn't currently fetch the fulfillments
-    connection, only the REST-shaped webhook payload does. Delivers the
-    full order in one go; idempotent via the same against_sales_order
-    check _sync_fulfillments's per-fulfillment-id check doesn't cover here.
+    Full-order fallback for orders Shopify reports as fulfilled but with an
+    EMPTY fulfillments array -- confirmed live, this is how a merchant's
+    quick manual "Complete order" click on Shopify behaves, not a rare
+    edge case. The GraphQL pull now fetches fulfillmentLineItems (see
+    _order_node_to_rest_shape), so any order that DOES have real
+    fulfillment data -- from a pull or a webhook -- routes through
+    _sync_fulfillments instead and gets one Delivery Note per real
+    fulfillment; this fallback only fires when there's nothing to split.
+    Delivers the full order in one go; idempotent via the same
+    against_sales_order check _sync_fulfillments's per-fulfillment-id
+    check doesn't cover here.
     """
     if frappe.db.exists("Delivery Note Item", {"against_sales_order": so_name}):
         return
@@ -103,6 +106,12 @@ def _sync_fulfillments(so_name, fulfillments):
     a second, later partial shipment creates its own separate one.
     """
     if not fulfillments:
+        # Callers must decide what an empty array means -- an unfulfilled order
+        # has none legitimately, while a FULFILLED order with none is Shopify's
+        # one-click "Complete order" and does need a Delivery Note. Returning
+        # silently for both is what let that second case ship nothing and go
+        # unnoticed; both call sites now branch on fulfillment_status before
+        # reaching here.
         return
 
     so = frappe.get_doc("Sales Order", so_name)
@@ -119,6 +128,86 @@ def _sync_fulfillments(so_name, fulfillments):
             so, fulfillment_id, fulfillment.get("line_items") or [], fulfillment.get("location_id"))
 
 
+
+def _record_fulfilled_from_location(item_code, location_id):
+    """Set Item.shopify_location from the location that actually shipped it.
+
+    The import resolves ownership from where an item HOLDS stock, and leaves
+    the field blank when that is ambiguous -- an item listed at two locations
+    with stock at neither cannot be attributed from stock at all. A sold-out
+    or archived item is exactly that case, so it stays unattributed forever
+    and any order for it resolves no supplier: nobody is billed and the line
+    lands on an admin's desk with no way to answer it.
+
+    A fulfillment settles it. Shopify records which location the goods
+    physically shipped from, and that stays true after the stock is gone --
+    it is a fact about this shipment, not an inference from present-day
+    quantity. Confirmed live: item 202430 (archived, 0 stock at both its
+    locations) had no supplier at all, while the order that sold it carried
+    the shipping location in its fulfillment payload the whole time.
+
+    Only ever FILLS A BLANK. An item that already has a location keeps it:
+    the import's own resolution is the authority when it managed to resolve
+    one, and a later fulfillment from somewhere else (a transfer, a
+    one-off) must not silently reassign ownership of the whole item.
+
+    Deliberately does not touch fulfillment TYPE. Which location shipped it
+    is a fact; whether the default location owns that stock or holds it for a supplier is a
+    commercial arrangement, and inferring one from the other is what the
+    routing rewrite deliberately stopped doing.
+    """
+    if not item_code or not location_id:
+        return
+    if not frappe.get_meta("Item").get_field("shopify_location"):
+        return
+    try:
+        if frappe.db.get_value("Item", item_code, "shopify_location"):
+            return
+        location = frappe.db.get_value(
+            "Shopify Location", {"sh_location_id": str(location_id)}, "name")
+        if not location:
+            return
+        frappe.db.set_value("Item", item_code, "shopify_location", location,
+                            update_modified=False)
+    except Exception:
+        # Ownership bookkeeping must never stop a Delivery Note being created.
+        frappe.log_error(
+            title=f"Shopify: could not record fulfilled-from location for {item_code}",
+            message=frappe.get_traceback(),
+        )
+
+
+def _item_on_order_by_title(so, title):
+    """The Sales Order line whose description matches this fulfillment line.
+
+    A fulfillment line identifies its product by sku, variant id and title.
+    All three can be useless: Shopify returns a null variant once the variant
+    has been deleted, and a one-off line carries a generated placeholder sku.
+    _resolve_item_code then finds nothing, the fulfillment maps to no items,
+    and no Delivery Note is created -- so the shipment is unrecorded and the
+    item never learns which location shipped it.
+
+    The order itself already answers this. Its lines were resolved when the
+    order was imported, from the same payload but with the full line item to
+    work from, so the title on the fulfillment names a product this order
+    demonstrably carries. Matching within the order is a much narrower claim
+    than matching across the catalogue.
+
+    Returns None unless exactly one line matches, so an order holding the same
+    title twice stays unresolved rather than sending a shipment to whichever
+    row came first.
+    """
+    title = (title or "").strip().lower()
+    if not title:
+        return None
+    matched = {
+        row.item_code for row in (so.items or [])
+        if title in ((row.item_name or "").strip().lower(),
+                     (row.description or "").strip().lower())
+    }
+    return matched.pop() if len(matched) == 1 else None
+
+
 def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_items, location_id=None):
     qty_by_item = {}
     for li in fulfillment_line_items:
@@ -128,8 +217,11 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             "title": li.get("title") or li.get("name"),
         })
         if not item_code:
+            item_code = _item_on_order_by_title(so, li.get("title") or li.get("name"))
+        if not item_code:
             continue
         qty_by_item[item_code] = qty_by_item.get(item_code, 0) + flt(li.get("quantity", 0))
+        _record_fulfilled_from_location(item_code, location_id)
 
     if not qty_by_item:
         frappe.log_error(
@@ -157,6 +249,23 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             dn.items = kept_items
             if not dn.items:
                 return
+
+            # make_delivery_note copies the ORDER's discount across whole, and
+            # the trim above just removed the lines that discount was computed
+            # over. On a partial fulfillment that leaves a discount larger than
+            # the note it sits on -- ERPNext refuses it ("cannot exceed the
+            # total before such discount"), the Delivery Note is never created,
+            # and the shipment goes unrecorded. Confirmed live: a $104,881
+            # order discount landed on a $36,945 partial shipment.
+            #
+            # A per-line discount is already inside each kept row's own rate,
+            # so only the order-level amount has to go. It is dropped rather
+            # than apportioned: what share of an order discount belongs to one
+            # shipment is a commercial question, and a Delivery Note moves
+            # stock rather than money.
+            if dn.get("discount_amount"):
+                dn.discount_amount = 0
+                dn.additional_discount_percentage = 0
 
             dn.sh_shopify_fulfillment_id = fulfillment_id
             for row in dn.items:

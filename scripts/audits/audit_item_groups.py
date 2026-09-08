@@ -16,7 +16,7 @@ Writes a CSV to the site's private/files for full review.
 
 Run:
     bench --site <site> console
-    exec(open("/home/ubuntu/alaiy_os_bench/apps/alaiy_os_connector_shopify/scripts/audit_item_groups.py").read(), globals())
+    exec(open("/home/ubuntu/alaiy_os_bench/apps/alaiy_os_connector_shopify/scripts/audits/audit_item_groups.py").read(), globals())
     run_audit()
 """
 import csv

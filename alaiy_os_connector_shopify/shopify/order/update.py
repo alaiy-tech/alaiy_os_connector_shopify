@@ -8,7 +8,11 @@ import frappe
 from alaiy_os_connector_shopify.shopify.order.locking import _acquire_order_lock, _release_order_lock
 from alaiy_os_connector_shopify.shopify.order.upsert import get_active_sales_order, _upsert_order_unlocked
 from alaiy_os_connector_shopify.shopify.order.line_items import _sync_order_line_items
-from alaiy_os_connector_shopify.shopify.order.delivery_notes import _sync_fulfillments, _sync_tracking
+from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
+    _create_delivery_note_if_needed,
+    _sync_fulfillments,
+    _sync_tracking,
+)
 
 
 def _update_order(order):
@@ -84,7 +88,42 @@ def _update_order_unlocked(order, order_id):
         _sync_order_line_items(so_name, order)
 
     fulfillments = order.get("fulfillments") or []
-    _sync_fulfillments(so_name, fulfillments)
+    # Same two-path handling the CREATE path already does (see upsert.py):
+    # _sync_fulfillments needs per-fulfillment line items to know what shipped,
+    # and returns silently when the array is empty. Shopify's one-click
+    # "Complete order" sends exactly that -- fulfillment_status "fulfilled"
+    # with fulfillments: [] -- so an order shipped that way had its status
+    # flag updated and no Delivery Note created at all.
+    #
+    # That is invisible at the point of failure and only shows up far away:
+    # anything asking "has this shipped?" by looking for a submitted Delivery
+    # Note keeps treating the order as open, so it ages into Overdue despite
+    # having gone out. Confirmed live as the cause of shipped orders still
+    # listed as overdue.
+    #
+    # The guard was added to upsert.py for a different reason (the GraphQL
+    # pull path had no per-fulfillment breakdown) and was never carried over
+    # here, where webhooks normally DO carry a populated array -- which is why
+    # the gap only surfaces on the manual-complete case.
+    if any(f.get("line_items") for f in fulfillments):
+        _sync_fulfillments(so_name, fulfillments)
+    elif fulfillment_status.lower() in ("fulfilled", "partially_fulfilled"):
+        # partially_fulfilled is included deliberately: a partial shipment
+        # normally carries a fulfillment object, but if Shopify ever reports
+        # one without, the order has still shipped in part and needs a
+        # Delivery Note rather than silently none.
+        _create_delivery_note_if_needed(so_name)
+    elif fulfillments:
+        # Fulfillments present but none carry line items, and the order is not
+        # reported fulfilled. Nothing is created, which may be right -- say so
+        # rather than leaving a silent no-op, since a silent return here is
+        # what hid the case above.
+        frappe.log_error(
+            title=f"Shopify: order {order_id} has fulfillments with no line items",
+            message=f"fulfillment_status={fulfillment_status!r}, "
+                    f"{len(fulfillments)} fulfillment(s), none with line_items. "
+                    "No Delivery Note created.",
+        )
     # Delivery status can change on any orders/updated (parcel moved from
     # IN_TRANSIT to DELIVERED) without any other field changing, so refresh
     # it here too rather than only at create time.

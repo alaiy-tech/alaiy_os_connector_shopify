@@ -30,7 +30,10 @@ def _upsert_item_price(item_code: str, price_list: str, rate: float, buying: boo
                 ip.selling = 0
             ip.flags.ignore_permissions = True
             ip.insert()
-        frappe.db.commit()
+        # No commit here on purpose. Every importer path commits once per
+        # product after its prices are written, so committing per price
+        # only forced three extra disk flushes per item (selling,
+        # compare-at and cost) without making anything more durable.
     except Exception:
         frappe.log_error(
             title=f"Failed to set price ({price_list}) for {item_code}",
