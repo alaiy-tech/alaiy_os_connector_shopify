@@ -6,9 +6,20 @@
   "doctype": "DocType",
   "engine": "InnoDB",
   "field_order": [
+    "connection",
     "tag_name"
   ],
   "fields": [
+    {
+      "fieldname": "connection",
+      "fieldtype": "Link",
+      "label": "Shopify Connection",
+      "options": "Shopify Connection",
+      "in_list_view": 1,
+      "read_only": 1,
+      "search_index": 1,
+      "description": "The Shopify store this row belongs to. Shopify ids are only unique within one store, so every lookup pairs the id with this field -- without it a second store's product 12345 finds the first store's row. Set by the connector; never hand-edited."
+    },
     {
       "fieldname": "tag_name",
       "fieldtype": "Data",

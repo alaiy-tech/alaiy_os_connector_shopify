@@ -276,6 +276,16 @@ def setup_custom_fields():
             "read_only": 1,
             "insert_after": "sh_requires_shipping",
         },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_inventory_item_id",
+            "description": "Which Shopify store this item belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
+        },
     ]
     sales_order_fields = [
         {
@@ -335,6 +345,16 @@ def setup_custom_fields():
             "insert_after": "sh_shopify_order_tags",
             "description": "The shipping method the customer chose, straight from Shopify's shippingLine.title (e.g. \"Free Standard Shipping\", \"2nd air\"). Stored as its own field so it stays filterable/reportable -- the shipping COST rides separately on the Sales Taxes and Charges table, and a free-shipping order carries no charge row at all yet still has a real method name here.",
         },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_order_tags",
+            "description": "Which Shopify store this order belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
+        },
     ]
     sales_order_item_fields = [
         {
@@ -345,6 +365,16 @@ def setup_custom_fields():
             "insert_after": "item_code",
             "description": "Shopify variant ID for this line item. Used to match items when syncing order modifications from Shopify.",
         },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_variant_id",
+            "description": "Which Shopify store this order line belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
+        },
     ]
     customer_fields = [
         {
@@ -353,6 +383,16 @@ def setup_custom_fields():
             "fieldtype": "Data",
             "search_index": 1,
             "insert_after": "customer_name",
+        },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_customer_id",
+            "description": "Which Shopify store this customer belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
         },
     ]
     delivery_note_fields = [
@@ -413,6 +453,16 @@ def setup_custom_fields():
             "description": "Set when this Sales Return was auto-created from a Shopify refund event. Prevents the same refund from ever creating a duplicate return.",
             "insert_after": "sh_delivery_status",
         },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_delivery_status",
+            "description": "Which Shopify store this delivery note belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
+        },
     ]
     sales_invoice_fields = [
         {
@@ -423,6 +473,16 @@ def setup_custom_fields():
             "read_only": 1,
             "description": "Set when this Credit Note was auto-created from a Shopify refund event. Prevents the same refund from ever creating a duplicate credit note.",
             "insert_after": "customer",
+        },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_refund_id",
+            "description": "Which Shopify store this credit note belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
         },
     ]
 
