@@ -21,7 +21,6 @@ class ShopifyConnection(Document):
         self.flags.shopify_just_enabled = bool(self.is_enabled and not old_enabled)
         self.flags.shopify_just_disabled = bool(not self.is_enabled and old_enabled)
 
-        self._assert_single_enabled()
         self._sync_registry_is_enabled()
         self._validate_default_warehouse()
 
@@ -68,35 +67,6 @@ class ShopifyConnection(Document):
                 "One connection per store -- edit that one instead."
             )
 
-    def _assert_single_enabled(self):
-        """
-        One store at a time drives ERPNext.
-
-        Enabling a connection arms this connector's Item and Sales Order
-        document events, its inventory push and its order import -- all of
-        which write records with nowhere to record which store they came from
-        (Shopify Location is keyed on Shopify's own location id; Item and Sales
-        Order carry a bare sh_shopify_product_id / sh_shopify_order_id). Two
-        enabled stores would silently overwrite each other in every one of
-        those places.
-
-        So the limit is stated here rather than discovered later as mixed-up
-        data. Holding many connections is still fine and is the reason this
-        DocType exists -- they just answer API reads, which is all a
-        multi-tenant bench asks of them.
-        """
-        if not self.is_enabled:
-            return
-        other = frappe.db.get_value(
-            self.doctype, {"is_enabled": 1, "name": ("!=", self.name)}, "name"
-        )
-        if other:
-            frappe.throw(
-                f"Shopify connection '{other}' is already the enabled store on this "
-                "site, and only one store at a time can drive Alaiy OS orders, "
-                "inventory and listings. Disable it first, or leave this connection "
-                "switched off -- it can still be used to read from Shopify."
-            )
 
     def _validate_default_warehouse(self):
         """
