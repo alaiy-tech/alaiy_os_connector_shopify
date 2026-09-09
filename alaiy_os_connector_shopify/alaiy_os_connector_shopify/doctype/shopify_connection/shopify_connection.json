@@ -21,8 +21,12 @@
   "connected_at",
   "sb_connection",
   "sh_shop_url",
+  "sh_auth_method",
+  "column_break_connection",
   "sh_client_id",
   "sh_client_secret",
+  "sh_shop_gid",
+  "sh_granted_scopes",
   "sh_access_token",
   "sh_token_refreshed_at",
   "sh_token_expires_at",
@@ -142,18 +146,47 @@
    "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
-   "description": "Client ID from your Shopify custom app (Developer Dashboard)",
+   "default": "Custom App",
+   "description": "How this connection authenticates. 'Custom App' -- a seller creates their own Shopify custom app and pastes its Client ID/Secret below. 'OAuth' -- connected through the Connect to Shopify button; the seller never sees or enters an app secret, and Client ID/Secret below stay blank for this row.",
+   "fieldname": "sh_auth_method",
+   "fieldtype": "Select",
+   "label": "Auth Method",
+   "options": "Custom App\nOAuth",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_connection",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Client ID from your Shopify custom app (Developer Dashboard). Blank for a connection made through Connect to Shopify.",
    "fieldname": "sh_client_id",
    "fieldtype": "Data",
    "label": "Client ID",
-   "mandatory_depends_on": "eval:doc.is_enabled"
+   "mandatory_depends_on": "eval:doc.is_enabled && doc.sh_auth_method == \"Custom App\""
   },
   {
-   "description": "Client Secret from your Shopify custom app",
+   "description": "Client Secret from your Shopify custom app. Blank for a connection made through Connect to Shopify.",
    "fieldname": "sh_client_secret",
    "fieldtype": "Password",
    "label": "Client Secret",
-   "mandatory_depends_on": "eval:doc.is_enabled"
+   "mandatory_depends_on": "eval:doc.is_enabled && doc.sh_auth_method == \"Custom App\""
+  },
+  {
+   "description": "This store's stable Shopify id, read back at OAuth install time. Blank for a Custom App connection.",
+   "fieldname": "sh_shop_gid",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Shop GID",
+   "read_only": 1
+  },
+  {
+   "description": "What Shopify actually granted at OAuth install time -- may be narrower than requested if the seller edited the approval screen.",
+   "fieldname": "sh_granted_scopes",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Granted Scopes",
+   "read_only": 1
   },
   {
    "description": "Access token (auto-managed by Test Connection)",

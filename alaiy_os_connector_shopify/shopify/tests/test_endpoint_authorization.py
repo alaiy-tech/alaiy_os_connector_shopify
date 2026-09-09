@@ -27,7 +27,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 GUARDS = ("require_access", "require_access_to_record", "_enqueue_sync",
           "get_roles", "PermissionError")
 
-# The two that legitimately carry no caller check, and why.
+# The ones that legitimately carry no caller check, and why.
 EXEMPT = {
     # Authenticated by HMAC against the named store's own secret, and refuses
     # any delivery it cannot attribute. Shopify has no session, so a
@@ -36,6 +36,16 @@ EXEMPT = {
     # A link picker. Refusing is the wrong shape -- it filters to the caller's
     # store instead, which test_item_picker_is_store_scoped pins.
     "item_without_listing_query",
+    # Same shape as handle_webhook: Shopify's browser redirect carries no
+    # Alaiy OS session, so every guarantee here comes from
+    # oauth.verify_callback_hmac (against the app's own secret) and the
+    # single-use state token, not from require_access. The scanner cannot
+    # see through the oauth module boundary, so this is named rather than
+    # silently passing.
+    "callback",
+    # Returns one boolean -- whether the OAuth app is configured on this
+    # site -- with no store name, no secret, no write. Nothing to authorise.
+    "is_configured",
 }
 
 
