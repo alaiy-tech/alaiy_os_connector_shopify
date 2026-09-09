@@ -5,6 +5,10 @@ unchanged.
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
+from alaiy_os_connector_shopify import connections
+
 
 def _resolve_default_warehouse(settings):
     """
@@ -24,7 +28,7 @@ def _resolve_default_warehouse(settings):
     if configured:
         frappe.log_error(
             title="Shopify: Default Warehouse is a Group Warehouse, falling back",
-            message=f"Configured: {configured}. Set a leaf warehouse in Shopify Connector Settings to silence this.",
+            message=f"Configured: {configured}. Set a leaf warehouse in Shopify Connection to silence this.",
         )
 
     fallback = frappe.db.get_value(
@@ -34,7 +38,7 @@ def _resolve_default_warehouse(settings):
     if not fallback:
         frappe.throw(
             "No usable (non-Group) Warehouse exists for this company. "
-            "Create one, then set it as 'Default Warehouse' on Shopify Connector Settings."
+            "Create one, then set it as 'Default Warehouse' on Shopify Connection."
         )
     return fallback
 
@@ -44,7 +48,7 @@ def _resolve_warehouse_for_location(location_id, settings):
     Look up the real per-supplier warehouse for a Shopify location id
     (the fulfillment's own location_id, REST-shaped -- a plain legacy
     numeric id, matching Shopify Location.sh_location_id), via
-    Shopify Connector Settings.sh_location_map.
+    Shopify Connection.sh_location_map.
 
     Confirmed live: this map (Warehouse to Location Map, 70+ real rows,
     one per supplier) was populated and correct, but nothing in order/
@@ -60,7 +64,12 @@ def _resolve_warehouse_for_location(location_id, settings):
     """
     if not location_id:
         return None
-    location_name = frappe.db.get_value("Shopify Location", {"sh_location_id": str(location_id)}, "name")
+    location_name = frappe.db.get_value(
+        "Shopify Location",
+        owned_by("Shopify Location", getattr(settings, "name", None),
+                 {"sh_location_id": str(location_id)}),
+        "name",
+    )
     if not location_name:
         return None
     for row in settings.get("sh_location_map") or []:
@@ -139,7 +148,8 @@ def _force_valid_warehouse(dn, location_id=None):
     header default ERPNext applies to rows that don't set their own, and
     every row here sets one explicitly.
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    connection = dn.get("sh_shopify_connection")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     default_warehouse = _resolve_default_warehouse(settings)
     location_warehouse = _resolve_warehouse_for_location(location_id, settings)
     for item in dn.items:

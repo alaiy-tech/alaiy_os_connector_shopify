@@ -6,7 +6,7 @@ Shopify -- create, tracking edits, and cancel were all a ground-up gap. This
 module builds all three, reusing the same sh_tracking_number/sh_tracking_company
 fields _sync_tracking already writes for the inbound direction.
 
-Gated by Shopify Connector Settings.sh_fulfillment_sync_direction: creating a
+Gated by Shopify Connection.sh_fulfillment_sync_direction: creating a
 NEW Shopify fulfillment from a Delivery Note submit only happens when that
 setting is "Alaiy OS -> Shopify (two-way)" (default is inbound-only, byte-
 for-byte unchanged from before this module existed). Once a fulfillment has
@@ -18,6 +18,8 @@ something this app did; the setting only gates creating new ones.
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access_to_record
+
 from alaiy_os_connector_shopify.shopify.order.queries import (
     _FULFILLMENT_ORDERS_QUERY, _FULFILLMENT_CREATE_MUTATION,
     _FULFILLMENT_CANCEL_MUTATION, _FULFILLMENT_TRACKING_UPDATE_MUTATION,
@@ -25,21 +27,33 @@ from alaiy_os_connector_shopify.shopify.order.queries import (
 from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
+from alaiy_os_connector_shopify import connections
+
 _TWO_WAY = "Alaiy OS → Shopify (two-way)"
 
 
-def _connector_enabled():
-    """None of the three functions below checked this master switch --
-    only sh_fulfillment_sync_direction (create) or nothing at all (tracking
-    update, cancel). Same class of gap found and fixed in Listing update/
-    trash and the Sales Order doc_events: disabling the connector entirely
-    (is_enabled = 0) did not actually stop these from still enqueuing a
-    real push against the live store. Checked once, used at the top of
-    every function here -- kept separate from sh_fulfillment_sync_direction,
-    which is a real, deliberately independent business toggle (see
-    on_delivery_note_cancel's own docstring for why cancel/tracking-edit
-    intentionally ignore that one once a fulfillment already exists)."""
-    return bool(frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"))
+def _dn_connection(dn) -> str:
+    """The store this Delivery Note's order belongs to, or the single
+    enabled store for a DN from before the field was backfilled."""
+    stored = dn.get("sh_shopify_connection") if hasattr(dn, "get") else None
+    if stored:
+        return stored
+    enabled = connections.enabled_connection()
+    return enabled.name if enabled else None
+
+
+def _connector_enabled(dn=None):
+    """Is THIS Delivery Note's store switched on for the connector.
+
+    Every caller here is addressed by a Delivery Note, and its store is
+    read straight off it -- not off "the" enabled store, which stopped
+    meaning anything once a bench can enable more than one. `dn=None`
+    (from a caller that has none yet, e.g. before the DN exists) falls back
+    to the single-enabled-store check, matching this connector's pre-multi-
+    store behaviour exactly."""
+    if dn is None:
+        return connections.enabled_connection() is not None
+    return bool(_dn_connection(dn))
 
 
 def _fulfillment_gid(fulfillment_id: str) -> str:
@@ -87,7 +101,7 @@ def _open_fulfillment_order_line_items(client, order_gid):
     return by_fulfillment_order, location_by_fulfillment_order
 
 
-def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order):
+def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order, connection=None):
     """
     Matches each Delivery Note item to the Shopify fulfillment-order line
     item it corresponds to (by variant id first, SKU as fallback -- same as
@@ -98,6 +112,11 @@ def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order):
     everything still open on the order.
 
     Returns (fulfillment_input_per_order: dict, unmatched_item_codes: list).
+
+    `connection` is the store the Delivery Note is being fulfilled against. A
+    Shopify variant id only identifies a variant inside one shop, so matching
+    without it can hand back a different seller's Item -- which here would push
+    a fulfillment for a line the order never contained.
     """
     qty_by_item = {}
     for item in dn.items:
@@ -109,7 +128,7 @@ def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order):
         matched = []
         for li in line_items:
             variant_id = str((li.get("variant") or {}).get("legacyResourceId") or "")
-            item_code = listing_resolver.item_by_variant_id(variant_id) if variant_id else None
+            item_code = listing_resolver.item_by_variant_id(variant_id, connection) if variant_id else None
             if not item_code:
                 sku = (li.get("sku") or "").strip()
                 if sku and frappe.db.exists("Item", sku):
@@ -167,7 +186,8 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         frappe.throw(f"{so_name} has no Shopify order linked -- nothing to push fulfillment to.")
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    conn = _dn_connection(dn)
+    client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
     order_gid = _to_gid(shopify_order_id)
 
     # Nothing from here on may raise. By the time this runs the goods have
@@ -196,7 +216,7 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         )
         return {"ok": False, "reason": "no_open_fulfillment_orders"}
 
-    fulfillment_input_per_order, unmatched = _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order)
+    fulfillment_input_per_order, unmatched = _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order, conn)
     if unmatched:
         frappe.log_error(
             title=f"Shopify: fulfillment push for {dn.name} could not match every item",
@@ -316,6 +336,12 @@ def push_fulfillment_for_delivery_note(delivery_note: str, tracking_number: str 
     on an already-linked DN. An existing fulfillment gets a tracking UPDATE
     instead of a second create attempt.
     """
+    # Addressed by Delivery Note, not by store. This ships against a real
+    # merchant's shop with that merchant's credentials, so naming somebody
+    # else's Delivery Note must not be enough to do it. Server-side callers
+    # (the carrier connectors this exists for) run as Administrator and pass.
+    require_access_to_record("Delivery Note", delivery_note, "write")
+
     dn = frappe.get_doc("Delivery Note", delivery_note)
     if dn.sh_shopify_fulfillment_id:
         if not tracking_number:
@@ -328,16 +354,19 @@ def on_delivery_note_submit(doc, method=None):
     """
     Generic outbound hook for any Delivery Note submitted in Alaiy OS (e.g. a
     warehouse scanning items out against a Sales Order) -- gated by
-    Shopify Connector Settings.sh_fulfillment_sync_direction so existing
+    Shopify Connection.sh_fulfillment_sync_direction so existing
     inbound-only installs see no behavior change by default.
     """
     if doc.flags.from_shopify_sync:
         return  # mirrors a fulfillment Shopify already knows about
     if doc.sh_shopify_fulfillment_id:
         return  # already linked (defensive -- from_shopify_sync should have caught this)
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
-    if (frappe.db.get_single_value("Shopify Connector Settings", "sh_fulfillment_sync_direction") or "") != _TWO_WAY:
+    conn = _dn_connection(doc)
+    direction = (connections.resolve(conn).get("sh_fulfillment_sync_direction")
+                 if conn else connections.enabled_value("sh_fulfillment_sync_direction")) or ""
+    if direction != _TWO_WAY:
         return
     so_name = _sales_order_of(doc)
     if not so_name or not frappe.db.get_value("Sales Order", so_name, "sh_shopify_order_id"):
@@ -377,7 +406,7 @@ def on_delivery_note_update_after_submit(doc, method=None):
     already has a linked Shopify fulfillment pushes the change to Shopify."""
     if not doc.sh_shopify_fulfillment_id:
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if not (doc.has_value_changed("sh_tracking_number") or doc.has_value_changed("sh_tracking_company")):
         return
@@ -404,7 +433,9 @@ def push_tracking_update_job(fulfillment_gid: str, tracking_number: str, carrier
 def _push_tracking_update(fulfillment_gid: str, tracking_number: str, carrier: str, delivery_note: str, raise_on_error: bool):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     try:
-        client = ShopifyGraphQLClient()
+        dn = frappe.get_doc("Delivery Note", delivery_note)
+        conn = _dn_connection(dn)
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
         data = client.execute(_FULFILLMENT_TRACKING_UPDATE_MUTATION, {
             "fulfillmentId": fulfillment_gid,
             "trackingInfoInput": {"number": tracking_number, "company": carrier},
@@ -442,7 +473,7 @@ def on_delivery_note_cancel(doc, method=None):
     respects the master is_enabled switch, unlike sh_fulfillment_sync_direction."""
     if doc.flags.from_shopify_sync or not doc.sh_shopify_fulfillment_id:
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order.fulfillment_push.push_fulfillment_cancel_job",
@@ -454,7 +485,9 @@ def on_delivery_note_cancel(doc, method=None):
 def push_fulfillment_cancel_job(fulfillment_gid: str, delivery_note: str):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     try:
-        client = ShopifyGraphQLClient()
+        dn = frappe.get_doc("Delivery Note", delivery_note)
+        conn = _dn_connection(dn)
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
         data = client.execute(_FULFILLMENT_CANCEL_MUTATION, {"id": fulfillment_gid})
         errors = (data.get("fulfillmentCancel") or {}).get("userErrors") or []
         if errors:

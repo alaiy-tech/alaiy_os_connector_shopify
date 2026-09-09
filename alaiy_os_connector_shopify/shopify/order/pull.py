@@ -4,6 +4,8 @@ order_sync.py, unchanged.
 """
 
 import frappe
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from frappe.utils import now_datetime
 
 from alaiy_os_connector_shopify.shopify.sync_guard import (
@@ -13,10 +15,12 @@ from alaiy_os_connector_shopify.shopify.order.queries import _ORDERS_COUNT_QUERY
 from alaiy_os_connector_shopify.shopify.order.utils import _order_node_to_rest_shape
 from alaiy_os_connector_shopify.shopify.order.upsert import _upsert_order
 
+from alaiy_os_connector_shopify import connections
 
-def run_orders_sync(trigger="manual", log_name=None):
-    log = load_or_create_log("orders", trigger, log_name)
-    settings = frappe.get_single("Shopify Connector Settings")
+
+def run_orders_sync(trigger="manual", log_name=None, connection=None):
+    log = load_or_create_log("orders", trigger, log_name, connection=connection)
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     # NOTE: "status:<open|closed|cancelled|any>" mirrors the old REST
     # `status` param's values 1:1 but wasn't independently verified
     # against Shopify's order search-syntax docs -- if a live pull
@@ -60,7 +64,10 @@ def _run_orders_pull(log, query_string, skip_existing=False):
     cheap exists-check before upsert -- only the historical import needs it,
     and only it emits the "imported N / already existed" summary line.
     """
-    if has_active_sync("orders", exclude_name=log.name):
+    # Per store: keyed bench-wide, one seller's run answers "already
+    # syncing" for everybody and the rest silently skip themselves.
+    if has_active_sync("orders", exclude_name=log.name,
+                       connection=log.get("connection")):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another orders sync is already running."
@@ -74,7 +81,8 @@ def _run_orders_pull(log, query_string, skip_existing=False):
 
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient()
+        conn = log.get("connection")
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
         variables = {"after": None, "queryString": query_string}
 
         processed = created = failed = skipped_existing = pages = 0
@@ -90,11 +98,17 @@ def _run_orders_pull(log, query_string, skip_existing=False):
                 processed += 1
                 if skip_existing:
                     order_id = str(order.get("id", ""))
-                    if order_id and frappe.db.exists("Sales Order", {"sh_shopify_order_id": order_id}):
+                    # Scoped to the store this run is for -- the log carries
+                    # it. Unscoped, another seller's order 1001 counts as
+                    # proof that this one is already imported, and it is
+                    # skipped forever.
+                    if order_id and frappe.db.exists("Sales Order", owned_by(
+                            "Sales Order", log.get("connection"),
+                            {"sh_shopify_order_id": order_id})):
                         skipped_existing += 1
                         continue
                 try:
-                    if _upsert_order(order):
+                    if _upsert_order(order, log.get("connection")):
                         created += 1
                 except Exception as exc:
                     failed += 1
@@ -146,16 +160,16 @@ def _run_orders_pull(log, query_string, skip_existing=False):
 
 # ── Historical / full import ────────────────────────────────────────────────────
 
-def get_shopify_orders_count() -> int:
+def get_shopify_orders_count(connection=None) -> int:
     """Cheap count-only query, used to decide up front whether a full
     import has anything left to do, without paging through every order."""
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
     data = client.execute(_ORDERS_COUNT_QUERY)
     return int((data.get("ordersCount") or {}).get("count") or 0)
 
 
-def import_existing_orders(date_from=None, date_to=None):
+def import_existing_orders(date_from=None, date_to=None, connection=None):
     """
     Entry point for the "Import Orders from Shopify" button. With no date
     range, it's the full-historical import: a fast pre-check against
@@ -167,13 +181,13 @@ def import_existing_orders(date_from=None, date_to=None):
     a real store's history can be thousands of orders and must never run
     inline on the request that clicked the button.
     """
-    if has_active_sync("orders"):
+    if has_active_sync("orders", connection=connection):
         return {"status": "already_running", "message": "An orders sync is already in progress."}
 
     if not date_from and not date_to:
-        shopify_total = get_shopify_orders_count()
+        shopify_total = get_shopify_orders_count(connection)
         already_synced = frappe.db.count(
-            "Sales Order", {"sh_shopify_order_id": ["is", "set"]})
+            "Sales Order", owned_by("Sales Order", connection, {"sh_shopify_order_id": ["is", "set"]}))
 
         if shopify_total and already_synced >= shopify_total:
             return {
@@ -184,7 +198,7 @@ def import_existing_orders(date_from=None, date_to=None):
     else:
         remaining_message = "Importing orders from Shopify for the selected date range."
 
-    log = load_or_create_log("orders", "manual")
+    log = load_or_create_log("orders", "manual", connection=connection)
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order_sync.run_full_import",
         queue="long",
@@ -199,6 +213,7 @@ def import_existing_orders(date_from=None, date_to=None):
         log_name=log.name,
         date_from=date_from,
         date_to=date_to,
+        connection=connection,
     )
     return {
         "status": "queued",
@@ -207,7 +222,7 @@ def import_existing_orders(date_from=None, date_to=None):
     }
 
 
-def run_full_import(log_name=None, date_from=None, date_to=None):
+def run_full_import(log_name=None, date_from=None, date_to=None, connection=None):
     """
     Pulls every order regardless of status/financial_status (unlike
     run_orders_sync, which respects the configured filter for routine

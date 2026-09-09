@@ -24,7 +24,7 @@ src/
 
 These rebuild the Desk page (`/app/shopify`) and its sidebar (Dashboard,
 Listings, Categories, Collections, Locations, Tags) on the platform's own
-primitives; Settings replaces the Desk form for **Shopify Connector Settings**.
+primitives; Settings replaces the Desk form for **Shopify Connection**.
 
 The Desk pages themselves still ship and still work — nothing here deletes them
 yet.

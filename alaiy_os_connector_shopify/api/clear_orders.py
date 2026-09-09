@@ -5,6 +5,13 @@ local cleanup, and the store is left exactly as it is.
 
 Dry run by default. Pass dry_run=0 to actually delete.
 
+Scope is every Shopify-imported Sales Order on the bench. A Sales Order
+carries nothing yet that says which store it came from, so on a bench holding
+more than one Shopify connection a real run refuses rather than delete another
+seller's orders -- see shopify/destructive.py. A dry run still works there,
+because seeing the blast radius is exactly what an operator needs at that
+point.
+
   # what would be deleted, changes nothing
   bench --site <site> execute \
       alaiy_os_connector_shopify.api.clear_orders.run
@@ -45,6 +52,8 @@ cache left behind to make the re-pull think they are already synced.
 import time
 
 import frappe
+
+from alaiy_os_connector_shopify.shopify import destructive
 
 _MAX_ATTEMPTS = 3
 
@@ -105,16 +114,27 @@ def _orders_to_clear(since=None, until=None, limit=None):
         order_by="transaction_date asc", limit_page_length=int(limit) if limit else 0)
 
 
-def run(dry_run=True, since=None, until=None, limit=None, show=10):
+def run(dry_run=True, since=None, until=None, limit=None, show=10, ack_multi_store=False):
     """Delete Shopify-imported Sales Orders and everything hanging off them.
 
     dry_run -- default True. Reports what would go and deletes nothing.
     since / until -- transaction_date bounds, 'YYYY-MM-DD'. Omit both for every
                      Shopify order on the site.
     limit -- stop after this many orders, useful for a first real run.
+    ack_multi_store -- this deletes every Shopify-imported Sales Order on the
+                     bench, not one store's, because a Sales Order carries
+                     nothing yet that says which store it came from. On a
+                     bench with more than one connection it refuses unless
+                     this is set. See shopify/destructive.py.
     """
     if isinstance(dry_run, str):
         dry_run = dry_run.strip().lower() not in ("0", "false", "no", "")
+
+    # A dry run reads and prints; it is the thing an operator on a
+    # multi-store bench should still be able to do to see the damage before
+    # being told no.
+    if not dry_run:
+        destructive.assert_safe("clear_orders", ack_multi_store)
 
     so_names = _orders_to_clear(since, until, limit)
     scope = f"{since or 'the beginning'} to {until or 'now'}"
@@ -166,6 +186,9 @@ def run(dry_run=True, since=None, until=None, limit=None, show=10):
         frappe.flags.in_test = False
         frappe.db.commit()
 
+    # Bench-wide on purpose: this run deletes bench-wide (that is what the
+    # guard above makes the operator acknowledge), so the number left has to
+    # be counted the same way or it would under-report what is still there.
     remaining = frappe.db.count("Sales Order", {"sh_shopify_order_id": ["is", "set"]})
     print(f"[clear_orders] deleted {done}, failed {failed}; "
           f"{remaining} Shopify Sales Order(s) left on the site")

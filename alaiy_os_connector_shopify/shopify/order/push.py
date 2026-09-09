@@ -12,6 +12,8 @@ from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
 from alaiy_os_connector_shopify.shopify.order.push_line_items import _apply_shopify_line_item_changes
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
+from alaiy_os_connector_shopify import connections
+
 _STATUS_TAG_PREFIX = "alaiy-os-status:"
 
 
@@ -160,7 +162,8 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
     notes = frappe.db.get_value("Sales Order", sales_order, "sh_shopify_notes") or ""
 
     try:
-        client = ShopifyGraphQLClient()
+        connection = frappe.db.get_value("Sales Order", sales_order, "sh_shopify_connection")
+        client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
         gid = _to_gid(order_id)
         merged_tags = _merge_status_tag(client, gid, status, sales_order)
         order_input = {
@@ -220,7 +223,8 @@ def push_order_create(sales_order: str):
     customer_email = frappe.db.get_value("Customer", so.customer, "email_id")
 
     try:
-        client = ShopifyGraphQLClient()
+        connection = so.sh_shopify_connection
+        client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
         order_input = {
             "lineItems": line_items,
             "financialStatus": "PENDING",
@@ -276,7 +280,8 @@ def push_order_cancel(order_id: str, sales_order: str):
         "Delivery Note Item", {"against_sales_order": sales_order, "docstatus": 1}
     ))
     try:
-        client = ShopifyGraphQLClient()
+        connection = frappe.db.get_value("Sales Order", sales_order, "sh_shopify_connection")
+        client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
         data = client.execute(_ORDER_CANCEL_MUTATION, {
             "orderId": _to_gid(order_id),
             "reason": "OTHER",

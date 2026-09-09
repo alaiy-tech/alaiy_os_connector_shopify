@@ -1,6 +1,9 @@
 import requests
 import frappe
-from frappe.utils import now_datetime, add_to_date
+from frappe.utils import add_to_date, now_datetime
+from frappe.utils.password import set_encrypted_password
+
+from alaiy_os_connector_shopify import connections
 
 # Everything the connector calls today (orders, inventory, locations) plus
 # what the approved product/order-push roadmap needs next. Shopify's
@@ -55,35 +58,62 @@ def get_client_credentials_token(shop_url: str, client_id: str, client_secret: s
     return {"access_token": access_token, "expires_in": data.get("expires_in")}
 
 
-def refresh_and_store_access_token() -> str:
+def store_access_token(connection, access_token: str, expires_in=None) -> None:
     """
-    Mint a fresh token from the connector's stored Client ID/Secret and
-    persist it, along with when it was refreshed and (per Shopify's own
-    expires_in) when it will next expire -- both shown on the settings form
-    and used by the scheduled proactive-refresh check in sync_jobs.py.
+    Persist a freshly minted token on a connection, encrypted.
+
+    Written through __Auth rather than straight into the column. The Single
+    this replaced was updated with `frappe.db.set_single_value`, which writes
+    the raw value to tabSingles and never touches __Auth -- so the store's
+    Admin API token sat in the database in plaintext, and `get_password` only
+    appeared to work because Document.get_password hands back a field value
+    that is set. Moving to a real row is the moment to stop doing that: the
+    secret goes to __Auth encrypted with the site key, and the column keeps the
+    masked placeholder a Password field is supposed to show.
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    set_encrypted_password(
+        connection.doctype, connection.name, access_token, "sh_access_token"
+    )
+
+    now = now_datetime()
+    connection.db_set(
+        {
+            "sh_access_token": "*" * len(access_token),
+            "sh_token_refreshed_at": now,
+            "sh_token_expires_at": add_to_date(now, seconds=expires_in) if expires_in else None,
+        },
+        update_modified=False,
+    )
+    frappe.db.commit()
+    # The in-memory document still holds whatever it was loaded with; a caller
+    # that reads the token straight after this must see the new one.
+    connection.reload()
+
+
+def refresh_and_store_access_token(connection=None) -> str:
+    """
+    Mint a fresh token from a store's stored Client ID/Secret and persist it,
+    along with when it was refreshed and (per Shopify's own expires_in) when it
+    will next expire -- both shown on the connection form and used by the
+    scheduled proactive-refresh check in sync_jobs.py.
+
+    `connection` is a Shopify Connection, its id, or None for the only store on
+    a single-store bench.
+    """
+    settings = connections.for_write(connection)
 
     shop_url = (settings.sh_shop_url or "").strip().rstrip("/")
     if not shop_url.startswith("http"):
         shop_url = f"https://{shop_url}"
 
     client_id = (settings.sh_client_id or "").strip()
-    client_secret = settings.get_password("sh_client_secret") if settings.sh_client_secret else None
+    client_secret = settings.get_password("sh_client_secret", raise_exception=False)
     if not client_id or not client_secret:
-        raise RuntimeError("Client ID and Client Secret must be saved before authenticating.")
+        raise RuntimeError(
+            f"Client ID and Client Secret must be saved on Shopify connection "
+            f"'{settings.name}' before authenticating."
+        )
 
     result = get_client_credentials_token(shop_url, client_id, client_secret)
-    access_token = result["access_token"]
-    expires_in = result.get("expires_in")
-
-    now = now_datetime()
-    updates = {
-        "sh_access_token": access_token,
-        "sh_token_refreshed_at": now,
-        "sh_token_expires_at": add_to_date(now, seconds=expires_in) if expires_in else None,
-    }
-    for field, value in updates.items():
-        frappe.db.set_single_value("Shopify Connector Settings", field, value)
-    frappe.db.commit()
-    return access_token
+    store_access_token(settings, result["access_token"], result.get("expires_in"))
+    return result["access_token"]

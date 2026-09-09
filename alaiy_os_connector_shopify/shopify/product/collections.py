@@ -18,7 +18,13 @@ Bidirectional, manual collections:
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access, require_access_to_record
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+
+from alaiy_os_connector_shopify import connections
 
 # ── GraphQL ──────────────────────────────────────────────────────────────────
 
@@ -63,7 +69,7 @@ query CollectionProducts($id: ID!, $after: String) {
           legacyResourceId
           title
           handle
-          featuredImage { url }
+          featuredMedia { preview { image { url } } }
           variants(first: 1) { nodes { price sku } }
         }
       }
@@ -207,11 +213,14 @@ def _collection_gid(collection_id: str) -> str:
 
 # ── Cache sync (Shopify -> local Shopify Collection docs) ─────────────────────
 
-def _upsert_collection_cache(node: dict):
+def _upsert_collection_cache(node: dict, connection=None):
     """
     Create or update one Shopify Collection doc from a GraphQL collection node.
-    Keyed on legacyResourceId (sh_collection_id). Sets from_shopify_sync so the
-    doc_events push-back hook doesn't echo this straight back to Shopify.
+    Keyed on legacyResourceId (sh_collection_id) paired with the store, since
+    that id is only unique inside one shop -- unscoped, a second seller's
+    collection 12345 overwrites the first seller's cached row. Sets
+    from_shopify_sync so the doc_events push-back hook doesn't echo this
+    straight back to Shopify.
     """
     legacy = str(node.get("legacyResourceId") or "")
     gid = node.get("id") or (_collection_gid(legacy) if legacy else "")
@@ -230,12 +239,17 @@ def _upsert_collection_cache(node: dict):
         "last_synced": frappe.utils.now_datetime(),
     }
 
-    name = frappe.db.get_value("Shopify Collection", {"sh_collection_id": legacy}, "name") if legacy else None
+    connection_name = getattr(connection, "name", connection)
+    name = frappe.db.get_value(
+        "Shopify Collection",
+        owned_by("Shopify Collection", connection_name, {"sh_collection_id": legacy}),
+        "name") if legacy else None
     if name:
         doc = frappe.get_doc("Shopify Collection", name)
         doc.update(values)
     else:
-        doc = frappe.get_doc(dict(doctype="Shopify Collection", **values))
+        doc = frappe.get_doc(dict(doctype="Shopify Collection",
+                                  connection=connection_name, **values))
     doc.flags.from_shopify_sync = True
     doc.flags.ignore_permissions = True
     doc.save()
@@ -243,7 +257,7 @@ def _upsert_collection_cache(node: dict):
 
 
 @frappe.whitelist()
-def sync_shopify_collections(trigger="manual", log_name=None):
+def sync_shopify_collections(trigger="manual", log_name=None, connection=None):
     """
     Fetch every collection on the store and cache it locally as a Shopify
     Collection doc -- the master list the Item collections multi-select picks
@@ -253,12 +267,17 @@ def sync_shopify_collections(trigger="manual", log_name=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, is_cancel_requested, append_log as _append_log
 
-    log = load_or_create_log("collections", trigger, log_name)
+    # Resolved and authorised before the log row is written, so a refused call
+    # leaves no run recorded against a store the caller may not touch.
+    connection = connections.resolve(connection)
+    require_access(connection.name, "write")
+
+    log = load_or_create_log("collections", trigger, log_name, connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)
     frappe.db.commit()
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connection)
     total = 0
     cancelled = False
     try:
@@ -267,7 +286,7 @@ def sync_shopify_collections(trigger="manual", log_name=None):
                 cancelled = True
                 break
             for node in page_nodes:
-                _upsert_collection_cache(node)
+                _upsert_collection_cache(node, connection)
                 total += 1
             log.items_processed = total
             log.items_created = total
@@ -308,13 +327,20 @@ def get_collection_products(collection_name: str):
     on demand -- not stored, since a collection's product set changes on
     Shopify's side and can be large. Also links any that map to a local Item.
     """
+
+    # Reads through the owning store's credentials, so the store has to
+    # be the caller's before the call is made.
+    require_access_to_record("Shopify Collection", collection_name)
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    row = frappe.db.get_value(
+        "Shopify Collection", collection_name, ["sh_collection_gid", "connection"], as_dict=True)
+    gid = row and row.sh_collection_gid
     if not gid:
         return []
 
-    client = ShopifyGraphQLClient()
+    conn = row.connection
+    client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
     products = []
     try:
         for page in client.execute_paginated(
@@ -326,10 +352,10 @@ def get_collection_products(collection_name: str):
                 item_code = None
                 if pid:
                     # Listing-based lookup first, falls back to Item.
-                    item_code = listing_resolver.template_by_product_id(pid)
+                    item_code = listing_resolver.template_by_product_id(pid, conn)
                 products.append({
                     "title": n.get("title"),
-                    "image": (n.get("featuredImage") or {}).get("url"),
+                    "image": (((n.get("featuredMedia") or {}).get("preview") or {}).get("image") or {}).get("url"),
                     "price": (variant[0] or {}).get("price"),
                     "sku": sku,
                     "item_code": item_code,
@@ -361,12 +387,19 @@ def get_collection_channels(collection_name: str):
     Live-fetch the sales channels (Shopify Publications) a collection is
     published to, each with its published/not state. Read-only, on demand.
     """
+
+    # Reads through the owning store's credentials, so the store has to
+    # be the caller's before the call is made.
+    require_access_to_record("Shopify Collection", collection_name)
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    row = frappe.db.get_value(
+        "Shopify Collection", collection_name, ["sh_collection_gid", "connection"], as_dict=True)
+    gid = row and row.sh_collection_gid
     if not gid:
         return []
-    client = ShopifyGraphQLClient()
+    conn = row.connection
+    client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
     try:
         # ALL publications = the master list, so an unpublished channel still
         # shows (as a not-published chip) and can be re-published. Then mark
@@ -401,7 +434,14 @@ def toggle_collection_channel(collection_name: str, publication_id: str, publish
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    # Addressed by collection, not by store, and it publishes to a real sales
+    # channel using that store's own credentials -- so an unauthorised call is
+    # not refused by Shopify, it succeeds against the wrong merchant's shop.
+    require_access_to_record("Shopify Collection", collection_name, "write")
+
+    row = frappe.db.get_value(
+        "Shopify Collection", collection_name, ["sh_collection_gid", "connection"], as_dict=True)
+    gid = row and row.sh_collection_gid
     if not gid:
         return {"ok": False, "error": "Collection not linked to Shopify."}
 
@@ -409,7 +449,8 @@ def toggle_collection_channel(collection_name: str, publication_id: str, publish
     mutation = _PUBLISH_MUTATION if do_publish else _UNPUBLISH_MUTATION
     key = "publishablePublish" if do_publish else "publishableUnpublish"
     try:
-        client = ShopifyGraphQLClient()
+        conn = row.connection
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
         data = client.execute(mutation, {
             "id": gid,
             "input": [{"publicationId": publication_id}],
@@ -430,17 +471,26 @@ def toggle_collection_channel(collection_name: str, publication_id: str, publish
         return {"ok": False, "error": "See Error Log."}
 
 
-def _set_item_collections(item, collection_titles: list):
+def _set_item_collections(item, collection_titles: list, connection=None):
     """
     Set sh_shopify_collections (Table MultiSelect of Item Shopify Collection
     rows) from a list of collection titles. Only titles that already exist as
     Shopify Collection docs are linked -- unlike tags we do NOT auto-create the
     master here, since a collection is a real Shopify object with an id, created
     via the Sync Collections action or the collections/create webhook.
+
+    Matched by title, which is the only thing a product node tells us about its
+    collections -- and a title is far weaker than an id: "Summer Sale" is a name
+    two unrelated sellers will both pick. Without the store, the first one
+    imported wins and the second seller's Items link to a collection they
+    cannot even see.
     """
     rows = []
     for title in collection_titles:
-        name = frappe.db.get_value("Shopify Collection", {"collection_title": title}, "name")
+        name = frappe.db.get_value(
+            "Shopify Collection",
+            owned_by("Shopify Collection", connection, {"collection_title": title}),
+            "name")
         if name:
             rows.append({"shopify_collection": name})
     item.set("sh_shopify_collections", rows)
@@ -562,7 +612,9 @@ def on_shopify_collection_update(doc, method=None):
         return
     if doc.is_smart:
         return
-    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+    conn = doc.get("connection")
+    settings = connections.resolve(conn) if conn else connections.enabled_connection()
+    if settings is None:
         # Same class of gap found and fixed across Listing/Sales Order/
         # Delivery Note/Sales Invoice push paths -- this never checked the
         # master switch before enqueuing a real push.
@@ -578,7 +630,9 @@ def on_shopify_collection_update(doc, method=None):
 def on_shopify_collection_trash(doc, method=None):
     if doc.flags.from_shopify_sync:
         return
-    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+    conn = doc.get("connection")
+    settings = connections.resolve(conn) if conn else connections.enabled_connection()
+    if settings is None:
         return
     if not doc.sh_collection_gid:
         return
@@ -587,6 +641,7 @@ def on_shopify_collection_trash(doc, method=None):
         queue="short",
         timeout=60,
         collection_gid=doc.sh_collection_gid,
+        connection=settings.name,
     )
 
 
@@ -595,7 +650,8 @@ def push_collection(collection_name: str):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     doc = frappe.get_doc("Shopify Collection", collection_name)
-    client = ShopifyGraphQLClient()
+    conn = doc.get("connection")
+    client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
     payload = _collection_input(doc)
 
     try:
@@ -628,10 +684,10 @@ def push_collection(collection_name: str):
         )
 
 
-def delete_collection(collection_gid: str):
+def delete_collection(collection_gid: str, connection=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
     try:
         data = client.execute(_COLLECTION_DELETE_MUTATION, {"input": {"id": collection_gid}})
         errors = (data.get("collectionDelete") or {}).get("userErrors") or []
@@ -649,7 +705,7 @@ def delete_collection(collection_gid: str):
 
 # ── Webhook handler (Shopify -> Alaiy OS) ──────────────────────────────────────
 
-def handle_collection_webhook(topic, payload):
+def handle_collection_webhook(topic, payload, connection=None):
     """
     collections/create|update -> upsert the cache doc; collections/delete ->
     remove it. Webhook payload is REST-shaped (id, title, handle, body_html,
@@ -661,7 +717,10 @@ def handle_collection_webhook(topic, payload):
             return
 
         if topic == "collections/delete":
-            name = frappe.db.get_value("Shopify Collection", {"sh_collection_id": legacy}, "name")
+            name = frappe.db.get_value(
+                "Shopify Collection",
+                owned_by("Shopify Collection", connection, {"sh_collection_id": legacy}),
+                "name")
             if name:
                 doc = frappe.get_doc("Shopify Collection", name)
                 doc.flags.from_shopify_sync = True
@@ -681,10 +740,19 @@ def handle_collection_webhook(topic, payload):
             "image": {"url": (payload.get("image") or {}).get("src")} if payload.get("image") else None,
             "ruleSet": {"rules": payload.get("rules")} if payload.get("rules") else None,
         }
-        _upsert_collection_cache(node)
+        # The webhook does carry its store now: api/webhooks.py attributes the
+        # delivery from X-Shopify-Shop-Domain -- the same header the HMAC is
+        # checked against, and one it refuses the delivery over when it cannot
+        # match -- and _dispatch passes that name down to here. So there is
+        # nothing left to fall back to, and the fallback that used to be here
+        # was the harmful half anyway: it asked the bench for "the" enabled
+        # store, which on a bench with several is None and on a bench with one
+        # was an answer this handler already had.
+        _upsert_collection_cache(node, connection)
         frappe.db.commit()
     except Exception:
         frappe.log_error(
             title=f"Shopify: collection webhook {topic} failed",
             message=frappe.get_traceback(),
         )
+

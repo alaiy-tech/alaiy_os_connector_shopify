@@ -15,7 +15,7 @@ from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
 )
 
 
-def _update_order(order):
+def _update_order(order, connection=None):
     """
     Acquires the SAME per-order lock _upsert_order uses (see
     _acquire_order_lock's docstring) before doing anything, then defers to
@@ -24,19 +24,19 @@ def _update_order(order):
     order_id = str(order.get("id", ""))
     if not order_id:
         return False
-    if not _acquire_order_lock(order_id):
+    if not _acquire_order_lock(order_id, connection=connection):
         frappe.log_error(
             title=f"Shopify order {order_id}: update lock timed out",
             message="Another process held this order's lock for 30s+ -- skipped this update.",
         )
         return False
     try:
-        return _update_order_unlocked(order, order_id)
+        return _update_order_unlocked(order, order_id, connection)
     finally:
-        _release_order_lock(order_id)
+        _release_order_lock(order_id, connection)
 
 
-def _update_order_unlocked(order, order_id):
+def _update_order_unlocked(order, order_id, connection=None):
     """
     Applies an orders/updated or orders/fulfilled webhook to an existing
     Sales Order. Updates status-tracking fields always. If the order hasn't
@@ -45,7 +45,7 @@ def _update_order_unlocked(order, order_id):
     state. Falls back to a full create if we've never seen this order (e.g.
     Shopify redelivered orders/updated before orders/create ever arrived).
     """
-    so_name = get_active_sales_order(order_id)
+    so_name = get_active_sales_order(order_id, connection)
     if not so_name:
         # Already holding this order_id's lock -- call the unlocked upsert
         # directly rather than _upsert_order, which would try (harmlessly,
@@ -129,13 +129,13 @@ def _update_order_unlocked(order, order_id):
     # it here too rather than only at create time.
     for fulfillment in fulfillments:
         if fulfillment.get("display_status") or fulfillment.get("shipment_status"):
-            _sync_tracking({**fulfillment, "order_id": order_id})
+            _sync_tracking({**fulfillment, "order_id": order_id}, connection)
 
     # Payment or fulfillment landed (orders/paid, orders/fulfilled, or an
     # orders/updated flipping either) -- create the Sales Invoice if the
     # trigger is now met and we haven't already.
     from alaiy_os_connector_shopify.shopify.order.invoice import create_sales_invoice_if_paid
-    create_sales_invoice_if_paid(so_name, financial_status, fulfillment_status)
+    create_sales_invoice_if_paid(so_name, financial_status, fulfillment_status, connection=connection)
     return False
 
 

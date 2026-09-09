@@ -4,6 +4,8 @@ order_sync.py, unchanged.
 """
 
 import frappe
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from frappe.utils import flt
 
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _resolve_item_code
@@ -68,6 +70,7 @@ def _create_delivery_note_if_needed(so_name):
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
         with _as_administrator():
             dn = make_delivery_note(so_name)
+            dn.sh_shopify_connection = so.sh_shopify_connection
             _force_valid_warehouse(dn)
             # Self-heal, same shape as the invoice's income-account/cost-center
             # fixes: a Shopify item with no incoming stock/valuation rate ever
@@ -122,14 +125,20 @@ def _sync_fulfillments(so_name, fulfillments):
         fulfillment_id = str(fulfillment.get("id") or "")
         if not fulfillment_id:
             continue
-        if frappe.db.exists("Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}):
+        # Scoped to the order's own store: a Shopify fulfillment id is only
+        # unique inside one shop, so unscoped this reads another seller's
+        # Delivery Note as proof that this fulfillment is already handled and
+        # silently never creates it.
+        if frappe.db.exists("Delivery Note", owned_by(
+                "Delivery Note", so.get("sh_shopify_connection"),
+                {"sh_shopify_fulfillment_id": fulfillment_id})):
             continue
         _create_delivery_note_for_fulfillment(
             so, fulfillment_id, fulfillment.get("line_items") or [], fulfillment.get("location_id"))
 
 
 
-def _record_fulfilled_from_location(item_code, location_id):
+def _record_fulfilled_from_location(item_code, location_id, connection=None):
     """Set Item.shopify_location from the location that actually shipped it.
 
     The import resolves ownership from where an item HOLDS stock, and leaves
@@ -164,7 +173,9 @@ def _record_fulfilled_from_location(item_code, location_id):
         if frappe.db.get_value("Item", item_code, "shopify_location"):
             return
         location = frappe.db.get_value(
-            "Shopify Location", {"sh_location_id": str(location_id)}, "name")
+            "Shopify Location",
+            owned_by("Shopify Location", connection, {"sh_location_id": str(location_id)}),
+            "name")
         if not location:
             return
         frappe.db.set_value("Item", item_code, "shopify_location", location,
@@ -215,13 +226,13 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             "sku": li.get("sku"),
             "variant_id": li.get("variant_id"),
             "title": li.get("title") or li.get("name"),
-        })
+        }, so.get("sh_shopify_connection"))
         if not item_code:
             item_code = _item_on_order_by_title(so, li.get("title") or li.get("name"))
         if not item_code:
             continue
         qty_by_item[item_code] = qty_by_item.get(item_code, 0) + flt(li.get("quantity", 0))
-        _record_fulfilled_from_location(item_code, location_id)
+        _record_fulfilled_from_location(item_code, location_id, so.get("sh_shopify_connection"))
 
     if not qty_by_item:
         frappe.log_error(
@@ -234,6 +245,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
         with _as_administrator():
             dn = make_delivery_note(so.name)
+            dn.sh_shopify_connection = so.sh_shopify_connection
             _force_valid_warehouse(dn, location_id)
 
             # make_delivery_note maps the full remaining quantity per item
@@ -283,7 +295,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         )
 
 
-def _sync_tracking(fulfillment):
+def _sync_tracking(fulfillment, connection=None):
     """
     fulfillments/create and fulfillments/update webhooks deliver the
     Fulfillment object directly (not wrapped in an order), carrying
@@ -312,14 +324,15 @@ def _sync_tracking(fulfillment):
     if not fulfillment_id:
         return
     dn_name = frappe.db.get_value(
-        "Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}, "name")
+        "Delivery Note", owned_by("Delivery Note", connection,
+                                  {"sh_shopify_fulfillment_id": fulfillment_id}), "name")
 
     if not dn_name:
         order_id = str(fulfillment.get("order_id") or "")
         if not order_id:
             return
         from alaiy_os_connector_shopify.shopify.order.upsert import get_active_sales_order
-        so_name = get_active_sales_order(order_id)
+        so_name = get_active_sales_order(order_id, connection)
         if not so_name:
             return
         dn_name = frappe.db.get_value(

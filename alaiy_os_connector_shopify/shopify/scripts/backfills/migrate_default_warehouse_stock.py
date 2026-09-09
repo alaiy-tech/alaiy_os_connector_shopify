@@ -38,6 +38,8 @@ convention as pull_stock_from_shopify.py:
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 
 def run(dry_run=True, slice_index=None, slices=None):
     if isinstance(dry_run, str):
@@ -53,7 +55,7 @@ def run(dry_run=True, slice_index=None, slices=None):
     from alaiy_os_connector_shopify.shopify.inventory_sync import _resolve_location_pairs
 
     client = ShopifyGraphQLClient()
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     pairs = _resolve_location_pairs(settings, client)
     if not pairs:
         print("No warehouse/location pair resolved -- aborting.", flush=True)

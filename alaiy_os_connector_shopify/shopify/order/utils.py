@@ -55,6 +55,31 @@ def _as_administrator():
         session.data = original_data
 
 
+def _format_risk_detail(assessments: list) -> str:
+    """
+    Flatten Shopify's per-provider risk assessments into the one Small Text
+    field that shows on the Sales Order. Each provider gets a line, with the
+    facts it based the call on indented beneath it, so whoever is deciding
+    whether to ship can see WHY it was flagged rather than just the level.
+    """
+    lines = []
+    for a in assessments:
+        provider = a.get("provider") or "Shopify"
+        lines.append(f"{a.get('risk_level') or 'UNKNOWN'} -- {provider}")
+        for fact in (a.get("facts") or []):
+            desc = (fact.get("description") or "").strip()
+            if not desc:
+                continue
+            sentiment = (fact.get("sentiment") or "").upper()
+            lines.append(f"  [{sentiment}] {desc}" if sentiment else f"  {desc}")
+    return "\n".join(lines)
+
+
+def _money(money_set) -> str:
+    """Pull the shop-currency amount out of a GraphQL MoneyBag, or "0"."""
+    return ((money_set or {}).get("shopMoney") or {}).get("amount") or "0"
+
+
 def _order_node_to_rest_shape(node: dict) -> dict:
     """
     Reshape a GraphQL order node into the same REST-style dict that
@@ -78,23 +103,58 @@ def _order_node_to_rest_shape(node: dict) -> dict:
     for li in (node.get("lineItems") or {}).get("nodes", []):
         variant = li.get("variant") or {}
         money = (li.get("originalUnitPriceSet") or {}).get("shopMoney") or {}
-        line_items.append({
+        discounted = (li.get("discountedUnitPriceSet") or {}).get("shopMoney") or {}
+        discounted_total = (li.get("discountedTotalSet") or {}).get("shopMoney") or {}
+        product = li.get("product") or {}
+        original_total = (li.get("originalTotalSet") or {}).get("shopMoney") or {}
+        item = {
+            "id": li.get("id"),
             "sku": li.get("sku"),
             "title": li.get("title"),
+            "name": li.get("name"),
             "quantity": li.get("quantity"),
             "variant_id": variant.get("legacyResourceId"),
+            "variant_gid": variant.get("id"),
+            "variant_title": variant.get("title"),
+            "variant_sku": variant.get("sku"),
+            "barcode": variant.get("barcode"),
+            "vendor": li.get("vendor"),
             # Outlives the variant, and stays fetchable by id after the
             # product is archived -- the only identifier left on a line whose
             # variant Shopify has deleted.
-            "product_id": (li.get("product") or {}).get("legacyResourceId"),
+            "product_id": product.get("legacyResourceId"),
+            "product_gid": product.get("id"),
+            "product_title": product.get("title"),
+            "product_handle": product.get("handle"),
+            "product_vendor": product.get("vendor"),
+            "product_type": product.get("productType"),
+            "product_status": (product.get("status") or "").lower(),
             "price": money.get("amount"),
-        })
+            "discounted_price": discounted.get("amount"),
+            "original_total": original_total.get("amount"),
+            "discounted_total": discounted_total.get("amount"),
+        }
+        # Matches the webhook payload's own key, so _line_item_qty reads one
+        # field whichever source the order came from. Only set when Shopify
+        # actually returned it -- the helper falls back to "quantity" on
+        # absence, and a None here would read as a removed line.
+        if li.get("currentQuantity") is not None:
+            item["current_quantity"] = li.get("currentQuantity")
+        line_items.append(item)
     def _addr(a):
         if not a:
             return None
         # GraphQL address fields already match the REST webhook shape 1:1.
-        return {k: a.get(k) for k in
-                ("name", "address1", "address2", "city", "province", "country", "zip", "phone")}
+        out = {k: a.get(k) for k in
+               ("name", "company", "address1", "address2", "city", "province",
+                "country", "zip", "phone")}
+        # The REST webhook spells these snake_case, so normalise to that --
+        # a carrier needs the code, not the display name.
+        out["first_name"] = a.get("firstName")
+        out["last_name"] = a.get("lastName")
+        out["province_code"] = a.get("provinceCode")
+        out["country_code"] = a.get("countryCodeV2")
+        return out
 
     ship_line = node.get("shippingLine") or {}
     shipping_lines = []
@@ -141,14 +201,60 @@ def _order_node_to_rest_shape(node: dict) -> dict:
             "line_items": fulfillment_line_items,
         })
 
+    # Shopify grades an order per fraud provider AND gives its own aggregate
+    # recommendation. Both are kept: the worst single assessment wins for the
+    # level, because one provider calling an order HIGH is the whole point of
+    # the flag even when another says LOW.
+    risk = node.get("risk") or {}
+    risk_assessments = []
+    for a in (risk.get("assessments") or []):
+        risk_assessments.append({
+            "risk_level": (a.get("riskLevel") or "").upper(),
+            "provider": ((a.get("provider") or {}).get("title") or ""),
+            "facts": [{
+                "description": f.get("description"),
+                "sentiment": f.get("sentiment"),
+            } for f in (a.get("facts") or [])],
+        })
+    # PENDING means "not assessed yet", not a severity, so it ranks below
+    # every real verdict -- an order with one PENDING and one HIGH is HIGH.
+    # It still beats "" so a wholly-unassessed order reads as PENDING rather
+    # than blank, which would look like a clean order that had been checked.
+    _RISK_ORDER = {"PENDING": 0, "NONE": 1, "LOW": 2, "MEDIUM": 3, "HIGH": 4}
+    risk_level = ""
+    for a in risk_assessments:
+        if _RISK_ORDER.get(a["risk_level"], -1) > _RISK_ORDER.get(risk_level, -1):
+            risk_level = a["risk_level"]
+
     return {
         "id": node.get("legacyResourceId"),
+        "gid": node.get("id"),
         "name": node.get("name"),
+        "confirmation_number": node.get("confirmationNumber") or "",
+        "test": bool(node.get("test")),
+        "risk_level": risk_level,
+        # Shopify's own aggregate call: ACCEPT / INVESTIGATE / CANCEL / NONE.
+        "risk_recommendation": (risk.get("recommendation") or "").upper(),
+        "risk_assessments": risk_assessments,
         "customer": {
             "id": customer.get("legacyResourceId"),
+            "gid": customer.get("id"),
             "first_name": customer.get("firstName"),
             "last_name": customer.get("lastName"),
-            "email": customer.get("email"),
+            "display_name": customer.get("displayName"),
+            # Customer.email/.phone are deprecated on 2026-07; these come off
+            # defaultEmailAddress/defaultPhoneNumber but keep the old key
+            # names, which is what the webhook payload and every consumer
+            # downstream already read.
+            "email": ((customer.get("defaultEmailAddress") or {}).get("emailAddress")
+                      or customer.get("email")),
+            "phone": ((customer.get("defaultPhoneNumber") or {}).get("phoneNumber")
+                      or customer.get("phone")),
+            "orders_count": customer.get("numberOfOrders"),
+            "created_at": customer.get("createdAt"),
+            "updated_at": customer.get("updatedAt"),
+            "tags": customer.get("tags") or [],
+            "default_address": _addr(customer.get("defaultAddress")),
         } if customer.get("legacyResourceId") else {},
         "line_items": line_items,
         "tax_lines": tax_lines,
@@ -158,10 +264,30 @@ def _order_node_to_rest_shape(node: dict) -> dict:
         "shipping_lines": shipping_lines,
         "fulfillments": fulfillments,
         "total_discounts": ((node.get("totalDiscountsSet") or {}).get("shopMoney") or {}).get("amount") or "0",
+        # Post-edit, post-refund totals. Keyed to the REST webhook's own
+        # names (current_total_price et al) so both sources read alike.
+        "current_total_price": _money(node.get("currentTotalPriceSet")),
+        "current_subtotal_price": _money(node.get("currentSubtotalPriceSet")),
+        "current_total_tax": _money(node.get("currentTotalTaxSet")),
+        "current_total_discounts": _money(node.get("currentTotalDiscountsSet")),
+        "total_shipping_price": _money(node.get("totalShippingPriceSet")),
+        # The buyer's own currency, when it differs from the shop's.
+        "presentment_total_price": (
+            ((node.get("currentTotalPriceSet") or {}).get("presentmentMoney") or {}).get("amount") or ""),
+        "presentment_currency": (
+            ((node.get("currentTotalPriceSet") or {}).get("presentmentMoney") or {}).get("currencyCode") or ""),
+        "discount_codes": node.get("discountCodes") or [],
         "currency": node.get("currencyCode") or "",
         "note": node.get("note") or "",
         "tags": node.get("tags") or [],
+        "email": node.get("email") or "",
+        "phone": node.get("phone") or "",
         "created_at": node.get("createdAt") or "",
+        "updated_at": node.get("updatedAt") or "",
+        "processed_at": node.get("processedAt") or "",
+        "closed_at": node.get("closedAt") or "",
+        "cancelled_at": node.get("cancelledAt") or "",
+        "cancel_reason": (node.get("cancelReason") or "").lower(),
         "financial_status": (node.get("displayFinancialStatus") or "").lower(),
         "fulfillment_status": (node.get("displayFulfillmentStatus") or "").lower(),
     }
@@ -176,16 +302,16 @@ def _line_item_qty(li: dict) -> float:
     confirmed live: an edited order still showed "quantity": 1 on a line the
     merchant had just deleted, only "current_quantity": 0 revealed the
     removal. Reading "quantity" alone meant edits that removed items were
-    silently invisible to line-item reconciliation. current_quantity is only
-    present on webhook payloads (not the GraphQL pull query), so fall back
-    to "quantity" when it's absent.
+    silently invisible to line-item reconciliation. Both sources now carry
+    it -- the webhook natively, the pull query via currentQuantity -- but an
+    older cached payload may not, so fall back to "quantity" when absent.
     """
     if "current_quantity" in li:
         return flt(li.get("current_quantity", 0))
     return flt(li.get("quantity", 1))
 
 
-def _resolve_item_code(line_item):
+def _resolve_item_code(line_item, connection=None):
     sku = (line_item.get("sku") or "").strip()
     if sku and frappe.db.exists("Item", sku):
         return sku
@@ -194,7 +320,7 @@ def _resolve_item_code(line_item):
     if variant_id:
         # Listing Variant's copy first (owning row), Item as fallback --
         # same helper already used elsewhere for this exact reverse lookup.
-        by_variant = listing_resolver.item_by_variant_id(variant_id)
+        by_variant = listing_resolver.item_by_variant_id(variant_id, connection)
         if by_variant:
             return by_variant
 
@@ -219,14 +345,14 @@ def _resolve_item_code(line_item):
     # fetches exactly one product, only when an order needs it.
     product_id = str(line_item.get("product_id") or "")
     if variant_id or sku or product_id:
-        imported = _import_product_for_order_line(variant_id, sku, product_id)
+        imported = _import_product_for_order_line(variant_id, sku, product_id, connection)
         if imported:
             return imported
 
     return None
 
 
-def _import_product_for_order_line(variant_id: str, sku: str = None, product_id: str = None):
+def _import_product_for_order_line(variant_id: str, sku: str = None, product_id: str = None, connection=None):
     """Import the single product this order line refers to, whatever its status.
 
     Found by variant id, or by SKU when the line carries no variant id --
@@ -251,7 +377,7 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
         from alaiy_os_connector_shopify.shopify.product import importer
         from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connection)
         # The order line names its product outright. Preferred over both
         # lookups below because it is the only one that reaches an ARCHIVED
         # product: confirmed live, every form of sku: query returns nothing
@@ -286,8 +412,17 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
             return None
 
         product_variants = []
+        # $first: 1, not the bulk import's default of 50 -- query:
+        # "id:<product_id>" can only ever match the one product with that
+        # id. Confirmed live: at the default 50, _PRODUCTS_QUERY's cost is
+        # charged per the DECLARED page size, not the actual match count, so
+        # this single-product rescue exceeded Shopify's 1000-point
+        # single-query limit (measured 1066) every time, regardless of the
+        # `first` value passed here -- the query itself hardcoded 50 in its
+        # text until $first became a real GraphQL variable (default 50, so
+        # the bulk import's own calls are unaffected).
         for page in client.execute_paginated(
-                _PRODUCTS_QUERY, {"first": 5, "query": f"id:{product_id}"}, ["products"]):
+                _PRODUCTS_QUERY, {"first": 1, "query": f"id:{product_id}"}, ["products"]):
             for node in page:
                 if str(node.get("legacyResourceId")) != product_id:
                     continue
@@ -295,10 +430,10 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
                 # gate exists to keep a bulk sweep from dragging in dead
                 # products, which is a different question from an order
                 # needing the one product it actually sold.
-                importer._import_product_inner(node)
+                importer._import_product_inner(node, connection)
                 product_variants = (node.get("variants") or {}).get("nodes") or []
 
-        item_code = (listing_resolver.item_by_variant_id(variant_id) if variant_id else None)
+        item_code = (listing_resolver.item_by_variant_id(variant_id, connection) if variant_id else None)
         if not item_code and sku and frappe.db.exists("Item", sku):
             item_code = sku
 
@@ -316,7 +451,7 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
             if len(product_variants) == 1:
                 only = product_variants[0]
                 item_code = (
-                    listing_resolver.item_by_variant_id(str(only.get("legacyResourceId") or ""))
+                    listing_resolver.item_by_variant_id(str(only.get("legacyResourceId") or ""), connection)
                     or (only.get("sku") if frappe.db.exists("Item", only.get("sku")) else None)
                 )
         if item_code:

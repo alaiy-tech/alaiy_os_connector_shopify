@@ -5,6 +5,8 @@ product_import.py, unchanged.
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_cost_center
 
 
@@ -106,7 +108,12 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     candidates = set()
     stocked = set()
     for location_id, qty in location_levels:
-        location_name = frappe.db.get_value("Shopify Location", {"sh_location_id": str(location_id)}, "name")
+        location_name = frappe.db.get_value(
+            "Shopify Location",
+            owned_by("Shopify Location", getattr(settings, "name", None),
+                     {"sh_location_id": str(location_id)}),
+            "name",
+        )
         if not location_name:
             continue
         candidates.add(location_name)
@@ -180,7 +187,7 @@ def resolve_product_shopify_location(variants, settings=None, product_id=None):
 
     pooled = {}
     for variant in variants or []:
-        for location_id, qty in (_variant_location_levels(variant) or []):
+        for location_id, qty in (_variant_location_levels(variant, settings) or []):
             pooled[location_id] = pooled.get(location_id, 0) + (qty or 0)
     if not pooled:
         return None

@@ -12,9 +12,16 @@ import frappe
 
 from alaiy_os_connector_shopify.shopify.product.pricing import _variant_price
 
+from alaiy_os_connector_shopify import connections
+
 
 def execute():
-    settings = frappe.get_single("Shopify Connector Settings")
+    # A backfill must not fail a migrate on a site that has no Shopify store,
+    # so this asks rather than requires. `settings` is only read for its
+    # price list / defaults below; with no store there is nothing to backfill.
+    settings = connections.enabled_connection()
+    if not settings:
+        return
     rows = frappe.db.sql("""
         SELECT l.name, l.item
         FROM `tabShopify Product Listing` l

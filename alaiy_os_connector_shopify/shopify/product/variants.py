@@ -22,6 +22,8 @@ from alaiy_os_connector_shopify.shopify.product.media import _absolute_file_url
 _WEIGHT_UNIT_TO_UOM = {
     "GRAMS": "Gram", "KILOGRAMS": "Kg", "OUNCES": "Ounce", "POUNDS": "Pound",
 }
+
+
 _UOM_TO_WEIGHT_UNIT = {v: k for k, v in _WEIGHT_UNIT_TO_UOM.items()}
 
 # Shopify's REST webhook payload uses a different, lowercase-abbreviation
@@ -88,6 +90,26 @@ _UOM_IN_GRAMS = {"Gram": 1.0, "Kg": 1000.0, "Ounce": 28.3495, "Pound": 453.592}
 # rounded to a whole pound. Anything beyond this is two different weights,
 # not a restatement, and is refused.
 _DUAL_UNIT_TOLERANCE = 0.20
+
+
+def level_quantity(level: dict, name: str = "available") -> float:
+    """
+    One named quantity off an inventoryLevel.
+
+    The queries ask for several states now (available, on_hand, committed,
+    incoming), and Shopify returns them as a list in no guaranteed order --
+    so quantities[0] is not reliably "available", and reading it by index
+    would silently write the wrong stock. Match on name, falling back to the
+    first entry only when nothing is named (a query asking for a single
+    state omits the name field).
+    """
+    quantities = level.get("quantities") or []
+    for q in quantities:
+        if q.get("name") == name:
+            return flt(q.get("quantity"))
+    if quantities and not any(q.get("name") for q in quantities):
+        return flt(quantities[0].get("quantity"))
+    return 0.0
 
 
 def _metafield_map(product_node):
@@ -242,13 +264,11 @@ def _variant_available_qty(variant: dict) -> float:
     levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
     total = 0
     for level in levels:
-        quantities = level.get("quantities") or []
-        if quantities:
-            total += flt(quantities[0].get("quantity"))
+        total += level_quantity(level)
     return total
 
 
-def _variant_location_levels(variant: dict) -> list:
+def _variant_location_levels(variant: dict, connection=None) -> list:
     """
     [(shopify_location_id, qty), ...] for this variant, one pair per real
     Shopify location it's stocked at -- lets opening stock be split into
@@ -264,9 +284,7 @@ def _variant_location_levels(variant: dict) -> list:
         location_id = ((level.get("location") or {}).get("legacyResourceId"))
         if not location_id:
             continue
-        quantities = level.get("quantities") or []
-        qty = flt(quantities[0].get("quantity")) if quantities else 0
-        pairs.append((str(location_id), qty))
+        pairs.append((str(location_id), level_quantity(level)))
 
     # inventoryLevels is capped hard inside the bulk products query -- nested
     # under products x variants, its page size multiplies toward Shopify's
@@ -285,7 +303,7 @@ def _variant_location_levels(variant: dict) -> list:
     from alaiy_os_connector_shopify.shopify.product.queries import INVENTORY_LEVELS_PAGE_SIZE
 
     if len(pairs) >= INVENTORY_LEVELS_PAGE_SIZE:
-        full = _fetch_variant_location_levels(variant.get("legacyResourceId"))
+        full = _fetch_variant_location_levels(variant.get("legacyResourceId"), connection)
         if full:
             return full
     return pairs or []
@@ -307,7 +325,7 @@ query VariantLevels($id: ID!) {
 """
 
 
-def _fetch_variant_location_levels(variant_id):
+def _fetch_variant_location_levels(variant_id, connection=None):
     """Every location one variant is stocked at, fetched on its own.
 
     Affords first: 50 because it queries a single variant -- there is no
@@ -321,7 +339,7 @@ def _fetch_variant_location_levels(variant_id):
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-        data = ShopifyGraphQLClient().execute(
+        data = ShopifyGraphQLClient(connection).execute(
             _VARIANT_LEVELS_QUERY, {"id": f"gid://shopify/ProductVariant/{variant_id}"})
         variant = (data.get("productVariant") or {})
         levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
@@ -330,9 +348,7 @@ def _fetch_variant_location_levels(variant_id):
             location_id = ((level.get("location") or {}).get("legacyResourceId"))
             if not location_id:
                 continue
-            quantities = level.get("quantities") or []
-            qty = flt(quantities[0].get("quantity")) if quantities else 0
-            pairs.append((str(location_id), qty))
+            pairs.append((str(location_id), level_quantity(level)))
         return pairs
     except Exception:
         frappe.log_error(

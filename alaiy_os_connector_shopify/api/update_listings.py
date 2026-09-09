@@ -41,6 +41,9 @@ import csv
 import io
 
 import frappe
+
+from alaiy_os_connector_shopify import connections
+from alaiy_os_connector_shopify.api import require_access
 from frappe.utils import cint, flt
 
 from alaiy_os_connector_shopify.shopify.product.tags import _set_item_tags
@@ -178,7 +181,7 @@ def _apply_product_fields(item, listing, row, report):
         new_tags = sorted(t.strip() for t in tags_value.split(",") if t.strip())
         old_tags = sorted(r.shopify_tag for r in (item.get("sh_shopify_tags") or []))
         if new_tags != old_tags:
-            _set_item_tags(item, new_tags)
+            _set_item_tags(item, new_tags, connection=item.get("sh_shopify_connection"))
             changes.append(f"{item.name}.tags: {old_tags!r} -> {new_tags!r}")
 
     title = (row.get("title") or "").strip()
@@ -281,13 +284,25 @@ def _apply_variant_fields(listing, variant_rows, report):
                 row.is_enabled = new_enabled
 
 
-def _apply_group(item_code, group, report):
+def _apply_group(item_code, group, report, connection=None):
     if not frappe.db.exists("Item", item_code):
         report["skipped"].append(f"{item_code}: Item not found -- new products are created via product import, not this update")
         return
     if not frappe.db.exists("Shopify Product Listing", item_code):
         report["skipped"].append(f"{item_code}: no Shopify Product Listing exists for this Item yet")
         return
+
+    # A row's item_code names a global Frappe document, not a store-scoped
+    # one -- the CSV itself has no other way to say which store it means.
+    # Without this check, a seller's CSV of their own item_codes could
+    # update (and push to Shopify) a DIFFERENT seller's Item/Listing if
+    # their codes happened to collide, since neither doctype's primary key
+    # carries store identity on its own.
+    if connection:
+        owner = frappe.db.get_value("Item", item_code, "sh_shopify_connection")
+        if owner and owner != connection:
+            report["skipped"].append(f"{item_code}: belongs to a different store -- skipped")
+            return
 
     item = frappe.get_doc("Item", item_code)
     listing = frappe.get_doc("Shopify Product Listing", item_code)
@@ -313,10 +328,10 @@ def _apply_group(item_code, group, report):
     report["updated"].append(item_code)
 
 
-def _run_update_listings(csv_content, user):
+def _run_update_listings(csv_content, user, connection=None):
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log
 
-    log = load_or_create_log("update_listings", "manual")
+    log = load_or_create_log("update_listings", "manual", connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)
     frappe.db.commit()
@@ -332,7 +347,7 @@ def _run_update_listings(csv_content, user):
 
         for i, item_code in enumerate(order):
             try:
-                _apply_group(item_code, groups[item_code], report)
+                _apply_group(item_code, groups[item_code], report, connection)
                 frappe.db.commit()
             except Exception:
                 report["skipped"].append(f"{item_code}: failed -- see Error Log")
@@ -398,13 +413,18 @@ def _run_update_listings(csv_content, user):
 
 
 @frappe.whitelist()
-def trigger_update_listings(file_url):
+def trigger_update_listings(file_url, connection=None):
     """file_url: a private File already uploaded (e.g. via the list view's
     file picker). Enqueued on the long queue -- same size reasoning as the
     export: a whole-site update file has no place running inside one
     request/response cycle. Applies directly, no separate dry-run step --
     every change is logged as an explicit before -> after diff on the
     resulting Shopify Sync Log instead."""
+    # Applies a whole file of changes to Listings and pushes them, so it is a
+    # write against the store before a single row is read.
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
+    require_access(settings.name, "write")
+
     file_doc = frappe.get_doc("File", {"file_url": file_url})
     csv_content = file_doc.get_content()
     if isinstance(csv_content, bytes):
@@ -416,5 +436,6 @@ def trigger_update_listings(file_url):
         timeout=1200,
         csv_content=csv_content,
         user=frappe.session.user,
+        connection=settings.name,
     )
     return {"queued": True}

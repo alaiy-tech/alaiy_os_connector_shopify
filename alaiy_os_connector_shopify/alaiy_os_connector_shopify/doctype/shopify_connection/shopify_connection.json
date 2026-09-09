@@ -1,15 +1,32 @@
 {
- "creation": "2026-07-02 00:00:00.000000",
- "docstatus": 0,
+ "actions": [],
+ "autoname": "field:connection_id",
+ "creation": "2026-09-04 00:00:00.000000",
+ "description": "One Shopify store connection. A single-store bench has exactly one, named 'default'; a multi-tenant bench has one per seller. Holds the store's credentials, its Alaiy OS defaults, and its sync settings.",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
   "is_enabled",
+  "identity_section",
+  "connection_id",
+  "label",
+  "is_default",
+  "column_break_identity",
+  "owner_app",
+  "status_section",
+  "last_status",
+  "last_status_message",
+  "column_break_status",
+  "connected_at",
   "sb_connection",
   "sh_shop_url",
+  "sh_auth_method",
+  "column_break_connection",
   "sh_client_id",
   "sh_client_secret",
+  "sh_shop_gid",
+  "sh_granted_scopes",
   "sh_access_token",
   "sh_token_refreshed_at",
   "sh_token_expires_at",
@@ -23,6 +40,7 @@
   "sh_selling_price_list",
   "sh_cost_center",
   "sh_tax_account",
+  "sh_rounding_write_off_account",
   "sh_auto_sales_invoice",
   "sh_invoice_trigger",
   "sb_locations",
@@ -50,6 +68,73 @@
    "label": "Enable Shopify"
   },
   {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
+  {
+   "fieldname": "connection_id",
+   "fieldtype": "Data",
+   "label": "Connection ID",
+   "set_only_once": 1,
+   "unique": 1,
+   "description": "Stable id used by callers and by the app that manages this store. A bench upgraded from the single-connection version keeps its one connection as 'default'.",
+   "reqd": 1
+  },
+  {
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "label": "Label",
+   "description": "Human-readable name, e.g. the store or brand."
+  },
+  {
+   "default": "0",
+   "fieldname": "is_default",
+   "fieldtype": "Check",
+   "label": "Default Connection",
+   "description": "Used when a caller names no connection. A bench with exactly one connection does not need this set."
+  },
+  {
+   "fieldname": "column_break_identity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "owner_app",
+   "fieldtype": "Data",
+   "label": "Created By App",
+   "read_only": 1,
+   "description": "Set by whichever app created this connection, so a multi-tenant bench can tell its own rows from ones made by hand."
+  },
+  {
+   "fieldname": "status_section",
+   "fieldtype": "Section Break",
+   "label": "Connection Status"
+  },
+  {
+   "default": "not_configured",
+   "fieldname": "last_status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "not_configured\nconnected\nerror",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_status_message",
+   "fieldtype": "Small Text",
+   "label": "Status Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "connected_at",
+   "fieldtype": "Datetime",
+   "label": "Connected At",
+   "read_only": 1
+  },
+  {
    "fieldname": "sb_connection",
    "fieldtype": "Section Break",
    "label": "API Connection"
@@ -59,21 +144,50 @@
    "fieldname": "sh_shop_url",
    "fieldtype": "Data",
    "label": "Shop URL",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
-   "description": "Client ID from your Shopify custom app (Developer Dashboard)",
+   "default": "Custom App",
+   "description": "How this connection authenticates. 'Custom App' -- a seller creates their own Shopify custom app and pastes its Client ID/Secret below. 'OAuth' -- connected through the Connect to Shopify button; the seller never sees or enters an app secret, and Client ID/Secret below stay blank for this row.",
+   "fieldname": "sh_auth_method",
+   "fieldtype": "Select",
+   "label": "Auth Method",
+   "options": "Custom App\nOAuth",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_connection",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Client ID from your Shopify custom app (Developer Dashboard). Blank for a connection made through Connect to Shopify.",
    "fieldname": "sh_client_id",
    "fieldtype": "Data",
    "label": "Client ID",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled && doc.sh_auth_method == \"Custom App\""
   },
   {
-   "description": "Client Secret from your Shopify custom app",
+   "description": "Client Secret from your Shopify custom app. Blank for a connection made through Connect to Shopify.",
    "fieldname": "sh_client_secret",
    "fieldtype": "Password",
    "label": "Client Secret",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled && doc.sh_auth_method == \"Custom App\""
+  },
+  {
+   "description": "This store's stable Shopify id, read back at OAuth install time. Blank for a Custom App connection.",
+   "fieldname": "sh_shop_gid",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Shop GID",
+   "read_only": 1
+  },
+  {
+   "description": "What Shopify actually granted at OAuth install time -- may be narrower than requested if the seller edited the approval screen.",
+   "fieldname": "sh_granted_scopes",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Granted Scopes",
+   "read_only": 1
   },
   {
    "description": "Access token (auto-managed by Test Connection)",
@@ -101,7 +215,7 @@
    "fieldname": "sh_webhook_secret",
    "fieldtype": "Password",
    "label": "Webhook Secret",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "fieldname": "sb_defaults",
@@ -113,7 +227,7 @@
    "fieldtype": "Link",
    "label": "Company",
    "options": "Company",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Warehouse for fulfilling Shopify orders",
@@ -121,7 +235,7 @@
    "fieldtype": "Link",
    "label": "Default Warehouse",
    "options": "Warehouse",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Where a Shopify refund's Sales Return lands. Leave blank to use Default Warehouse instead -- someone downstream (e.g. a supplier portal's own returns routing) decides where it really ends up from there.",
@@ -135,7 +249,7 @@
    "fieldtype": "Link",
    "label": "Default Customer Group",
    "options": "Customer Group",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Territory assigned to Customers auto-created from Shopify orders. Falls back to any existing Territory if left blank -- there's no guarantee a site has one named 'All Territories'.",
@@ -149,20 +263,27 @@
    "fieldtype": "Link",
    "label": "Selling Price List",
    "options": "Price List",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "fieldname": "sh_cost_center",
    "fieldtype": "Link",
    "label": "Cost Center",
    "options": "Cost Center",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "description": "Account that tax lines pulled from Shopify orders (e.g. CGST, SGST, VAT) are booked against. Leave blank to auto-resolve/create a 'Shopify Tax' account under the company.",
    "fieldname": "sh_tax_account",
    "fieldtype": "Link",
    "label": "Tax Account",
+   "options": "Account"
+  },
+  {
+   "description": "Account a small rounding gap between Shopify's own total and Alaiy OS's recalculated total is booked against. Shopify's total is what the customer actually paid, so a mismatch (floating point, a rate that doesn't divide evenly) is corrected here rather than left as a silent discrepancy. Leave blank to use the Company's own Write Off Account; if neither is set, the order is left with the gap and a note in its Error Log.",
+   "fieldname": "sh_rounding_write_off_account",
+   "fieldtype": "Link",
+   "label": "Rounding Write Off Account",
    "options": "Account"
   },
   {
@@ -205,7 +326,7 @@
    "fieldtype": "Select",
    "label": "Sync Orders With Status",
    "options": "Open\nAny\nClosed\nCancelled",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "default": "Shopify → Alaiy OS (default)",
@@ -214,7 +335,7 @@
    "fieldtype": "Select",
    "label": "Fulfillment Sync Direction",
    "options": "Shopify → Alaiy OS (default)\nAlaiy OS → Shopify (two-way)",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "default": "Shopify → Alaiy OS only",
@@ -232,7 +353,7 @@
    "fieldtype": "Select",
    "label": "Inventory Sync Interval",
    "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "default": "12 hours",
@@ -241,7 +362,7 @@
    "fieldtype": "Select",
    "label": "Token Refresh Interval",
    "options": "Disabled\n6 hours\n12 hours\n24 hours",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.is_enabled"
   },
   {
    "fieldname": "sb_product_status",
@@ -292,12 +413,14 @@
    "label": "Export Archived products"
   }
  ],
- "is_single": 1,
+ "index_web_pages_for_search": 0,
+ "issingle": 0,
  "links": [],
- "modified": "2026-07-02 00:00:00.000000",
+ "modified": "2026-09-04 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Alaiy OS Connector Shopify",
- "name": "Shopify Connector Settings",
+ "name": "Shopify Connection",
+ "naming_rule": "By fieldname",
  "owner": "Administrator",
  "permissions": [
   {
@@ -313,8 +436,10 @@
    "write": 1
   }
  ],
- "sort_field": "modified",
+ "show_title_field_in_link": 1,
+ "sort_field": "creation",
  "sort_order": "DESC",
  "states": [],
+ "title_field": "label",
  "track_changes": 0
 }

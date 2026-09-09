@@ -29,6 +29,8 @@ import time
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify.shopify.sync_guard import append_log as _append_export_log
 
 from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
@@ -39,6 +41,8 @@ from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_SET_MUTA
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical, _product_set_input
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 from alaiy_os_connector_shopify.shopify.product import status as status_map
+
+from alaiy_os_connector_shopify import connections
 
 LOCK_TIMEOUT_SECONDS = 30
 
@@ -52,8 +56,14 @@ def push_item(item_code: str, allowed_statuses=None):
 
     # allowed_statuses is the dashboard's per-run choice; None means fall back to
     # the settings checkboxes, which is what a doc_event-driven push does.
+    # The store is read off the Listing rather than asked of the bench: on a
+    # bench with several enabled stores there is no single answer to ask for,
+    # and getting None back would read as "not selected" and stop the push
+    # without saying anything.
     listing = listing_resolver.get_listing(item.variant_of or item.name)
-    if listing and not status_map.export_allows(listing.sh_shopify_status, allowed_statuses):
+    if listing and not status_map.export_allows(
+        listing.sh_shopify_status, allowed_statuses, listing.get("connection")
+    ):
         return
 
     if item.variant_of:
@@ -62,7 +72,7 @@ def push_item(item_code: str, allowed_statuses=None):
         _push_product(item)
 
 
-def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
+def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None, connection=None):
     """
     One-off bulk push of every local (not-yet-linked) product to Shopify --
     for manually-created Alaiy OS Items that predate any Shopify connection,
@@ -75,9 +85,10 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
     """
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync, is_cancel_requested
 
-    log = load_or_create_log("product_export", trigger, log_name)
+    log = load_or_create_log("product_export", trigger, log_name, connection=connection)
 
-    if has_active_sync("product_export", exclude_name=log.name):
+    if has_active_sync("product_export", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = frappe.utils.now_datetime()
         log.error_message = "Skipped: another product export is already running."
@@ -130,7 +141,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
             # nothing sent, which reads as a failed push rather than a skip.
             if allowed_statuses is not None:
                 current = frappe.db.get_value("Item", item_code, "sh_shopify_status")
-                if not status_map.export_allows(current, allowed_statuses):
+                if not status_map.export_allows(current, allowed_statuses, connection):
                     skipped_status += 1
                     continue
             try:
@@ -213,7 +224,7 @@ def _save_throttled(listing, log, listing_name, max_wait=180):
             listing.reload()
 
 
-def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
+def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None, connection=None):
     """
     Bulk-enable every disabled Shopify Product Listing whose own status
     matches one of the caller's chosen statuses -- for switching on a batch
@@ -227,9 +238,10 @@ def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
     """
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync, is_cancel_requested
 
-    log = load_or_create_log("listing_bulk_enable", trigger, log_name)
+    log = load_or_create_log("listing_bulk_enable", trigger, log_name, connection=connection)
 
-    if has_active_sync("listing_bulk_enable", exclude_name=log.name):
+    if has_active_sync("listing_bulk_enable", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = frappe.utils.now_datetime()
         log.error_message = "Skipped: another bulk-enable run is already in progress."
@@ -248,7 +260,8 @@ def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
             filters={"is_enabled": 0},
             fields=["name", "sh_shopify_status"],
         )
-        matched = [r.name for r in disabled if status_map.export_allows(r.sh_shopify_status, allowed_statuses)]
+        matched = [r.name for r in disabled
+                   if status_map.export_allows(r.sh_shopify_status, allowed_statuses, connection)]
         log.pages_total = len(matched)
         log.save(ignore_permissions=True)
         frappe.db.commit()
@@ -353,7 +366,8 @@ def _push_product_unlocked(item):
     # were waiting for the lock, and we must build the payload from that,
     # not from what `item` looked like before we acquired it.
     item = frappe.get_doc("Item", item.name)
-    settings = frappe.get_single("Shopify Connector Settings")
+    conn = item.get("sh_shopify_connection")
+    settings = connections.resolve(conn) if conn else connections.require_enabled()
     listing = listing_resolver.get_listing(item.name)
     if not listing:
         return  # gate already checked is_enabled, but stay defensive
@@ -377,11 +391,11 @@ def _push_product_unlocked(item):
     canonical = _product_canonical(item, variants, settings, listing)
     fp = fingerprint.fingerprint(canonical)
 
-    entity = entities.get_by_erpnext("product", "Item", item.name)
+    entity = entities.get_by_erpnext("product", "Item", item.name, connection=settings)
     if entity and entity.erpnext_fingerprint == fp:
         return  # unchanged since our own last push -- avoid spamming the API
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(settings)
     product_input = _product_set_input(item, variants, settings, listing, client)
 
     identifier = None
@@ -585,7 +599,7 @@ def _push_product_unlocked(item):
 
     entities.save(
         entity or entities.get_or_new(
-            "product", "Item", item.name, product_id),
+            "product", "Item", item.name, product_id, connection=settings),
         external_id=product_id,
         erpnext_doctype="Item",
         erpnext_name=item.name,
@@ -624,7 +638,7 @@ def _clear_stale_locks(max_age_seconds=300):
         frappe.logger().info(f"Cleared {removed} stale document lock(s)")
 
 
-def push_changed_items_only():
+def push_changed_items_only(connection=None):
     """
     Hourly reconciliation: push every template with an enabled Listing.
 
@@ -639,14 +653,21 @@ def push_changed_items_only():
     """
     import time
 
-    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+    # Once per enabled store. Called from the scheduler with no argument, so
+    # without the fan-out this pushed every store's listings under whichever
+    # store happened to be enabled -- and the 240s budget below was shared
+    # across all of them, so the last store in the list never got a turn.
+    if connection is None:
+        connections.for_each("hourly product push", push_changed_items_only)
         return
+
+    connection = connections.resolve(connection)
 
     _clear_stale_locks()
 
     sync_items = frappe.get_all(
         "Shopify Product Listing",
-        filters={"is_enabled": 1},
+        filters=owned_by("Shopify Product Listing", connection.name, {"is_enabled": 1}),
         pluck="item",
     )
     # Time-box under the RQ 300s job timeout: each push commits its own
@@ -662,6 +683,9 @@ def push_changed_items_only():
             stopped_early = True
             break
         try:
+            # push_item's second parameter is a status filter, not a store.
+            # The Listings were already narrowed to this connection above, so
+            # the items in this loop are this store's by construction.
             push_item(code)
             pushed += 1
         except Exception:

@@ -21,8 +21,14 @@ on every write so the two never drift.
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access_to_record
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify.shopify.product.pricing import _price_rate, _variant_price
 from alaiy_os_connector_shopify.shopify.product.media import _item_images, _absolute_file_url
+
+from alaiy_os_connector_shopify import connections
 
 
 @frappe.whitelist()
@@ -32,6 +38,29 @@ def item_without_listing_query(doctype, txt, searchfield, start, page_len, filte
     (never variants) that don't already have a Shopify Product Listing -- so
     the picker can't offer a variant or an already-listed product (both of
     which would fail on save)."""
+    # The picker offers Items to link, so it must only offer this store's --
+    # otherwise typing one letter into the field lists every other seller's
+    # product names and codes back to the caller.
+    #
+    # "This store's" is deliberately wider than "carries this connection". The
+    # point of the picker is Items not yet listed, and an Item created locally
+    # carries no connection at all -- filtering on equality alone would empty
+    # the picker on every site. So it offers this store's Shopify-linked Items
+    # plus every unattributed local one, and excludes only Items that belong
+    # to a different store.
+    #
+    # A store has to be resolved for any of that to hold. `resolve_optional_name`
+    # returns None once the bench has several enabled -- exactly the case this
+    # scoping exists for -- and the `%(store)s IS NULL` branch below then
+    # matched every Item on the bench, so the picker listed other sellers'
+    # codes and names back to whoever opened it. An unresolvable store is now
+    # an empty picker: offering nothing is a visible, harmless bug, offering
+    # everyone's catalogue is a leak.
+    from alaiy_os_connector_shopify import connections
+
+    store = connections.resolve_optional_name()
+    if not store:
+        return []
     like = f"%{txt}%"
     return frappe.db.sql(
         """
@@ -41,11 +70,14 @@ def item_without_listing_query(doctype, txt, searchfield, start, page_len, filte
           AND NOT EXISTS (
               SELECT 1 FROM `tabShopify Product Listing` l WHERE l.item = i.name
           )
+          AND (i.sh_shopify_connection IS NULL
+               OR i.sh_shopify_connection = ''
+               OR i.sh_shopify_connection = %(store)s)
           AND (i.name LIKE %(txt)s OR i.item_name LIKE %(txt)s)
         ORDER BY i.modified DESC
         LIMIT %(start)s, %(page_len)s
         """,
-        {"txt": like, "start": start, "page_len": page_len},
+        {"txt": like, "start": start, "page_len": page_len, "store": store},
     )
 
 
@@ -177,30 +209,82 @@ def variant_price(listing, variant_code: str, settings):
 # Listing-based lookups, with the Item as fallback for any row that hasn't
 # been dual-written to yet.
 
-def item_by_variant_id(variant_id: str):
+def item_by_variant_id(variant_id: str, connection):
     """Shopify variant id -> the Alaiy OS variant Item code, via the Listing
     Variant row. Falls back to the Item-side lookup if the Listing doesn't
     have it (e.g. a row that hasn't been dual-written to). None if neither
-    has it."""
+    has it.
+
+    `connection` narrows both lookups to one store. A Shopify variant id is
+    only unique inside one shop, so without it a second seller importing the
+    same catalogue resolves to the first seller's Item.
+
+    Required rather than defaulted, now that every caller threads one. The
+    default was the dangerous part: forgetting it did not fail, it returned
+    another tenant's Item, and the caller had no way to tell that from a
+    correct answer. A missing argument is a TypeError at the call site, which
+    is the loudest this can be made. Passing None is still allowed and still
+    means bench-wide -- it just has to be written down deliberately."""
     if not variant_id:
         return None
-    row_parent = frappe.db.get_value(
-        "Shopify Listing Variant", {"sh_shopify_variant_id": variant_id}, "item_variant")
+    # The Listing Variant row is a child table, so the store is recorded on
+    # its parent Listing rather than on the row itself.
+    if connection is not None:
+        row_parent = _variant_row_by_store(variant_id, connection)
+    else:
+        row_parent = frappe.db.get_value(
+            "Shopify Listing Variant",
+            {"sh_shopify_variant_id": variant_id}, "item_variant")
     if row_parent:
         return row_parent
-    return frappe.db.get_value("Item", {"sh_shopify_variant_id": variant_id}, "name")
+    return frappe.db.get_value(
+        "Item",
+        owned_by("Item", connection, {"sh_shopify_variant_id": variant_id}),
+        "name")
 
 
-def template_by_product_id(product_id: str):
+def _variant_row_by_store(variant_id: str, connection):
+    """
+    The variant Item code for a Shopify variant id, within one store.
+
+    A Listing Variant is a child row, so it carries no store of its own -- the
+    Listing that owns it does. One join answers that; the obvious alternative,
+    collecting the store's Listing names and passing them as `parent in [...]`,
+    runs a second query on a path that is hit once per variant during an
+    import, and degenerates to `parent IN ()` for a store with no Listings yet
+    -- which is exactly the state a seller is in on their first import.
+    """
+    rows = frappe.db.sql(
+        """
+        SELECT v.item_variant
+        FROM `tabShopify Listing Variant` v
+        JOIN `tabShopify Product Listing` l ON l.name = v.parent
+        WHERE v.sh_shopify_variant_id = %s AND l.connection = %s
+        LIMIT 1
+        """,
+        (variant_id, getattr(connection, "name", connection)),
+    )
+    return rows[0][0] if rows else None
+
+
+def template_by_product_id(product_id: str, connection):
     """Shopify product id -> the Alaiy OS template Item code, via the Listing.
-    Falls back to the Item-side lookup the same way."""
+    Falls back to the Item-side lookup the same way. `connection` narrows both
+    to one store, and is required, for the same reasons as
+    item_by_variant_id."""
     if not product_id:
         return None
     listing_item = frappe.db.get_value(
-        "Shopify Product Listing", {"sh_shopify_product_id": product_id}, "item")
+        "Shopify Product Listing",
+        owned_by("Shopify Product Listing", connection,
+                 {"sh_shopify_product_id": product_id}),
+        "item")
     if listing_item:
         return listing_item
-    return frappe.db.get_value("Item", {"sh_shopify_product_id": product_id}, "name")
+    return frappe.db.get_value(
+        "Item",
+        owned_by("Item", connection, {"sh_shopify_product_id": product_id}),
+        "name")
 
 
 def set_product_id(template_name: str, product_id):
@@ -290,7 +374,7 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     tmpl = frappe.db.get_value(
         "Item", template_name,
         ["name", "item_name", "description", "has_variants", "image",
-         "sh_shopify_product_id", "sh_shopify_status"],
+         "sh_shopify_product_id", "sh_shopify_status", "sh_shopify_connection"],
         as_dict=True,
     )
     if not tmpl:
@@ -298,6 +382,11 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
 
     listing = frappe.new_doc("Shopify Product Listing")
     listing.item = tmpl.name
+    # Copied from the Item, not resolved independently -- the Listing has to
+    # agree with the Item it was built from, and every owned_by("Shopify
+    # Product Listing", ...) lookup elsewhere in this connector depends on
+    # this being set, not left blank.
+    listing.connection = tmpl.sh_shopify_connection or None
     listing.is_enabled = 1 if default_enabled else 0
     listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
     # sh_shopify_product_id is a real, independently-writable field (not a
@@ -318,7 +407,7 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
         # listing_price is only ever read for a simple product (variant_price()'s
         # override chain); a template's own price never applies, so there's
         # nothing meaningful to prefill for one.
-        settings = frappe.get_single("Shopify Connector Settings")
+        settings = connections.resolve(tmpl.sh_shopify_connection) if tmpl.sh_shopify_connection else connections.require_enabled()
         price = _variant_price(template_name, settings)
         if price is not None:
             listing.listing_price = price
@@ -461,7 +550,8 @@ def fill_children_from_item(listing):
         (row.item_variant or "").strip(): row
         for row in (listing.variants or []) if row.item_variant
     }
-    settings = frappe.get_single("Shopify Connector Settings")
+    conn = listing.get("connection")
+    settings = connections.resolve(conn) if conn else connections.require_enabled()
     for v in _template_variant_items(tmpl.name, tmpl.has_variants):
         existing = rows_by_variant.get((v.name or "").strip())
         if existing is None:
@@ -561,13 +651,18 @@ def effective_values(listing_name: str) -> dict:
     anything into the fields -- filling them would freeze the value and stop it
     tracking a later change to the Item.
     """
+    # Resolves against the owning store's settings (price list, defaults), so
+    # the store has to be the caller's.
+    require_access_to_record("Shopify Product Listing", listing_name)
+
     if not frappe.db.exists("Shopify Product Listing", listing_name):
         return {}
     listing = frappe.get_doc("Shopify Product Listing", listing_name)
     if not listing.item or not frappe.db.exists("Item", listing.item):
         return {}
     item = frappe.get_doc("Item", listing.item)
-    settings = frappe.get_single("Shopify Connector Settings")
+    conn = listing.get("connection")
+    settings = connections.resolve(conn) if conn else connections.require_enabled()
     seo = effective_seo(listing, item)
     return {
         "title": effective_title(listing, item),

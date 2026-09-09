@@ -12,17 +12,41 @@ import frappe
 
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
+from alaiy_os_connector_shopify import connections
 
-def _connector_enabled():
-    """None of the enqueue call sites below ever checked this -- confirmed
-    live: disabling Shopify Connector Settings.is_enabled did NOT stop
-    on_listing_trash/on_listing_update from still enqueuing a real push/
-    archive against the live store, since neither function read this field
-    at all. A bulk local deletion (e.g. wiping the catalogue for a clean
-    re-import) with the connector "disabled" would otherwise still archive
-    the real Shopify catalogue underneath it. Checked once, used at the top
-    of every function in this module that can enqueue outbound work."""
-    return bool(frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"))
+
+def _connector_enabled(doc=None):
+    """Is THIS Listing's store switched on for the connector.
+
+    Confirmed live: disabling Shopify Connector Settings.is_enabled did NOT
+    stop on_listing_trash/on_listing_update from still enqueuing a real
+    push/archive against the live store, since neither function read this
+    field at all. A bulk local deletion (e.g. wiping the catalogue for a
+    clean re-import) with the connector "disabled" would otherwise still
+    archive the real Shopify catalogue underneath it. Checked once, used at
+    the top of every function in this module that can enqueue outbound
+    work.
+
+    Reads the store off the Listing itself, not off "the" enabled store --
+    that stopped naming a single answer once a bench can enable more than
+    one. `doc=None` falls back to the single-enabled-store check, matching
+    this connector's pre-multi-store behaviour exactly.
+
+    A Listing created before that field existed carries no store, and the
+    fallback has to answer for it. `enabled_connection` cannot on a bench with
+    several enabled, where it returns None and this gate reads that as
+    "switched off" -- every pre-backfill Listing then stops pushing without
+    saying so. The Listing's own Item is asked first, since an Item that has
+    been through an import or a push carries the store the Listing is missing;
+    only when that is blank too is there genuinely nothing to go on, and then
+    nothing is pushed rather than pushed at a guessed store."""
+    if doc is None:
+        return connections.enabled_connection() is not None
+    if doc.get("connection"):
+        return True
+    if doc.get("item") and frappe.db.get_value("Item", doc.item, "sh_shopify_connection"):
+        return True
+    return connections.enabled_connection() is not None
 
 
 # ── Shopify Product Listing doc_events ───────────────────────────────────────
@@ -38,7 +62,7 @@ def on_listing_update(doc, method=None):
         # Provisioning insert (backfill / inbound import) -- data mirrored
         # from an existing Item, pushing it back would be a pointless echo.
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if doc.is_enabled:
         frappe.enqueue(
@@ -57,7 +81,7 @@ def on_listing_update(doc, method=None):
 def on_listing_trash(doc, method=None):
     """Deleting the Listing takes the product off Shopify (archive: hidden,
     order history intact), same terminal state as unchecking then removing."""
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if doc.sh_shopify_product_id:
         frappe.enqueue(

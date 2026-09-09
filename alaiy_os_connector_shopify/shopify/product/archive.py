@@ -9,6 +9,8 @@ from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClie
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_UPDATE_MUTATION
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
+from alaiy_os_connector_shopify import connections
+
 LOCK_TIMEOUT_SECONDS = 30
 
 
@@ -38,7 +40,8 @@ def archive_item(item_code: str):
 
     try:
         item = frappe.get_doc("Item", item.name)
-        client = ShopifyGraphQLClient()
+        conn = item.get("sh_shopify_connection")
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
 
         data = client.execute(_PRODUCT_UPDATE_MUTATION, {
             "input": {
@@ -56,7 +59,7 @@ def archive_item(item_code: str):
             # Clear fingerprint on successful archive so a subsequent push_item
             # (when re-enabled or unarchived) detects the status change and pushes.
             from alaiy_os_connector_shopify.shopify.sync_engine import entities
-            entity = entities.get_by_erpnext("product", "Item", item.name)
+            entity = entities.get_by_erpnext("product", "Item", item.name, connection=conn)
             if entity:
                 entity.erpnext_fingerprint = None
                 entity.save(ignore_permissions=True)

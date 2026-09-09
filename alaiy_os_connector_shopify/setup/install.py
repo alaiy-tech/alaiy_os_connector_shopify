@@ -11,28 +11,13 @@ def sync_connector_registry():
     but custom fields are ensured on every migrate (idempotent) so a newly
     added field lands on sites that already had the connector enabled.
     """
-    _fix_settings_as_single()
     setup_custom_fields()
     _unlock_disabled_field_on_variants()
-    _backfill_singles_defaults("Shopify Connector Settings", [
-        "sh_token_refresh_interval",
-        "sh_auto_sales_invoice", "sh_invoice_trigger",
-        # Confirmed live: never backfilled on a site whose Settings singleton
-        # predated these fields -- read back as 0, not None, so status.py's
-        # own _selected() safeguard (written for the None case) didn't catch
-        # it, and every export was silently blocked regardless of status.
-        "sh_import_status_active", "sh_import_status_draft", "sh_import_status_archived",
-        "sh_export_status_active", "sh_export_status_draft", "sh_export_status_archived",
-    ])
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_description")
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_vendor")
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_product_type")
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_push_images")
     _ensure_list_view_column("Sales Order", "sh_shopify_order_name", "Shopify Order #")
     _ensure_list_view_column("Sales Order", "sh_fulfillment_status", "Shopify Fulfillment Status")
     _ensure_list_view_column("Sales Order", "sh_financial_status", "Shopify Financial Status")
+    _ensure_list_view_column("Sales Order", "sh_risk_level", "Shopify Risk")
     _ensure_list_view_column("Delivery Note", "sh_delivery_status", "Shopify Delivery Status")
-    _drop_orphaned_singles_value("Shopify Connector Settings", "sh_api_version")
 
     if not frappe.db.exists("DocType", "OS Connector Registry"):
         return
@@ -86,57 +71,6 @@ def _update_alaiy_os_sidebar():
             title="Shopify connector: sidebar update failed",
             message=frappe.get_traceback(),
         )
-
-
-def _fix_settings_as_single():
-    frappe.db.sql(
-        "UPDATE `tabDocType` SET issingle=1 WHERE name='Shopify Connector Settings' AND issingle=0"
-    )
-    frappe.db.commit()
-
-
-def _backfill_singles_defaults(doctype, fieldnames):
-    """
-    A field's `default` in its DocType/Custom Field JSON only applies when a
-    NEW document is created. For a Single doctype's one pre-existing row,
-    adding a field with a default later does not retroactively populate it --
-    it silently reads back empty forever unless the admin happens to open
-    and save the form. Backfill it here instead, once, idempotently.
-
-    Checks row EXISTENCE in tabSingles directly rather than via
-    get_single_value()/the ORM -- for a Check field, "never set" and
-    "explicitly set to 0" both read back as plain 0, indistinguishable by
-    value alone. Only an actual missing row means "never set".
-    """
-    meta = frappe.get_meta(doctype)
-    for fieldname in fieldnames:
-        already_set = frappe.db.sql(
-            "SELECT 1 FROM `tabSingles` WHERE doctype=%s AND field=%s LIMIT 1",
-            (doctype, fieldname),
-        )
-        if already_set:
-            continue
-        field = meta.get_field(fieldname)
-        if not field or field.default in (None, ""):
-            continue
-        frappe.db.set_single_value(doctype, fieldname, field.default)
-    frappe.db.commit()
-
-
-def _drop_orphaned_singles_value(doctype, fieldname):
-    """
-    Removing a field from a DocType's JSON doesn't clean up its old stored
-    value on a site that already had one -- it just becomes an orphaned,
-    invisible row in tabSingles. Delete it explicitly (e.g. sh_api_version,
-    removed in favor of a hardcoded SHOPIFY_API_VERSION constant -- it was
-    merchant-editable, which meant a stale/wrong value could silently break
-    every API call without any code change to point to).
-    """
-    frappe.db.sql(
-        "DELETE FROM `tabSingles` WHERE doctype=%s AND field=%s",
-        (doctype, fieldname),
-    )
-    frappe.db.commit()
 
 
 def _ensure_list_view_column(doctype, fieldname, label):
@@ -343,6 +277,16 @@ def setup_custom_fields():
             "read_only": 1,
             "insert_after": "sh_requires_shipping",
         },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_inventory_item_id",
+            "description": "Which Shopify store this item belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
+        },
     ]
     sales_order_fields = [
         {
@@ -376,10 +320,43 @@ def setup_custom_fields():
             "insert_after": "sh_financial_status",
         },
         {
+            "fieldname": "sh_risk_recommendation",
+            "label": "Shopify Risk Recommendation",
+            "fieldtype": "Select",
+            "options": "\nNONE\nACCEPT\nINVESTIGATE\nCANCEL",
+            "read_only": 1,
+            "in_standard_filter": 1,
+            "insert_after": "sh_fulfillment_status",
+            "description": "Shopify's own recommended action for this order.",
+        },
+        {
+            "fieldname": "sh_risk_level",
+            "label": "Shopify Risk",
+            "fieldtype": "Select",
+            "options": "\nPENDING\nNONE\nLOW\nMEDIUM\nHIGH",
+            "read_only": 1,
+            # On the list view because a HIGH-risk order has to be visible
+            # before someone opens it -- the point of the flag is to stop a
+            # fraudulent order shipping, which happens from the list.
+            "in_list_view": 1,
+            "in_standard_filter": 1,
+            "insert_after": "sh_risk_recommendation",
+            "description": "Shopify's fraud analysis. The worst level across all assessing providers.",
+        },
+        {
+            "fieldname": "sh_risk_detail",
+            "label": "Shopify Risk Detail",
+            "fieldtype": "Small Text",
+            "read_only": 1,
+            "insert_after": "sh_risk_level",
+            "depends_on": "eval:doc.sh_risk_level && doc.sh_risk_level != 'NONE'",
+            "description": "Per-provider risk level and the facts behind it.",
+        },
+        {
             "fieldname": "sh_shopify_notes",
             "label": "Shopify Notes",
             "fieldtype": "Small Text",
-            "insert_after": "sh_fulfillment_status",
+            "insert_after": "sh_risk_detail",
             "description": "Synced both directions with Shopify's order note field.",
             # Orders here are typically submitted immediately -- without
             # this, the field is silently read-only the moment the Sales
@@ -402,6 +379,16 @@ def setup_custom_fields():
             "insert_after": "sh_shopify_order_tags",
             "description": "The shipping method the customer chose, straight from Shopify's shippingLine.title (e.g. \"Free Standard Shipping\", \"2nd air\"). Stored as its own field so it stays filterable/reportable -- the shipping COST rides separately on the Sales Taxes and Charges table, and a free-shipping order carries no charge row at all yet still has a real method name here.",
         },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_order_tags",
+            "description": "Which Shopify store this order belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
+        },
     ]
     sales_order_item_fields = [
         {
@@ -412,6 +399,16 @@ def setup_custom_fields():
             "insert_after": "item_code",
             "description": "Shopify variant ID for this line item. Used to match items when syncing order modifications from Shopify.",
         },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_variant_id",
+            "description": "Which Shopify store this order line belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
+        },
     ]
     customer_fields = [
         {
@@ -420,6 +417,16 @@ def setup_custom_fields():
             "fieldtype": "Data",
             "search_index": 1,
             "insert_after": "customer_name",
+        },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_customer_id",
+            "description": "Which Shopify store this customer belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
         },
     ]
     delivery_note_fields = [
@@ -480,6 +487,16 @@ def setup_custom_fields():
             "description": "Set when this Sales Return was auto-created from a Shopify refund event. Prevents the same refund from ever creating a duplicate return.",
             "insert_after": "sh_delivery_status",
         },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_delivery_status",
+            "description": "Which Shopify store this delivery note belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
+        },
     ]
     sales_invoice_fields = [
         {
@@ -490,6 +507,16 @@ def setup_custom_fields():
             "read_only": 1,
             "description": "Set when this Credit Note was auto-created from a Shopify refund event. Prevents the same refund from ever creating a duplicate credit note.",
             "insert_after": "customer",
+        },
+        {
+            "fieldname": "sh_shopify_connection",
+            "label": "Shopify Connection",
+            "fieldtype": "Link",
+            "options": "Shopify Connection",
+            "search_index": 1,
+            "read_only": 1,
+            "insert_after": "sh_shopify_refund_id",
+            "description": "Which Shopify store this credit note belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
         },
     ]
 

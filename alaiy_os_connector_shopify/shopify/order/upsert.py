@@ -9,7 +9,7 @@ from frappe.utils import flt
 from alaiy_os_connector_shopify.shopify.order.locking import _acquire_order_lock, _release_order_lock
 from alaiy_os_connector_shopify.shopify.order.customer import _get_or_create_customer
 from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_warehouse, _resolve_warehouse_for_item
-from alaiy_os_connector_shopify.shopify.order.utils import _resolve_item_code
+from alaiy_os_connector_shopify.shopify.order.utils import _format_risk_detail, _resolve_item_code
 from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
     _sync_fulfillments,
     _create_delivery_note_if_needed,
@@ -17,8 +17,11 @@ from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
 )
 from alaiy_os_connector_shopify.shopify.order.tax import _append_tax_lines
 
+from alaiy_os_connector_shopify import connections
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 
-def get_active_sales_order(order_id: str):
+
+def get_active_sales_order(order_id: str, connection=None):
     """
     Look up the Sales Order for a Shopify order ID, preferring the latest
     non-cancelled document. Once _sync_order_line_items starts amending
@@ -26,10 +29,20 @@ def get_active_sales_order(order_id: str):
     amended replacement both carry the same sh_shopify_order_id -- a plain
     frappe.db.get_value with no docstatus/order_by picks whichever the DB
     happens to return first, which can silently resurrect the cancelled one.
+
+    `connection` narrows the search to one store. A Shopify order id is only
+    unique inside one shop, so two sellers both have an order 1001: without
+    it, the second seller's import finds the first seller's Sales Order,
+    treats their own order as already imported, and never creates it.
+
+    Optional, and None searches every store exactly as before -- this is also
+    the dedupe the importer relies on, so it has to keep answering for callers
+    that have not been given a connection to pass yet.
     """
     return frappe.db.get_value(
         "Sales Order",
-        {"sh_shopify_order_id": order_id, "docstatus": ["!=", 2]},
+        owned_by("Sales Order", connection,
+                 {"sh_shopify_order_id": order_id, "docstatus": ["!=", 2]}),
         "name",
         order_by="creation desc",
     )
@@ -71,24 +84,27 @@ def _merge_duplicate_item_rows(line_items: list) -> list:
     return [merged[key] for key in order]
 
 
-def _upsert_order(order):
-    """Acquires this order's lock, then defers to _upsert_order_unlocked."""
+def _upsert_order(order, connection=None):
+    """Acquires this order's lock, then defers to _upsert_order_unlocked.
+
+    `connection` scopes the lock to one store, so two sellers' unrelated
+    orders sharing an id do not wait on each other."""
     order_id = str(order.get("id", ""))
     if not order_id:
         return False
-    if not _acquire_order_lock(order_id):
+    if not _acquire_order_lock(order_id, connection=connection):
         frappe.log_error(
             title=f"Shopify order {order_id}: upsert lock timed out",
             message="Another process held this order's lock for 30s+ -- skipped to avoid a duplicate.",
         )
         return False
     try:
-        return _upsert_order_unlocked(order, order_id)
+        return _upsert_order_unlocked(order, order_id, connection)
     finally:
-        _release_order_lock(order_id)
+        _release_order_lock(order_id, connection)
 
 
-def _attribute_fulfilled_locations(order):
+def _attribute_fulfilled_locations(order, connection=None):
     """Record where each fulfilled line shipped from, before routing runs.
 
     Same write _record_fulfilled_from_location performs when a Delivery Note
@@ -111,9 +127,9 @@ def _attribute_fulfilled_locations(order):
                     "sku": li.get("sku"),
                     "variant_id": li.get("variant_id"),
                     "title": li.get("title") or li.get("name"),
-                })
+                }, connection)
                 if item_code:
-                    _record_fulfilled_from_location(item_code, location_id)
+                    _record_fulfilled_from_location(item_code, location_id, connection)
             except Exception:
                 frappe.log_error(
                     title="Shopify: could not attribute a fulfilled line's location",
@@ -121,16 +137,20 @@ def _attribute_fulfilled_locations(order):
                 )
 
 
-def _upsert_order_unlocked(order, order_id):
+def _upsert_order_unlocked(order, order_id, connection=None):
     """Returns True if a new Sales Order was created, False if skipped."""
-    if get_active_sales_order(order_id):
+    # Resolved before the dedupe, not after: the dedupe has to ask "does THIS
+    # store already have this order", and a Shopify order id is only unique
+    # inside one shop.
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
+
+    if get_active_sales_order(order_id, settings.name):
         return False  # already processed
 
-    settings = frappe.get_single("Shopify Connector Settings")
     # A missing default Address Template makes Alaiy OS throw while rendering the
     # customer's address during Sales Order validate -- ensure one exists first.
     from alaiy_os_connector_shopify.shopify.order.address import ensure_default_address_template
-    ensure_default_address_template()
+    ensure_default_address_template(settings.name)
 
     # Real Shopify order date, not the date this pull/webhook happens to run
     # on -- computed here (not just on the parent so.transaction_date below)
@@ -150,11 +170,11 @@ def _upsert_order_unlocked(order, order_id):
 
     line_items = []
     for li in order.get("line_items", []):
-        item_code = _resolve_item_code(li)
+        item_code = _resolve_item_code(li, settings.name)
         if not item_code:
             # No catalog match -- keep it as a custom line item rather than
             # silently dropping it (Shopify allows one-off/custom products).
-            custom = build_custom_line_item(li, warehouse, delivery_date=order_date)
+            custom = build_custom_line_item(li, warehouse, delivery_date=order_date, connection=settings.name)
             if custom:
                 line_items.append(custom)
             continue
@@ -245,11 +265,22 @@ def _upsert_order_unlocked(order, order_id):
     # is installed, so a site running Shopify + Amazon + Unicommerce can
     # filter/report on Sales Order.sales_channel uniformly.
     so.sales_channel = "Shopify"
+    # Which seller's store this order came from. Every later lookup pairs the
+    # Shopify order id with this, because the id alone is only unique inside
+    # one shop.
+    so.sh_shopify_connection = settings.name
     so.sh_shopify_order_id = order_id
     so.sh_shopify_order_name = order.get("name", "")
     so.sh_financial_status = order.get("financial_status", "")
     so.sh_fulfillment_status = order.get("fulfillment_status", "")
     so.sh_shopify_notes = order.get("note") or ""
+    # Shopify's fraud verdict. Only the pull path carries it -- the REST
+    # webhook payload has no risk block at all -- so leave whatever a prior
+    # sync stored rather than blanking a real HIGH on a webhook update.
+    if "risk_level" in order:
+        so.sh_risk_level = order.get("risk_level") or ""
+        so.sh_risk_recommendation = order.get("risk_recommendation") or ""
+        so.sh_risk_detail = _format_risk_detail(order.get("risk_assessments") or [])
     # The method NAME, independent of what it cost. The shipping charge
     # itself rides on the Sales Taxes and Charges table (charges.py), which
     # skips the row entirely when shipping is free -- so that description
@@ -266,7 +297,7 @@ def _upsert_order_unlocked(order, order_id):
     from alaiy_os_connector_shopify.shopify.order.charges import (
         append_shipping_charge, apply_order_discount,
     )
-    addr = sync_order_address(order, customer_name)
+    addr = sync_order_address(order, customer_name, settings.name)
     if addr:
         so.customer_address = addr
         so.shipping_address_name = addr
@@ -283,6 +314,16 @@ def _upsert_order_unlocked(order, order_id):
     so.flags.ignore_permissions = True
     so.insert()
 
+    # so.grand_total only exists once ERPNext has calculated it, which
+    # insert() just did -- correct any gap against Shopify's own total
+    # before submit locks the tax table. Rare in practice (most orders
+    # land exact), so this is a second save only on the orders that
+    # actually need one, not every order.
+    from alaiy_os_connector_shopify.shopify.order.tax import apply_rounding_adjustment
+    if apply_rounding_adjustment(so, order, settings):
+        so.flags.ignore_permissions = True
+        so.save()
+
     # Draft orders from Shopify should stay as draft in Alaiy OS until customer completes checkout.
     # Real orders are submitted immediately and ready for fulfillment.
     # Draft orders have Order # like #D9, #D10; real orders are numeric like #1015
@@ -298,7 +339,7 @@ def _upsert_order_unlocked(order, order_id):
         # learned its location yet, and raised a decision request for a line
         # that would have routed itself moments later. The daily sweep closed
         # them afterwards, but the order sat unrouted until it ran.
-        _attribute_fulfilled_locations(order)
+        _attribute_fulfilled_locations(order, settings.name)
         so.submit()
 
     frappe.db.commit()
@@ -327,12 +368,13 @@ def _upsert_order_unlocked(order, order_id):
             # order_id is on the standalone fulfillments/* webhook payload but
             # not on a fulfillment nested inside an order -- _sync_tracking
             # needs it for its no-fulfillment-id fallback.
-            _sync_tracking({**fulfillment, "order_id": order_id})
+            _sync_tracking({**fulfillment, "order_id": order_id}, settings.name)
 
     # Orders often arrive already paid (and sometimes already fulfilled) at
     # create time -- invoice right away if the trigger is met.
     if not is_draft_order:
         from alaiy_os_connector_shopify.shopify.order.invoice import create_sales_invoice_if_paid
         create_sales_invoice_if_paid(
-            so.name, order.get("financial_status", ""), order.get("fulfillment_status", ""))
+            so.name, order.get("financial_status", ""), order.get("fulfillment_status", ""),
+            connection=settings.name)
     return True
