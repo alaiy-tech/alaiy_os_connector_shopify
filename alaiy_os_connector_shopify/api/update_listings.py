@@ -181,7 +181,7 @@ def _apply_product_fields(item, listing, row, report):
         new_tags = sorted(t.strip() for t in tags_value.split(",") if t.strip())
         old_tags = sorted(r.shopify_tag for r in (item.get("sh_shopify_tags") or []))
         if new_tags != old_tags:
-            _set_item_tags(item, new_tags)
+            _set_item_tags(item, new_tags, connection=item.get("sh_shopify_connection"))
             changes.append(f"{item.name}.tags: {old_tags!r} -> {new_tags!r}")
 
     title = (row.get("title") or "").strip()

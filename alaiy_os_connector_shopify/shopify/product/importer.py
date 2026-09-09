@@ -723,7 +723,7 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     item = frappe.get_doc("Item", item_code)
     _apply_variant_physical(item, variant, product_meta)
     if product_meta:
-        _apply_product_meta(item, product_meta)
+        _apply_product_meta(item, product_meta, connection=settings)
     _dedupe_item_uoms(item)
     location_levels = _variant_location_levels(variant)
     # product_location is the fallback for a variant holding no stock
@@ -886,6 +886,7 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
     v_item.include_item_in_buying = 1
     v_item.sh_shopify_product_id = product_id
     v_item.sh_shopify_variant_id = v_id
+    v_item.sh_shopify_connection = getattr(settings, "name", settings)
     template = frappe.get_doc("Item", template_name)
     template_attrs = [r.attribute for r in (template.attributes or [])]
     selected_options = variant.get("selectedOptions")
@@ -928,7 +929,7 @@ def _apply_existing_template_content(template_name: str, product_meta: dict, ima
     (skip_abstracted) they must NOT overwrite the Item image -- the caller
     routes them to the Listing instead."""
     template = frappe.get_doc("Item", template_name)
-    _apply_product_meta(template, product_meta)
+    _apply_product_meta(template, product_meta, connection=settings)
     _dedupe_item_uoms(template)
     template.flags.from_shopify_sync = True
     template.flags.ignore_permissions = True
@@ -966,8 +967,16 @@ def _import_simple_product(
     sku = (variant.get("sku") or "").strip()
     if not sku:
         sku = f"SH-{product_id}"  # Fallback to Shopify ID if no SKU
+    # Namespaced per store -- the default store's SKUs stay bare (see
+    # item_code_for), every other store's take a prefix so two sellers
+    # stocking the same SKU never collide on Item's primary key.
+    sku = item_code_for(settings, sku)
 
-    # Check if Item with this SKU already exists
+    # Check if Item with this SKU already exists. Namespaced, so this only
+    # ever matches another connector's pre-existing Item (Cloudstore etc.)
+    # for the default store -- no other connector is namespace-aware, so a
+    # namespaced store's variants always fall through to a fresh create
+    # instead of reusing a bare-SKU Item someone else made.
     if frappe.db.exists("Item", sku):
         # Whether this Item is already linked to Shopify -- Listing's
         # copy first (owning template if it's a variant), Item as fallback.
@@ -986,15 +995,17 @@ def _import_simple_product(
             # belongs on the template, not this leaf variant.
             if variant_of:
                 frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
+                frappe.db.set_value("Item", variant_of, "sh_shopify_connection", getattr(settings, "name", settings))
                 listing_resolver.set_product_id(variant_of, product_id)
                 if product_meta:
                     _apply_existing_template_content(variant_of, product_meta, images, settings)
-                entity = entities.get_or_new("product", "Item", variant_of, product_id)
+                entity = entities.get_or_new("product", "Item", variant_of, product_id, connection=settings)
                 entities.save(entity, external_id=product_id, erpnext_name=variant_of)
 
             # Link the item itself
             frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
+            frappe.db.set_value("Item", sku, "sh_shopify_connection", getattr(settings, "name", settings))
             if not variant_of:
                 listing_resolver.set_product_id(sku, product_id)
             listing_resolver.set_variant_id(variant_of or sku, sku, variant.get("legacyResourceId"))
@@ -1011,7 +1022,7 @@ def _import_simple_product(
 
             # Save Synced Entity mapping for the simple item if no parent template
             if not variant_of:
-                entity = entities.get_or_new("product", "Item", sku, product_id)
+                entity = entities.get_or_new("product", "Item", sku, product_id, connection=settings)
                 entities.save(entity, external_id=product_id, erpnext_name=sku)
 
             frappe.db.commit()
@@ -1045,6 +1056,10 @@ def _import_simple_product(
     # Link to Shopify
     item.sh_shopify_product_id = product_id
     item.sh_shopify_variant_id = variant.get("legacyResourceId")
+    # Which store this Item belongs to -- without this, a lookup by Shopify
+    # id alone (webhooks, inventory sync, the importer's own re-run) cannot
+    # tell this store's product from another seller's.
+    item.sh_shopify_connection = getattr(settings, "name", settings)
 
     default_warehouse_row = _default_warehouse_row(settings)
     if default_warehouse_row:
@@ -1100,7 +1115,7 @@ def _import_simple_product(
     # this import" apart from "changed" instead of always seeing a blank
     # baseline and treating every product as changed on its first re-check.
     entities.save(
-        entities.get_or_new("product", "Item", item_name, product_id),
+        entities.get_or_new("product", "Item", item_name, product_id, connection=settings),
         erpnext_doctype="Item",
         erpnext_name=item_name,
         external_id=product_id,
@@ -1129,6 +1144,11 @@ def _import_product_with_variants(
         ch for ch in title.lower().replace(" ", "-") if ch.isalnum() or ch == "-"
     ).strip("-")[:60]
     template_name = f"{slug}-{product_id}" if slug else f"sh-{product_id}"
+    # Namespaced per store, same as a simple product's SKU (see
+    # item_code_for). product_id is only unique within its own shop, so two
+    # sellers can each have a product 12345 and land on the identical
+    # template_name here without this.
+    template_name = item_code_for(settings, template_name)
 
     # Check if template already exists -- since template_name is now
     # product_id-suffixed, this can only be true if the exact same
@@ -1185,6 +1205,15 @@ def _import_product_with_variants(
     # empty one -- otherwise the new Shopify template steals the
     # sh_shopify_product_id while the real content stays orphaned on the
     # original template no one links to anymore.
+    # NOTE: matches by the BARE Shopify SKU on purpose -- a non-Shopify
+    # connector (Cloudstore) has never heard of this store's `store::SKU`
+    # namespace, so any Item it already created can only exist under the
+    # bare code. This means cross-connector reuse only ever finds a match
+    # for the default store (item_code_for is a no-op there); a namespaced
+    # store's variants always fall through to a fresh create instead of
+    # reusing another connector's existing Item. Correct for now -- no
+    # other connector is namespace-aware yet -- but worth revisiting if
+    # that changes.
     reused_template_name = None
     for v in variants:
         v_sku = (v.get("sku") or "").strip()
@@ -1216,10 +1245,11 @@ def _import_product_with_variants(
         template = frappe.get_doc("Item", template_name)
         if not template.sh_shopify_product_id:
             frappe.db.set_value("Item", template_name, "sh_shopify_product_id", product_id)
+            frappe.db.set_value("Item", template_name, "sh_shopify_connection", getattr(settings, "name", settings))
             listing_resolver.set_product_id(template_name, product_id)
         if product_meta:
             _apply_existing_template_content(template_name, product_meta, images, settings)
-        entity = entities.get_or_new("product", "Item", template_name, product_id)
+        entity = entities.get_or_new("product", "Item", template_name, product_id, connection=settings)
         entities.save(entity, external_id=product_id, erpnext_name=template_name)
     else:
         # Create template Item
@@ -1243,6 +1273,7 @@ def _import_product_with_variants(
 
         # Link to Shopify
         template.sh_shopify_product_id = product_id
+        template.sh_shopify_connection = getattr(settings, "name", settings)
 
         if product_meta:
             _apply_product_meta(template, product_meta)
@@ -1265,8 +1296,12 @@ def _import_product_with_variants(
     # Create variant Items
     for idx, variant in enumerate(variants):
         sku = (variant.get("sku") or "").strip()
-        if not sku:
-            sku = f"{template_name}-{idx+1}"  # Fallback naming
+        if sku:
+            sku = item_code_for(settings, sku)
+        else:
+            # template_name is already namespaced above, so this fallback
+            # inherits the same store prefix without a second call.
+            sku = f"{template_name}-{idx+1}"
 
         # Check for SKU conflict
         if frappe.db.exists("Item", sku):
@@ -1280,11 +1315,13 @@ def _import_product_with_variants(
                 variant_of = existing_parent_of or template_name
                 frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
                 frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
+                frappe.db.set_value("Item", sku, "sh_shopify_connection", getattr(settings, "name", settings))
                 frappe.db.set_value("Item", sku, "variant_of", variant_of)
                 listing_resolver.set_variant_id(variant_of, sku, variant.get("legacyResourceId"))
 
                 # Also link its parent template to Shopify
                 frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
+                frappe.db.set_value("Item", variant_of, "sh_shopify_connection", getattr(settings, "name", settings))
                 listing_resolver.set_product_id(variant_of, product_id)
 
                 # Auto-linking only ever wrote the Shopify IDs -- pull in
@@ -1294,7 +1331,7 @@ def _import_product_with_variants(
                                                 product_location=product_location)
 
                 # Create Synced Entity pairing for the template/product
-                entity = entities.get_or_new("product", "Item", variant_of, product_id)
+                entity = entities.get_or_new("product", "Item", variant_of, product_id, connection=settings)
                 entities.save(entity, external_id=product_id, erpnext_name=variant_of)
                 continue
             elif existing_id == product_id:
@@ -1342,6 +1379,7 @@ def _import_product_with_variants(
         # Link to Shopify
         variant_item.sh_shopify_product_id = product_id
         variant_item.sh_shopify_variant_id = variant.get("legacyResourceId")
+        variant_item.sh_shopify_connection = getattr(settings, "name", settings)
         _apply_variant_physical(variant_item, variant, product_meta)
 
         default_warehouse_row = _default_warehouse_row(settings)
@@ -1398,7 +1436,7 @@ def _import_product_with_variants(
     # comment: stamping external_fingerprint now avoids a blank baseline
     # making every product look "changed" on the very next import run.
     entities.save(
-        entities.get_or_new("product", "Item", template_name, product_id),
+        entities.get_or_new("product", "Item", template_name, product_id, connection=settings),
         erpnext_doctype="Item",
         erpnext_name=template_name,
         external_id=product_id,
@@ -1409,8 +1447,14 @@ def _import_product_with_variants(
     return True, "created"
 
 
-def _apply_product_meta(item, node: dict):
-    """Apply product meta to Item -- status, tags, category, collections, SEO."""
+def _apply_product_meta(item, node: dict, connection=None):
+    """Apply product meta to Item -- status, tags, category, collections, SEO.
+
+    `connection` scopes the Shopify Tag rows this stamps -- falls back to
+    the Item's own sh_shopify_connection when not given explicitly, which
+    every fresh-create caller has already set on `item` before reaching
+    here.
+    """
     from alaiy_os_connector_shopify.shopify.product import status as status_map
     local_status = status_map.to_local(node.get("status"))
     if local_status:
@@ -1440,7 +1484,7 @@ def _apply_product_meta(item, node: dict):
 
     tags = _normalize_tags(node.get("tags"))
     if tags:
-        _set_item_tags(item, tags)
+        _set_item_tags(item, tags, connection=connection or item.get("sh_shopify_connection"))
     collection_titles = [
         n.get("title") for n in ((node.get("collections") or {}).get("nodes") or [])
         if n.get("title")

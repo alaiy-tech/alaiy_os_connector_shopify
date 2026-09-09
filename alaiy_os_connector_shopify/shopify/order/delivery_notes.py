@@ -70,6 +70,7 @@ def _create_delivery_note_if_needed(so_name):
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
         with _as_administrator():
             dn = make_delivery_note(so_name)
+            dn.sh_shopify_connection = so.sh_shopify_connection
             _force_valid_warehouse(dn)
             # Self-heal, same shape as the invoice's income-account/cost-center
             # fixes: a Shopify item with no incoming stock/valuation rate ever
@@ -137,7 +138,7 @@ def _sync_fulfillments(so_name, fulfillments):
 
 
 
-def _record_fulfilled_from_location(item_code, location_id):
+def _record_fulfilled_from_location(item_code, location_id, connection=None):
     """Set Item.shopify_location from the location that actually shipped it.
 
     The import resolves ownership from where an item HOLDS stock, and leaves
@@ -172,7 +173,9 @@ def _record_fulfilled_from_location(item_code, location_id):
         if frappe.db.get_value("Item", item_code, "shopify_location"):
             return
         location = frappe.db.get_value(
-            "Shopify Location", {"sh_location_id": str(location_id)}, "name")
+            "Shopify Location",
+            owned_by("Shopify Location", connection, {"sh_location_id": str(location_id)}),
+            "name")
         if not location:
             return
         frappe.db.set_value("Item", item_code, "shopify_location", location,
@@ -229,7 +232,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         if not item_code:
             continue
         qty_by_item[item_code] = qty_by_item.get(item_code, 0) + flt(li.get("quantity", 0))
-        _record_fulfilled_from_location(item_code, location_id)
+        _record_fulfilled_from_location(item_code, location_id, so.get("sh_shopify_connection"))
 
     if not qty_by_item:
         frappe.log_error(
@@ -242,6 +245,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
         with _as_administrator():
             dn = make_delivery_note(so.name)
+            dn.sh_shopify_connection = so.sh_shopify_connection
             _force_valid_warehouse(dn, location_id)
 
             # make_delivery_note maps the full remaining quantity per item

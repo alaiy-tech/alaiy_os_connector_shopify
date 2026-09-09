@@ -104,7 +104,7 @@ def _upsert_order(order, connection=None):
         _release_order_lock(order_id, connection)
 
 
-def _attribute_fulfilled_locations(order):
+def _attribute_fulfilled_locations(order, connection=None):
     """Record where each fulfilled line shipped from, before routing runs.
 
     Same write _record_fulfilled_from_location performs when a Delivery Note
@@ -129,7 +129,7 @@ def _attribute_fulfilled_locations(order):
                     "title": li.get("title") or li.get("name"),
                 })
                 if item_code:
-                    _record_fulfilled_from_location(item_code, location_id)
+                    _record_fulfilled_from_location(item_code, location_id, connection)
             except Exception:
                 frappe.log_error(
                     title="Shopify: could not attribute a fulfilled line's location",
@@ -174,7 +174,7 @@ def _upsert_order_unlocked(order, order_id, connection=None):
         if not item_code:
             # No catalog match -- keep it as a custom line item rather than
             # silently dropping it (Shopify allows one-off/custom products).
-            custom = build_custom_line_item(li, warehouse, delivery_date=order_date)
+            custom = build_custom_line_item(li, warehouse, delivery_date=order_date, connection=settings.name)
             if custom:
                 line_items.append(custom)
             continue
@@ -329,7 +329,7 @@ def _upsert_order_unlocked(order, order_id, connection=None):
         # learned its location yet, and raised a decision request for a line
         # that would have routed itself moments later. The daily sweep closed
         # them afterwards, but the order sat unrouted until it ran.
-        _attribute_fulfilled_locations(order)
+        _attribute_fulfilled_locations(order, settings.name)
         so.submit()
 
     frappe.db.commit()

@@ -75,6 +75,7 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillmen
                 # "Due Date cannot be before Posting Date".
                 si.set_posting_time = 1
             si.update_stock = 0
+            si.sh_shopify_connection = settings.name
             _fill_item_accounts(si, settings)
             _ensure_round_off_account(si.company)
             # Mirrors every other webhook-driven save in this connector: mark

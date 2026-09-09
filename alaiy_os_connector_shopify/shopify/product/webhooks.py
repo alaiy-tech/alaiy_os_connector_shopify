@@ -305,7 +305,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
         "tags": [tags] if tags else [],
         "category": {"name": category.get("name") or category.get("full_name")} if category.get("name") or category.get("full_name") else None,
         "status": product.get("status") or "",
-    })
+    }, connection=connection)
 
     # Status: active/draft/archived is a PER-MARKETPLACE concern -- it only
     # ever affects the Shopify LISTING, NEVER the shared Item (disabling the

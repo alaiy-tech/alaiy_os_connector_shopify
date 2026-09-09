@@ -384,7 +384,7 @@ def _push_product_unlocked(item):
     canonical = _product_canonical(item, variants, settings, listing)
     fp = fingerprint.fingerprint(canonical)
 
-    entity = entities.get_by_erpnext("product", "Item", item.name)
+    entity = entities.get_by_erpnext("product", "Item", item.name, connection=settings)
     if entity and entity.erpnext_fingerprint == fp:
         return  # unchanged since our own last push -- avoid spamming the API
 
@@ -592,7 +592,7 @@ def _push_product_unlocked(item):
 
     entities.save(
         entity or entities.get_or_new(
-            "product", "Item", item.name, product_id),
+            "product", "Item", item.name, product_id, connection=settings),
         external_id=product_id,
         erpnext_doctype="Item",
         erpnext_name=item.name,

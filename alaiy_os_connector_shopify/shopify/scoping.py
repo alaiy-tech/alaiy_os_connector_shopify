@@ -118,6 +118,28 @@ def item_code_for(connection, sku: str) -> str:
     return f"{name}::{sku}"
 
 
+def tag_doc_name(connection, tag_name: str) -> str:
+    """
+    The Shopify Tag row name a store's tag maps to.
+
+    Same rule as item_code_for, same reason: tag_name stopped being globally
+    unique the moment a second store could have its own "Sale" tag, and the
+    row's name is that primary key. The default store keeps bare tag names
+    -- every existing install's Item Shopify Tag rows already link to those
+    names, and renaming them out from under every Item that references one
+    is not a migration worth forcing. Only a store added after this exists
+    gets a namespaced name.
+    """
+    if not tag_name:
+        return tag_name
+    name = getattr(connection, "name", connection)
+    if not name or name == DEFAULT_ITEM_CODE_CONNECTION:
+        return tag_name
+    if tag_name.startswith(f"{name}::"):
+        return tag_name
+    return f"{name}::{tag_name}"
+
+
 
 def sku_from_item_code(item_code: str) -> str:
     """The Shopify SKU behind an Item code, prefix removed if it has one."""

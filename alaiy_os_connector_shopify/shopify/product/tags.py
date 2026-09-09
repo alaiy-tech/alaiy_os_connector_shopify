@@ -31,7 +31,7 @@ def _normalize_tags(tags) -> list:
     return result
 
 
-def _set_item_tags(item, tag_names: list):
+def _set_item_tags(item, tag_names: list, connection=None):
     """
     Sets sh_shopify_tags (a Table MultiSelect of Item Shopify Tag rows)
     from a plain list of tag name strings, self-healing any "Shopify Tag"
@@ -39,14 +39,22 @@ def _set_item_tags(item, tag_names: list):
     with a tag never seen before (i.e. before the next "Sync Shopify
     Tags" run catches up) shouldn't fail or silently drop it.
 
-    Shopify Tag is autonamed directly from tag_name (no separate label
-    field) -- a tag containing '<' or '>' (seen live: fashion-catalog
-    filter tags like "Price < 500") crashes Frappe's own name-character
-    validation on insert. Confirmed live: this took down the ENTIRE
-    product's import, not just that one tag, since the exception wasn't
-    caught here. Skip and log the offending tag instead of crashing the
-    whole product over one bad tag.
+    `connection` scopes which store's Shopify Tag row this links to -- two
+    sellers can each have their own "Sale" tag (see tag_doc_name); the
+    child row itself still links by the tag's plain display name via
+    tag_name, not the namespaced doc name, so the picker/label reads the
+    same either way.
+
+    Shopify Tag's name is namespaced per store (tag_doc_name) rather than
+    tag_name directly -- a tag containing '<' or '>' (seen live:
+    fashion-catalog filter tags like "Price < 500") crashes Frappe's own
+    name-character validation on insert regardless. Confirmed live: this
+    took down the ENTIRE product's import, not just that one tag, since the
+    exception wasn't caught here. Skip and log the offending tag instead of
+    crashing the whole product over one bad tag.
     """
+    from alaiy_os_connector_shopify.shopify.scoping import tag_doc_name, owned_by
+
     usable_tags = []
     for tag_name in tag_names:
         if "<" in tag_name or ">" in tag_name:
@@ -56,10 +64,14 @@ def _set_item_tags(item, tag_names: list):
             frappe.logger().warning(
                 f"Shopify: skipping tag with invalid characters: {tag_name!r}")
             continue
-        if not frappe.db.exists("Shopify Tag", tag_name):
-            frappe.get_doc({"doctype": "Shopify Tag", "tag_name": tag_name}).insert(
-                ignore_permissions=True)
-        usable_tags.append(tag_name)
+        doc_name = tag_doc_name(connection, tag_name)
+        if not frappe.db.exists("Shopify Tag", doc_name):
+            frappe.get_doc({
+                "doctype": "Shopify Tag",
+                "tag_name": tag_name,
+                "connection": getattr(connection, "name", connection) or None,
+            }).insert(ignore_permissions=True)
+        usable_tags.append(doc_name)
     item.set("sh_shopify_tags", [{"shopify_tag": t} for t in usable_tags])
 
 
@@ -103,6 +115,7 @@ def sync_shopify_tags(connection=None):
     Shopify's per-page connection limit.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.scoping import tag_doc_name
 
     connection = connections.resolve(connection)
     require_access(connection.name, "write")
@@ -117,17 +130,22 @@ def sync_shopify_tags(connection=None):
                 if not tag_name:
                     continue
                 total += 1
-                # Shopify Tag is autonamed directly from tag_name -- a tag
-                # containing '<'/'>' (seen live: fashion-catalog filter
-                # tags like "Price < 500") fails Frappe's name validation.
-                # Skip just that one tag instead of crashing this entire
-                # paginated sync over one bad value.
+                # Shopify Tag is namespaced per store (tag_doc_name) rather
+                # than tag_name directly -- a tag containing '<'/'>' (seen
+                # live: fashion-catalog filter tags like "Price < 500")
+                # fails Frappe's name validation regardless. Skip just that
+                # one tag instead of crashing this entire paginated sync
+                # over one bad value.
                 if "<" in tag_name or ">" in tag_name:
                     skipped += 1
                     continue
-                if not frappe.db.exists("Shopify Tag", tag_name):
-                    frappe.get_doc({"doctype": "Shopify Tag", "tag_name": tag_name}).insert(
-                        ignore_permissions=True)
+                doc_name = tag_doc_name(connection, tag_name)
+                if not frappe.db.exists("Shopify Tag", doc_name):
+                    frappe.get_doc({
+                        "doctype": "Shopify Tag",
+                        "tag_name": tag_name,
+                        "connection": connection.name,
+                    }).insert(ignore_permissions=True)
                     created += 1
             frappe.db.commit()
     except Exception:

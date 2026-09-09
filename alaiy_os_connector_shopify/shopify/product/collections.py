@@ -708,7 +708,10 @@ def handle_collection_webhook(topic, payload, connection=None):
             return
 
         if topic == "collections/delete":
-            name = frappe.db.get_value("Shopify Collection", {"sh_collection_id": legacy}, "name")
+            name = frappe.db.get_value(
+                "Shopify Collection",
+                owned_by("Shopify Collection", connection, {"sh_collection_id": legacy}),
+                "name")
             if name:
                 doc = frappe.get_doc("Shopify Collection", name)
                 doc.flags.from_shopify_sync = True
