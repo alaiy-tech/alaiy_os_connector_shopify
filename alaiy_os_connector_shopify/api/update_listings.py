@@ -401,7 +401,7 @@ def _run_update_listings(csv_content, user):
 
 
 @frappe.whitelist()
-def trigger_update_listings(file_url):
+def trigger_update_listings(file_url, connection=None):
     """file_url: a private File already uploaded (e.g. via the list view's
     file picker). Enqueued on the long queue -- same size reasoning as the
     export: a whole-site update file has no place running inside one
@@ -410,7 +410,8 @@ def trigger_update_listings(file_url):
     resulting Shopify Sync Log instead."""
     # Applies a whole file of changes to Listings and pushes them, so it is a
     # write against the store before a single row is read.
-    require_access(connections.require_enabled().name, "write")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
+    require_access(settings.name, "write")
 
     file_doc = frappe.get_doc("File", {"file_url": file_url})
     csv_content = file_doc.get_content()

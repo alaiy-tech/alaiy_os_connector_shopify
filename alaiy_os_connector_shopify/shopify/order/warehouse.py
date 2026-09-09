@@ -148,7 +148,8 @@ def _force_valid_warehouse(dn, location_id=None):
     header default ERPNext applies to rows that don't set their own, and
     every row here sets one explicitly.
     """
-    settings = connections.require_enabled()
+    connection = dn.get("sh_shopify_connection")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     default_warehouse = _resolve_default_warehouse(settings)
     location_warehouse = _resolve_warehouse_for_location(location_id, settings)
     for item in dn.items:

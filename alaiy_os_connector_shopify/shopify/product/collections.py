@@ -333,11 +333,14 @@ def get_collection_products(collection_name: str):
     require_access_to_record("Shopify Collection", collection_name)
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    row = frappe.db.get_value(
+        "Shopify Collection", collection_name, ["sh_collection_gid", "connection"], as_dict=True)
+    gid = row and row.sh_collection_gid
     if not gid:
         return []
 
-    client = ShopifyGraphQLClient(connections.require_enabled())
+    conn = row.connection
+    client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
     products = []
     try:
         for page in client.execute_paginated(
@@ -390,10 +393,13 @@ def get_collection_channels(collection_name: str):
     require_access_to_record("Shopify Collection", collection_name)
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    row = frappe.db.get_value(
+        "Shopify Collection", collection_name, ["sh_collection_gid", "connection"], as_dict=True)
+    gid = row and row.sh_collection_gid
     if not gid:
         return []
-    client = ShopifyGraphQLClient(connections.require_enabled())
+    conn = row.connection
+    client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
     try:
         # ALL publications = the master list, so an unpublished channel still
         # shows (as a not-published chip) and can be re-published. Then mark
@@ -433,7 +439,9 @@ def toggle_collection_channel(collection_name: str, publication_id: str, publish
     # not refused by Shopify, it succeeds against the wrong merchant's shop.
     require_access_to_record("Shopify Collection", collection_name, "write")
 
-    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    row = frappe.db.get_value(
+        "Shopify Collection", collection_name, ["sh_collection_gid", "connection"], as_dict=True)
+    gid = row and row.sh_collection_gid
     if not gid:
         return {"ok": False, "error": "Collection not linked to Shopify."}
 
@@ -441,7 +449,8 @@ def toggle_collection_channel(collection_name: str, publication_id: str, publish
     mutation = _PUBLISH_MUTATION if do_publish else _UNPUBLISH_MUTATION
     key = "publishablePublish" if do_publish else "publishableUnpublish"
     try:
-        client = ShopifyGraphQLClient(connections.require_enabled())
+        conn = row.connection
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
         data = client.execute(mutation, {
             "id": gid,
             "input": [{"publicationId": publication_id}],
@@ -594,7 +603,9 @@ def on_shopify_collection_update(doc, method=None):
         return
     if doc.is_smart:
         return
-    if connections.enabled_connection() is None:
+    conn = doc.get("connection")
+    settings = connections.resolve(conn) if conn else connections.enabled_connection()
+    if settings is None:
         # Same class of gap found and fixed across Listing/Sales Order/
         # Delivery Note/Sales Invoice push paths -- this never checked the
         # master switch before enqueuing a real push.
@@ -610,7 +621,9 @@ def on_shopify_collection_update(doc, method=None):
 def on_shopify_collection_trash(doc, method=None):
     if doc.flags.from_shopify_sync:
         return
-    if connections.enabled_connection() is None:
+    conn = doc.get("connection")
+    settings = connections.resolve(conn) if conn else connections.enabled_connection()
+    if settings is None:
         return
     if not doc.sh_collection_gid:
         return
@@ -619,6 +632,7 @@ def on_shopify_collection_trash(doc, method=None):
         queue="short",
         timeout=60,
         collection_gid=doc.sh_collection_gid,
+        connection=settings.name,
     )
 
 
@@ -627,7 +641,8 @@ def push_collection(collection_name: str):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     doc = frappe.get_doc("Shopify Collection", collection_name)
-    client = ShopifyGraphQLClient(connections.require_enabled())
+    conn = doc.get("connection")
+    client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
     payload = _collection_input(doc)
 
     try:
@@ -660,10 +675,10 @@ def push_collection(collection_name: str):
         )
 
 
-def delete_collection(collection_gid: str):
+def delete_collection(collection_gid: str, connection=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    client = ShopifyGraphQLClient(connections.require_enabled())
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
     try:
         data = client.execute(_COLLECTION_DELETE_MUTATION, {"input": {"id": collection_gid}})
         errors = (data.get("collectionDelete") or {}).get("userErrors") or []

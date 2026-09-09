@@ -17,19 +17,23 @@ _ADDRESS_TEMPLATE = """{{ address_line1 }}<br>
 """
 
 
-def ensure_default_address_template():
+def ensure_default_address_template(connection=None):
     """
     Alaiy OS refuses to save/render ANY Address (and any Sales Order that
     references one) if there's no default Address Template -- confirmed live:
     a fresh site had none, so order import crashed with "No default Address
     Template found". Self-heal a standard one instead of making the merchant
     create it by hand.
+
+    Not store-specific data -- one default template covers every store on the
+    bench -- so `connection` here is only about which store's Company to read,
+    not about isolating the template itself.
     """
     if frappe.db.exists("Address Template", {"is_default": 1}):
         return
     try:
-        company = (connections.require_enabled().sh_company
-                   or frappe.defaults.get_global_default("company"))
+        settings = connections.resolve(connection) if connection else connections.require_enabled()
+        company = settings.sh_company or frappe.defaults.get_global_default("company")
         country = frappe.db.get_value("Company", company, "country") or "India"
         if not frappe.db.exists("Country", country):
             country = frappe.db.get_value("Country", {}, "name") or "India"
@@ -51,7 +55,7 @@ def ensure_default_address_template():
         )
 
 
-def sync_order_address(order, customer_name):
+def sync_order_address(order, customer_name, connection=None):
     """
     Create/update an Address from the order's shipping address (falls back to
     billing), link it to the customer, return its name for the Sales Order.
@@ -81,10 +85,10 @@ def sync_order_address(order, customer_name):
         # it's a real Country record, else the company's country as a fallback.
         country = a.get("country")
         if not country or not frappe.db.exists("Country", country):
+            settings = connections.resolve(connection) if connection else connections.require_enabled()
             country = frappe.db.get_value(
                 "Company",
-                connections.require_enabled().sh_company
-                or frappe.defaults.get_global_default("company"),
+                settings.sh_company or frappe.defaults.get_global_default("company"),
                 "country",
             ) or "India"
         addr.country = country

@@ -220,7 +220,7 @@ def _trim_return_items(doc, qty_by_item):
     return bool(doc.items)
 
 
-def _land_return_in_warehouse(dn):
+def _land_return_in_warehouse(dn, connection=None):
     """
     sh_return_warehouse if configured, else the connector's Default
     Warehouse -- same self-heal shape as warehouse.py's
@@ -230,7 +230,7 @@ def _land_return_in_warehouse(dn):
     a manual quality check) decides where the item really ends up from
     here -- this just gives it somewhere valid to land first.
     """
-    settings = connections.require_enabled()
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     warehouse = settings.sh_return_warehouse or _resolve_default_warehouse(settings)
     for item in dn.items:
         item.warehouse = warehouse
@@ -280,7 +280,7 @@ def _make_sales_return(so_name, qty_by_item, refund_id, connection=None):
         dn = make_return_doc("Delivery Note", dn_name)
         if not _trim_return_items(dn, qty_by_item):
             return None
-        _land_return_in_warehouse(dn)
+        _land_return_in_warehouse(dn, connection)
         for row in dn.items:
             row.allow_zero_valuation_rate = 1
         _fill_expense_accounts(dn)
@@ -353,7 +353,7 @@ def _make_credit_note(so_name, qty_by_item, refund_id, connection=None):
                 {"sh_shopify_refund_id": refund_id})):
             return None
         from erpnext.controllers.sales_and_purchase_return import make_return_doc
-        settings = connections.require_enabled()
+        settings = connections.resolve(connection) if connection else connections.require_enabled()
         si = make_return_doc("Sales Invoice", si_name)
         if not _trim_return_items(si, qty_by_item):
             return None

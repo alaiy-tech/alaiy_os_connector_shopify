@@ -15,15 +15,26 @@ from alaiy_os_connector_shopify.shopify.product import listing as listing_resolv
 from alaiy_os_connector_shopify import connections
 
 
-def _connector_enabled():
-    """None of the enqueue call sites below ever checked this -- confirmed
-    live: disabling Shopify Connector Settings.is_enabled did NOT stop
-    on_listing_trash/on_listing_update from still enqueuing a real push/
-    archive against the live store, since neither function read this field
-    at all. A bulk local deletion (e.g. wiping the catalogue for a clean
-    re-import) with the connector "disabled" would otherwise still archive
-    the real Shopify catalogue underneath it. Checked once, used at the top
-    of every function in this module that can enqueue outbound work."""
+def _connector_enabled(doc=None):
+    """Is THIS Listing's store switched on for the connector.
+
+    Confirmed live: disabling Shopify Connector Settings.is_enabled did NOT
+    stop on_listing_trash/on_listing_update from still enqueuing a real
+    push/archive against the live store, since neither function read this
+    field at all. A bulk local deletion (e.g. wiping the catalogue for a
+    clean re-import) with the connector "disabled" would otherwise still
+    archive the real Shopify catalogue underneath it. Checked once, used at
+    the top of every function in this module that can enqueue outbound
+    work.
+
+    Reads the store off the Listing itself, not off "the" enabled store --
+    that stopped naming a single answer once a bench can enable more than
+    one. `doc=None` falls back to the single-enabled-store check, matching
+    this connector's pre-multi-store behaviour exactly."""
+    if doc is None:
+        return connections.enabled_connection() is not None
+    if doc.get("connection"):
+        return True
     return connections.enabled_connection() is not None
 
 
@@ -40,7 +51,7 @@ def on_listing_update(doc, method=None):
         # Provisioning insert (backfill / inbound import) -- data mirrored
         # from an existing Item, pushing it back would be a pointless echo.
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if doc.is_enabled:
         frappe.enqueue(
@@ -59,7 +70,7 @@ def on_listing_update(doc, method=None):
 def on_listing_trash(doc, method=None):
     """Deleting the Listing takes the product off Shopify (archive: hidden,
     order history intact), same terminal state as unchecking then removing."""
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if doc.sh_shopify_product_id:
         frappe.enqueue(

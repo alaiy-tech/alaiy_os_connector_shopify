@@ -40,7 +40,8 @@ def archive_item(item_code: str):
 
     try:
         item = frappe.get_doc("Item", item.name)
-        client = ShopifyGraphQLClient(connections.require_enabled())
+        conn = item.get("sh_shopify_connection")
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
 
         data = client.execute(_PRODUCT_UPDATE_MUTATION, {
             "input": {

@@ -21,7 +21,8 @@ def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
     `warehouse` is the order-level default, used only as the per-line
     fallback -- each line resolves its own real warehouse below.
     """
-    settings = connections.require_enabled()
+    connection = doc.get("sh_shopify_connection")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     current_items_by_variant = {item.get("sh_shopify_variant_id"): item for item in doc.items if item.get("sh_shopify_variant_id")}
     current_items_by_code = {item.item_code: item for item in doc.items if not item.get("sh_shopify_variant_id")}
     new_items_from_shopify = {}
@@ -130,7 +131,8 @@ def _sync_order_line_items(so_name: str, order: dict):
     if so.docstatus not in (0, 1):
         return
 
-    settings = connections.require_enabled()
+    connection = so.sh_shopify_connection
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     warehouse = _resolve_default_warehouse(settings)
 
     if so.docstatus == 0:

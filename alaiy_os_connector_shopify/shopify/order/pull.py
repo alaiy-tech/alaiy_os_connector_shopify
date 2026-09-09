@@ -20,7 +20,7 @@ from alaiy_os_connector_shopify import connections
 
 def run_orders_sync(trigger="manual", log_name=None, connection=None):
     log = load_or_create_log("orders", trigger, log_name, connection=connection)
-    settings = connections.require_enabled()
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     # NOTE: "status:<open|closed|cancelled|any>" mirrors the old REST
     # `status` param's values 1:1 but wasn't independently verified
     # against Shopify's order search-syntax docs -- if a live pull
@@ -81,7 +81,8 @@ def _run_orders_pull(log, query_string, skip_existing=False):
 
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient(connections.require_enabled())
+        conn = log.get("connection")
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
         variables = {"after": None, "queryString": query_string}
 
         processed = created = failed = skipped_existing = pages = 0
@@ -159,11 +160,11 @@ def _run_orders_pull(log, query_string, skip_existing=False):
 
 # ── Historical / full import ────────────────────────────────────────────────────
 
-def get_shopify_orders_count() -> int:
+def get_shopify_orders_count(connection=None) -> int:
     """Cheap count-only query, used to decide up front whether a full
     import has anything left to do, without paging through every order."""
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient(connections.require_enabled())
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
     data = client.execute(_ORDERS_COUNT_QUERY)
     return int((data.get("ordersCount") or {}).get("count") or 0)
 
@@ -184,9 +185,9 @@ def import_existing_orders(date_from=None, date_to=None, connection=None):
         return {"status": "already_running", "message": "An orders sync is already in progress."}
 
     if not date_from and not date_to:
-        shopify_total = get_shopify_orders_count()
+        shopify_total = get_shopify_orders_count(connection)
         already_synced = frappe.db.count(
-            "Sales Order", {"sh_shopify_order_id": ["is", "set"]})
+            "Sales Order", owned_by("Sales Order", connection, {"sh_shopify_order_id": ["is", "set"]}))
 
         if shopify_total and already_synced >= shopify_total:
             return {

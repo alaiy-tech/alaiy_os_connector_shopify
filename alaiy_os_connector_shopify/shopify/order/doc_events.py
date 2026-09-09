@@ -17,14 +17,26 @@ from alaiy_os_connector_shopify.shopify.product import listing as listing_resolv
 from alaiy_os_connector_shopify import connections
 
 
-def _connector_enabled():
-    """None of the three functions below checked this -- confirmed live:
-    disabling Shopify Connector Settings.is_enabled did not stop a Sales
-    Order update/submit/cancel from still enqueuing a real push against the
-    live store, since none of them read this field. Same class of gap
-    found and fixed in product/listing_hooks.py's Listing update/trash --
-    checked once, used at the top of every function here."""
-    return connections.enabled_connection() is not None
+def _connector_enabled(doc=None):
+    """Is THIS Sales Order's store switched on for the connector.
+
+    Confirmed live: disabling Shopify Connector Settings.is_enabled did not
+    stop a Sales Order update/submit/cancel from still enqueuing a real push
+    against the live store, since none of them read this field. Same class
+    of gap found and fixed in product/listing_hooks.py's Listing update/
+    trash -- checked once, used at the top of every function here.
+
+    Reads the store off the Sales Order itself, not off "the" enabled store
+    -- that stopped naming a single answer once a bench can enable more
+    than one. `doc=None` falls back to the single-enabled-store check,
+    matching this connector's pre-multi-store behaviour exactly."""
+    if doc is None:
+        return connections.enabled_connection() is not None
+    conn = doc.get("sh_shopify_connection")
+    if conn:
+        return True
+    enabled = connections.enabled_connection()
+    return enabled is not None
 
 
 def on_sales_order_update(doc, method=None):
@@ -35,7 +47,7 @@ def on_sales_order_update(doc, method=None):
         frappe.logger().debug(
             f"Shopify: on_sales_order_update {doc.name} skipped, from_shopify_sync flag set")
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if not doc.get("sh_shopify_order_id"):
         frappe.logger().debug(
@@ -83,7 +95,7 @@ def on_sales_order_submit(doc, method=None):
     """
     if doc.flags.from_shopify_sync:
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if doc.get("sh_shopify_order_id"):
         return  # already a Shopify-origin order, nothing to push
@@ -104,7 +116,7 @@ def on_sales_order_submit(doc, method=None):
 def on_sales_order_cancel(doc, method=None):
     if doc.flags.from_shopify_sync:
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if not doc.get("sh_shopify_order_id"):
         return

@@ -179,13 +179,13 @@ def _build_csv(names, settings):
 
 
 @frappe.whitelist()
-def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=None):
+def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=None, connection=None):
     """Synchronous direct download -- no size limit. The list view only
     routes a hand-checked (deliberately bounded) selection here; an
     unfiltered All/Enabled/Disabled export always goes through
     trigger_background_export instead, so this path never sees the whole
     site's Listings by accident."""
-    settings = connections.require_enabled()
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     # The export carries listing titles, SKUs and prices out of the site as
     # a file, so reading them has to be allowed for the store first.
     require_access(settings.name)
@@ -196,8 +196,8 @@ def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=Non
     frappe.response.type = "download"
 
 
-def _run_background_export(listing_names, only_enabled, only_disabled, user):
-    settings = connections.require_enabled()
+def _run_background_export(listing_names, only_enabled, only_disabled, user, connection=None):
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     names = _resolve_names(listing_names, only_enabled, only_disabled)
     content = _build_csv(names, settings)
 
@@ -218,11 +218,12 @@ def _run_background_export(listing_names, only_enabled, only_disabled, user):
 
 
 @frappe.whitelist()
-def trigger_background_export(listing_names=None, only_enabled=None, only_disabled=None):
+def trigger_background_export(listing_names=None, only_enabled=None, only_disabled=None, connection=None):
     """Enqueues the export on the long queue and notifies the browser via
     realtime with a download link once the File is ready -- the real path
     for exporting an entire site's Listings (thealtomoda alone has 1,577)."""
-    require_access(connections.require_enabled().name)
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
+    require_access(settings.name)
 
     frappe.enqueue(
         "alaiy_os_connector_shopify.api.export._run_background_export",
@@ -232,5 +233,6 @@ def trigger_background_export(listing_names=None, only_enabled=None, only_disabl
         only_enabled=only_enabled,
         only_disabled=only_disabled,
         user=frappe.session.user,
+        connection=settings.name,
     )
     return {"queued": True}

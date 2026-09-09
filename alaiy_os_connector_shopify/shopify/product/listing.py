@@ -358,7 +358,7 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     tmpl = frappe.db.get_value(
         "Item", template_name,
         ["name", "item_name", "description", "has_variants", "image",
-         "sh_shopify_product_id", "sh_shopify_status"],
+         "sh_shopify_product_id", "sh_shopify_status", "sh_shopify_connection"],
         as_dict=True,
     )
     if not tmpl:
@@ -386,7 +386,7 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
         # listing_price is only ever read for a simple product (variant_price()'s
         # override chain); a template's own price never applies, so there's
         # nothing meaningful to prefill for one.
-        settings = connections.require_enabled()
+        settings = connections.resolve(tmpl.sh_shopify_connection) if tmpl.sh_shopify_connection else connections.require_enabled()
         price = _variant_price(template_name, settings)
         if price is not None:
             listing.listing_price = price
@@ -529,7 +529,8 @@ def fill_children_from_item(listing):
         (row.item_variant or "").strip(): row
         for row in (listing.variants or []) if row.item_variant
     }
-    settings = connections.require_enabled()
+    conn = listing.get("connection")
+    settings = connections.resolve(conn) if conn else connections.require_enabled()
     for v in _template_variant_items(tmpl.name, tmpl.has_variants):
         existing = rows_by_variant.get((v.name or "").strip())
         if existing is None:
@@ -639,7 +640,8 @@ def effective_values(listing_name: str) -> dict:
     if not listing.item or not frappe.db.exists("Item", listing.item):
         return {}
     item = frappe.get_doc("Item", listing.item)
-    settings = connections.require_enabled()
+    conn = listing.get("connection")
+    settings = connections.resolve(conn) if conn else connections.require_enabled()
     seo = effective_seo(listing, item)
     return {
         "title": effective_title(listing, item),

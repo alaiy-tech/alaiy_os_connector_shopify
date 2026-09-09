@@ -18,7 +18,7 @@ from alaiy_os_connector_shopify.shopify.order.queries import _ORDER_MARK_PAID_MU
 from alaiy_os_connector_shopify import connections
 
 
-def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillment_status: str = ""):
+def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillment_status: str = "", connection=None):
     """
     Best-effort: create + submit a Sales Invoice once the order meets the
     configured trigger. Logs and returns on any problem rather than breaking
@@ -30,8 +30,13 @@ def create_sales_invoice_if_paid(so_name: str, financial_status: str, fulfillmen
       until the merchant marks it paid on delivery, and only then (paid +
       fulfilled) does it invoice. Prepaid orders wait until shipped.
     - "Paid": invoice as soon as it's paid, regardless of fulfillment.
+
+    `connection` is optional -- unset falls back to `sh_shopify_connection` on
+    the Sales Order itself, then to the single enabled store, matching every
+    other function in this module.
     """
-    settings = connections.require_enabled()
+    connection = connection or frappe.db.get_value("Sales Order", so_name, "sh_shopify_connection")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     if not settings.get("sh_auto_sales_invoice"):
         return
 
@@ -327,13 +332,16 @@ def on_sales_invoice_submit(doc, method=None):
     """
     if doc.flags.from_shopify_sync:
         return
-    if connections.enabled_connection() is None:
+    order_id = _linked_shopify_order_id(doc)
+    if not order_id:
+        return
+    connection = _sales_invoice_connection(doc)
+    if connection is None:
         # Same class of gap found and fixed across Listing update/trash,
         # Sales Order update/submit/cancel, and Delivery Note push -- this
         # never checked the master switch before enqueuing a real push.
-        return
-    order_id = _linked_shopify_order_id(doc)
-    if not order_id:
+        # No connection resolvable (not this connector's store, or that
+        # store's own connector switched off) -- nothing to push.
         return
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order_sync.push_order_paid",
@@ -341,14 +349,33 @@ def on_sales_invoice_submit(doc, method=None):
         timeout=60,
         order_id=order_id,
         sales_invoice=doc.name,
+        connection=connection,
     )
 
 
-def push_order_paid(order_id: str, sales_invoice: str):
+def _sales_invoice_connection(doc):
+    """
+    The enabled store this Sales Invoice's order belongs to, or None.
+
+    Prefers the invoice's own Sales Order connection (multi-store correct);
+    falls back to the single enabled store for invoices from before that
+    field was backfilled.
+    """
+    for row in (doc.items or []):
+        so = row.get("sales_order")
+        if not so:
+            continue
+        conn = frappe.db.get_value("Sales Order", so, "sh_shopify_connection")
+        if conn:
+            return conn
+    return connections.enabled_connection() and connections.enabled_connection().name
+
+
+def push_order_paid(order_id: str, sales_invoice: str, connection=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     try:
-        client = ShopifyGraphQLClient(connections.require_enabled())
+        client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
         data = client.execute(_ORDER_MARK_PAID_MUTATION, {"input": {"id": _to_gid(order_id)}})
         errors = (data.get("orderMarkAsPaid") or {}).get("userErrors") or []
         if errors:

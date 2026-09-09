@@ -359,7 +359,8 @@ def _push_product_unlocked(item):
     # were waiting for the lock, and we must build the payload from that,
     # not from what `item` looked like before we acquired it.
     item = frappe.get_doc("Item", item.name)
-    settings = connections.require_enabled()
+    conn = item.get("sh_shopify_connection")
+    settings = connections.resolve(conn) if conn else connections.require_enabled()
     listing = listing_resolver.get_listing(item.name)
     if not listing:
         return  # gate already checked is_enabled, but stay defensive
@@ -387,7 +388,7 @@ def _push_product_unlocked(item):
     if entity and entity.erpnext_fingerprint == fp:
         return  # unchanged since our own last push -- avoid spamming the API
 
-    client = ShopifyGraphQLClient(connections.require_enabled())
+    client = ShopifyGraphQLClient(settings)
     product_input = _product_set_input(item, variants, settings, listing, client)
 
     identifier = None

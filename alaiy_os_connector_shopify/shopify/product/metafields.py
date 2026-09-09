@@ -115,7 +115,7 @@ def push_listing_metafields(listing, product_gid: str, client):
 
 
 @frappe.whitelist()
-def backfill_all_product_metafields():
+def backfill_all_product_metafields(connection=None):
     """
     One-time-run tool: fetch metafields for every product already linked to
     a Shopify Product Listing, without re-running the full product import
@@ -124,20 +124,27 @@ def backfill_all_product_metafields():
     wired into patches.txt -- unlike a pure-DB patch, this makes one live
     Shopify API call per product, which could run long and would otherwise
     block a routine bench migrate. Run manually via bench execute instead.
+
+    `connection` scopes the run to one store's Listings; unset falls back to
+    the single enabled store, matching this tool's original single-store
+    behaviour.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.scoping import owned_by
 
-    require_access(connections.require_enabled().name, "write")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
+    require_access(settings.name, "write")
 
     listings = frappe.get_all(
         "Shopify Product Listing",
-        filters={"sh_shopify_product_id": ["is", "set"]},
+        filters=owned_by("Shopify Product Listing", settings.name,
+                         {"sh_shopify_product_id": ["is", "set"]}),
         fields=["name", "sh_shopify_product_id"],
     )
     if not listings:
         return {"done": 0, "failed": 0}
 
-    client = ShopifyGraphQLClient(connections.require_enabled())
+    client = ShopifyGraphQLClient(settings)
     done = failed = 0
     for row in listings:
         try:

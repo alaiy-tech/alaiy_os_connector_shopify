@@ -32,22 +32,28 @@ from alaiy_os_connector_shopify import connections
 _TWO_WAY = "Alaiy OS → Shopify (two-way)"
 
 
-def _connector_enabled():
-    """None of the three functions below checked this master switch --
-    only sh_fulfillment_sync_direction (create) or nothing at all (tracking
-    update, cancel). Same class of gap found and fixed in Listing update/
-    trash and the Sales Order doc_events: disabling the connector entirely
-    (is_enabled = 0) did not actually stop these from still enqueuing a
-    real push against the live store. Checked once, used at the top of
-    every function here -- kept separate from sh_fulfillment_sync_direction,
-    which is a real, deliberately independent business toggle (see
-    on_delivery_note_cancel's own docstring for why cancel/tracking-edit
-    intentionally ignore that one once a fulfillment already exists).
+def _dn_connection(dn) -> str:
+    """The store this Delivery Note's order belongs to, or the single
+    enabled store for a DN from before the field was backfilled."""
+    stored = dn.get("sh_shopify_connection") if hasattr(dn, "get") else None
+    if stored:
+        return stored
+    enabled = connections.enabled_connection()
+    return enabled.name if enabled else None
 
-    Now asks the connections module rather than the old Single: with several
-    connections on a bench, "is the connector on" means "is there a store
-    driving ERPNext", which is the one connection allowed to be enabled."""
-    return connections.enabled_connection() is not None
+
+def _connector_enabled(dn=None):
+    """Is THIS Delivery Note's store switched on for the connector.
+
+    Every caller here is addressed by a Delivery Note, and its store is
+    read straight off it -- not off "the" enabled store, which stopped
+    meaning anything once a bench can enable more than one. `dn=None`
+    (from a caller that has none yet, e.g. before the DN exists) falls back
+    to the single-enabled-store check, matching this connector's pre-multi-
+    store behaviour exactly."""
+    if dn is None:
+        return connections.enabled_connection() is not None
+    return bool(_dn_connection(dn))
 
 
 def _fulfillment_gid(fulfillment_id: str) -> str:
@@ -175,7 +181,8 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         frappe.throw(f"{so_name} has no Shopify order linked -- nothing to push fulfillment to.")
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient(connections.require_enabled())
+    conn = _dn_connection(dn)
+    client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
     order_gid = _to_gid(shopify_order_id)
 
     # Nothing from here on may raise. By the time this runs the goods have
@@ -349,9 +356,12 @@ def on_delivery_note_submit(doc, method=None):
         return  # mirrors a fulfillment Shopify already knows about
     if doc.sh_shopify_fulfillment_id:
         return  # already linked (defensive -- from_shopify_sync should have caught this)
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
-    if (connections.enabled_value("sh_fulfillment_sync_direction") or "") != _TWO_WAY:
+    conn = _dn_connection(doc)
+    direction = (connections.resolve(conn).get("sh_fulfillment_sync_direction")
+                 if conn else connections.enabled_value("sh_fulfillment_sync_direction")) or ""
+    if direction != _TWO_WAY:
         return
     so_name = _sales_order_of(doc)
     if not so_name or not frappe.db.get_value("Sales Order", so_name, "sh_shopify_order_id"):
@@ -391,7 +401,7 @@ def on_delivery_note_update_after_submit(doc, method=None):
     already has a linked Shopify fulfillment pushes the change to Shopify."""
     if not doc.sh_shopify_fulfillment_id:
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if not (doc.has_value_changed("sh_tracking_number") or doc.has_value_changed("sh_tracking_company")):
         return
@@ -418,7 +428,9 @@ def push_tracking_update_job(fulfillment_gid: str, tracking_number: str, carrier
 def _push_tracking_update(fulfillment_gid: str, tracking_number: str, carrier: str, delivery_note: str, raise_on_error: bool):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     try:
-        client = ShopifyGraphQLClient(connections.require_enabled())
+        dn = frappe.get_doc("Delivery Note", delivery_note)
+        conn = _dn_connection(dn)
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
         data = client.execute(_FULFILLMENT_TRACKING_UPDATE_MUTATION, {
             "fulfillmentId": fulfillment_gid,
             "trackingInfoInput": {"number": tracking_number, "company": carrier},
@@ -456,7 +468,7 @@ def on_delivery_note_cancel(doc, method=None):
     respects the master is_enabled switch, unlike sh_fulfillment_sync_direction."""
     if doc.flags.from_shopify_sync or not doc.sh_shopify_fulfillment_id:
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order.fulfillment_push.push_fulfillment_cancel_job",
@@ -468,7 +480,9 @@ def on_delivery_note_cancel(doc, method=None):
 def push_fulfillment_cancel_job(fulfillment_gid: str, delivery_note: str):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     try:
-        client = ShopifyGraphQLClient(connections.require_enabled())
+        dn = frappe.get_doc("Delivery Note", delivery_note)
+        conn = _dn_connection(dn)
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
         data = client.execute(_FULFILLMENT_CANCEL_MUTATION, {"id": fulfillment_gid})
         errors = (data.get("fulfillmentCancel") or {}).get("userErrors") or []
         if errors:

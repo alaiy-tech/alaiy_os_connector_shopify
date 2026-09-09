@@ -150,7 +150,7 @@ def _upsert_order_unlocked(order, order_id, connection=None):
     # A missing default Address Template makes Alaiy OS throw while rendering the
     # customer's address during Sales Order validate -- ensure one exists first.
     from alaiy_os_connector_shopify.shopify.order.address import ensure_default_address_template
-    ensure_default_address_template()
+    ensure_default_address_template(settings.name)
 
     # Real Shopify order date, not the date this pull/webhook happens to run
     # on -- computed here (not just on the parent so.transaction_date below)
@@ -290,7 +290,7 @@ def _upsert_order_unlocked(order, order_id, connection=None):
     from alaiy_os_connector_shopify.shopify.order.charges import (
         append_shipping_charge, apply_order_discount,
     )
-    addr = sync_order_address(order, customer_name)
+    addr = sync_order_address(order, customer_name, settings.name)
     if addr:
         so.customer_address = addr
         so.shipping_address_name = addr
@@ -358,5 +358,6 @@ def _upsert_order_unlocked(order, order_id, connection=None):
     if not is_draft_order:
         from alaiy_os_connector_shopify.shopify.order.invoice import create_sales_invoice_if_paid
         create_sales_invoice_if_paid(
-            so.name, order.get("financial_status", ""), order.get("fulfillment_status", ""))
+            so.name, order.get("financial_status", ""), order.get("fulfillment_status", ""),
+            connection=settings.name)
     return True

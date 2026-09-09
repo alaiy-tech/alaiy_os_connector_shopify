@@ -161,7 +161,7 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None, wi
                         skip_examples.append(f"{node.get('title', 'Unknown')}: {reason}")
                     continue
                 try:
-                    was_created, reason = _import_product(node)
+                    was_created, reason = _import_product(node, connection)
                     if was_created and reason.startswith("updated"):
                         updated += 1
                     elif was_created:
@@ -306,7 +306,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                     skipped += 1
                     continue
                 try:
-                    was_created, reason = _import_product(node)
+                    was_created, reason = _import_product(node, connection)
                     if was_created:
                         created += 1
                     else:
@@ -447,7 +447,7 @@ def _shopify_node_fingerprint(node: dict) -> str:
     return fingerprint.fingerprint(canonical)
 
 
-def _update_existing_product(entity, node: dict) -> tuple:
+def _update_existing_product(entity, node: dict, connection=None) -> tuple:
     """
     Product already imported (Synced Entity + Item both exist). Compares a
     fingerprint of Shopify's current data against what was stored at the
@@ -470,7 +470,7 @@ def _update_existing_product(entity, node: dict) -> tuple:
     if entity.external_fingerprint == new_fp:
         return False, "already imported, unchanged"
 
-    settings = connections.require_enabled()
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     template_name = entity.erpnext_name
     variants = node.get("variants", {}).get("nodes", [])
     images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
@@ -556,13 +556,17 @@ def _warn_if_truncated(node: dict):
         )
 
 
-def _import_product(node: dict) -> tuple:
+def _import_product(node: dict, connection=None) -> tuple:
     """
     Import a single Shopify product, then make sure it has a manageable
     Shopify Product Listing. A product linked/imported inbound must get a
     Listing so it's manageable and so the outbound pipeline (which now reads
     the Listing) sees it -- ensure_listing is idempotent, so re-imports and
     updates never duplicate or clobber merchant edits.
+
+    `connection` is optional -- unset falls back to the single enabled
+    store, matching the behaviour of every caller before this parameter
+    existed.
     """
     # The status choice is applied as a Shopify SEARCH filter in the paginated
     # runs, so a node arriving any other way -- a webhook, a targeted re-import
@@ -574,12 +578,12 @@ def _import_product(node: dict) -> tuple:
         return False, f"skipped ({(node.get('status') or 'unknown').lower()} not enabled for import)"
 
     _warn_if_truncated(node)
-    created, reason = _import_product_inner(node)
+    created, reason = _import_product_inner(node, connection)
     product_id = str(node.get("legacyResourceId", ""))
     if product_id:
         entity = None
         try:
-            entity = entities.get_by_external_id("product", product_id)
+            entity = entities.get_by_external_id("product", product_id, connection)
             if entity and entity.erpnext_name:
                 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
                 listing_resolver.ensure_listing(entity.erpnext_name)
@@ -592,7 +596,7 @@ def _import_product(node: dict) -> tuple:
                 message=frappe.get_traceback(),
             )
         try:
-            _sync_product_metafields(entity.erpnext_name if entity else None, node, product_id)
+            _sync_product_metafields(entity.erpnext_name if entity else None, node, product_id, connection)
         except Exception:
             frappe.log_error(
                 title=f"Shopify import: metafields sync failed for product {product_id}",
@@ -601,7 +605,7 @@ def _import_product(node: dict) -> tuple:
     return created, reason
 
 
-def _sync_product_metafields(template_name: str, node: dict, product_id: str):
+def _sync_product_metafields(template_name: str, node: dict, product_id: str, connection=None):
     """Fetch every metafield (all namespaces, all pages) and store them on
     the Listing -- no-op if the product never got a Listing."""
     if not template_name:
@@ -614,7 +618,7 @@ def _sync_product_metafields(template_name: str, node: dict, product_id: str):
     from alaiy_os_connector_shopify.shopify.product.metafields import (
         all_metafields_of, sync_listing_metafields,
     )
-    client = ShopifyGraphQLClient(connections.require_enabled())
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
     product_gid = f"gid://shopify/Product/{product_id}"
     nodes = all_metafields_of(node, client, product_gid=product_gid)
     sync_listing_metafields(listing, nodes)
@@ -624,7 +628,7 @@ def _sync_product_metafields(template_name: str, node: dict, product_id: str):
     frappe.db.commit()
 
 
-def _import_product_inner(node: dict) -> tuple:
+def _import_product_inner(node: dict, connection=None) -> tuple:
     """
     Import a single Shopify product (template + variants) as Alaiy OS Item(s),
     or update it if already imported and Shopify's data has since changed.
@@ -644,7 +648,7 @@ def _import_product_inner(node: dict) -> tuple:
     if not product_id:
         return False, "missing product_id"
 
-    existing_entity = entities.get_by_external_id("product", product_id)
+    existing_entity = entities.get_by_external_id("product", product_id, connection)
     if existing_entity and not frappe.db.exists("Item", existing_entity.erpnext_name):
         # Local item was deleted since the last import/link -- the mapping
         # is stale. Drop it and fall through to a fresh create below,
@@ -654,9 +658,9 @@ def _import_product_inner(node: dict) -> tuple:
         existing_entity = None
 
     if existing_entity:
-        return _update_existing_product(existing_entity, node)
+        return _update_existing_product(existing_entity, node, connection)
 
-    settings = connections.require_enabled()
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     title = node.get("title", f"Product {product_id}").strip()
     description = node.get("descriptionHtml", "")
     vendor = node.get("vendor", "")
