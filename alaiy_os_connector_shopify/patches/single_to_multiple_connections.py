@@ -80,7 +80,8 @@ def _migrate_single() -> None:
 	doc = frappe.new_doc(NEW)
 	doc.connection_id = NEW_NAME
 	doc.label = stored.get("sh_shop_url") or "Shopify"
-	# The only connection on the site, so it answers every call that names none.
+	# The only connection on the site when this patch runs. Kept as a record
+	# of which row the Single became; resolution no longer reads it.
 	doc.is_default = 1
 	doc.owner_app = "alaiy_os_connector_shopify"
 

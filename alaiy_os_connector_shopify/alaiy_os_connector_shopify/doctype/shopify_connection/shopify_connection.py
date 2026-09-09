@@ -180,16 +180,18 @@ class ShopifyConnection(Document):
         """
         Mirror the enable flag onto the registry card.
 
-        Only the default connection speaks for the card. The registry has one
-        row per connector, not per store, so on a multi-tenant bench letting
-        every connection write it would mean the last save won -- one seller
-        disabling their store would show the whole connector as off.
+        Only a single-store site does this. The registry has one row per
+        connector, not per store, so where several stores share a bench
+        letting each one write it would mean the last save won -- one seller
+        disabling their store would show the whole connector as off for
+        everyone. With no default among them there is no one connection
+        entitled to speak for the card, so none of them does.
         """
         if not frappe.db.exists("OS Connector Registry", "shopify"):
             return
         from alaiy_os_connector_shopify import connections
 
-        if not self.is_default and len(connections.names()) > 1:
+        if len(connections.names()) > 1:
             return
         frappe.db.set_value(
             "OS Connector Registry", "shopify", "is_enabled", self.is_enabled
