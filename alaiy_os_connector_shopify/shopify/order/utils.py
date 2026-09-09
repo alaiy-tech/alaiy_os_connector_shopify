@@ -412,13 +412,15 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
             return None
 
         product_variants = []
-        # first: 1, not 5 -- query: "id:<product_id>" can only ever match the
-        # one product with that id, so asking for 5 just multiplied this
-        # already-expensive query's cost for nothing. Confirmed live: at 5,
-        # _PRODUCTS_QUERY (built for the bulk import sweep, not a
-        # single-product rescue) exceeded Shopify's 1000-point single-query
-        # cost limit outright (measured 1066) and this whole rescue always
-        # failed.
+        # $first: 1, not the bulk import's default of 50 -- query:
+        # "id:<product_id>" can only ever match the one product with that
+        # id. Confirmed live: at the default 50, _PRODUCTS_QUERY's cost is
+        # charged per the DECLARED page size, not the actual match count, so
+        # this single-product rescue exceeded Shopify's 1000-point
+        # single-query limit (measured 1066) every time, regardless of the
+        # `first` value passed here -- the query itself hardcoded 50 in its
+        # text until $first became a real GraphQL variable (default 50, so
+        # the bulk import's own calls are unaffected).
         for page in client.execute_paginated(
                 _PRODUCTS_QUERY, {"first": 1, "query": f"id:{product_id}"}, ["products"]):
             for node in page:
