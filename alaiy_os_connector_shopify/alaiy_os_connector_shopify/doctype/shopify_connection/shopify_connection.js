@@ -32,35 +32,58 @@ frappe.ui.form.on("Shopify Connection", {
 
     if (frm.is_new()) return;
 
-    frm.add_custom_button(
-      __("Test Connection"),
-      () => {
-        frappe.call({
-          // Straight to the connector, not through Alaiy OS's generic
-          // `test_connector` wrapper. That wrapper takes a connector_id and
-          // nothing else, so it cannot say which store to test -- on a bench
-          // with several it would test the default one and report the answer
-          // on this form. test_connection records the result on the
-          // connection itself, which is what keeps the status card above in
-          // step either way.
-          method: "alaiy_os_connector_shopify.api.test_connection.test_connection",
-          args: { connection: frm.doc.name },
-          callback(r) {
-            const res = r.message || {};
-            frappe.show_alert(
-              {
-                message:
-                  res.message || (res.success ? __("Connected") : __("Connection failed")),
-                indicator: res.success ? "green" : "red",
-              },
-              res.success ? 5 : 7,
-            );
-            frm.reload_doc();
-          },
-        });
-      },
-      __("Actions"),
-    );
+    // Settings-page buttons, not grouped under Actions -- both are about the
+    // credentials on this form, not a sync to run.
+    frm.add_custom_button(__("Get Access Token"), () => {
+      frappe.call({
+        // Mints (or re-mints) the token via client_credentials and stores
+        // it -- a real write against this store's credentials, split out
+        // of Test Connection so a click labelled "Test" is not silently
+        // the thing that generates and saves a new token.
+        method: "alaiy_os_connector_shopify.api.test_connection.authenticate",
+        args: { connection: frm.doc.name },
+        freeze: true,
+        freeze_message: __("Authenticating with Shopify..."),
+        callback(r) {
+          const res = r.message || {};
+          frappe.show_alert(
+            {
+              message: res.message || (res.success ? __("Access token obtained") : __("Authentication failed")),
+              indicator: res.success ? "green" : "red",
+            },
+            res.success ? 5 : 7,
+          );
+          frm.reload_doc();
+        },
+      });
+    });
+
+    frm.add_custom_button(__("Test Connection"), () => {
+      frappe.call({
+        // Straight to the connector, not through Alaiy OS's generic
+        // `test_connector` wrapper. That wrapper takes a connector_id and
+        // nothing else, so it cannot say which store to test -- on a bench
+        // with several it would test the default one and report the answer
+        // on this form. test_connection records the result on the
+        // connection itself, which is what keeps the status card above in
+        // step either way. Read-only: verifies whatever token already
+        // exists rather than minting one -- see Get Access Token for that.
+        method: "alaiy_os_connector_shopify.api.test_connection.test_connection",
+        args: { connection: frm.doc.name },
+        callback(r) {
+          const res = r.message || {};
+          frappe.show_alert(
+            {
+              message:
+                res.message || (res.success ? __("Connected") : __("Connection failed")),
+              indicator: res.success ? "green" : "red",
+            },
+            res.success ? 5 : 7,
+          );
+          frm.reload_doc();
+        },
+      });
+    });
 
     const queue = (method, message) => () =>
       frappe.call({

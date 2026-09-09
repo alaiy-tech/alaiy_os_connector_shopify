@@ -92,7 +92,9 @@ class TestWritePathsRequireWriteAccess(unittest.TestCase):
         "sync_shopify_tags": "shopify/product/tags.py",
         "sync_shopify_locations": "shopify/inventory_sync.py",
         "sync_shopify_collections": "shopify/product/collections.py",
-        "test_connection": "api/test_connection.py",
+        # Mints and stores a fresh access token -- split out of
+        # test_connection, which is read-only and correctly asks for "read".
+        "authenticate": "api/test_connection.py",
     }
 
     def test_each_asks_for_write_not_read(self):

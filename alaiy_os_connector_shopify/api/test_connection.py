@@ -8,9 +8,48 @@ from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_tok
 
 
 @frappe.whitelist()
+def authenticate(connection=None):
+    """
+    Mint a fresh access token via the client_credentials grant and store it.
+
+    Split out from test_connection: minting is a write against the store's
+    own credentials (a new token, a new sh_token_refreshed_at/expires_at) --
+    a button labelled "Test" doing that as a hidden first step was honest
+    about neither what it changed nor when. This is that step alone; the
+    caller runs test_connection after to actually prove the result works.
+
+    `connection` names which store. Left out it means the only store on a
+    single-store bench, or the one marked default -- and on a bench with
+    several and no default it refuses rather than minting a token for
+    somebody else's credentials.
+    """
+    try:
+        settings = connections.resolve(connection)
+        require_access(settings.name, "write")
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+    if not (settings.sh_shop_url or "").strip():
+        return {"success": False, "message": "Shop URL is not configured."}
+    if not (settings.sh_client_id or "").strip() or not settings.sh_client_secret:
+        return {"success": False, "message": "Client ID and Client Secret must be saved before authenticating."}
+
+    try:
+        refresh_and_store_access_token(settings)
+    except requests.exceptions.Timeout:
+        return _failed(settings, "Authentication request timed out.")
+    except Exception as e:
+        return _failed(settings, f"Authentication error: {str(e)[:200]}")
+
+    return {"success": True, "message": "Access token obtained."}
+
+
+@frappe.whitelist()
 def test_connection(connection=None):
     """
-    Mint a token and prove it works, for one store.
+    Prove the store's CURRENT access token works. Read-only: does not mint,
+    refresh, or change anything about the stored credentials -- run
+    authenticate first if there is no token yet, or the current one is bad.
 
     `connection` names which. Left out it means the only store on a
     single-store bench, or the one marked default -- and on a bench with
@@ -19,26 +58,13 @@ def test_connection(connection=None):
     """
     try:
         settings = connections.resolve(connection)
-        # Minting a token is a write against the store's own credentials.
-        require_access(settings.name, "write")
+        require_access(settings.name)
     except Exception as e:
         return {"success": False, "message": str(e)}
 
-    if not (settings.sh_shop_url or "").strip():
-        return {"success": False, "message": "Shop URL is not configured."}
-    if not (settings.sh_client_id or "").strip() or not settings.sh_client_secret:
-        return {"success": False, "message": "Client ID and Client Secret must be saved before testing."}
+    if not settings.get_password("sh_access_token", raise_exception=False):
+        return {"success": False, "message": "No access token yet -- click Get Access Token first."}
 
-    # Step 1: Authenticate via client_credentials grant (same helper
-    # ShopifyGraphQLClient falls back to automatically once a token expires).
-    try:
-        refresh_and_store_access_token(settings)
-    except requests.exceptions.Timeout:
-        return _failed(settings, "Authentication request timed out.")
-    except Exception as e:
-        return _failed(settings, f"Authentication error: {str(e)[:200]}")
-
-    # Step 2: Verify the token works
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
         client = ShopifyGraphQLClient(settings.name)
