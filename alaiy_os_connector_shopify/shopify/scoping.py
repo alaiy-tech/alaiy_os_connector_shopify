@@ -101,11 +101,19 @@ def item_code_for(connection, sku: str) -> str:
 
     A blank SKU is handed back untouched. The importer has its own fallbacks
     for that case and this must not turn "no SKU" into a code that looks real.
+
+    Idempotent: a `sku` already carrying THIS connection's own prefix is
+    handed back unchanged rather than prefixed again. There is exactly one
+    caller today and it never re-namespaces its own output, but the helper
+    should not double-prefix if that ever changes -- `sim-a::sim-a::SKU1`
+    is a real Item code that no longer matches anything on Shopify.
     """
     if not sku:
         return sku
     name = getattr(connection, "name", connection)
     if not name or name == DEFAULT_ITEM_CODE_CONNECTION:
+        return sku
+    if sku.startswith(f"{name}::"):
         return sku
     return f"{name}::{sku}"
 
