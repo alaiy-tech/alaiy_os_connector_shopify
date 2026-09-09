@@ -127,7 +127,7 @@ def _attribute_fulfilled_locations(order, connection=None):
                     "sku": li.get("sku"),
                     "variant_id": li.get("variant_id"),
                     "title": li.get("title") or li.get("name"),
-                })
+                }, connection)
                 if item_code:
                     _record_fulfilled_from_location(item_code, location_id, connection)
             except Exception:
@@ -170,7 +170,7 @@ def _upsert_order_unlocked(order, order_id, connection=None):
 
     line_items = []
     for li in order.get("line_items", []):
-        item_code = _resolve_item_code(li)
+        item_code = _resolve_item_code(li, settings.name)
         if not item_code:
             # No catalog match -- keep it as a custom line item rather than
             # silently dropping it (Shopify allows one-off/custom products).

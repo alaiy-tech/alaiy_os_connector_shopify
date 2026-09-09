@@ -268,7 +268,7 @@ def _variant_available_qty(variant: dict) -> float:
     return total
 
 
-def _variant_location_levels(variant: dict) -> list:
+def _variant_location_levels(variant: dict, connection=None) -> list:
     """
     [(shopify_location_id, qty), ...] for this variant, one pair per real
     Shopify location it's stocked at -- lets opening stock be split into
@@ -303,7 +303,7 @@ def _variant_location_levels(variant: dict) -> list:
     from alaiy_os_connector_shopify.shopify.product.queries import INVENTORY_LEVELS_PAGE_SIZE
 
     if len(pairs) >= INVENTORY_LEVELS_PAGE_SIZE:
-        full = _fetch_variant_location_levels(variant.get("legacyResourceId"))
+        full = _fetch_variant_location_levels(variant.get("legacyResourceId"), connection)
         if full:
             return full
     return pairs or []
@@ -325,7 +325,7 @@ query VariantLevels($id: ID!) {
 """
 
 
-def _fetch_variant_location_levels(variant_id):
+def _fetch_variant_location_levels(variant_id, connection=None):
     """Every location one variant is stocked at, fetched on its own.
 
     Affords first: 50 because it queries a single variant -- there is no
@@ -339,7 +339,7 @@ def _fetch_variant_location_levels(variant_id):
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-        data = ShopifyGraphQLClient().execute(
+        data = ShopifyGraphQLClient(connection).execute(
             _VARIANT_LEVELS_QUERY, {"id": f"gid://shopify/ProductVariant/{variant_id}"})
         variant = (data.get("productVariant") or {})
         levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []

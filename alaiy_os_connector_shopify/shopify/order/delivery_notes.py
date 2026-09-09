@@ -226,7 +226,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             "sku": li.get("sku"),
             "variant_id": li.get("variant_id"),
             "title": li.get("title") or li.get("name"),
-        })
+        }, so.get("sh_shopify_connection"))
         if not item_code:
             item_code = _item_on_order_by_title(so, li.get("title") or li.get("name"))
         if not item_code:

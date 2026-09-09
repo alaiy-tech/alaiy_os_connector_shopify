@@ -311,7 +311,7 @@ def _line_item_qty(li: dict) -> float:
     return flt(li.get("quantity", 1))
 
 
-def _resolve_item_code(line_item):
+def _resolve_item_code(line_item, connection=None):
     sku = (line_item.get("sku") or "").strip()
     if sku and frappe.db.exists("Item", sku):
         return sku
@@ -345,14 +345,14 @@ def _resolve_item_code(line_item):
     # fetches exactly one product, only when an order needs it.
     product_id = str(line_item.get("product_id") or "")
     if variant_id or sku or product_id:
-        imported = _import_product_for_order_line(variant_id, sku, product_id)
+        imported = _import_product_for_order_line(variant_id, sku, product_id, connection)
         if imported:
             return imported
 
     return None
 
 
-def _import_product_for_order_line(variant_id: str, sku: str = None, product_id: str = None):
+def _import_product_for_order_line(variant_id: str, sku: str = None, product_id: str = None, connection=None):
     """Import the single product this order line refers to, whatever its status.
 
     Found by variant id, or by SKU when the line carries no variant id --
@@ -377,7 +377,7 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
         from alaiy_os_connector_shopify.shopify.product import importer
         from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
 
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connection)
         # The order line names its product outright. Preferred over both
         # lookups below because it is the only one that reaches an ARCHIVED
         # product: confirmed live, every form of sku: query returns nothing
@@ -421,7 +421,7 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
                 # gate exists to keep a bulk sweep from dragging in dead
                 # products, which is a different question from an order
                 # needing the one product it actually sold.
-                importer._import_product_inner(node)
+                importer._import_product_inner(node, connection)
                 product_variants = (node.get("variants") or {}).get("nodes") or []
 
         item_code = (listing_resolver.item_by_variant_id(variant_id) if variant_id else None)

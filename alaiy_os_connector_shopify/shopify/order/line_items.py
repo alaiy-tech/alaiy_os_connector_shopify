@@ -29,7 +29,7 @@ def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
 
     # Parse Shopify's line items
     for li in order.get("line_items", []):
-        item_code = _resolve_item_code(li)
+        item_code = _resolve_item_code(li, connection)
         if not item_code:
             continue
         variant_id = str(li.get("variant_id", ""))

@@ -1112,7 +1112,7 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None)
                 if not item_code:
                     unknown_variants += 1
                     continue
-                for location_id, qty in _variant_location_levels(variant):
+                for location_id, qty in _variant_location_levels(variant, connection):
                     # Deliberately NOT _resolve_warehouse_for_location: that
                     # falls back to sh_default_warehouse for an unmapped
                     # location, which is right for a single webhook (better

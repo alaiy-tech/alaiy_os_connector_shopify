@@ -116,7 +116,7 @@ def _process_refund(refund, connection=None):
             # line item) -- _resolve_item_code already falls through
             # sku -> variant id -> title, so a null here is handled.
             "sku": li.get("sku"), "variant_id": li.get("variant_id"), "title": li.get("title"),
-        })
+        }, connection)
         if not item_code:
             frappe.log_error(
                 title=f"Shopify: refund {refund_id} line item didn't match any Item",

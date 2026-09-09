@@ -725,7 +725,7 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     if product_meta:
         _apply_product_meta(item, product_meta, connection=settings)
     _dedupe_item_uoms(item)
-    location_levels = _variant_location_levels(variant)
+    location_levels = _variant_location_levels(variant, settings)
     # product_location is the fallback for a variant holding no stock
     # anywhere -- ownership is a product fact, not a stock reading.
     resolved_location = _resolve_item_shopify_location(
@@ -1065,7 +1065,7 @@ def _import_simple_product(
     if default_warehouse_row:
         item.append("item_defaults", default_warehouse_row)
 
-    location_levels = _variant_location_levels(variant)
+    location_levels = _variant_location_levels(variant, settings)
     resolved_location = _resolve_item_shopify_location(location_levels, settings, item_name)
     if resolved_location:
         item.shopify_location = resolved_location
@@ -1386,7 +1386,7 @@ def _import_product_with_variants(
         if default_warehouse_row:
             variant_item.append("item_defaults", default_warehouse_row)
 
-        location_levels = _variant_location_levels(variant)
+        location_levels = _variant_location_levels(variant, settings)
         # Falls back to the product's own location for a variant holding no
         # stock anywhere -- ownership is a product fact, not a stock reading.
         resolved_location = _resolve_item_shopify_location(
