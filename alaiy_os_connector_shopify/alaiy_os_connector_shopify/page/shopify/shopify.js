@@ -14,6 +14,15 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	$(page.body).html(`
 		<div class="shopify-page">
 			<div class="container shopify-container">
+				<!-- Store picker. Hidden on a single-store bench, where there
+				     is nothing to choose and a dropdown of one is just noise. -->
+				<div class="shopify-card" id="shopify-store-picker-card" style="display:none">
+					<div class="shopify-card-body">
+						<label for="shopify-store-picker" style="margin-right:8px">Store</label>
+						<select id="shopify-store-picker" class="form-control" style="display:inline-block;width:auto"></select>
+					</div>
+				</div>
+
 				<!-- Connection Status Card (branded icon/name/status; populated below) -->
 				<div class="shopify-card">
 					<div class="shopify-card-body">
@@ -202,8 +211,77 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		</div>
 	`);
 
+	// Which store every call on this page is about. Null until known, and
+	// nothing calls anything while it is null: on a bench with several stores
+	// an unnamed call is refused, which is what filled this page with error
+	// dialogs before the picker existed.
+	var active_connection = null;
+
+	function load_connections(on_ready) {
+		scoped_call({
+			method: 'alaiy_os_connector_shopify.api.sync.list_connections',
+			callback: function(r) {
+				var msg = r.message || {};
+				var rows = msg.connections || [];
+				var picker = document.getElementById('shopify-store-picker');
+				var card = document.getElementById('shopify-store-picker-card');
+
+				if (!rows.length) {
+					card.style.display = '';
+					picker.innerHTML = '<option value="">No enabled Shopify store</option>';
+					return;
+				}
+
+				active_connection = msg.selected;
+
+				if (rows.length > 1) {
+					// Several stores: the seller says which. No pre-selection --
+					// showing one store's numbers because it sorted first is
+					// how somebody reads another seller's catalogue.
+					card.style.display = '';
+					picker.innerHTML = '<option value="">Choose a store...</option>' +
+						rows.map(function(c) {
+							return '<option value="' + frappe.utils.escape_html(c.name) + '">' +
+								frappe.utils.escape_html(c.label) + '</option>';
+						}).join('');
+					picker.value = active_connection || '';
+				}
+
+				if (active_connection && on_ready) on_ready();
+			}
+		});
+	}
+
+	// Every call this page makes to the connector is stamped with the chosen
+	// store here, rather than at each of the thirteen call sites. Doing it at
+	// the call sites is what the page did before, which is to say it did not:
+	// a new one only has to forget once, and the failure is a seller reading
+	// another seller's numbers rather than an error.
+	//
+	// Calls to frappe.* core methods (frappe.client.get and friends) pass
+	// through untouched -- they are not store-scoped and would reject the
+	// argument.
+	var _raw_call = frappe.call.bind(frappe);
+	function scoped_call(opts) {
+		var method = opts && opts.method;
+		if (!method || method.indexOf('alaiy_os_connector_shopify.') !== 0) {
+			return _raw_call(opts);
+		}
+		// list_connections is how the page learns which stores exist, so it
+		// is the one connector call that cannot already know the answer.
+		if (method.endsWith('.list_connections')) {
+			return _raw_call(opts);
+		}
+		if (!active_connection) {
+			frappe.msgprint(__('Choose a store first.'));
+			return;
+		}
+		opts.args = Object.assign({ connection: active_connection }, opts.args || {});
+		return _raw_call(opts);
+	}
+
 	function render_connector_status() {
-		frappe.call({
+		scoped_call({
 			method: "alaiy_os.api.connectors.get_all_connectors",
 			callback: function(r) {
 				var connector = (r.message || []).find(function(c) {
@@ -217,7 +295,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function check_connection() {
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.test_connection.test_connection',
 			callback: function() { render_connector_status(); },
 			error: function() { render_connector_status(); }
@@ -282,7 +360,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		log_container.classList.add('shopify-active');
 		log_container.innerHTML = '<div class="shopify-log-status-running">Starting import...<span class="shopify-spinner"></span></div>';
 
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
 			args: date_from && date_to ? {date_from: date_from, date_to: date_to} : {},
 			callback: function(r) {
@@ -311,7 +389,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		log_container.classList.add('shopify-active');
 		log_container.innerHTML = '<div class="shopify-log-status-running">Starting inventory sync...<span class="shopify-spinner"></span></div>';
 
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.sync.trigger_inventory_push',
 			callback: function(r) {
 				if (r.message && r.message.log_name) {
@@ -371,7 +449,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 				var log_container = document.getElementById('products-log');
 				btn.disabled = true;
 
-				frappe.call({
+				scoped_call({
 					method: 'alaiy_os_connector_shopify.api.sync.trigger_product_import',
 					args: { statuses: statuses },
 					callback: function(r) {
@@ -405,7 +483,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 				var log_container = document.getElementById('products-export-log');
 				btn.disabled = true;
 
-				frappe.call({
+				scoped_call({
 					method: 'alaiy_os_connector_shopify.api.sync.trigger_product_export',
 					args: { statuses: statuses },
 					callback: function(r) {
@@ -429,7 +507,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function sync_taxonomy() {
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.sync.refresh_shopify_taxonomy',
 			callback: function(r) {
 				if (r.message && r.message.queued) {
@@ -440,7 +518,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function sync_tags() {
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.sync.refresh_shopify_tags',
 			callback: function(r) {
 				if (r.message && r.message.queued) {
@@ -451,7 +529,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function sync_collections() {
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.sync.refresh_shopify_collections',
 			callback: function(r) {
 				if (r.message && r.message.queued) {
@@ -462,7 +540,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function sync_locations() {
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.sync.refresh_shopify_locations',
 			callback: function(r) {
 				if (r.message && r.message.queued) {
@@ -473,7 +551,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function poll_import_progress(log_name, log_container, btn, stop_btn) {
-		frappe.call({
+		scoped_call({
 			method: 'frappe.client.get',
 			args: {doctype: 'Shopify Sync Log', name: log_name},
 			callback: function(r) {
@@ -506,7 +584,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	function stop_sync(log_name, stop_btn) {
 		if (!log_name) return;
 		stop_btn.disabled = true;
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.shopify.sync_guard.request_cancel',
 			args: {log_name: log_name},
 			callback: function(r) {
@@ -533,7 +611,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 	}
 
 	function refresh_logs() {
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.sync.get_sync_status',
 			callback: function(r) {
 				if (r.message) render_logs_table(r.message);
@@ -620,7 +698,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		var grid = document.getElementById('shopify-stats-grid');
 		grid.innerHTML = render_skeleton_group('Alaiy OS (local)', 8);
 
-		frappe.call({
+		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.sync.get_dashboard_stats',
 			callback: function(r) {
 				var s = r.message;
@@ -636,7 +714,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					{label: 'Orders synced', value: s.orders_synced},
 				], 'local') + render_status_stat_group(s) + '<div id="shopify-side-stats">' + render_skeleton_group('Shopify (live)', 3) + '</div>';
 
-				frappe.call({
+				scoped_call({
 					method: 'alaiy_os_connector_shopify.api.sync.get_shopify_side_stats',
 					callback: function(r2) {
 						var ss = r2.message;
@@ -657,9 +735,24 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		});
 	}
 
-	check_connection();
-	load_stats();
-	refresh_logs();
+	// Which store, before anything that asks about one. On a single-store
+	// bench this resolves immediately and the page loads exactly as it always
+	// did; where there are several it waits for the seller to choose rather
+	// than firing thirteen calls that would each be refused.
+	function load_store_scoped_content() {
+		check_connection();
+		load_stats();
+		refresh_logs();
+	}
+
+	load_connections(load_store_scoped_content);
+
+	$(page.body).on('change', '#shopify-store-picker', function() {
+		active_connection = this.value || null;
+		if (!active_connection) return;
+		load_store_scoped_content();
+	});
+
 	toggle_order_date_fields();
 
 	$(page.body).find('.shopify-import-mode .shopify-mode-btn').on('click', function() {

@@ -5,14 +5,100 @@
 // having run.
 frappe.listview_settings["Shopify Product Listing"] = frappe.listview_settings["Shopify Product Listing"] || {};
 
+// Every endpoint on this page takes a `connection`, and a call that names none
+// is refused outright once the bench has more than one store enabled -- there
+// is no single store to guess at, and guessing would act on some other
+// seller's shop. A list view has no store in scope the way a Listing form
+// does, so it has to ask the server which stores this user may act on and,
+// when that is more than one, ask the user which of them this action is for.
+//
+// list_connections answers both halves: `selected` is filled in when there is
+// exactly one store, which is every single-store bench -- those go straight
+// through with no extra click, exactly as before. Cached for the life of the
+// page: the banner refetches on every refresh, and re-asking on each of those
+// would put a prompt in front of a seller who has already answered.
+var shopify_connection_choice = null;
+
+function with_shopify_connection(callback) {
+	if (shopify_connection_choice) {
+		callback(shopify_connection_choice);
+		return;
+	}
+	frappe.call({
+		method: "alaiy_os_connector_shopify.api.sync.list_connections",
+		callback: function (r) {
+			var message = r.message || {};
+			var rows = message.connections || [];
+			if (message.selected) {
+				shopify_connection_choice = message.selected;
+				callback(shopify_connection_choice);
+				return;
+			}
+			if (!rows.length) {
+				// No store this user may act on. Every endpoint would refuse
+				// anyway -- say so here rather than firing the call to find out.
+				frappe.msgprint(__("No Shopify store is switched on for you on this site."));
+				return;
+			}
+			frappe.prompt(
+				[{
+					fieldtype: "Select",
+					fieldname: "connection",
+					label: __("Shopify Store"),
+					reqd: 1,
+					// Shown by label, submitted by name -- the endpoints key on
+					// the connection's id, but a seller picks by the store they
+					// recognise.
+					options: rows.map(function (c) {
+						return { label: c.label + (c.shop_url ? " (" + c.shop_url + ")" : ""), value: c.name };
+					}),
+					default: rows[0].name,
+				}],
+				function (values) {
+					shopify_connection_choice = values.connection;
+					// The banner drew without its counts because there was no
+					// store to count for. There is one now, so fill them in
+					// rather than leaving it blank until the next refresh.
+					if (cur_list) render_shopify_status_banner(cur_list);
+					callback(shopify_connection_choice);
+				},
+				__("Which store?"),
+				__("Continue")
+			);
+		},
+	});
+}
+
 // Own block below the header/filter row -- add_inner_message shares the
 // narrow header title slot with whatever else writes there (confirmed live,
 // other connectors on this same page also use it, squeezing our pills out
 // of view). Rendered into a dedicated div inserted once, refreshed in place
 // on every onload/refresh rather than re-inserted, so it never duplicates.
 function render_shopify_status_banner(listview) {
+	// The counts are per-store, so they can only be fetched once a store is
+	// known. Drawing the banner must not be the thing that raises the store
+	// prompt though -- it redraws on every refresh, and a seller would meet a
+	// modal just for opening the list. So on a bench where the store is still
+	// unanswered the banner draws with its buttons and no counts, and the
+	// counts fill in the moment any of those buttons has been answered.
+	if (!shopify_connection_choice) {
+		frappe.call({
+			method: "alaiy_os_connector_shopify.api.sync.list_connections",
+			callback: function (r) {
+				var selected = (r.message || {}).selected;
+				if (!selected) {
+					draw_shopify_status_banner(listview, "");
+					return;
+				}
+				shopify_connection_choice = selected;
+				render_shopify_status_banner(listview);
+			},
+		});
+		return;
+	}
 	frappe.call({
 		method: "alaiy_os_connector_shopify.api.sync.get_dashboard_stats",
+		args: { connection: shopify_connection_choice },
 		callback: function (r) {
 			var s = r.message;
 			if (!s) return;
@@ -25,59 +111,67 @@ function render_shopify_status_banner(listview) {
 				return '<span class="shopify-listing-status-pill filterable" style="cursor:pointer;margin-right:16px;" data-filter=\'' +
 					JSON.stringify(c.filter) + "'>" + __(c.label) + ": <b>" + c.value + "</b></span>";
 			}).join("");
-
-			// Export/Update Listings/Enable-by-Status all moved out of the
-			// crowded header toolbar into this banner instead -- small
-			// icon buttons, not full-width header entries.
-			var actions =
-				'<span class="btn-group" style="margin-left:16px;">' +
-					'<button type="button" class="btn btn-xs btn-default shopify-listing-export-all"><i class="fa fa-download"></i> ' + __("Export Listings (CSV)") + '</button>' +
-					'<button type="button" class="btn btn-xs btn-default dropdown-toggle" data-toggle="dropdown" style="padding-left:4px;padding-right:6px;"></button>' +
-					'<ul class="dropdown-menu">' +
-						'<li><a href="#" class="shopify-listing-export-option" data-scope="all">' + __("All") + '</a></li>' +
-						'<li><a href="#" class="shopify-listing-export-option" data-scope="enabled">' + __("Enabled Only") + '</a></li>' +
-						'<li><a href="#" class="shopify-listing-export-option" data-scope="disabled">' + __("Disabled Only") + '</a></li>' +
-					'</ul>' +
-				'</span>' +
-				'<button type="button" class="btn btn-xs btn-default shopify-listing-update-btn" style="margin-left:8px;"><i class="fa fa-upload"></i> ' + __("Update Listings (CSV)") + '</button>' +
-				'<button type="button" class="btn btn-xs btn-default shopify-listing-enable-btn" style="margin-left:8px;"><i class="fa fa-check-circle"></i> ' + __("Enable Listings by Status") + '</button>';
-
-			var $container = listview.page.wrapper.find(".shopify-listing-status-block");
-			if (!$container.length) {
-				$container = $(
-					'<div class="shopify-listing-status-block" style="padding:8px 20px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;"></div>'
-				);
-				// Above the filter row (.page-form), not just above the list
-				// rows -- .page-form is the standard Frappe list view's
-				// ID/filter/sort row, sitting right below the title/header.
-				var $page_form = listview.page.wrapper.find(".page-form");
-				if ($page_form.length) {
-					$page_form.before($container);
-				} else {
-					// Fallback if this Frappe version's DOM doesn't have
-					// .page-form -- still show it somewhere rather than
-					// silently not inserting at all.
-					listview.$result.before($container);
-				}
-			}
-			$container.html(pills + actions);
-			$container.find(".shopify-listing-status-pill").off("click").on("click", function () {
-				frappe.set_route("List", "Shopify Product Listing", JSON.parse($(this).attr("data-filter")));
-			});
-			$container.find(".shopify-listing-export-all").off("click").on("click", function () {
-				export_listings(listview, "all");
-			});
-			$container.find(".shopify-listing-export-option").off("click").on("click", function (e) {
-				e.preventDefault();
-				export_listings(listview, $(this).data("scope"));
-			});
-			$container.find(".shopify-listing-update-btn").off("click").on("click", function () {
-				open_update_listings_dialog(listview);
-			});
-			$container.find(".shopify-listing-enable-btn").off("click").on("click", function () {
-				open_enable_by_status_dialog(listview);
-			});
+			draw_shopify_status_banner(listview, pills);
 		},
+	});
+}
+
+// Split out of render_shopify_status_banner so the buttons can be drawn
+// without the counts. The counts need a store and the buttons do not -- each
+// button asks for one itself -- and without this split a bench that had not
+// been asked yet drew no banner at all, which left the seller with no way to
+// reach the question.
+function draw_shopify_status_banner(listview, pills) {
+	// Export/Update Listings/Enable-by-Status all moved out of the
+	// crowded header toolbar into this banner instead -- small
+	// icon buttons, not full-width header entries.
+	var actions =
+		'<span class="btn-group" style="margin-left:16px;">' +
+			'<button type="button" class="btn btn-xs btn-default shopify-listing-export-all"><i class="fa fa-download"></i> ' + __("Export Listings (CSV)") + '</button>' +
+			'<button type="button" class="btn btn-xs btn-default dropdown-toggle" data-toggle="dropdown" style="padding-left:4px;padding-right:6px;"></button>' +
+			'<ul class="dropdown-menu">' +
+				'<li><a href="#" class="shopify-listing-export-option" data-scope="all">' + __("All") + '</a></li>' +
+				'<li><a href="#" class="shopify-listing-export-option" data-scope="enabled">' + __("Enabled Only") + '</a></li>' +
+				'<li><a href="#" class="shopify-listing-export-option" data-scope="disabled">' + __("Disabled Only") + '</a></li>' +
+			'</ul>' +
+		'</span>' +
+		'<button type="button" class="btn btn-xs btn-default shopify-listing-update-btn" style="margin-left:8px;"><i class="fa fa-upload"></i> ' + __("Update Listings (CSV)") + '</button>' +
+		'<button type="button" class="btn btn-xs btn-default shopify-listing-enable-btn" style="margin-left:8px;"><i class="fa fa-check-circle"></i> ' + __("Enable Listings by Status") + '</button>';
+
+	var $container = listview.page.wrapper.find(".shopify-listing-status-block");
+	if (!$container.length) {
+		$container = $(
+			'<div class="shopify-listing-status-block" style="padding:8px 20px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;"></div>'
+		);
+		// Above the filter row (.page-form), not just above the list
+		// rows -- .page-form is the standard Frappe list view's
+		// ID/filter/sort row, sitting right below the title/header.
+		var $page_form = listview.page.wrapper.find(".page-form");
+		if ($page_form.length) {
+			$page_form.before($container);
+		} else {
+			// Fallback if this Frappe version's DOM doesn't have
+			// .page-form -- still show it somewhere rather than
+			// silently not inserting at all.
+			listview.$result.before($container);
+		}
+	}
+	$container.html(pills + actions);
+	$container.find(".shopify-listing-status-pill").off("click").on("click", function () {
+		frappe.set_route("List", "Shopify Product Listing", JSON.parse($(this).attr("data-filter")));
+	});
+	$container.find(".shopify-listing-export-all").off("click").on("click", function () {
+		export_listings(listview, "all");
+	});
+	$container.find(".shopify-listing-export-option").off("click").on("click", function (e) {
+		e.preventDefault();
+		export_listings(listview, $(this).data("scope"));
+	});
+	$container.find(".shopify-listing-update-btn").off("click").on("click", function () {
+		open_update_listings_dialog(listview);
+	});
+	$container.find(".shopify-listing-enable-btn").off("click").on("click", function () {
+		open_enable_by_status_dialog(listview);
 	});
 }
 
@@ -104,14 +198,16 @@ function open_enable_by_status_dialog(listview) {
 				frappe.msgprint(__("Pick at least one status."));
 				return;
 			}
-			frappe.call({
-				method: "alaiy_os_connector_shopify.api.sync.enable_listings_by_status",
-				args: { statuses: statuses },
-				callback: function (r) {
-					if (r.message && r.message.log_name) {
-						frappe.show_alert({ message: __("Enabling Listings in the background -- check Shopify Sync Log for progress."), indicator: "blue" }, 7);
-					}
-				},
+			with_shopify_connection(function (connection) {
+				frappe.call({
+					method: "alaiy_os_connector_shopify.api.sync.enable_listings_by_status",
+					args: { statuses: statuses, connection: connection },
+					callback: function (r) {
+						if (r.message && r.message.log_name) {
+							frappe.show_alert({ message: __("Enabling Listings in the background -- check Shopify Sync Log for progress."), indicator: "blue" }, 7);
+						}
+					},
+				});
 			});
 			dialog.hide();
 		},
@@ -126,17 +222,21 @@ function export_listings(listview, scope) {
 	if (scope === "enabled") args.only_enabled = "1";
 	if (scope === "disabled") args.only_disabled = "1";
 
-	// A checked selection is a deliberate, hand-picked list -- always
-	// download it directly, whatever the size.
-	if (checked.length) {
-		download_export_csv(args);
-		return;
-	}
+	with_shopify_connection(function (connection) {
+		args.connection = connection;
 
-	frappe.show_alert({ message: __("Building export in the background -- you'll get a download link when it's ready."), indicator: "blue" }, 6);
-	frappe.call({
-		method: "alaiy_os_connector_shopify.api.export.trigger_background_export",
-		args: args,
+		// A checked selection is a deliberate, hand-picked list -- always
+		// download it directly, whatever the size.
+		if (checked.length) {
+			download_export_csv(args);
+			return;
+		}
+
+		frappe.show_alert({ message: __("Building export in the background -- you'll get a download link when it's ready."), indicator: "blue" }, 6);
+		frappe.call({
+			method: "alaiy_os_connector_shopify.api.export.trigger_background_export",
+			args: args,
+		});
 	});
 }
 
@@ -144,7 +244,9 @@ function download_export_csv(args) {
 	// A file download needs a real GET navigation, not frappe.call (which
 	// parses the response as JSON) -- build the URL directly and let the
 	// browser handle the resulting file response, same pattern Frappe's own
-	// report/list exports use.
+	// report/list exports use. The store rides along in `args` like every other
+	// filter -- a GET has no other way to name it, and unnamed the endpoint
+	// refuses the download outright once the bench has more than one store.
 	var params = new URLSearchParams(args);
 	window.open("/api/method/alaiy_os_connector_shopify.api.export.export_listings_csv?" + params.toString());
 }
@@ -157,15 +259,17 @@ frappe.realtime.on("shopify_listings_export_ready", function (data) {
 });
 
 function run_update_listings(file_url) {
-	frappe.call({
-		method: "alaiy_os_connector_shopify.api.update_listings.trigger_update_listings",
-		args: { file_url: file_url },
-		callback: function () {
-			frappe.show_alert({
-				message: __("Updating Listings in the background -- every changed field is logged as a before/after diff on the Sync Log."),
-				indicator: "blue",
-			}, 6);
-		},
+	with_shopify_connection(function (connection) {
+		frappe.call({
+			method: "alaiy_os_connector_shopify.api.update_listings.trigger_update_listings",
+			args: { file_url: file_url, connection: connection },
+			callback: function () {
+				frappe.show_alert({
+					message: __("Updating Listings in the background -- every changed field is logged as a before/after diff on the Sync Log."),
+					indicator: "blue",
+				}, 6);
+			},
+		});
 	});
 }
 

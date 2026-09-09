@@ -102,7 +102,7 @@ _EXPORT_FIELD = {
 }
 
 
-def _selected(field_map, local_status):
+def _selected(field_map, local_status, connection=None):
     import frappe
 
     field = field_map.get(local_status)
@@ -112,7 +112,14 @@ def _selected(field_map, local_status):
         # as a guard, and permissive: a status with no checkbox is one nobody
         # chose to exclude.
         return True
-    value = connections.enabled_value(field)
+    # Read the checkbox off the store this run is for. Asking `enabled_value`
+    # instead was fine while a bench could only have one enabled store, but on
+    # a bench with several it answers None -- which the rule below reads as
+    # "never set" and the caller reads as "off". Either way the seller's own
+    # choice stops being consulted, so a store-gated import or push quietly
+    # does the wrong thing rather than saying so.
+    doc = connections.resolve_optional(connection)
+    value = doc.get(field) if doc else None
     # A field added to the settings after the single row already existed reads
     # back as None, not its declared default -- Frappe only applies a default
     # when a document is created. None means "never set", which for these
@@ -158,7 +165,7 @@ def search_filter(allowed=None):
     return " OR ".join(f"status:{s.lower()}" for s in statuses)
 
 
-def import_allows(shopify_status, allowed=None):
+def import_allows(shopify_status, allowed=None, connection=None):
     """True when a product with this Shopify status should be imported.
 
     allowed -- an explicit set from parse_statuses (a per-run choice on the
@@ -177,18 +184,22 @@ def import_allows(shopify_status, allowed=None):
     to exclude a status that has no checkbox, so an unmodelled one is
     imported rather than dropped, with _apply_product_meta logging that its
     status field was left unset.
+
+    `connection` names the store whose checkboxes decide, for the fallback
+    path. Unset resolves the way it always did, which is the only enabled
+    store on a single-store bench.
     """
     local = to_local(shopify_status)
     if allowed is not None:
         return local is not None and local in allowed
     if local is None:
         return True
-    return _selected(_IMPORT_FIELD, local)
+    return _selected(_IMPORT_FIELD, local, connection)
 
 
-def export_allows(local_status, allowed=None):
+def export_allows(local_status, allowed=None, connection=None):
     """True when a Listing holding this local status should be pushed."""
     local = (local_status or "").strip() or DEFAULT_LOCAL
     if allowed is not None:
         return local in allowed
-    return _selected(_EXPORT_FIELD, local)
+    return _selected(_EXPORT_FIELD, local, connection)

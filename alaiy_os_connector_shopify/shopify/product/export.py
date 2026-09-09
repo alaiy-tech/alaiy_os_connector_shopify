@@ -56,8 +56,14 @@ def push_item(item_code: str, allowed_statuses=None):
 
     # allowed_statuses is the dashboard's per-run choice; None means fall back to
     # the settings checkboxes, which is what a doc_event-driven push does.
+    # The store is read off the Listing rather than asked of the bench: on a
+    # bench with several enabled stores there is no single answer to ask for,
+    # and getting None back would read as "not selected" and stop the push
+    # without saying anything.
     listing = listing_resolver.get_listing(item.variant_of or item.name)
-    if listing and not status_map.export_allows(listing.sh_shopify_status, allowed_statuses):
+    if listing and not status_map.export_allows(
+        listing.sh_shopify_status, allowed_statuses, listing.get("connection")
+    ):
         return
 
     if item.variant_of:
@@ -135,7 +141,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None, c
             # nothing sent, which reads as a failed push rather than a skip.
             if allowed_statuses is not None:
                 current = frappe.db.get_value("Item", item_code, "sh_shopify_status")
-                if not status_map.export_allows(current, allowed_statuses):
+                if not status_map.export_allows(current, allowed_statuses, connection):
                     skipped_status += 1
                     continue
             try:
@@ -254,7 +260,8 @@ def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None, con
             filters={"is_enabled": 0},
             fields=["name", "sh_shopify_status"],
         )
-        matched = [r.name for r in disabled if status_map.export_allows(r.sh_shopify_status, allowed_statuses)]
+        matched = [r.name for r in disabled
+                   if status_map.export_allows(r.sh_shopify_status, allowed_statuses, connection)]
         log.pages_total = len(matched)
         log.save(ignore_permissions=True)
         frappe.db.commit()

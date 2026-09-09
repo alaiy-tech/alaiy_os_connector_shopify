@@ -311,7 +311,7 @@ def run_inventory_push(trigger="manual", log_name=None, connection=None):
                 break
             _backfill_missing_default_warehouse(warehouse)
             cancelled = _push_warehouse_to_location(
-                client, warehouse, location_id, last_success_time, log, totals)
+                client, settings, warehouse, location_id, last_success_time, log, totals)
             if cancelled:
                 break
 
@@ -351,23 +351,41 @@ def _resolve_location_pairs(settings, client):
     return []
 
 
-def _push_warehouse_to_location(client, warehouse, location_id, last_success_time, log, totals):
+def _push_warehouse_to_location(client, connection, warehouse, location_id, last_success_time, log, totals):
     """Push one warehouse's bin quantities to one Shopify location. Same
-    change-detection + no-op-skip optimization as before, scoped per warehouse."""
+    change-detection + no-op-skip optimization as before, scoped per warehouse.
+
+    `connection` is the store being pushed to, and every catalogue read below
+    has to carry it. This runs on the 5-minute schedule fanned out per store,
+    and a variant id only means anything inside the shop that issued it --
+    unscoped, one seller's variant ids get sent to another seller's Shopify
+    with that seller's credentials, so the write either fails or lands on
+    whatever variant happens to share the id in the wrong merchant's shop."""
     from alaiy_os_connector_shopify.shopify.graphql_client import new_idempotency_key
 
     items = frappe.get_all(
         "Item",
-        filters=[["sh_shopify_variant_id", "is", "set"]],
+        filters=owned_by("Item", connection, {"sh_shopify_variant_id": ["is", "set"]}),
         fields=["name", "sh_shopify_variant_id"],
     )
     # Listing Variant's copy wins where it has one -- bulk-resolved
     # (one query) rather than a per-item lookup, to keep this scan cheap.
+    #
+    # Scoped through the parent, not with owned_by: a Listing Variant is a
+    # child row and carries no store of its own, so filtering it directly on
+    # a connection column matches nothing and silently empties this map --
+    # every variant would then fall back to the Item's own id.
     listing_ids = {
         r.item_variant: r.sh_shopify_variant_id
         for r in frappe.get_all(
             "Shopify Listing Variant",
-            filters=[["sh_shopify_variant_id", "is", "set"]],
+            filters={
+                "sh_shopify_variant_id": ["is", "set"],
+                "parent": ["in", frappe.get_all(
+                    "Shopify Product Listing",
+                    filters=owned_by("Shopify Product Listing", connection, {}),
+                    pluck="name")],
+            },
             fields=["item_variant", "sh_shopify_variant_id"],
         )
     }
@@ -381,7 +399,8 @@ def _push_warehouse_to_location(client, warehouse, location_id, last_success_tim
             "Bin", filters={"modified": [">", last_success_time], "warehouse": warehouse},
             pluck="item_code")
         new_items = frappe.db.get_all(
-            "Item", filters={"creation": [">", last_success_time], "sh_shopify_variant_id": ["is", "set"]},
+            "Item", filters=owned_by("Item", connection, {
+                "creation": [">", last_success_time], "sh_shopify_variant_id": ["is", "set"]}),
             pluck="name")
         codes = set(changed + new_items)
         items = [i for i in items if i.name in codes]
@@ -790,7 +809,12 @@ def _resolve_warehouse_for_location(location_id, connection=None):
         "Shopify Location Map", {"shopify_location": location}, "warehouse")
     if warehouse:
         return warehouse
-    settings = connections.enabled_connection()
+    # The default warehouse belongs to the store this location was resolved
+    # against, not to "the bench's one enabled store" -- there is no such
+    # thing once a second seller connects, and reading it that way returned
+    # None on every multi-store bench, so an unmapped location stopped
+    # falling back at all and its inbound stock was silently dropped.
+    settings = connections.resolve(connection) if connection else connections.enabled_connection()
     return settings.sh_default_warehouse if settings else None
 
 
@@ -917,8 +941,13 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
 
     Returns {"checked", "corrections", "applied", "unlinked", "unmapped"}.
     """
-    settings = connections.enabled_connection()
-    if not settings:
+    # resolve_optional, not enabled_connection: the latter answers None once a
+    # second store is switched on, which this read as "connector disabled" and
+    # refused to run for anybody. Resolving keeps the genuinely-disabled bench
+    # returning the same skip it always did, while a caller that named a store
+    # gets that store.
+    connection = connections.resolve_optional(connection)
+    if not connection:
         return {"skipped": "connector disabled"}
 
     item_codes = [c for c in (item_codes or []) if c]
@@ -957,7 +986,6 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
     unlinked = [r.name for r in rows if not r.sh_shopify_inventory_item_id]
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    connection = connections.resolve(connection)
     client = ShopifyGraphQLClient(connection)
 
     corrections = []
@@ -1057,8 +1085,13 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None)
 
     dry_run=True reports what would change without writing.
     """
-    settings = connections.enabled_connection()
-    if not settings:
+    # enqueue_reconcile_inventory already fans this out one job per store and
+    # names the store in `connection`; reading enabled_connection() instead
+    # threw that away and, since it is None whenever two stores are on, turned
+    # the daily backstop off for the whole bench. resolve_optional keeps the
+    # skip for a bench with nothing enabled.
+    connection = connections.resolve_optional(connection)
+    if not connection:
         return {"skipped": "connector disabled"}
 
     # Shares the "inventory" sync slot with run_inventory_pull/push: all
@@ -1068,7 +1101,6 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None)
     # A windowed run skips the shared slot on purpose: the point of taking a
     # window is to run several at once, and they cannot collide when each one
     # covers a different slice of the catalogue.
-    connection = connections.resolve(connection)
 
     # Per store, not bench-wide: has_active_sync already keys on the
     # connection, the call just never passed one -- so one seller's running

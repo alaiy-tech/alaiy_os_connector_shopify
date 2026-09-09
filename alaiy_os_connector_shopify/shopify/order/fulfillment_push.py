@@ -101,7 +101,7 @@ def _open_fulfillment_order_line_items(client, order_gid):
     return by_fulfillment_order, location_by_fulfillment_order
 
 
-def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order):
+def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order, connection=None):
     """
     Matches each Delivery Note item to the Shopify fulfillment-order line
     item it corresponds to (by variant id first, SKU as fallback -- same as
@@ -112,6 +112,11 @@ def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order):
     everything still open on the order.
 
     Returns (fulfillment_input_per_order: dict, unmatched_item_codes: list).
+
+    `connection` is the store the Delivery Note is being fulfilled against. A
+    Shopify variant id only identifies a variant inside one shop, so matching
+    without it can hand back a different seller's Item -- which here would push
+    a fulfillment for a line the order never contained.
     """
     qty_by_item = {}
     for item in dn.items:
@@ -123,7 +128,7 @@ def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order):
         matched = []
         for li in line_items:
             variant_id = str((li.get("variant") or {}).get("legacyResourceId") or "")
-            item_code = listing_resolver.item_by_variant_id(variant_id) if variant_id else None
+            item_code = listing_resolver.item_by_variant_id(variant_id, connection) if variant_id else None
             if not item_code:
                 sku = (li.get("sku") or "").strip()
                 if sku and frappe.db.exists("Item", sku):
@@ -211,7 +216,7 @@ def push_delivery_note_fulfillment(delivery_note: str, tracking_number: str = No
         )
         return {"ok": False, "reason": "no_open_fulfillment_orders"}
 
-    fulfillment_input_per_order, unmatched = _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order)
+    fulfillment_input_per_order, unmatched = _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order, conn)
     if unmatched:
         frappe.log_error(
             title=f"Shopify: fulfillment push for {dn.name} could not match every item",

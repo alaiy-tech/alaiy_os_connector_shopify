@@ -320,7 +320,7 @@ def _resolve_item_code(line_item, connection=None):
     if variant_id:
         # Listing Variant's copy first (owning row), Item as fallback --
         # same helper already used elsewhere for this exact reverse lookup.
-        by_variant = listing_resolver.item_by_variant_id(variant_id)
+        by_variant = listing_resolver.item_by_variant_id(variant_id, connection)
         if by_variant:
             return by_variant
 
@@ -433,7 +433,7 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
                 importer._import_product_inner(node, connection)
                 product_variants = (node.get("variants") or {}).get("nodes") or []
 
-        item_code = (listing_resolver.item_by_variant_id(variant_id) if variant_id else None)
+        item_code = (listing_resolver.item_by_variant_id(variant_id, connection) if variant_id else None)
         if not item_code and sku and frappe.db.exists("Item", sku):
             item_code = sku
 
@@ -451,7 +451,7 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
             if len(product_variants) == 1:
                 only = product_variants[0]
                 item_code = (
-                    listing_resolver.item_by_variant_id(str(only.get("legacyResourceId") or ""))
+                    listing_resolver.item_by_variant_id(str(only.get("legacyResourceId") or ""), connection)
                     or (only.get("sku") if frappe.db.exists("Item", only.get("sku")) else None)
                 )
         if item_code:

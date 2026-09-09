@@ -352,7 +352,7 @@ def get_collection_products(collection_name: str):
                 item_code = None
                 if pid:
                     # Listing-based lookup first, falls back to Item.
-                    item_code = listing_resolver.template_by_product_id(pid)
+                    item_code = listing_resolver.template_by_product_id(pid, conn)
                 products.append({
                     "title": n.get("title"),
                     "image": (((n.get("featuredMedia") or {}).get("preview") or {}).get("image") or {}).get("url"),
@@ -471,17 +471,26 @@ def toggle_collection_channel(collection_name: str, publication_id: str, publish
         return {"ok": False, "error": "See Error Log."}
 
 
-def _set_item_collections(item, collection_titles: list):
+def _set_item_collections(item, collection_titles: list, connection=None):
     """
     Set sh_shopify_collections (Table MultiSelect of Item Shopify Collection
     rows) from a list of collection titles. Only titles that already exist as
     Shopify Collection docs are linked -- unlike tags we do NOT auto-create the
     master here, since a collection is a real Shopify object with an id, created
     via the Sync Collections action or the collections/create webhook.
+
+    Matched by title, which is the only thing a product node tells us about its
+    collections -- and a title is far weaker than an id: "Summer Sale" is a name
+    two unrelated sellers will both pick. Without the store, the first one
+    imported wins and the second seller's Items link to a collection they
+    cannot even see.
     """
     rows = []
     for title in collection_titles:
-        name = frappe.db.get_value("Shopify Collection", {"collection_title": title}, "name")
+        name = frappe.db.get_value(
+            "Shopify Collection",
+            owned_by("Shopify Collection", connection, {"collection_title": title}),
+            "name")
         if name:
             rows.append({"shopify_collection": name})
     item.set("sh_shopify_collections", rows)
@@ -731,10 +740,15 @@ def handle_collection_webhook(topic, payload, connection=None):
             "image": {"url": (payload.get("image") or {}).get("src")} if payload.get("image") else None,
             "ruleSet": {"rules": payload.get("rules")} if payload.get("rules") else None,
         }
-        # ponytail: webhook carries no connection yet -- the shop domain that
-        # identifies the store is read in api/webhooks.py and not passed down.
-        # Threading it through _dispatch is the webhook half of this work.
-        _upsert_collection_cache(node, connection or _webhook_connection(payload))
+        # The webhook does carry its store now: api/webhooks.py attributes the
+        # delivery from X-Shopify-Shop-Domain -- the same header the HMAC is
+        # checked against, and one it refuses the delivery over when it cannot
+        # match -- and _dispatch passes that name down to here. So there is
+        # nothing left to fall back to, and the fallback that used to be here
+        # was the harmful half anyway: it asked the bench for "the" enabled
+        # store, which on a bench with several is None and on a bench with one
+        # was an answer this handler already had.
+        _upsert_collection_cache(node, connection)
         frappe.db.commit()
     except Exception:
         frappe.log_error(
@@ -742,19 +756,3 @@ def handle_collection_webhook(topic, payload, connection=None):
             message=frappe.get_traceback(),
         )
 
-
-def _webhook_connection(payload):
-    """
-    The store a collection webhook is for, when it can be told.
-
-    The shop domain that identifies it is checked in api/webhooks.py to pick
-    the secret the HMAC is verified against, but is not passed down to the
-    handlers yet. Until it is, this falls back to the bench's own answer:
-    unambiguous while one store is enabled, and None once several are, which
-    leaves the cache row unattributed rather than attributed to the wrong
-    seller.
-    """
-    from alaiy_os_connector_shopify import connections
-
-    doc = connections.enabled_connection()
-    return doc.name if doc else None

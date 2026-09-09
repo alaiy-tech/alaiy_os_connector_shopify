@@ -9,23 +9,26 @@ is now Shopify Connection, a normal DocType, so one bench can hold many stores
 -- which self-serve needs, where every seller shares a site.
 
 Benches are already running the single-store shape, so `resolve()` answers the
-old question too. A caller that names no connection gets:
+old question too. A caller that names no connection gets the only ENABLED
+connection, when there is exactly one -- which is every single-store bench,
+and is why none of them had to change -- and otherwise a refusal.
 
-  1. the one flagged `is_default`, if any -- which the upgrade patch sets on the
-     row it migrates out of tabSingles;
-  2. the only connection, when there is exactly one, which is every
-     single-store bench and is why none of them had to change;
+Enabled is the part that matters. A disabled connection is a store this bench
+does no work for: an old row left switched off, or one that exists only to
+read a seller's catalogue through the API. Counting those would make a site
+with one live store and one retired row look ambiguous and refuse every
+unnamed call, which is not ambiguity, it is one store.
 
-and otherwise a refusal. That last case is the important one: on a bench with
-several stores, an unnamed call is a bug, and guessing which store it meant
-would push one seller's stock to another seller's shop. It has to be louder
-than that.
+Where several stores really are enabled they are all equally real, there is
+nothing to choose between them, and an unnamed call is a bug in the caller:
+it should carry the connection of the document it is working on. Guessing
+would push one seller's stock to another seller's shop, so it fails loudly.
 
-There is deliberately no third rule falling back to the connection *named*
-"default". It looks harmless -- that is what the patch calls the migrated row
--- but on a multi-tenant bench it would quietly hand an unnamed call the first
-store instead of refusing, which is the whole failure this is meant to prevent.
-Rules 1 and 2 already cover every upgraded bench between them.
+No fallback to a flagged default, and none to the connection *named*
+"default" either. Both look harmless and both do the same damage: they hand
+an unnamed call some arbitrary store rather than surfacing the missing
+argument. `is_default` still exists as a label -- it records which row the
+Single became -- but nothing routes on it.
 
 `resolve_optional` exists for the callers that must not raise: document events
 fire on every Item and Sales Order save on the bench, including saves that have
@@ -76,26 +79,34 @@ def resolve_name(connection=None) -> str:
             frappe.throw(_("No Shopify connection {0}.").format(name), NoConnection)
         return name
 
-    default = frappe.db.get_value(DOCTYPE, {"is_default": 1}, "name")
-    if default:
-        return default
+    # Only enabled connections are candidates. A disabled one is a store this
+    # bench does no work for, so counting it would make a site with one live
+    # store and an old switched-off row look ambiguous and refuse -- which is
+    # what it did.
+    candidates = enabled_names()
+    if len(candidates) == 1:
+        return candidates[0]
 
-    all_names = names()
-    if len(all_names) == 1:
-        return all_names[0]
-
-    if not all_names:
+    if not candidates:
+        # Nothing enabled. Say which of the two situations it is, since the
+        # fix differs: set a connection up, or switch one on.
+        if names():
+            frappe.throw(
+                _("No Shopify connection is enabled on this site."), NoConnection
+            )
         frappe.throw(
             _("No Shopify connection has been set up on this site."), NoConnection
         )
 
-    # Several, none marked default. Picking one would act on the wrong store,
-    # which is worse than failing.
+    # Several enabled stores, all equally real. There is nothing to choose
+    # between them, and picking one would act on some seller's shop because
+    # of the order they were created in. An unnamed call here is a bug in the
+    # caller -- it should carry the connection of the document it is working
+    # on -- so it fails loudly rather than guessing.
     frappe.throw(
         _(
-            "This site has {0} Shopify connections, so the call has to name one. "
-            "Mark one as the default connection, or pass its id."
-        ).format(len(all_names)),
+            "This site has {0} enabled Shopify connections, so the call has to name one."
+        ).format(len(candidates)),
         NoConnection,
     )
 
@@ -294,15 +305,13 @@ def create(
     which, so a multi-tenant bench can tell its rows from ones created by hand
     in the desk.
 
-    `is_default` is off unless asked for, and deliberately so. Flagging the
-    first connection would look harmless on a single-store bench and be a
-    cross-tenant write on a multi-tenant one: every later call that named no
-    connection would quietly act on the first seller's store instead of
-    refusing. A bench with exactly one connection already resolves it without
-    the flag, so nothing needs it.
+    `is_default` is off unless asked for. Resolution does not read it -- a
+    bench with one connection resolves that one, and a bench with several
+    refuses an unnamed call rather than picking -- so it is a label, not a
+    routing rule.
 
-    `is_enabled` is off for the same shape of reason. Switching a connection on
-    registers webhooks and arms this connector's Item/Sales Order document
+    `is_enabled` is off unless asked for, deliberately. Switching a connection
+    on registers webhooks and arms this connector's Item/Sales Order document
     events; an app that wants the API client and nothing else must not get
     those by default.
     """
