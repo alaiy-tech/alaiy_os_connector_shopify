@@ -366,6 +366,11 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
 
     listing = frappe.new_doc("Shopify Product Listing")
     listing.item = tmpl.name
+    # Copied from the Item, not resolved independently -- the Listing has to
+    # agree with the Item it was built from, and every owned_by("Shopify
+    # Product Listing", ...) lookup elsewhere in this connector depends on
+    # this being set, not left blank.
+    listing.connection = tmpl.sh_shopify_connection or None
     listing.is_enabled = 1 if default_enabled else 0
     listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
     # sh_shopify_product_id is a real, independently-writable field (not a
