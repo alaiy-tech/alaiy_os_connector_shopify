@@ -412,8 +412,15 @@ def _import_product_for_order_line(variant_id: str, sku: str = None, product_id:
             return None
 
         product_variants = []
+        # first: 1, not 5 -- query: "id:<product_id>" can only ever match the
+        # one product with that id, so asking for 5 just multiplied this
+        # already-expensive query's cost for nothing. Confirmed live: at 5,
+        # _PRODUCTS_QUERY (built for the bulk import sweep, not a
+        # single-product rescue) exceeded Shopify's 1000-point single-query
+        # cost limit outright (measured 1066) and this whole rescue always
+        # failed.
         for page in client.execute_paginated(
-                _PRODUCTS_QUERY, {"first": 5, "query": f"id:{product_id}"}, ["products"]):
+                _PRODUCTS_QUERY, {"first": 1, "query": f"id:{product_id}"}, ["products"]):
             for node in page:
                 if str(node.get("legacyResourceId")) != product_id:
                     continue
