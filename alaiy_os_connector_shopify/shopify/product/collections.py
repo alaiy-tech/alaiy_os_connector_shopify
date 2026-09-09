@@ -69,7 +69,7 @@ query CollectionProducts($id: ID!, $after: String) {
           legacyResourceId
           title
           handle
-          featuredImage { url }
+          featuredMedia { preview { image { url } } }
           variants(first: 1) { nodes { price sku } }
         }
       }
@@ -355,7 +355,7 @@ def get_collection_products(collection_name: str):
                     item_code = listing_resolver.template_by_product_id(pid)
                 products.append({
                     "title": n.get("title"),
-                    "image": (n.get("featuredImage") or {}).get("url"),
+                    "image": (((n.get("featuredMedia") or {}).get("preview") or {}).get("image") or {}).get("url"),
                     "price": (variant[0] or {}).get("price"),
                     "sku": sku,
                     "item_code": item_code,

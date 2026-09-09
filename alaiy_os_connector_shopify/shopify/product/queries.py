@@ -67,10 +67,29 @@ query PullProducts($after: String, $query: String) {
           name
           values
         }
-        images(first: 10) {
+        # Product.images is deprecated (superseded by media). preview.image
+        # is the one path that works for every media type, so a video or 3D
+        # model yields its poster frame here rather than vanishing -- while
+        # mediaContentType lets the caller keep only real images.
+        featuredMedia {
+          preview {
+            image {
+              url
+            }
+          }
+        }
+        media(first: 25) {
           nodes {
             id
-            src
+            mediaContentType
+            preview {
+              image {
+                url
+                altText
+                width
+                height
+              }
+            }
           }
         }
         variants(first: 100) {
@@ -107,7 +126,14 @@ query PullProducts($after: String, $query: String) {
                   location {
                     legacyResourceId
                   }
-                  quantities(names: ["available"]) {
+                  # available is what can still be sold; on_hand is what is
+                  # physically there. They diverge by whatever is committed
+                  # to unfulfilled orders, so available alone can't tell a
+                  # real stock-out from stock already spoken for. Naming
+                  # more states costs nothing extra -- the cost ceiling is
+                  # driven by the inventoryLevels page size above.
+                  quantities(names: ["available", "on_hand", "committed", "incoming"]) {
+                    name
                     quantity
                   }
                 }

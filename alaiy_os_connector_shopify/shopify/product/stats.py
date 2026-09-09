@@ -37,9 +37,9 @@ query Catalog($first: Int!, $after: String) {
         status
         totalInventory
         descriptionHtml
-        featuredImage { id }
+        featuredMedia { id }
         variants(first: 250) {
-          nodes { legacyResourceId sku price image { id } }
+          nodes { legacyResourceId sku price media(first: 1) { nodes { id } } }
         }
       }
     }
@@ -87,7 +87,7 @@ def _pull_catalog(client, progress_every=10):
             products[pid] = {
                 "status": node["status"],
                 "total_inventory": node.get("totalInventory"),
-                "has_image": bool(node.get("featuredImage")),
+                "has_image": bool(node.get("featuredMedia")),
                 "has_description": bool((node.get("descriptionHtml") or "").strip()),
                 "variant_count": len(v_nodes),
             }
@@ -96,7 +96,7 @@ def _pull_catalog(client, progress_every=10):
                     "sku": v.get("sku") or "",
                     "product_id": pid,
                     "price": v.get("price"),
-                    "has_image": bool(v.get("image")),
+                    "has_image": bool(((v.get("media") or {}).get("nodes") or [])),
                 }
         pages += 1
         if progress_every and pages % progress_every == 0:

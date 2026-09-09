@@ -9,7 +9,7 @@ from frappe.utils import flt
 from alaiy_os_connector_shopify.shopify.order.locking import _acquire_order_lock, _release_order_lock
 from alaiy_os_connector_shopify.shopify.order.customer import _get_or_create_customer
 from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_warehouse, _resolve_warehouse_for_item
-from alaiy_os_connector_shopify.shopify.order.utils import _resolve_item_code
+from alaiy_os_connector_shopify.shopify.order.utils import _format_risk_detail, _resolve_item_code
 from alaiy_os_connector_shopify.shopify.order.delivery_notes import (
     _sync_fulfillments,
     _create_delivery_note_if_needed,
@@ -274,6 +274,13 @@ def _upsert_order_unlocked(order, order_id, connection=None):
     so.sh_financial_status = order.get("financial_status", "")
     so.sh_fulfillment_status = order.get("fulfillment_status", "")
     so.sh_shopify_notes = order.get("note") or ""
+    # Shopify's fraud verdict. Only the pull path carries it -- the REST
+    # webhook payload has no risk block at all -- so leave whatever a prior
+    # sync stored rather than blanking a real HIGH on a webhook update.
+    if "risk_level" in order:
+        so.sh_risk_level = order.get("risk_level") or ""
+        so.sh_risk_recommendation = order.get("risk_recommendation") or ""
+        so.sh_risk_detail = _format_risk_detail(order.get("risk_assessments") or [])
     # The method NAME, independent of what it cost. The shipping charge
     # itself rides on the Sales Taxes and Charges table (charges.py), which
     # skips the row entirely when shipping is free -- so that description
