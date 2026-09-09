@@ -79,6 +79,9 @@ class _Listing:
         getattr(self, table).append(_Row(**row))
         return row
 
+    def get(self, fieldname, default=None):
+        return getattr(self, fieldname, default)
+
 
 def _fill(listing, template=None, variants=None, monkey_price=None):
     template = template or types.SimpleNamespace(
