@@ -129,13 +129,13 @@ def _update_order_unlocked(order, order_id, connection=None):
     # it here too rather than only at create time.
     for fulfillment in fulfillments:
         if fulfillment.get("display_status") or fulfillment.get("shipment_status"):
-            _sync_tracking({**fulfillment, "order_id": order_id})
+            _sync_tracking({**fulfillment, "order_id": order_id}, connection)
 
     # Payment or fulfillment landed (orders/paid, orders/fulfilled, or an
     # orders/updated flipping either) -- create the Sales Invoice if the
     # trigger is now met and we haven't already.
     from alaiy_os_connector_shopify.shopify.order.invoice import create_sales_invoice_if_paid
-    create_sales_invoice_if_paid(so_name, financial_status, fulfillment_status)
+    create_sales_invoice_if_paid(so_name, financial_status, fulfillment_status, connection=connection)
     return False
 
 

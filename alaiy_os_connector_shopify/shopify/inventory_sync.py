@@ -1098,7 +1098,10 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None)
                     # would dump every unmapped supplier's stock into the
                     # default warehouse and report success. Report it instead.
                     location = frappe.db.get_value(
-                        "Shopify Location", {"sh_location_id": str(location_id)}, "name")
+                        "Shopify Location",
+                        owned_by("Shopify Location", connection.name,
+                                 {"sh_location_id": str(location_id)}),
+                        "name")
                     warehouse = frappe.db.get_value(
                         "Shopify Location Map", {"shopify_location": location},
                         "warehouse") if location else None

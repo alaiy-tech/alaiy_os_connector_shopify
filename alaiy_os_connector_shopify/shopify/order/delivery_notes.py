@@ -320,7 +320,8 @@ def _sync_tracking(fulfillment, connection=None):
     if not fulfillment_id:
         return
     dn_name = frappe.db.get_value(
-        "Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}, "name")
+        "Delivery Note", owned_by("Delivery Note", connection,
+                                  {"sh_shopify_fulfillment_id": fulfillment_id}), "name")
 
     if not dn_name:
         order_id = str(fulfillment.get("order_id") or "")

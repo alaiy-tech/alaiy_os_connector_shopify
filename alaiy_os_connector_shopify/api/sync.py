@@ -323,6 +323,7 @@ def refresh_shopify_tags(connection=None):
         "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
         queue="long",
         timeout=300,
+        connection=connection,
     )
     return {"queued": True}
 
