@@ -21,7 +21,22 @@ def _load(connection_names, columns=None, doctypes=None):
 
     frappe = types.ModuleType("frappe")
 
-    def has_column(table, column):
+    def has_column(doctype, column):
+        """
+        Stands in for frappe.db.has_column, which takes a *doctype* and
+        prefixes "tab" itself.
+
+        The signature is the assertion. This stub used to name its first
+        argument `table` and accept whatever it was handed, so a patch passing
+        `tab{doctype}` through it read as correct here and asked the real one
+        for `tabtabItem` -- which does not return "no columns", it raises
+        TableMissingError. That reached a production migrate.
+        """
+        if doctype.startswith("tab"):
+            raise AssertionError(
+                f"has_column takes a doctype, not a table name: {doctype!r}"
+            )
+        table = f"tab{doctype}"
         return True if columns is None else (table, column) in columns
 
     def exists(doctype, name=None):

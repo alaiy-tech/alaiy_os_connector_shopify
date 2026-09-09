@@ -103,14 +103,18 @@ def _stamp(doctype: str, connection: str, marker: str = None) -> None:
 
 	if not frappe.db.exists("DocType", doctype):
 		return
-	if not frappe.db.has_column(table, field):
+	# The doctype, not `table`. has_column prefixes "tab" itself, so handing it
+	# one asks for `tabtabItem`, and get_table_columns raises TableMissingError
+	# on a table that is not there rather than returning no columns -- so the
+	# skip below became a failed migrate on the first doctype that did exist.
+	if not frappe.db.has_column(doctype, field):
 		# The column arrives with this release's migrate. If it is missing the
 		# schema sync has not run yet, and writing would fail rather than skip.
 		return
 
 	where = [f"(`{field}` IS NULL OR `{field}` = '')"]
 	if marker:
-		if not frappe.db.has_column(table, marker):
+		if not frappe.db.has_column(doctype, marker):
 			return
 		where.append(f"(`{marker}` IS NOT NULL AND `{marker}` != '')")
 
@@ -144,11 +148,12 @@ def _count_unattributed(doctype: str, field: str, marker: str) -> int:
 	table = f"tab{doctype}"
 	if not frappe.db.exists("DocType", doctype):
 		return 0
-	if not frappe.db.has_column(table, field):
+	# The doctype, not `table` -- see _stamp.
+	if not frappe.db.has_column(doctype, field):
 		return 0
 	where = [f"(`{field}` IS NULL OR `{field}` = '')"]
 	if marker:
-		if not frappe.db.has_column(table, marker):
+		if not frappe.db.has_column(doctype, marker):
 			return 0
 		where.append(f"(`{marker}` IS NOT NULL AND `{marker}` != '')")
 	rows = frappe.db.sql(
