@@ -69,14 +69,6 @@ _STATE_CACHE_PREFIX = "shopify_connector_oauth_state"
 # the app's client secret, or later an access token, to a host they own.
 _SHOP_DOMAIN_RE = r"^[a-z0-9][a-z0-9-]*\.myshopify\.com$"
 
-# Where the callback may send the seller back to. An allow-list, not a
-# passthrough: the return path is echoed into a redirect, so accepting an
-# arbitrary one would turn the callback into an open redirect.
-_RETURN_PATHS = {
-    "connection": "/app/shopify-connection",
-}
-_DEFAULT_RETURN = "/app/shopify-connection"
-
 
 def _app_client_id() -> str:
     """The Alaiy OS Shopify app's Client ID. One app, set once in
@@ -171,11 +163,7 @@ def consume_state(state: str):
         return None
 
 
-def return_path_for(key: str) -> str:
-    return _RETURN_PATHS.get(key or "", _DEFAULT_RETURN)
-
-
-def build_install_url(shop: str, connection_id: str = None, label: str = None, return_to: str = None):
+def build_install_url(shop: str, connection_id: str = None, label: str = None):
     """Authorization URL plus the state bound to this session and shop.
 
     `connection_id` names an existing Shopify Connection to reconnect
@@ -191,7 +179,6 @@ def build_install_url(shop: str, connection_id: str = None, label: str = None, r
         "user": frappe.session.user,
         "connection_id": connection_id or "",
         "label": label or "",
-        "return_to": return_to if return_to in _RETURN_PATHS else "",
     })
 
     query = urlencode({

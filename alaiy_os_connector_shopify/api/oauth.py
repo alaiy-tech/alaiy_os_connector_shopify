@@ -20,7 +20,7 @@ def is_configured():
 
 
 @frappe.whitelist()
-def start_install(shop: str, connection_id: str = None, label: str = None, return_to: str = None):
+def start_install(shop: str, connection_id: str = None, label: str = None):
     """
     Builds the Shopify authorize URL for this shop and returns it for the
     browser to redirect to.
@@ -32,7 +32,7 @@ def start_install(shop: str, connection_id: str = None, label: str = None, retur
     """
     if connection_id:
         require_access(connection_id, "write")
-    url, _state = oauth.build_install_url(shop, connection_id=connection_id, label=label, return_to=return_to)
+    url, _state = oauth.build_install_url(shop, connection_id=connection_id, label=label)
     return {"redirect_url": url}
 
 
@@ -46,7 +46,11 @@ def callback():
     frappe.session.user.
     """
     params = frappe.local.request.args.to_dict()
-    return_to = oauth.return_path_for(None)
+    # A form route, not the list -- show_oauth_result_if_returning only runs
+    # from Shopify Connection's own refresh handler, which needs an open
+    # form to fire on. "new" always resolves to one even when nothing was
+    # ever created (the failure path has no saved row to point at instead).
+    failure_route = "/app/shopify-connection/new"
 
     try:
         if not oauth.verify_callback_hmac(params):
@@ -64,8 +68,6 @@ def callback():
             # different shop than it was issued for.
             frappe.throw(_("This connection attempt does not match the store it was started for."))
 
-        return_to = oauth.return_path_for(state_payload.get("return_to"))
-
         code = params.get("code")
         if not code:
             frappe.throw(_("Shopify did not send back an authorization code."))
@@ -82,12 +84,15 @@ def callback():
             label=state_payload.get("label") or shop_identity.get("name") or None,
         )
 
+        # The connection's own form, not the list -- show_oauth_result_if_returning
+        # only runs from Shopify Connection's refresh handler, which needs an
+        # open form to fire on at all.
         frappe.local.response["type"] = "redirect"
-        frappe.local.response["location"] = f"{return_to}?shopify_connected={conn.name}"
+        frappe.local.response["location"] = f"/app/shopify-connection/{conn.name}?shopify_connected={conn.name}"
     except Exception:
         frappe.log_error(
             title="Shopify OAuth: install failed",
             message=frappe.get_traceback(),
         )
         frappe.local.response["type"] = "redirect"
-        frappe.local.response["location"] = f"{return_to}?shopify_connect_error=1"
+        frappe.local.response["location"] = f"{failure_route}?shopify_connect_error=1"
