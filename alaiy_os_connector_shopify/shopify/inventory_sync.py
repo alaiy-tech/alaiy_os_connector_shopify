@@ -654,16 +654,38 @@ def apply_pulled_stock(corrections):
         if flt(c["qty"]) < 0:
             skipped.append((c["item_code"], f"negative qty from Shopify: {c['qty']}"))
             continue
-        rows_by_warehouse.setdefault(c["warehouse"], []).append(c)
+        # Third instance of the same rule: Stock Reconciliation rejects the
+        # ENTIRE document when one item appears twice for the same warehouse
+        # ("Row #37: Same item and warehouse combination already entered"), so
+        # nine duplicate rows took down a batch of a hundred real corrections.
+        #
+        # A duplicate is not bad data. Corrections are built one per Shopify
+        # LOCATION, and several locations can resolve to one warehouse -- two
+        # mapped to it deliberately, or, much more easily, any location with
+        # no Shopify Location Map row at all, since _resolve_warehouse_for_location
+        # falls back to the default warehouse for those. An item stocked at two
+        # such locations produces two rows naming the same warehouse.
+        #
+        # They are summed rather than deduplicated. If a warehouse really does
+        # stand behind two locations then it physically holds both quantities,
+        # and keeping only one would write a stock level that is short by the
+        # other -- silently, and then "corrected" to the same wrong number on
+        # every subsequent run.
+        rows = rows_by_warehouse.setdefault(c["warehouse"], {})
+        existing = rows.get(c["item_code"])
+        if existing:
+            existing["qty"] = flt(existing["qty"]) + flt(c["qty"])
+        else:
+            rows[c["item_code"]] = dict(c)
 
     reconciliations, by_warehouse = [], {}
     # One document per warehouse: company is resolved per-warehouse, and this
     # keeps a bad row in one warehouse from blocking another's correction.
-    for warehouse, rows in rows_by_warehouse.items():
+    for warehouse, rows_by_item in rows_by_warehouse.items():
         sr = frappe.new_doc("Stock Reconciliation")
         sr.company = frappe.db.get_value("Warehouse", warehouse, "company")
         sr.purpose = "Stock Reconciliation"
-        for c in rows:
+        for c in rows_by_item.values():
             sr.append("items", {
                 "item_code": c["item_code"],
                 "warehouse": warehouse,
