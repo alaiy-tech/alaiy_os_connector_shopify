@@ -314,6 +314,16 @@ def _upsert_order_unlocked(order, order_id, connection=None):
     so.flags.ignore_permissions = True
     so.insert()
 
+    # so.grand_total only exists once ERPNext has calculated it, which
+    # insert() just did -- correct any gap against Shopify's own total
+    # before submit locks the tax table. Rare in practice (most orders
+    # land exact), so this is a second save only on the orders that
+    # actually need one, not every order.
+    from alaiy_os_connector_shopify.shopify.order.tax import apply_rounding_adjustment
+    if apply_rounding_adjustment(so, order, settings):
+        so.flags.ignore_permissions = True
+        so.save()
+
     # Draft orders from Shopify should stay as draft in Alaiy OS until customer completes checkout.
     # Real orders are submitted immediately and ready for fulfillment.
     # Draft orders have Order # like #D9, #D10; real orders are numeric like #1015

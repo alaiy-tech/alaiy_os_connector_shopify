@@ -40,6 +40,7 @@
   "sh_selling_price_list",
   "sh_cost_center",
   "sh_tax_account",
+  "sh_rounding_write_off_account",
   "sh_auto_sales_invoice",
   "sh_invoice_trigger",
   "sb_locations",
@@ -276,6 +277,13 @@
    "fieldname": "sh_tax_account",
    "fieldtype": "Link",
    "label": "Tax Account",
+   "options": "Account"
+  },
+  {
+   "description": "Account a small rounding gap between Shopify's own total and Alaiy OS's recalculated total is booked against. Shopify's total is what the customer actually paid, so a mismatch (floating point, a rate that doesn't divide evenly) is corrected here rather than left as a silent discrepancy. Leave blank to use the Company's own Write Off Account; if neither is set, the order is left with the gap and a note in its Error Log.",
+   "fieldname": "sh_rounding_write_off_account",
+   "fieldtype": "Link",
+   "label": "Rounding Write Off Account",
    "options": "Account"
   },
   {

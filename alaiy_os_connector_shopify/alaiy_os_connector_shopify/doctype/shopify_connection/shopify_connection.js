@@ -16,6 +16,7 @@ frappe.ui.form.on("Shopify Connection", {
     }
 
     frappe.shopify_connection.show_oauth_result_if_returning();
+    frappe.shopify_connection.show_status_banner(frm);
 
     // Redirects the whole page to Shopify, so there is nothing to await --
     // reconnecting an existing row (auth method already OAuth, or the
@@ -180,5 +181,20 @@ frappe.shopify_connection = {
         indicator: "red",
       });
     }
+  },
+
+  // A persistent read of last_status/last_status_message, shown on every
+  // load rather than only right after a Test Connection click -- a
+  // connection that went bad since the last time someone opened this form
+  // (a revoked OAuth grant, an expired token) should be visible without
+  // clicking anything.
+  show_status_banner(frm) {
+    if (frm.is_new() || !frm.doc.last_status) return;
+    const indicator = { connected: "green", error: "red", not_configured: "orange" }[frm.doc.last_status] || "blue";
+    frm.dashboard.set_headline_alert(
+      `<div class="indicator-pill ${indicator}">${frappe.utils.escape_html(
+        frm.doc.last_status_message || frm.doc.last_status,
+      )}</div>`,
+    );
   },
 };
