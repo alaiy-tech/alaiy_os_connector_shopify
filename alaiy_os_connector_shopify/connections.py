@@ -9,20 +9,26 @@ is now Shopify Connection, a normal DocType, so one bench can hold many stores
 -- which self-serve needs, where every seller shares a site.
 
 Benches are already running the single-store shape, so `resolve()` answers the
-old question too. A caller that names no connection gets the only connection,
-when there is exactly one -- which is every single-store bench, and is why
-none of them had to change -- and otherwise a refusal.
+old question too. A caller that names no connection gets the only ENABLED
+connection, when there is exactly one -- which is every single-store bench,
+and is why none of them had to change -- and otherwise a refusal.
 
-That refusal is the important part. Where a site has several stores they are
-all equally real, there is no default among them, and an unnamed call is a
-bug in the caller: it should carry the connection of the document it is
-working on. Guessing would push one seller's stock to another seller's shop,
-so it fails loudly instead.
+Enabled is the part that matters. A disabled connection is a store this bench
+does no work for: an old row left switched off, or one that exists only to
+read a seller's catalogue through the API. Counting those would make a site
+with one live store and one retired row look ambiguous and refuse every
+unnamed call, which is not ambiguity, it is one store.
+
+Where several stores really are enabled they are all equally real, there is
+nothing to choose between them, and an unnamed call is a bug in the caller:
+it should carry the connection of the document it is working on. Guessing
+would push one seller's stock to another seller's shop, so it fails loudly.
 
 No fallback to a flagged default, and none to the connection *named*
 "default" either. Both look harmless and both do the same damage: they hand
 an unnamed call some arbitrary store rather than surfacing the missing
-argument.
+argument. `is_default` still exists as a label -- it records which row the
+Single became -- but nothing routes on it.
 
 `resolve_optional` exists for the callers that must not raise: document events
 fire on every Item and Sales Order save on the bench, including saves that have
@@ -73,25 +79,34 @@ def resolve_name(connection=None) -> str:
             frappe.throw(_("No Shopify connection {0}.").format(name), NoConnection)
         return name
 
-    all_names = names()
-    if len(all_names) == 1:
-        return all_names[0]
+    # Only enabled connections are candidates. A disabled one is a store this
+    # bench does no work for, so counting it would make a site with one live
+    # store and an old switched-off row look ambiguous and refuse -- which is
+    # what it did.
+    candidates = enabled_names()
+    if len(candidates) == 1:
+        return candidates[0]
 
-    if not all_names:
+    if not candidates:
+        # Nothing enabled. Say which of the two situations it is, since the
+        # fix differs: set a connection up, or switch one on.
+        if names():
+            frappe.throw(
+                _("No Shopify connection is enabled on this site."), NoConnection
+            )
         frappe.throw(
             _("No Shopify connection has been set up on this site."), NoConnection
         )
 
-    # Several stores, all equally real. There is no default to fall back on
-    # and deliberately so: a default would let an unnamed call act on one
-    # seller's shop because it happens to be flagged, which is the failure
-    # this whole module exists to prevent. An unnamed call here is a bug in
-    # the caller -- it should carry the connection of the document it is
-    # working on -- so it fails loudly rather than guessing.
+    # Several enabled stores, all equally real. There is nothing to choose
+    # between them, and picking one would act on some seller's shop because
+    # of the order they were created in. An unnamed call here is a bug in the
+    # caller -- it should carry the connection of the document it is working
+    # on -- so it fails loudly rather than guessing.
     frappe.throw(
         _(
-            "This site has {0} Shopify connections, so the call has to name one."
-        ).format(len(all_names)),
+            "This site has {0} enabled Shopify connections, so the call has to name one."
+        ).format(len(candidates)),
         NoConnection,
     )
 

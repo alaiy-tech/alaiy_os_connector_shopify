@@ -184,14 +184,19 @@ class ShopifyConnection(Document):
         connector, not per store, so where several stores share a bench
         letting each one write it would mean the last save won -- one seller
         disabling their store would show the whole connector as off for
-        everyone. With no default among them there is no one connection
-        entitled to speak for the card, so none of them does.
+        everyone. No connection is entitled to speak for the others, so on
+        such a bench none of them writes it.
+
+        Counted on enabled connections, matching how a call with no
+        connection resolves: a site with one live store and an old
+        switched-off row is a single-store site, and its card should track
+        the store it actually runs.
         """
         if not frappe.db.exists("OS Connector Registry", "shopify"):
             return
         from alaiy_os_connector_shopify import connections
 
-        if len(connections.names()) > 1:
+        if len(connections.enabled_names()) > 1:
             return
         frappe.db.set_value(
             "OS Connector Registry", "shopify", "is_enabled", self.is_enabled
