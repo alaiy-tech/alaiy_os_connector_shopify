@@ -59,7 +59,7 @@ def archive_item(item_code: str):
             # Clear fingerprint on successful archive so a subsequent push_item
             # (when re-enabled or unarchived) detects the status change and pushes.
             from alaiy_os_connector_shopify.shopify.sync_engine import entities
-            entity = entities.get_by_erpnext("product", "Item", item.name)
+            entity = entities.get_by_erpnext("product", "Item", item.name, connection=conn)
             if entity:
                 entity.erpnext_fingerprint = None
                 entity.save(ignore_permissions=True)

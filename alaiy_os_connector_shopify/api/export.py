@@ -53,6 +53,7 @@ from frappe.utils import cint
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
 from alaiy_os_connector_shopify import connections
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 
 _COLUMNS = [
     "item_code", "title", "description", "category", "category_id", "item_group",
@@ -150,8 +151,12 @@ def _listing_rows(listing_name, settings):
         yield {**product_fields, **variant_fields}
 
 
-def _resolve_names(listing_names, only_enabled, only_disabled):
-    filters = {}
+def _resolve_names(listing_names, only_enabled, only_disabled, connection=None):
+    # Scoped even when the caller names specific listing_names: an explicit
+    # list is still just names, not proof of ownership, and the "export
+    # all Enabled/Disabled" path with no listing_names given would
+    # otherwise pull every seller's Listings into one seller's file.
+    filters = owned_by("Shopify Product Listing", connection, {})
     if only_enabled and frappe.utils.cint(only_enabled):
         filters["is_enabled"] = 1
     elif only_disabled and frappe.utils.cint(only_disabled):
@@ -189,7 +194,7 @@ def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=Non
     # The export carries listing titles, SKUs and prices out of the site as
     # a file, so reading them has to be allowed for the store first.
     require_access(settings.name)
-    names = _resolve_names(listing_names, only_enabled, only_disabled)
+    names = _resolve_names(listing_names, only_enabled, only_disabled, settings.name)
 
     frappe.response.filename = "shopify_listings_export.csv"
     frappe.response.filecontent = _build_csv(names, settings)
@@ -198,7 +203,7 @@ def export_listings_csv(listing_names=None, only_enabled=None, only_disabled=Non
 
 def _run_background_export(listing_names, only_enabled, only_disabled, user, connection=None):
     settings = connections.resolve(connection) if connection else connections.require_enabled()
-    names = _resolve_names(listing_names, only_enabled, only_disabled)
+    names = _resolve_names(listing_names, only_enabled, only_disabled, settings.name)
     content = _build_csv(names, settings)
 
     file_doc = frappe.get_doc({

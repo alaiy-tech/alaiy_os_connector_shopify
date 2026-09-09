@@ -66,11 +66,18 @@ def sync_order_address(order, customer_name, connection=None):
         return None
 
     try:
+        # Found through the Customer link, not by address_title alone --
+        # customer_name is already store-scoped (_get_or_create_customer
+        # never merges two sellers' customers), but address_title is a bare
+        # display name. Two sellers each with a "John Smith" customer would
+        # otherwise share -- and silently overwrite -- one Address row.
         existing = frappe.db.get_value(
-            "Address",
-            {"address_title": customer_name, "address_type": "Shipping"},
-            "name",
+            "Dynamic Link",
+            {"link_doctype": "Customer", "link_name": customer_name, "parenttype": "Address"},
+            "parent",
         )
+        if existing and frappe.db.get_value("Address", existing, "address_type") != "Shipping":
+            existing = None
         addr = frappe.get_doc("Address", existing) if existing else frappe.new_doc("Address")
         addr.address_title = customer_name
         addr.address_type = "Shipping"

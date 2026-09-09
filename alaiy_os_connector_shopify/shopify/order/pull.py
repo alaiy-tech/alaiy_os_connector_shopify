@@ -198,7 +198,7 @@ def import_existing_orders(date_from=None, date_to=None, connection=None):
     else:
         remaining_message = "Importing orders from Shopify for the selected date range."
 
-    log = load_or_create_log("orders", "manual")
+    log = load_or_create_log("orders", "manual", connection=connection)
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.order_sync.run_full_import",
         queue="long",
@@ -213,6 +213,7 @@ def import_existing_orders(date_from=None, date_to=None, connection=None):
         log_name=log.name,
         date_from=date_from,
         date_to=date_to,
+        connection=connection,
     )
     return {
         "status": "queued",
