@@ -25,7 +25,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 # Checked for in an endpoint's body. _enqueue_sync resolves and authorises the
 # connection itself before queueing.
 GUARDS = ("require_access", "require_access_to_record", "_enqueue_sync",
-          "get_roles", "PermissionError")
+          "get_roles", "PermissionError",
+          # Filtering to what the caller may see is the other honest shape.
+          # A picker that refuses outright is useless, and one that returns
+          # every store on the bench is the leak -- has_permission per row is
+          # how it returns the caller's own and nothing else.
+          "has_permission")
 
 # The ones that legitimately carry no caller check, and why.
 EXEMPT = {

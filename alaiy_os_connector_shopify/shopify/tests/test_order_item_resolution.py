@@ -16,7 +16,7 @@ class TestItemByVariantId(unittest.TestCase):
     def test_prefers_listing_variant_row(self):
         with patch("frappe.db.get_value") as get_value:
             get_value.return_value = "SKU-FROM-LISTING"
-            self.assertEqual(item_by_variant_id("123"), "SKU-FROM-LISTING")
+            self.assertEqual(item_by_variant_id("123", None), "SKU-FROM-LISTING")
             # Only the Listing Variant lookup should fire -- Item fallback
             # is skipped once the Listing Variant already answered.
             get_value.assert_called_once_with(
@@ -26,13 +26,13 @@ class TestItemByVariantId(unittest.TestCase):
     def test_falls_back_to_item_when_no_listing_variant_row(self):
         with patch("frappe.db.get_value") as get_value:
             get_value.side_effect = [None, "SKU-FROM-ITEM"]
-            self.assertEqual(item_by_variant_id("123"), "SKU-FROM-ITEM")
+            self.assertEqual(item_by_variant_id("123", None), "SKU-FROM-ITEM")
             self.assertEqual(get_value.call_count, 2)
             self.assertEqual(get_value.call_args_list[1].args[0], "Item")
 
     def test_blank_variant_id_short_circuits(self):
-        self.assertIsNone(item_by_variant_id(""))
-        self.assertIsNone(item_by_variant_id(None))
+        self.assertIsNone(item_by_variant_id("", None))
+        self.assertIsNone(item_by_variant_id(None, None))
 
 
 class TestResolveItemCode(unittest.TestCase):

@@ -9,6 +9,40 @@ from alaiy_os_connector_shopify import connections
 from alaiy_os_connector_shopify.api import require_access
 
 
+@frappe.whitelist()
+def list_connections():
+    """
+    The enabled stores this user may act on, for the desk page's store picker.
+
+    Every endpoint on this page takes a `connection`, and on a bench with
+    several stores an unnamed call is refused rather than guessed at -- so the
+    page has to ask which store it is looking at before it can call anything.
+    This is what it asks.
+
+    Filtered by permission, not just by enabled: a seller sharing a bench must
+    not be offered another seller's store in a dropdown, even to be refused a
+    moment later by the endpoint itself.
+
+    `selected` is what the page should start on: the only store when there is
+    one, and nothing when there are several, since picking for the seller is
+    the guess this whole arrangement exists to avoid.
+    """
+    rows = []
+    for name in connections.enabled_names():
+        if not frappe.has_permission("Shopify Connection", "read", doc=name):
+            continue
+        doc = frappe.get_cached_doc("Shopify Connection", name)
+        rows.append({
+            "name": name,
+            "label": doc.get("label") or name,
+            "shop_url": doc.get("sh_shop_url") or "",
+        })
+    return {
+        "connections": rows,
+        "selected": rows[0]["name"] if len(rows) == 1 else None,
+    }
+
+
 def _enqueue_sync(sync_type, method, timeout=600, connection=None, **kwargs):
     """
     Queue one sync for one store.

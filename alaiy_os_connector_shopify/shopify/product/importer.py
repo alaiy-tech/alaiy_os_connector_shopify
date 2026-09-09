@@ -153,7 +153,7 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None, wi
             pages += 1
             for node in page_nodes:
                 processed += 1
-                if not status_map.import_allows(node.get("status"), allowed_statuses):
+                if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
                     skipped += 1
                     reason = f"status {node.get('status')} not selected for import"
                     skip_reason_counts[reason] += 1
@@ -302,7 +302,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                 if product_id in existing_ids:
                     continue  # already linked -- no fingerprint check, no write, no risk
                 processed += 1
-                if not status_map.import_allows(node.get("status"), allowed_statuses):
+                if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
                     skipped += 1
                     continue
                 try:
@@ -574,7 +574,7 @@ def _import_product(node: dict, connection=None) -> tuple:
     # product archived on Shopify was imported as a fresh, enabled Item on a
     # site with archived import switched off. Re-check the node itself so the
     # setting holds wherever a product comes from.
-    if not status_map.import_allows(node.get("status")):
+    if not status_map.import_allows(node.get("status"), connection=connection):
         return False, f"skipped ({(node.get('status') or 'unknown').lower()} not enabled for import)"
 
     _warn_if_truncated(node)
@@ -1491,7 +1491,8 @@ def _apply_product_meta(item, node: dict, connection=None):
     ]
     if collection_titles:
         from alaiy_os_connector_shopify.shopify.product.collections import _set_item_collections
-        _set_item_collections(item, collection_titles)
+        _set_item_collections(item, collection_titles,
+                              connection=connection or item.get("sh_shopify_connection"))
     category = node.get("category")
     if category:
         cat_name = category.get("fullName") or category.get("name")

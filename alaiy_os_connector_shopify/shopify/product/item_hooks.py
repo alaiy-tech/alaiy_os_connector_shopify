@@ -97,7 +97,16 @@ def ensure_listing_for_new_item(doc, method=None):
     the settings save that switches it on, so the gap this hook exists to close
     stays closed.
     """
-    if not should_create_listing(doc.variant_of, connections.enabled_value("is_enabled")):
+    # "Is the connector on" is asked of the store this Item belongs to, not of
+    # the bench. `enabled_value` can only answer while exactly one store is
+    # enabled; on a bench with several it returns None, which this gate reads
+    # as "switched off" and every new template Item bench-wide stops getting a
+    # Listing -- silently, since nothing here raises. The Item carries its own
+    # store once it has been through an import or a push, so ask that one; an
+    # Item that carries none is the single-store case this gate already
+    # handled, and falls back to it unchanged.
+    connection = connections.resolve_optional(doc.get("sh_shopify_connection"))
+    if not should_create_listing(doc.variant_of, connection and connection.get("is_enabled")):
         return
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
     from alaiy_os_connector_shopify.shopify.product.stock import _write_shopify_location_from_supplier
@@ -116,8 +125,8 @@ def should_create_listing(variant_of, connector_enabled) -> bool:
     """The after_insert gate, as a function of plain values.
 
     Split out of the hook so check_listing_gating can exercise the rule
-    directly. `connector_enabled` is whatever connections.enabled_value
-    returned, so None ("no store switched on") has to read as off.
+    directly. `connector_enabled` is the is_enabled flag off the Item's own
+    store, so None ("no store to ask") has to read as off.
     """
     return not variant_of and bool(connector_enabled)
 

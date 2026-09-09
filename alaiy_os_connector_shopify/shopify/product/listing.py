@@ -48,9 +48,19 @@ def item_without_listing_query(doctype, txt, searchfield, start, page_len, filte
     # the picker on every site. So it offers this store's Shopify-linked Items
     # plus every unattributed local one, and excludes only Items that belong
     # to a different store.
+    #
+    # A store has to be resolved for any of that to hold. `resolve_optional_name`
+    # returns None once the bench has several enabled -- exactly the case this
+    # scoping exists for -- and the `%(store)s IS NULL` branch below then
+    # matched every Item on the bench, so the picker listed other sellers'
+    # codes and names back to whoever opened it. An unresolvable store is now
+    # an empty picker: offering nothing is a visible, harmless bug, offering
+    # everyone's catalogue is a leak.
     from alaiy_os_connector_shopify import connections
 
     store = connections.resolve_optional_name()
+    if not store:
+        return []
     like = f"%{txt}%"
     return frappe.db.sql(
         """
@@ -60,8 +70,7 @@ def item_without_listing_query(doctype, txt, searchfield, start, page_len, filte
           AND NOT EXISTS (
               SELECT 1 FROM `tabShopify Product Listing` l WHERE l.item = i.name
           )
-          AND (%(store)s IS NULL
-               OR i.sh_shopify_connection IS NULL
+          AND (i.sh_shopify_connection IS NULL
                OR i.sh_shopify_connection = ''
                OR i.sh_shopify_connection = %(store)s)
           AND (i.name LIKE %(txt)s OR i.item_name LIKE %(txt)s)
@@ -200,7 +209,7 @@ def variant_price(listing, variant_code: str, settings):
 # Listing-based lookups, with the Item as fallback for any row that hasn't
 # been dual-written to yet.
 
-def item_by_variant_id(variant_id: str, connection=None):
+def item_by_variant_id(variant_id: str, connection):
     """Shopify variant id -> the Alaiy OS variant Item code, via the Listing
     Variant row. Falls back to the Item-side lookup if the Listing doesn't
     have it (e.g. a row that hasn't been dual-written to). None if neither
@@ -208,8 +217,14 @@ def item_by_variant_id(variant_id: str, connection=None):
 
     `connection` narrows both lookups to one store. A Shopify variant id is
     only unique inside one shop, so without it a second seller importing the
-    same catalogue resolves to the first seller's Item. None searches every
-    store, which is what an unconverted caller still does."""
+    same catalogue resolves to the first seller's Item.
+
+    Required rather than defaulted, now that every caller threads one. The
+    default was the dangerous part: forgetting it did not fail, it returned
+    another tenant's Item, and the caller had no way to tell that from a
+    correct answer. A missing argument is a TypeError at the call site, which
+    is the loudest this can be made. Passing None is still allowed and still
+    means bench-wide -- it just has to be written down deliberately."""
     if not variant_id:
         return None
     # The Listing Variant row is a child table, so the store is recorded on
@@ -252,10 +267,11 @@ def _variant_row_by_store(variant_id: str, connection):
     return rows[0][0] if rows else None
 
 
-def template_by_product_id(product_id: str, connection=None):
+def template_by_product_id(product_id: str, connection):
     """Shopify product id -> the Alaiy OS template Item code, via the Listing.
     Falls back to the Item-side lookup the same way. `connection` narrows both
-    to one store, for the same reason as item_by_variant_id."""
+    to one store, and is required, for the same reasons as
+    item_by_variant_id."""
     if not product_id:
         return None
     listing_item = frappe.db.get_value(

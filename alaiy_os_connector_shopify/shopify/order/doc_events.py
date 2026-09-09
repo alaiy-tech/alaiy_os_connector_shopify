@@ -29,14 +29,32 @@ def _connector_enabled(doc=None):
     Reads the store off the Sales Order itself, not off "the" enabled store
     -- that stopped naming a single answer once a bench can enable more
     than one. `doc=None` falls back to the single-enabled-store check,
-    matching this connector's pre-multi-store behaviour exactly."""
-    if doc is None:
-        return connections.enabled_connection() is not None
-    conn = doc.get("sh_shopify_connection")
+    matching this connector's pre-multi-store behaviour exactly.
+
+    An order predating the backfill carries no store, and the fallback then
+    has to answer for it. `enabled_connection` cannot: it returns None on a
+    bench with several stores enabled, which reads here as "switched off" and
+    quietly stops every unattributed order from pushing. Asking whether the
+    store is enabled AND on this bench is a different question from asking
+    whether it is this order's store, and only the first one has an answer --
+    so on a multi-store bench an unattributed order stays unattributed and
+    nothing is pushed on a guess, which is the same refusal connections.py
+    makes for every other unnamed call. It is logged rather than passed over
+    in silence, because from the seller's side an order that never pushes and
+    an order with nothing wrong with it look identical."""
+    conn = doc.get("sh_shopify_connection") if doc is not None else None
     if conn:
         return True
-    enabled = connections.enabled_connection()
-    return enabled is not None
+    if connections.enabled_connection() is not None:
+        return True
+    if doc is not None and doc.get("sh_shopify_order_id") and len(connections.enabled_names()) > 1:
+        # Came from Shopify (it has an order id) but predates the backfill, so
+        # there is no way to tell which of the enabled stores it came from.
+        frappe.logger().warning(
+            f"Shopify: {doc.doctype} {doc.name} not pushed -- it names no "
+            f"connection and this bench has several enabled, so which store it "
+            f"belongs to cannot be told. Backfill sh_shopify_connection on it.")
+    return False
 
 
 def on_sales_order_update(doc, method=None):

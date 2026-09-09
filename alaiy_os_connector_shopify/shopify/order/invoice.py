@@ -361,6 +361,14 @@ def _sales_invoice_connection(doc):
     Prefers the invoice's own Sales Order connection (multi-store correct);
     falls back to the single enabled store for invoices from before that
     field was backfilled.
+
+    The fallback goes through `resolve_optional_name`, which is the same
+    single-enabled-store answer this used to build by hand out of
+    `enabled_connection`, minus the second call that loaded the document
+    again only to read its name off it. Both return None on a bench with
+    several enabled stores -- the invoice is then left unattributed rather
+    than stamped with a guess, which is what the push side wants: an order
+    pushed to the wrong seller's shop is worse than one not pushed.
     """
     for row in (doc.items or []):
         so = row.get("sales_order")
@@ -369,7 +377,7 @@ def _sales_invoice_connection(doc):
         conn = frappe.db.get_value("Sales Order", so, "sh_shopify_connection")
         if conn:
             return conn
-    return connections.enabled_connection() and connections.enabled_connection().name
+    return connections.resolve_optional_name()
 
 
 def push_order_paid(order_id: str, sales_invoice: str, connection=None):

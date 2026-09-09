@@ -30,10 +30,21 @@ def _connector_enabled(doc=None):
     Reads the store off the Listing itself, not off "the" enabled store --
     that stopped naming a single answer once a bench can enable more than
     one. `doc=None` falls back to the single-enabled-store check, matching
-    this connector's pre-multi-store behaviour exactly."""
+    this connector's pre-multi-store behaviour exactly.
+
+    A Listing created before that field existed carries no store, and the
+    fallback has to answer for it. `enabled_connection` cannot on a bench with
+    several enabled, where it returns None and this gate reads that as
+    "switched off" -- every pre-backfill Listing then stops pushing without
+    saying so. The Listing's own Item is asked first, since an Item that has
+    been through an import or a push carries the store the Listing is missing;
+    only when that is blank too is there genuinely nothing to go on, and then
+    nothing is pushed rather than pushed at a guessed store."""
     if doc is None:
         return connections.enabled_connection() is not None
     if doc.get("connection"):
+        return True
+    if doc.get("item") and frappe.db.get_value("Item", doc.item, "sh_shopify_connection"):
         return True
     return connections.enabled_connection() is not None
 
