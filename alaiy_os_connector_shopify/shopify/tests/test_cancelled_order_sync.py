@@ -41,6 +41,7 @@ def _load(docstatus=1, so_name="SAL-ORD-0001"):
     frappe.logger = lambda: types.SimpleNamespace(info=lambda *a, **k: None)
     sys.modules["frappe"] = frappe
 
+
     def _stub(path, **attrs):
         mod = types.ModuleType(path)
         for key, value in attrs.items():
@@ -83,7 +84,13 @@ LIVE = {"financial_status": "paid", "fulfillment_status": ""}
 # Refunded in full with the line items removed, never formally cancelled:
 # cancelled_at is null, and the order is finished all the same.
 REFUNDED = {"financial_status": "refunded", "fulfillment_status": ""}
-PARTIAL = {"financial_status": "partially_refunded", "fulfillment_status": ""}
+PARTIAL = {"financial_status": "partially_refunded", "fulfillment_status": "",
+           "line_items": [{"quantity": 1, "current_quantity": 1},
+                          {"quantity": 2, "current_quantity": 0}]}
+# TS26012's real shape: refunded line by line until nothing was left, so the
+# order-level status still says "partially" while every line sits at zero.
+ALL_LINES_REMOVED = {"financial_status": "partially_refunded", "fulfillment_status": "",
+                     "line_items": [{"quantity": 1, "current_quantity": 0}]}
 CANCELLED = {"financial_status": "refunded", "fulfillment_status": "",
              "cancelled_at": "2026-01-03T19:15:00-05:00"}
 
@@ -128,6 +135,20 @@ class CancelledOrderSync(unittest.TestCase):
         self.assertEqual(calls["cancelled"], [])
         self.assertEqual(calls["line_items"], ["SAL-ORD-0001"])
 
+    def test_an_order_with_every_line_removed_is_cancelled(self):
+        """Refunded line by line: financial_status never reaches "refunded",
+        but currentQuantity 0 everywhere means nothing is left to ship."""
+        update, calls = _load()
+        update(ALL_LINES_REMOVED, "5001")
+        self.assertEqual(calls["cancelled"], ["SAL-ORD-0001"])
+
+    def test_a_partial_refund_with_a_line_still_live_is_left_alone(self):
+        """One line refunded, one still to ship -- a real live order. This is
+        the case that must never be swept up by the rule above."""
+        update, calls = _load()
+        update(PARTIAL, "5001")
+        self.assertEqual(calls["cancelled"], [])
+
     def test_a_live_order_is_untouched(self):
         update, calls = _load()
         update(LIVE, "5001")
@@ -159,6 +180,24 @@ class FinishedOnShopify(unittest.TestCase):
     def test_a_paid_order_is_not(self):
         self.assertFalse(self._fn()({"cancelledAt": None,
                                      "displayFinancialStatus": "PAID"}))
+
+    def test_every_line_at_zero_is_finished(self):
+        self.assertTrue(self._fn()({
+            "cancelledAt": None, "displayFinancialStatus": "PARTIALLY_REFUNDED",
+            "lineItems": {"nodes": [{"quantity": 1, "currentQuantity": 0}]}}))
+
+    def test_one_line_still_live_is_not(self):
+        self.assertFalse(self._fn()({
+            "cancelledAt": None, "displayFinancialStatus": "PARTIALLY_REFUNDED",
+            "lineItems": {"nodes": [{"quantity": 1, "currentQuantity": 1},
+                                    {"quantity": 2, "currentQuantity": 0}]}}))
+
+    def test_no_line_items_in_the_payload_is_not_treated_as_empty(self):
+        """A missing list means the read told us nothing -- cancelling on
+        that is worse than missing one order."""
+        self.assertFalse(self._fn()({
+            "cancelledAt": None, "displayFinancialStatus": "PAID",
+            "lineItems": {"nodes": []}}))
 
 
 if __name__ == "__main__":
