@@ -352,6 +352,9 @@ query($ids: [ID!]!) {
       cancelReason
       displayFinancialStatus
       displayFulfillmentStatus
+      lineItems(first: 250) {
+        nodes { quantity currentQuantity }
+      }
     }
   }
 }
@@ -412,7 +415,40 @@ def _finished_on_shopify(node):
                 f"reason {node.get('cancelReason')}")
     if (node.get("displayFinancialStatus") or "").upper() == "REFUNDED":
         return "Shopify reports the order fully REFUNDED with no cancellation"
+    if _every_line_removed(node):
+        return ("every line item is at currentQuantity 0 on Shopify -- "
+                "nothing is left to fulfil")
     return ""
+
+
+def _every_line_removed(node):
+    """Whether Shopify has taken every line off this order.
+
+    The third way an order ends, and the one that hides behind a misleading
+    status. Refunding an order line by line rather than in one go leaves
+    displayFinancialStatus at PARTIALLY_REFUNDED even once the last line is
+    gone -- that field describes the money, not whether anything remains to
+    ship. Confirmed live: an order reading PARTIALLY_REFUNDED, UNFULFILLED,
+    not cancelled and not closed, whose only line item stood at
+    currentQuantity 0, had been open here for eight months and 5724 hours
+    past its fulfillment SLA.
+
+    currentQuantity is the count still on the order after edits and
+    refunds; quantity is what was originally ordered and never changes. So
+    this asks the only question that matters -- is there anything left to
+    send -- rather than trying to infer it from the refund state.
+
+    Deliberately conservative in both directions. An order with no line
+    items in the payload returns False rather than True: an empty list here
+    means the query returned nothing useful, not that the order is empty,
+    and cancelling on a failed read would be far worse than missing one.
+    An order where any line still carries quantity is genuinely live, which
+    is what keeps a real partial refund out of this branch.
+    """
+    nodes = ((node.get("lineItems") or {}).get("nodes")) or []
+    if not nodes:
+        return False
+    return all((line.get("currentQuantity") or 0) <= 0 for line in nodes)
 
 
 def sync_order_status(limit=None):

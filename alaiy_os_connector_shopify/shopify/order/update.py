@@ -105,7 +105,26 @@ def _update_order_unlocked(order, order_id):
     # is just as finished -- Refunded, "Fulfillment not required", nothing left
     # to ship. Only a full refund; "partially_refunded" is a live order with
     # some money returned and the rest still to fulfil.
-    if order.get("cancelled_at") or financial_status.lower() == "refunded":
+    # ...and the third way, which hides behind a misleading status: refunding
+    # an order line by line rather than in one go leaves financial_status at
+    # "partially_refunded" even after the last line is gone, because that
+    # field describes the money and not whether anything is left to ship.
+    # current_quantity is the post-edit truth and "quantity" is the untouched
+    # original -- the same distinction order.utils._line_item_qty exists for.
+    # Read directly rather than importing it: this needs the one comparison,
+    # and that module pulls in the whitelisted-endpoint surface with it.
+    # A payload carrying no line items at all is NOT treated as empty -- that
+    # means the webhook told us nothing, and cancelling on a blank read is far
+    # worse than waiting for the poll to ask Shopify properly.
+    lines = order.get("line_items") or []
+    every_line_removed = bool(lines) and all(
+        float(li.get("current_quantity", li.get("quantity", 1)) or 0) <= 0
+        for li in lines
+    )
+
+    if (order.get("cancelled_at")
+            or financial_status.lower() == "refunded"
+            or every_line_removed):
         if frappe.db.get_value("Sales Order", so_name, "docstatus") == 1:
             from alaiy_os_connector_shopify.shopify.order.webhook import _cancel_sales_order
             _cancel_sales_order(so_name)
