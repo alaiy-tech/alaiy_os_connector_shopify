@@ -105,6 +105,14 @@ scheduler_events = {
         ],
     },
     "hourly": [
+        # Refunds land overwhelmingly on delivered, Completed orders, which
+        # sync_order_status deliberately never asks about -- its job is to
+        # close orders still open. A refund with no webhook therefore left
+        # the order reading paid forever and never reached the admin Returns
+        # page, which keys off sh_financial_status. Hourly rather than every
+        # five minutes: the refund webhook is still the fast path, and this
+        # only has to catch what it missed.
+        "alaiy_os_connector_shopify.shopify.order.delivery_status.sync_refund_status",
         "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only",
     ],
     "daily": [

@@ -451,6 +451,38 @@ def _every_line_removed(node):
     return all((line.get("currentQuantity") or 0) <= 0 for line in nodes)
 
 
+def _sync_financial_status(node, by_legacy_id, summary):
+    """Bring Sales Order.sh_financial_status in line with Shopify.
+
+    Refunds are the reason this exists. The refund webhook is the fast path
+    and creates the Credit Note; this is the backstop that makes sure the
+    ORDER still reflects the refund even when no webhook arrived, because
+    the Returns page reads the order's own status rather than the credit
+    note (most refunds never produce one -- the webhook only does when a
+    Sales Invoice already existed to return against).
+
+    A direct field write, not a document save: this is a status Shopify
+    owns, no hook needs to fire for it, and saving a submitted Sales Order
+    to change one custom field risks a TimestampMismatch against whatever
+    else is touching that row.
+    """
+    status = (node.get("displayFinancialStatus") or "").lower()
+    if not status:
+        return
+    so_name = by_legacy_id.get(str(node.get("legacyResourceId") or ""))
+    if not so_name:
+        return
+    if (frappe.db.get_value("Sales Order", so_name, "sh_financial_status") or "") == status:
+        return
+
+    frappe.db.set_value("Sales Order", so_name, "sh_financial_status", status,
+                        update_modified=False)
+    frappe.db.commit()
+    summary["financial_status_updated"] = summary.get("financial_status_updated", 0) + 1
+    if status in ("refunded", "partially_refunded"):
+        summary["refunds_found"] = summary.get("refunds_found", 0) + 1
+
+
 def sync_order_status(limit=None):
     """Apply Shopify's own order state to Sales Orders. Safe on a schedule.
 
@@ -467,7 +499,8 @@ def sync_order_status(limit=None):
         return {"ok": False, "reason": "connector disabled"}
 
     open_orders = _open_shopify_orders(limit)
-    summary = {"ok": True, "checked": len(open_orders), "cancelled": 0, "failed": 0}
+    summary = {"ok": True, "checked": len(open_orders), "cancelled": 0, "failed": 0,
+               "financial_status_updated": 0, "refunds_found": 0}
     if not open_orders:
         return summary
 
@@ -494,6 +527,16 @@ def sync_order_status(limit=None):
         for node in data.get("nodes") or []:
             if not node:
                 continue
+            # Write back what Shopify says about the money, whether or not
+            # this order is finished. The query already carried
+            # displayFinancialStatus and nothing read it into the Sales
+            # Order, so a refund that arrived without a webhook -- dropped,
+            # fired while the connector was disabled, or issued before the
+            # order was imported -- never reached sh_financial_status. The
+            # admin Returns page keys off exactly that field, so those
+            # orders were refunded on Shopify and absent from Returns here.
+            _sync_financial_status(node, by_legacy_id, summary)
+
             reason = _finished_on_shopify(node)
             if not reason:
                 continue
@@ -521,5 +564,76 @@ def sync_order_status(limit=None):
                     title=f"Shopify: order reconcile failed for {so_name}",
                     message=frappe.get_traceback(),
                 )
+
+    return summary
+
+
+def sync_refund_status(limit=500):
+    """Ask Shopify which orders it considers refunded, and record it.
+
+    sync_order_status above only looks at orders still OPEN here, because
+    its job is to close the ones Shopify has finished. Refunds are the
+    opposite case: they land overwhelmingly on orders that are delivered
+    and Completed, which that sweep deliberately never asks about. So a
+    refund with no webhook -- dropped, fired while the connector was off,
+    or issued before the order was imported -- left the order reading paid
+    forever and never appeared on the admin Returns page, which keys off
+    sh_financial_status.
+
+    Reads and records only. It does NOT create a Credit Note or reverse
+    stock: that is handle_refund_webhook's job and it needs the refund's
+    line-item breakdown to do it correctly. Inventing one from an
+    order-level status would guess at quantities. This makes the refund
+    visible; a human decides what to do about it.
+
+    Least-recently-checked first, so a large history is covered across
+    several runs rather than one unbounded pass.
+    """
+    settings = frappe.get_cached_doc("Shopify Connector Settings")
+    if not settings.is_enabled:
+        return {"ok": False, "reason": "connector disabled"}
+
+    # Everything Shopify might have refunded that we do not already know is
+    # refunded. docstatus 1 only -- a cancelled order's money is settled by
+    # the cancel path, and a draft was never paid.
+    rows = frappe.get_all(
+        "Sales Order",
+        filters={
+            "docstatus": 1,
+            "sh_shopify_order_id": ["is", "set"],
+            "sh_financial_status": ["not in", ["refunded", "partially_refunded", "voided"]],
+        },
+        fields=["name", "sh_shopify_order_id"],
+        order_by="modified asc",
+        limit=limit,
+    )
+    summary = {"ok": True, "checked": len(rows), "refunds_found": 0,
+               "financial_status_updated": 0, "failed": 0}
+    if not rows:
+        return summary
+
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    by_legacy_id = {str(r.sh_shopify_order_id): r.name for r in rows}
+    ids = list(by_legacy_id)
+
+    for start in range(0, len(ids), _BATCH):
+        chunk = ids[start:start + _BATCH]
+        gids = [f"gid://shopify/Order/{oid}" for oid in chunk]
+        try:
+            data = client.execute(_ORDER_STATUS_QUERY, {"ids": gids})
+        except Exception:
+            summary["failed"] += len(chunk)
+            frappe.log_error(
+                title="Shopify: refund status poll failed for a batch",
+                message=repr(chunk) + chr(10) + frappe.get_traceback(),
+            )
+            continue
+
+        for node in data.get("nodes") or []:
+            if not node:
+                continue
+            _sync_financial_status(node, by_legacy_id, summary)
 
     return summary
