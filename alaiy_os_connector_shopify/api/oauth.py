@@ -208,7 +208,7 @@ def handle_callback():
     # Call its connect_shopify directly as an in-process Python call — no HTTP
     # round-trip needed since both apps are on the same bench.
     try:
-        from alaiy_os_self_serve_apis.api.connections import connect_shopify as _store
+        from alaiy_os.api.connections import connect_shopify as _store
         _store(workspace=workspace, shop=shop, access_token=access_token)
     except Exception:
         frappe.log_error(
