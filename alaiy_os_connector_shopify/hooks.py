@@ -95,6 +95,13 @@ scheduler_events = {
             # Cheap to run often: it only reads a queue table and does nothing
             # at all when that queue is empty.
             "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
+            # Re-attempt outbound pushes that failed transiently. The retry
+            # queue existed with backoff and a dead-letter state but nothing
+            # ever drained it, so a failed fulfillment or cancel push was a
+            # single Error Log line and no second attempt. Same five-minute
+            # tick as the reconcilers above and just as cheap: it reads one
+            # table and does nothing when that table is empty.
+            "alaiy_os_connector_shopify.shopify.sync_engine.retry_worker.drain",
         ],
     },
     "hourly": [

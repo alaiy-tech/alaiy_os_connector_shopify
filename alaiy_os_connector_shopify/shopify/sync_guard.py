@@ -137,3 +137,56 @@ def close_log(log, status, processed=0, created=0, failed=0, error=""):
         frappe.db.rollback()
         frappe.db.set_value("Shopify Sync Log", log.name, fields, update_modified=True)
     frappe.db.commit()
+
+    # Every sync in this connector finishes through here, so this is the one
+    # place a failure can be announced without adding a call to each job.
+    # Until now a failed run was a row in a list nobody opens: the stock
+    # reconciliation that broke on this site was found by someone reading the
+    # Error Log by hand, days later.
+    if status == "failed":
+        _notify_sync_failed(log, fields.get("error_message") or error)
+
+
+def _notify_sync_failed(log, error):
+    """Tell the admins a sync run failed. Never raises.
+
+    A failed alert must not fail the close-out that was reporting the
+    original problem -- that turns one broken sync into a sync whose status
+    was never recorded at all, which is strictly worse.
+    """
+    try:
+        from alaiy_os_connector_shopify.shopify.sync_engine.retry_worker import (
+            ALERT_ROLE,
+        )
+
+        recipients = frappe.get_all(
+            "Has Role", filters={"role": ALERT_ROLE, "parenttype": "User"}, pluck="parent",
+        )
+        users = set(frappe.get_all(
+            "User", filters={"name": ["in", recipients], "enabled": 1}, pluck="name"
+        )) if recipients else set()
+        users -= {"Administrator", "Guest"}
+        if not users:
+            return
+
+        sync_type = getattr(log, "sync_type", "") or "sync"
+        for user in users:
+            note = frappe.new_doc("Notification Log")
+            note.subject = f"Shopify {sync_type} sync failed"
+            note.for_user = user
+            note.type = "Alert"
+            note.document_type = "Shopify Sync Log"
+            note.document_name = log.name
+            note.email_content = (
+                f"The {sync_type} sync finished with status failed.<br><br>"
+                f"<b>Error:</b> {frappe.utils.escape_html(str(error or 'No detail recorded'))[:500]}"
+                "<br><br>Open the Shopify Sync Log for the full run."
+            )
+            note.insert(ignore_permissions=True)
+        frappe.db.commit()
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(
+            title="Shopify: could not send a sync-failure alert",
+            message=frappe.get_traceback(),
+        )
