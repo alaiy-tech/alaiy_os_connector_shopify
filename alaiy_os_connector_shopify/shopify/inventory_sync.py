@@ -105,7 +105,7 @@ def sync_shopify_locations(trigger="manual", log_name=None):
     log = load_or_create_log("locations", trigger, log_name)
     log.status = "running"
     log.save(ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep -- closes the run record; nothing follows it in this job
 
     try:
         client = ShopifyGraphQLClient()
@@ -1039,7 +1039,7 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, trigger="schedul
             log.finished_at = now_datetime()
             log.error_message = frappe.get_traceback()[:2000]
             log.save(ignore_permissions=True)
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep -- the failure record must survive the exception being re-raised
         raise
 
 
@@ -1134,7 +1134,7 @@ def _reconcile_inventory(dry_run, query, log):
                 "items_created": len(corrections),
                 "log_messages": (previous + "\n" + note).strip(),
             }, update_modified=False)
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep -- per-page progress is only useful if it is readable while the sweep is still running
 
     summary = {
         "checked": checked,

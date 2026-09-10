@@ -183,7 +183,7 @@ def _notify_sync_failed(log, error):
                 "<br><br>Open the Shopify Sync Log for the full run."
             )
             note.insert(ignore_permissions=True)
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep -- an alert about a failed sync must survive whatever fails next
     except Exception:
         frappe.db.rollback()
         frappe.log_error(

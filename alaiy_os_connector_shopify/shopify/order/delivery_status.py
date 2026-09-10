@@ -477,7 +477,7 @@ def _sync_financial_status(node, by_legacy_id, summary):
 
     frappe.db.set_value("Sales Order", so_name, "sh_financial_status", status,
                         update_modified=False)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep -- each order is independent; one bad row must not roll back the batch
     summary["financial_status_updated"] = summary.get("financial_status_updated", 0) + 1
     if status in ("refunded", "partially_refunded"):
         summary["refunds_found"] = summary.get("refunds_found", 0) + 1

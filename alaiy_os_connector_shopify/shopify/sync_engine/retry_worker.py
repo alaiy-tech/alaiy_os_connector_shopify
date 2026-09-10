@@ -51,7 +51,7 @@ def drain(limit: int = BATCH):
 
         entry.status = "in_progress"
         entry.save(ignore_permissions=True)
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep -- in_progress has to be visible to a second worker before the call goes out
         summary["attempted"] += 1
 
         try:
@@ -174,7 +174,7 @@ def notify_dead_letter(entry, error=None):
                 "then set its status back to pending to try again."
             )
             note.insert(ignore_permissions=True)
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep -- an alert about a failed sync must survive whatever fails next
     except Exception:
         frappe.db.rollback()
         frappe.log_error(
@@ -210,5 +210,5 @@ def retry_now(entry_name: str):
     entry.attempt_count = 0
     entry.next_attempt_at = now_datetime()
     entry.save(ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep -- the requeue is the whole action; nothing follows it to commit for it
     return {"ok": True, "requeued": entry_name}
