@@ -261,7 +261,16 @@ def push_order_create(sales_order: str):
         )
 
 
-def push_order_cancel(order_id: str, sales_order: str):
+def push_order_cancel(order_id: str, sales_order: str, reason: str = "OTHER",
+                      refund: bool = False, notify_customer: bool = False):
+    """Cancel the order on Shopify.
+
+    reason/refund/notify_customer are parameters rather than constants because
+    a fraud rejection is a different act from an ordinary cancellation: it
+    should be recorded on Shopify as FRAUD, and the customer's money returned
+    rather than held against an order nobody will ship. The defaults keep
+    every existing caller behaving exactly as before.
+    """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     # restock=False tells Shopify this inventory is gone for good (a
@@ -279,10 +288,10 @@ def push_order_cancel(order_id: str, sales_order: str):
         client = ShopifyGraphQLClient()
         data = client.execute(_ORDER_CANCEL_MUTATION, {
             "orderId": _to_gid(order_id),
-            "reason": "OTHER",
-            "refund": False,
+            "reason": reason,
+            "refund": refund,
             "restock": not has_shipped,
-            "notifyCustomer": False,
+            "notifyCustomer": notify_customer,
         })
         errors = (data.get("orderCancel") or {}).get("orderCancelUserErrors") or []
         if errors:
