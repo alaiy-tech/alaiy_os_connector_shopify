@@ -1029,7 +1029,7 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, trigger="schedul
         log = load_or_create_log("inventory", trigger, log_name)
         log.status = "running"
         log.save(ignore_permissions=True)
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep -- the running marker must be visible to the next tick before the sweep starts
 
     try:
         return _reconcile_inventory(dry_run, query, log)
@@ -1187,4 +1187,4 @@ def _finish_reconcile_log(log, summary):
     if skipped_rows:
         _append_log(log, f"{len(skipped_rows)} row(s) were rejected by their Stock Reconciliation.")
     log.save(ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep -- closes the run record; nothing follows it in this job
