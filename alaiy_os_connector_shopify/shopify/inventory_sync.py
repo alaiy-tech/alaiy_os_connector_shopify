@@ -969,7 +969,7 @@ def pull_stock_for_items(item_codes, dry_run=False):
     return result
 
 
-def reconcile_inventory_from_shopify(dry_run=False, query=None):
+def reconcile_inventory_from_shopify(dry_run=False, query=None, trigger="scheduled", log_name=None):
     """PULL leg, full sweep. Ask Shopify for every linked product's current
     per-location quantity and apply the differences as audited Stock
     Reconciliations.
@@ -995,6 +995,12 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None):
     mapping for are skipped and counted, not guessed at.
 
     dry_run=True reports what would change without writing.
+
+    Writes a Shopify Sync Log row for the same reason every other sync here
+    does: this is the full-catalogue stock pull, it takes minutes, and until
+    it appeared in that list there was no way to tell from the desk whether
+    it had ever run, was running now, or had failed halfway. A dry run takes
+    no log -- it changes nothing and is a question, not a sync.
     """
     settings = frappe.get_single("Shopify Connector Settings")
     if not settings.is_enabled:
@@ -1010,6 +1016,29 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None):
     if not dry_run and not query and has_active_sync("inventory"):
         return {"skipped": "another inventory sync is already running"}
 
+    # After the active-sync guard, so a run that was refused does not leave a
+    # log row claiming it started.
+    log = None
+    if not dry_run:
+        log = load_or_create_log("inventory", trigger, log_name)
+        log.status = "running"
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    try:
+        return _reconcile_inventory(dry_run, query, log)
+    except Exception:
+        if log:
+            log.status = "failed"
+            log.finished_at = now_datetime()
+            log.error_message = frappe.get_traceback()[:2000]
+            log.save(ignore_permissions=True)
+            frappe.db.commit()
+        raise
+
+
+def _reconcile_inventory(dry_run, query, log):
+    """The sweep itself. Split out so every exit path closes the log above."""
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_STOCK_QUERY
     from alaiy_os_connector_shopify.shopify.product.variants import _variant_location_levels
@@ -1076,9 +1105,46 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None):
     }
     if dry_run or not corrections:
         summary["sample"] = corrections[:20]
+        _finish_reconcile_log(log, summary)
         return summary
 
     result = apply_pulled_stock(corrections)
     summary["reconciliations"] = result.get("reconciliations", [])
     summary["skipped_rows"] = result.get("skipped", [])
+    _finish_reconcile_log(log, summary)
     return summary
+
+
+def _finish_reconcile_log(log, summary):
+    """Close the run's log row with what it actually did.
+
+    items_processed is what was checked against Shopify, items_created the
+    corrections applied -- the two numbers someone reads to tell "nothing was
+    wrong" apart from "nothing ran". items_failed counts rows a Stock
+    Reconciliation rejected, which is a partial success worth seeing rather
+    than a silent shortfall.
+    """
+    if not log:
+        return
+    skipped_rows = summary.get("skipped_rows") or []
+    log.status = "success"
+    log.finished_at = now_datetime()
+    log.items_processed = summary.get("checked") or 0
+    log.items_created = len(summary.get("reconciliations") or [])
+    log.items_failed = len(skipped_rows)
+    _append_log(log, (
+        f"Checked {summary.get('checked', 0)} variants against Shopify. "
+        f"{summary.get('mismatched', 0)} differed and were corrected in "
+        f"{len(summary.get('reconciliations') or [])} Stock Reconciliation(s)."
+    ))
+    if summary.get("unknown_variants"):
+        _append_log(log, f"{summary['unknown_variants']} Shopify variant(s) match no local Item.")
+    if summary.get("unmapped_locations"):
+        _append_log(log, (
+            "No warehouse mapping for Shopify location(s): "
+            + ", ".join(str(x) for x in summary["unmapped_locations"])
+        ))
+    if skipped_rows:
+        _append_log(log, f"{len(skipped_rows)} row(s) were rejected by their Stock Reconciliation.")
+    log.save(ignore_permissions=True)
+    frappe.db.commit()
