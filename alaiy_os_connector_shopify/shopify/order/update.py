@@ -98,7 +98,14 @@ def _update_order_unlocked(order, order_id):
     # through a linked Sales Invoice or Purchase Order and retries the
     # TimestampMismatch race, so every cancel goes through one path whichever
     # webhook delivers it.
-    if order.get("cancelled_at"):
+    # financial_status "refunded" counts as cancelled here for the same reason
+    # the scheduled poll treats it that way (see _finished_on_shopify): a
+    # merchant can end an order by refunding it in full and removing its lines
+    # rather than cancelling it, which leaves cancelled_at null while the order
+    # is just as finished -- Refunded, "Fulfillment not required", nothing left
+    # to ship. Only a full refund; "partially_refunded" is a live order with
+    # some money returned and the rest still to fulfil.
+    if order.get("cancelled_at") or financial_status.lower() == "refunded":
         if frappe.db.get_value("Sales Order", so_name, "docstatus") == 1:
             from alaiy_os_connector_shopify.shopify.order.webhook import _cancel_sales_order
             _cancel_sales_order(so_name)

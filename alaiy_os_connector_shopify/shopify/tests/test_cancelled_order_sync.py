@@ -80,6 +80,10 @@ def _load(docstatus=1, so_name="SAL-ORD-0001"):
 
 
 LIVE = {"financial_status": "paid", "fulfillment_status": ""}
+# Refunded in full with the line items removed, never formally cancelled:
+# cancelled_at is null, and the order is finished all the same.
+REFUNDED = {"financial_status": "refunded", "fulfillment_status": ""}
+PARTIAL = {"financial_status": "partially_refunded", "fulfillment_status": ""}
 CANCELLED = {"financial_status": "refunded", "fulfillment_status": "",
              "cancelled_at": "2026-01-03T19:15:00-05:00"}
 
@@ -109,11 +113,52 @@ class CancelledOrderSync(unittest.TestCase):
         update(CANCELLED, "5001")
         self.assertEqual(calls["cancelled"], [])
 
+    def test_a_fully_refunded_order_is_cancelled_even_with_no_cancelled_at(self):
+        """Shopify shows Refunded / "Fulfillment not required" / Archived and
+        no Canceled badge. Nothing left to ship, so it must not keep ageing
+        against its SLA."""
+        update, calls = _load()
+        update(REFUNDED, "5001")
+        self.assertEqual(calls["cancelled"], ["SAL-ORD-0001"])
+
+    def test_a_partial_refund_leaves_the_order_alone(self):
+        """Part of the money back, the rest still to fulfil -- a live order."""
+        update, calls = _load()
+        update(PARTIAL, "5001")
+        self.assertEqual(calls["cancelled"], [])
+        self.assertEqual(calls["line_items"], ["SAL-ORD-0001"])
+
     def test_a_live_order_is_untouched(self):
         update, calls = _load()
         update(LIVE, "5001")
         self.assertEqual(calls["cancelled"], [])
         self.assertEqual(calls["line_items"], ["SAL-ORD-0001"])
+
+
+class FinishedOnShopify(unittest.TestCase):
+    """The scheduled poll's own view of "this order is over"."""
+
+    def _fn(self):
+        import importlib
+        _load()  # installs the frappe stub the module imports at top level
+        mod = importlib.import_module(
+            "alaiy_os_connector_shopify.shopify.order.delivery_status")
+        return mod._finished_on_shopify
+
+    def test_a_cancelled_order_is_finished(self):
+        self.assertTrue(self._fn()({"cancelledAt": "2026-01-03T19:15:00-05:00"}))
+
+    def test_a_fully_refunded_order_is_finished(self):
+        self.assertTrue(self._fn()({"cancelledAt": None,
+                                    "displayFinancialStatus": "REFUNDED"}))
+
+    def test_a_partially_refunded_order_is_not(self):
+        self.assertFalse(self._fn()({"cancelledAt": None,
+                                     "displayFinancialStatus": "PARTIALLY_REFUNDED"}))
+
+    def test_a_paid_order_is_not(self):
+        self.assertFalse(self._fn()({"cancelledAt": None,
+                                     "displayFinancialStatus": "PAID"}))
 
 
 if __name__ == "__main__":

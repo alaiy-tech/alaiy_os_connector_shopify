@@ -386,6 +386,35 @@ def _open_shopify_orders(limit=None):
     )
 
 
+def _finished_on_shopify(node):
+    """Why Shopify considers this order finished, or "" if it does not.
+
+    Two ways an order ends, and only one of them is a cancellation.
+
+    A cancelled order sets cancelledAt, which is the obvious case. But a
+    merchant can also just refund an order in full and remove its line items,
+    which leaves cancelledAt null: the order reads Refunded, "Fulfillment not
+    required", $0.00 net, nothing left to ship -- and is every bit as finished
+    as a cancelled one. Confirmed live: orders in exactly that state sat open
+    here for eight months, showing thousands of hours past their fulfillment
+    SLA on the admin dashboard, because this poll tested cancelledAt alone.
+
+    REFUNDED only, never PARTIALLY_REFUNDED: a partial refund is a live order
+    with some money returned, and the rest of it still has to ship. Cancelling
+    on that basis would close orders a supplier genuinely still owes.
+
+    Both signals come from the query this poll already runs, so recognising
+    the second costs nothing extra -- which is what the module docstring meant
+    by "a branch here rather than another Shopify round-trip".
+    """
+    if node.get("cancelledAt"):
+        return (f"Shopify cancelledAt {node['cancelledAt']}, "
+                f"reason {node.get('cancelReason')}")
+    if (node.get("displayFinancialStatus") or "").upper() == "REFUNDED":
+        return "Shopify reports the order fully REFUNDED with no cancellation"
+    return ""
+
+
 def sync_order_status(limit=None):
     """Apply Shopify's own order state to Sales Orders. Safe on a schedule.
 
@@ -427,7 +456,10 @@ def sync_order_status(limit=None):
             continue
 
         for node in data.get("nodes") or []:
-            if not node or not node.get("cancelledAt"):
+            if not node:
+                continue
+            reason = _finished_on_shopify(node)
+            if not reason:
                 continue
             so_name = by_legacy_id.get(str(node.get("legacyResourceId") or ""))
             if not so_name:
@@ -440,9 +472,7 @@ def sync_order_status(limit=None):
                 _cancel_sales_order(so_name)
                 summary["cancelled"] += 1
                 frappe.logger().info(
-                    f"Shopify order reconcile: cancelled {so_name} "
-                    f"(Shopify cancelledAt {node['cancelledAt']}, "
-                    f"reason {node.get('cancelReason')})"
+                    f"Shopify order reconcile: cancelled {so_name} ({reason})"
                 )
             except Exception:
                 # _cancel_sales_order already logs what it can explain (a
