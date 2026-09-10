@@ -95,9 +95,24 @@ scheduler_events = {
             # Cheap to run often: it only reads a queue table and does nothing
             # at all when that queue is empty.
             "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
+            # Re-attempt outbound pushes that failed transiently. The retry
+            # queue existed with backoff and a dead-letter state but nothing
+            # ever drained it, so a failed fulfillment or cancel push was a
+            # single Error Log line and no second attempt. Same five-minute
+            # tick as the reconcilers above and just as cheap: it reads one
+            # table and does nothing when that table is empty.
+            "alaiy_os_connector_shopify.shopify.sync_engine.retry_worker.drain",
         ],
     },
     "hourly": [
+        # Refunds land overwhelmingly on delivered, Completed orders, which
+        # sync_order_status deliberately never asks about -- its job is to
+        # close orders still open. A refund with no webhook therefore left
+        # the order reading paid forever and never reached the admin Returns
+        # page, which keys off sh_financial_status. Hourly rather than every
+        # five minutes: the refund webhook is still the fast path, and this
+        # only has to catch what it missed.
+        "alaiy_os_connector_shopify.shopify.order.delivery_status.sync_refund_status",
         "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only",
     ],
     "daily": [

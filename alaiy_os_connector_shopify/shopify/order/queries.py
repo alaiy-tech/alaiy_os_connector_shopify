@@ -12,15 +12,81 @@ query PullOrders($after: String, $queryString: String!) {
   orders(first: 50, after: $after, query: $queryString, sortKey: CREATED_AT) {
     edges {
       node {
+        id
         legacyResourceId
         name
+        confirmationNumber
         note
         tags
+        email
+        phone
+        test
         createdAt
+        updatedAt
+        processedAt
+        cancelledAt
+        closedAt
+        cancelReason
         currencyCode
         displayFinancialStatus
         displayFulfillmentStatus
         taxesIncluded
+        # The current* totals are the order as it stands NOW -- after any
+        # edit or refund. The uncurrent ones are frozen at placement, so an
+        # edited order reconciles against a total it no longer has.
+        currentTotalPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+          # What the buyer was actually charged, in their own currency. The
+          # shop-currency figure alone hides the presentment amount on any
+          # cross-currency order.
+          presentmentMoney {
+            amount
+            currencyCode
+          }
+        }
+        currentSubtotalPriceSet {
+          shopMoney {
+            amount
+          }
+        }
+        currentTotalTaxSet {
+          shopMoney {
+            amount
+          }
+        }
+        currentTotalDiscountsSet {
+          shopMoney {
+            amount
+          }
+        }
+        totalShippingPriceSet {
+          shopMoney {
+            amount
+          }
+        }
+        discountCodes
+        # Shopify's own fraud read. recommendation is its aggregate call --
+        # ACCEPT / INVESTIGATE / CANCEL / NONE -- while assessments carry one
+        # verdict per provider with the facts behind it. Keep both: the
+        # recommendation is what Shopify would do, the worst assessment is
+        # how bad any single provider thinks the order is, and they can
+        # disagree.
+        risk {
+          recommendation
+          assessments {
+            riskLevel
+            provider {
+              title
+            }
+            facts {
+              description
+              sentiment
+            }
+          }
+        }
         taxLines {
           title
           rate
@@ -31,10 +97,38 @@ query PullOrders($after: String, $queryString: String!) {
           }
         }
         customer {
+          id
           legacyResourceId
           firstName
           lastName
-          email
+          displayName
+          # Customer.email and Customer.phone are both deprecated on
+          # 2026-07 in favour of these.
+          defaultEmailAddress {
+            emailAddress
+          }
+          defaultPhoneNumber {
+            phoneNumber
+          }
+          numberOfOrders
+          createdAt
+          updatedAt
+          tags
+          defaultAddress {
+            id
+            firstName
+            lastName
+            company
+            address1
+            address2
+            city
+            province
+            provinceCode
+            country
+            countryCodeV2
+            zip
+            phone
+          }
         }
         totalDiscountsSet {
           shopMoney {
@@ -80,31 +174,68 @@ query PullOrders($after: String, $queryString: String!) {
         }
         shippingAddress {
           name
+          firstName
+          lastName
+          company
           address1
           address2
           city
           province
+          provinceCode
           country
+          countryCodeV2
           zip
           phone
         }
         billingAddress {
           name
+          firstName
+          lastName
+          company
           address1
           address2
           city
           province
+          provinceCode
           country
+          countryCodeV2
           zip
           phone
         }
+        # What the gateway charged to take the money. Shopify Payments
+        # reports a real fee per transaction; most third-party gateways
+        # report none at all, so an absent fee means not reported rather
+        # than free. Capped at 10: an order accrues a transaction per
+        # capture and refund, and no real order has more than a handful.
+        transactions(first: 10) {
+          id
+          kind
+          status
+          fees {
+            amount {
+              amount
+            }
+          }
+        }
         lineItems(first: 100) {
           nodes {
+            id
             sku
             title
+            name
             quantity
+            # The post-edit quantity -- 0 once a line has been removed via
+            # Order Editing, while quantity stays frozen at what was first
+            # placed. Without it a pulled order that had a line deleted
+            # still reconciles against the original count.
+            currentQuantity
+            vendor
             variant {
+              id
               legacyResourceId
+              title
+              sku
+              barcode
             }
             # The product survives its variant. Shopify returns a null variant
             # once the variant has been deleted -- ordinary for one-of-a-kind
@@ -116,9 +247,58 @@ query PullOrders($after: String, $queryString: String!) {
             # nothing), so the line collapsed onto the shared placeholder item
             # and took its supplier, its cost and its fulfillment with it.
             product {
+              id
               legacyResourceId
+              title
+              handle
+              vendor
+              productType
+              status
             }
             originalUnitPriceSet {
+              shopMoney {
+                amount
+              }
+            }
+            # What the line actually sold for after its share of any
+            # discount. originalUnitPriceSet alone hides every per-line
+            # discount, so a discounted order's lines summed above its real
+            # total.
+            discountedUnitPriceSet {
+              shopMoney {
+                amount
+              }
+            }
+            # WHICH discount reduced this line, and by how much. The
+            # discounted prices above already carry the right amounts, so
+            # margin per SKU is correct without this -- what is missing is
+            # attribution: an order with two codes, or one code that applied
+            # to a single SKU, is indistinguishable from a flat order-level
+            # discount once only the totals are kept.
+            discountAllocations {
+              allocatedAmountSet {
+                shopMoney {
+                  amount
+                }
+              }
+              discountApplication {
+                ... on DiscountCodeApplication {
+                  code
+                }
+                ... on AutomaticDiscountApplication {
+                  title
+                }
+                ... on ManualDiscountApplication {
+                  title
+                }
+              }
+            }
+            originalTotalSet {
+              shopMoney {
+                amount
+              }
+            }
+            discountedTotalSet {
               shopMoney {
                 amount
               }

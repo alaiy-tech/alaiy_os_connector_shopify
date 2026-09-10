@@ -332,6 +332,14 @@ def sync_delivery_status(limit=None):
 
 # Newer than this and a webhook still has a fair chance of arriving on its own;
 # older and the order is cold. Keeps each run bounded on years of history.
+#
+# Deliberately NOT the bound on the cancel check below. An order goes cold for
+# DELIVERY updates -- a parcel stops moving -- but a cancel that never landed
+# does not age out: it stays wrong until something asks Shopify. Bounding the
+# cancel poll by transaction_date meant an order cancelled on Shopify before we
+# imported it was never once asked about, because it was already older than the
+# window on the day it arrived. Confirmed live: orders sitting open locally for
+# months against a Cancelled, Refunded order on Shopify, ageing past SLA.
 _ORDER_LOOKBACK_DAYS = 30
 
 _ORDER_STATUS_QUERY = """
@@ -344,6 +352,9 @@ query($ids: [ID!]!) {
       cancelReason
       displayFinancialStatus
       displayFulfillmentStatus
+      lineItems(first: 250) {
+        nodes { quantity currentQuantity }
+      }
     }
   }
 }
@@ -355,21 +366,121 @@ def _open_shopify_orders(limit=None):
 
     docstatus 1 only: a draft was never submitted and a 2 is already cancelled,
     so neither needs asking about. Least-recently-touched first so a large
-    backlog spreads across runs instead of re-asking about the same rows.
+    backlog spreads across runs instead of re-asking about the same rows, and
+    so the oldest un-reconciled orders are reached first rather than never.
+
+    No transaction_date bound, on purpose -- see _ORDER_LOOKBACK_DAYS. What
+    bounds a run is `limit` and the `modified asc` ordering: each tick takes
+    the least-recently-checked slice and the rest follow on later ticks, so
+    years of history are covered without any single run being unbounded.
+    Restricting this to recent orders is what let a cancelled order stay open
+    locally indefinitely.
     """
     return frappe.get_all(
         "Sales Order",
         filters={
             "docstatus": 1,
             "sh_shopify_order_id": ["is", "set"],
-            "transaction_date": [
-                ">=", frappe.utils.add_days(frappe.utils.nowdate(), -_ORDER_LOOKBACK_DAYS)
-            ],
+            "status": ["not in", ("Completed", "Closed")],
         },
         fields=["name", "sh_shopify_order_id"],
         order_by="modified asc",
         limit=limit,
     )
+
+
+def _finished_on_shopify(node):
+    """Why Shopify considers this order finished, or "" if it does not.
+
+    Two ways an order ends, and only one of them is a cancellation.
+
+    A cancelled order sets cancelledAt, which is the obvious case. But a
+    merchant can also just refund an order in full and remove its line items,
+    which leaves cancelledAt null: the order reads Refunded, "Fulfillment not
+    required", $0.00 net, nothing left to ship -- and is every bit as finished
+    as a cancelled one. Confirmed live: orders in exactly that state sat open
+    here for eight months, showing thousands of hours past their fulfillment
+    SLA on the admin dashboard, because this poll tested cancelledAt alone.
+
+    REFUNDED only, never PARTIALLY_REFUNDED: a partial refund is a live order
+    with some money returned, and the rest of it still has to ship. Cancelling
+    on that basis would close orders a supplier genuinely still owes.
+
+    Both signals come from the query this poll already runs, so recognising
+    the second costs nothing extra -- which is what the module docstring meant
+    by "a branch here rather than another Shopify round-trip".
+    """
+    if node.get("cancelledAt"):
+        return (f"Shopify cancelledAt {node['cancelledAt']}, "
+                f"reason {node.get('cancelReason')}")
+    if (node.get("displayFinancialStatus") or "").upper() == "REFUNDED":
+        return "Shopify reports the order fully REFUNDED with no cancellation"
+    if _every_line_removed(node):
+        return ("every line item is at currentQuantity 0 on Shopify -- "
+                "nothing is left to fulfil")
+    return ""
+
+
+def _every_line_removed(node):
+    """Whether Shopify has taken every line off this order.
+
+    The third way an order ends, and the one that hides behind a misleading
+    status. Refunding an order line by line rather than in one go leaves
+    displayFinancialStatus at PARTIALLY_REFUNDED even once the last line is
+    gone -- that field describes the money, not whether anything remains to
+    ship. Confirmed live: an order reading PARTIALLY_REFUNDED, UNFULFILLED,
+    not cancelled and not closed, whose only line item stood at
+    currentQuantity 0, had been open here for eight months and 5724 hours
+    past its fulfillment SLA.
+
+    currentQuantity is the count still on the order after edits and
+    refunds; quantity is what was originally ordered and never changes. So
+    this asks the only question that matters -- is there anything left to
+    send -- rather than trying to infer it from the refund state.
+
+    Deliberately conservative in both directions. An order with no line
+    items in the payload returns False rather than True: an empty list here
+    means the query returned nothing useful, not that the order is empty,
+    and cancelling on a failed read would be far worse than missing one.
+    An order where any line still carries quantity is genuinely live, which
+    is what keeps a real partial refund out of this branch.
+    """
+    nodes = ((node.get("lineItems") or {}).get("nodes")) or []
+    if not nodes:
+        return False
+    return all((line.get("currentQuantity") or 0) <= 0 for line in nodes)
+
+
+def _sync_financial_status(node, by_legacy_id, summary):
+    """Bring Sales Order.sh_financial_status in line with Shopify.
+
+    Refunds are the reason this exists. The refund webhook is the fast path
+    and creates the Credit Note; this is the backstop that makes sure the
+    ORDER still reflects the refund even when no webhook arrived, because
+    the Returns page reads the order's own status rather than the credit
+    note (most refunds never produce one -- the webhook only does when a
+    Sales Invoice already existed to return against).
+
+    A direct field write, not a document save: this is a status Shopify
+    owns, no hook needs to fire for it, and saving a submitted Sales Order
+    to change one custom field risks a TimestampMismatch against whatever
+    else is touching that row.
+    """
+    status = (node.get("displayFinancialStatus") or "").lower()
+    if not status:
+        return
+    so_name = by_legacy_id.get(str(node.get("legacyResourceId") or ""))
+    if not so_name:
+        return
+    if (frappe.db.get_value("Sales Order", so_name, "sh_financial_status") or "") == status:
+        return
+
+    frappe.db.set_value("Sales Order", so_name, "sh_financial_status", status,
+                        update_modified=False)
+    frappe.db.commit()  # nosemgrep -- each order is independent; one bad row must not roll back the batch
+    summary["financial_status_updated"] = summary.get("financial_status_updated", 0) + 1
+    if status in ("refunded", "partially_refunded"):
+        summary["refunds_found"] = summary.get("refunds_found", 0) + 1
 
 
 def sync_order_status(limit=None):
@@ -388,7 +499,8 @@ def sync_order_status(limit=None):
         return {"ok": False, "reason": "connector disabled"}
 
     open_orders = _open_shopify_orders(limit)
-    summary = {"ok": True, "checked": len(open_orders), "cancelled": 0, "failed": 0}
+    summary = {"ok": True, "checked": len(open_orders), "cancelled": 0, "failed": 0,
+               "financial_status_updated": 0, "refunds_found": 0}
     if not open_orders:
         return summary
 
@@ -413,7 +525,20 @@ def sync_order_status(limit=None):
             continue
 
         for node in data.get("nodes") or []:
-            if not node or not node.get("cancelledAt"):
+            if not node:
+                continue
+            # Write back what Shopify says about the money, whether or not
+            # this order is finished. The query already carried
+            # displayFinancialStatus and nothing read it into the Sales
+            # Order, so a refund that arrived without a webhook -- dropped,
+            # fired while the connector was disabled, or issued before the
+            # order was imported -- never reached sh_financial_status. The
+            # admin Returns page keys off exactly that field, so those
+            # orders were refunded on Shopify and absent from Returns here.
+            _sync_financial_status(node, by_legacy_id, summary)
+
+            reason = _finished_on_shopify(node)
+            if not reason:
                 continue
             so_name = by_legacy_id.get(str(node.get("legacyResourceId") or ""))
             if not so_name:
@@ -426,9 +551,7 @@ def sync_order_status(limit=None):
                 _cancel_sales_order(so_name)
                 summary["cancelled"] += 1
                 frappe.logger().info(
-                    f"Shopify order reconcile: cancelled {so_name} "
-                    f"(Shopify cancelledAt {node['cancelledAt']}, "
-                    f"reason {node.get('cancelReason')})"
+                    f"Shopify order reconcile: cancelled {so_name} ({reason})"
                 )
             except Exception:
                 # _cancel_sales_order already logs what it can explain (a
@@ -441,5 +564,76 @@ def sync_order_status(limit=None):
                     title=f"Shopify: order reconcile failed for {so_name}",
                     message=frappe.get_traceback(),
                 )
+
+    return summary
+
+
+def sync_refund_status(limit=500):
+    """Ask Shopify which orders it considers refunded, and record it.
+
+    sync_order_status above only looks at orders still OPEN here, because
+    its job is to close the ones Shopify has finished. Refunds are the
+    opposite case: they land overwhelmingly on orders that are delivered
+    and Completed, which that sweep deliberately never asks about. So a
+    refund with no webhook -- dropped, fired while the connector was off,
+    or issued before the order was imported -- left the order reading paid
+    forever and never appeared on the admin Returns page, which keys off
+    sh_financial_status.
+
+    Reads and records only. It does NOT create a Credit Note or reverse
+    stock: that is handle_refund_webhook's job and it needs the refund's
+    line-item breakdown to do it correctly. Inventing one from an
+    order-level status would guess at quantities. This makes the refund
+    visible; a human decides what to do about it.
+
+    Least-recently-checked first, so a large history is covered across
+    several runs rather than one unbounded pass.
+    """
+    settings = frappe.get_cached_doc("Shopify Connector Settings")
+    if not settings.is_enabled:
+        return {"ok": False, "reason": "connector disabled"}
+
+    # Everything Shopify might have refunded that we do not already know is
+    # refunded. docstatus 1 only -- a cancelled order's money is settled by
+    # the cancel path, and a draft was never paid.
+    rows = frappe.get_all(
+        "Sales Order",
+        filters={
+            "docstatus": 1,
+            "sh_shopify_order_id": ["is", "set"],
+            "sh_financial_status": ["not in", ["refunded", "partially_refunded", "voided"]],
+        },
+        fields=["name", "sh_shopify_order_id"],
+        order_by="modified asc",
+        limit=limit,
+    )
+    summary = {"ok": True, "checked": len(rows), "refunds_found": 0,
+               "financial_status_updated": 0, "failed": 0}
+    if not rows:
+        return summary
+
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    client = ShopifyGraphQLClient()
+    by_legacy_id = {str(r.sh_shopify_order_id): r.name for r in rows}
+    ids = list(by_legacy_id)
+
+    for start in range(0, len(ids), _BATCH):
+        chunk = ids[start:start + _BATCH]
+        gids = [f"gid://shopify/Order/{oid}" for oid in chunk]
+        try:
+            data = client.execute(_ORDER_STATUS_QUERY, {"ids": gids})
+        except Exception:
+            summary["failed"] += len(chunk)
+            frappe.log_error(
+                title="Shopify: refund status poll failed for a batch",
+                message=repr(chunk) + chr(10) + frappe.get_traceback(),
+            )
+            continue
+
+        for node in data.get("nodes") or []:
+            if not node:
+                continue
+            _sync_financial_status(node, by_legacy_id, summary)
 
     return summary
