@@ -2,11 +2,15 @@
 
 import { useEffect, useState } from "react";
 
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+
 import { Badge } from "@alaiy-os/ui/badge";
 import { Button } from "@alaiy-os/ui/button";
 import { Card, CardContent, CardHeader } from "@alaiy-os/ui/card";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@alaiy-os/ui/input-group";
 import { Skeleton } from "@alaiy-os/ui/skeleton";
+import { Switch } from "@alaiy-os/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@alaiy-os/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@alaiy-os/ui/tabs";
 import { cn } from "@alaiy-os/utils";
@@ -14,6 +18,7 @@ import { Search, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { getListingStatusBadgeClass } from "@/constants/shopify";
+import { setListingEnabled } from "@/lib/frappe/shopify-listing-toggle";
 import { enableListingsByStatus, fetchResourceList, shopifyErrorMessage } from "@/lib/frappe/shopify-sync";
 
 interface ShopifyListing extends Record<string, unknown> {
@@ -37,13 +42,33 @@ type StatusTab = (typeof STATUS_TABS)[number];
 // the cap silently.
 const ROW_LIMIT = 200;
 
+function isStatusTab(value: string | null): value is StatusTab {
+  return !!value && (STATUS_TABS as readonly string[]).includes(value);
+}
+
 export function ListingsTable() {
-  const [tab, setTab] = useState<StatusTab>("All");
+  const searchParams = useSearchParams();
+  const initialTab = searchParams.get("status");
+  const [tab, setTab] = useState<StatusTab>(isStatusTab(initialTab) ? initialTab : "All");
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<ShopifyListing[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [enabling, setEnabling] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
+  const [togglingRow, setTogglingRow] = useState<string | null>(null);
+
+  async function toggleRow(row: ShopifyListing, next: boolean) {
+    setTogglingRow(row.name);
+    setRows((current) => current?.map((r) => (r.name === row.name ? { ...r, is_enabled: next ? 1 : 0 } : r)) ?? current);
+    try {
+      await setListingEnabled(row.name, next);
+    } catch (error) {
+      setRows((current) => current?.map((r) => (r.name === row.name ? { ...r, is_enabled: next ? 0 : 1 } : r)) ?? current);
+      toast.error(shopifyErrorMessage(error, "Could not update this listing."));
+    } finally {
+      setTogglingRow(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -150,9 +175,19 @@ export function ListingsTable() {
                 ) : (
                   rows.map((row) => (
                     <TableRow key={row.name}>
-                      <TableCell className="font-medium">{row.item}</TableCell>
+                      <TableCell className="font-medium">
+                        <Link href={`/os/channels/shopify/listings/${encodeURIComponent(row.name)}`} className="hover:underline">
+                          {row.item}
+                        </Link>
+                      </TableCell>
                       <TableCell className="max-w-64 truncate" title={row.listing_title ?? undefined}>
-                        {row.listing_title || <span className="text-muted-foreground">—</span>}
+                        {row.listing_title ? (
+                          <Link href={`/os/channels/shopify/listings/${encodeURIComponent(row.name)}`} className="hover:underline">
+                            {row.listing_title}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Badge
@@ -163,7 +198,11 @@ export function ListingsTable() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={row.is_enabled ? "outline" : "secondary"}>{row.is_enabled ? "Enabled" : "Disabled"}</Badge>
+                        <Switch
+                          checked={!!row.is_enabled}
+                          disabled={togglingRow === row.name}
+                          onCheckedChange={(next) => void toggleRow(row, next)}
+                        />
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {row.listing_price != null ? row.listing_price.toFixed(2) : <span className="text-muted-foreground">—</span>}

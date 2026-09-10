@@ -1,11 +1,17 @@
+"use client";
+
+import { useState } from "react";
+
 import { PageHeader } from "@alaiy-os/layout/page-header";
 
 import { Badge } from "@alaiy-os/ui/badge";
+import { Button } from "@alaiy-os/ui/button";
 
 import { fetchResourceList, refreshShopifyCollections } from "@/lib/frappe/shopify-sync";
 
 import { RefreshableList } from "../_components/refreshable-list";
 import { SimpleResourceTable } from "../_components/simple-resource-table";
+import { CollectionDetailDialog } from "./_components/collection-detail-dialog";
 
 interface ShopifyCollection extends Record<string, unknown> {
   name: string;
@@ -17,6 +23,8 @@ interface ShopifyCollection extends Record<string, unknown> {
 }
 
 export default function Page() {
+  const [detail, setDetail] = useState<{ name: string; title: string } | null>(null);
+
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Shopify Collections" subtitle="Manual and smart collections pulled from your Shopify storefront." />
@@ -43,10 +51,26 @@ export default function Page() {
                 render: (row) =>
                   row.last_synced ? new Date(row.last_synced).toLocaleString() : <span className="text-muted-foreground">—</span>,
               },
+              {
+                header: "",
+                render: (row) => (
+                  <Button size="sm" variant="outline" onClick={() => setDetail({ name: row.name, title: row.collection_title })}>
+                    Manage
+                  </Button>
+                ),
+              },
             ]}
           />
         )}
       </RefreshableList>
+      {detail && (
+        <CollectionDetailDialog
+          collectionName={detail.name}
+          collectionTitle={detail.title}
+          open={!!detail}
+          onOpenChange={(next) => !next && setDetail(null)}
+        />
+      )}
     </div>
   );
 }
