@@ -83,6 +83,27 @@ def _update_order_unlocked(order, order_id):
             frappe.db.set_value("Sales Order", so_name, field, value)
         frappe.db.commit()
 
+    # Shopify has cancelled this order. Nothing below applies to a cancelled
+    # order -- the line-item diff, Delivery Note creation and the invoice
+    # trigger all assume a live one -- and none of them notices, because until
+    # now this path read only financial_status and fulfillment_status. An
+    # order cancelled AFTER we imported it therefore stayed open locally
+    # forever: still "To Deliver and Bill", still unfulfilled, ageing past its
+    # SLA on the dashboard against an order Shopify shows as Cancelled and
+    # Refunded. The dedicated orders/cancelled path was the only cancel path,
+    # and it does nothing when the cancel predates the Sales Order (an order
+    # re-imported later, e.g. by a catalogue reimport, never sees it).
+    #
+    # _cancel_sales_order rather than a bare so.cancel(): it already cascades
+    # through a linked Sales Invoice or Purchase Order and retries the
+    # TimestampMismatch race, so every cancel goes through one path whichever
+    # webhook delivers it.
+    if order.get("cancelled_at"):
+        if frappe.db.get_value("Sales Order", so_name, "docstatus") == 1:
+            from alaiy_os_connector_shopify.shopify.order.webhook import _cancel_sales_order
+            _cancel_sales_order(so_name)
+        return False
+
     # State guard: only sync line items if order hasn't shipped yet
     if _can_modify_order_items(fulfillment_status):
         _sync_order_line_items(so_name, order)
