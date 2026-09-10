@@ -332,6 +332,14 @@ def sync_delivery_status(limit=None):
 
 # Newer than this and a webhook still has a fair chance of arriving on its own;
 # older and the order is cold. Keeps each run bounded on years of history.
+#
+# Deliberately NOT the bound on the cancel check below. An order goes cold for
+# DELIVERY updates -- a parcel stops moving -- but a cancel that never landed
+# does not age out: it stays wrong until something asks Shopify. Bounding the
+# cancel poll by transaction_date meant an order cancelled on Shopify before we
+# imported it was never once asked about, because it was already older than the
+# window on the day it arrived. Confirmed live: orders sitting open locally for
+# months against a Cancelled, Refunded order on Shopify, ageing past SLA.
 _ORDER_LOOKBACK_DAYS = 30
 
 _ORDER_STATUS_QUERY = """
@@ -355,16 +363,22 @@ def _open_shopify_orders(limit=None):
 
     docstatus 1 only: a draft was never submitted and a 2 is already cancelled,
     so neither needs asking about. Least-recently-touched first so a large
-    backlog spreads across runs instead of re-asking about the same rows.
+    backlog spreads across runs instead of re-asking about the same rows, and
+    so the oldest un-reconciled orders are reached first rather than never.
+
+    No transaction_date bound, on purpose -- see _ORDER_LOOKBACK_DAYS. What
+    bounds a run is `limit` and the `modified asc` ordering: each tick takes
+    the least-recently-checked slice and the rest follow on later ticks, so
+    years of history are covered without any single run being unbounded.
+    Restricting this to recent orders is what let a cancelled order stay open
+    locally indefinitely.
     """
     return frappe.get_all(
         "Sales Order",
         filters={
             "docstatus": 1,
             "sh_shopify_order_id": ["is", "set"],
-            "transaction_date": [
-                ">=", frappe.utils.add_days(frappe.utils.nowdate(), -_ORDER_LOOKBACK_DAYS)
-            ],
+            "status": ["not in", ("Completed", "Closed")],
         },
         fields=["name", "sh_shopify_order_id"],
         order_by="modified asc",
