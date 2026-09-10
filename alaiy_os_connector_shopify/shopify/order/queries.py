@@ -202,6 +202,21 @@ query PullOrders($after: String, $queryString: String!) {
           zip
           phone
         }
+        # What the gateway charged to take the money. Shopify Payments
+        # reports a real fee per transaction; most third-party gateways
+        # report none at all, so an absent fee means not reported rather
+        # than free. Capped at 10: an order accrues a transaction per
+        # capture and refund, and no real order has more than a handful.
+        transactions(first: 10) {
+          id
+          kind
+          status
+          fees {
+            amount {
+              amount
+            }
+          }
+        }
         lineItems(first: 100) {
           nodes {
             id
@@ -252,6 +267,30 @@ query PullOrders($after: String, $queryString: String!) {
             discountedUnitPriceSet {
               shopMoney {
                 amount
+              }
+            }
+            # WHICH discount reduced this line, and by how much. The
+            # discounted prices above already carry the right amounts, so
+            # margin per SKU is correct without this -- what is missing is
+            # attribution: an order with two codes, or one code that applied
+            # to a single SKU, is indistinguishable from a flat order-level
+            # discount once only the totals are kept.
+            discountAllocations {
+              allocatedAmountSet {
+                shopMoney {
+                  amount
+                }
+              }
+              discountApplication {
+                ... on DiscountCodeApplication {
+                  code
+                }
+                ... on AutomaticDiscountApplication {
+                  title
+                }
+                ... on ManualDiscountApplication {
+                  title
+                }
               }
             }
             originalTotalSet {

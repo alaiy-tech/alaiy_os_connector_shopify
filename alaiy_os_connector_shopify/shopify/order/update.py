@@ -67,6 +67,12 @@ def _update_order_unlocked(order, order_id):
         # a note to empty on Shopify is a legitimate edit that should sync
         # too, not get silently ignored.
         updates["sh_shopify_notes"] = order.get("note") or ""
+    if order.get("payment_fee") is not None:
+        # Only when reported. Absent means the gateway did not tell us, not
+        # that processing was free, so a missing fee must never overwrite a
+        # figure an earlier pull recorded.
+        if frappe.db.has_column("Sales Order", "sh_payment_fee"):
+            updates["sh_payment_fee"] = order["payment_fee"]
     if "tags" in order:
         from alaiy_os_connector_shopify.shopify.order.push import parse_tags, strip_status_tag
         updates["sh_shopify_order_tags"] = ",".join(strip_status_tag(parse_tags(order.get("tags"))))

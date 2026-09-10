@@ -119,6 +119,7 @@ def _order_node_to_rest_shape(node: dict) -> dict:
             "variant_sku": variant.get("sku"),
             "barcode": variant.get("barcode"),
             "vendor": li.get("vendor"),
+            "discount_allocations": _discount_allocations(li),
             # Outlives the variant, and stays fetchable by id after the
             # product is archived -- the only identifier left on a line whose
             # variant Shopify has deleted.
@@ -290,7 +291,63 @@ def _order_node_to_rest_shape(node: dict) -> dict:
         "cancel_reason": (node.get("cancelReason") or "").lower(),
         "financial_status": (node.get("displayFinancialStatus") or "").lower(),
         "fulfillment_status": (node.get("displayFulfillmentStatus") or "").lower(),
+        "payment_fee": _payment_fee(node),
     }
+
+
+def _payment_fee(node: dict):
+    """What the gateway charged to take the money on this order.
+
+    Summed across SUCCESSful SALE and CAPTURE transactions only. A refund
+    carries its own fee entry and including it would net the charge back
+    out, reporting a fee of nearly nothing on a refunded order -- the money
+    the processor kept is the figure worth having. A pending or failed
+    transaction has not been charged for at all.
+
+    Returns None rather than 0 when nothing reported a fee. Most
+    third-party gateways report none through this field, and a 0 would
+    read as "this order cost nothing to process" when the truth is that we
+    do not know.
+    """
+    total = 0.0
+    seen = False
+    for txn in (node.get("transactions") or []):
+        if (txn.get("status") or "").upper() != "SUCCESS":
+            continue
+        if (txn.get("kind") or "").upper() not in ("SALE", "CAPTURE"):
+            continue
+        for fee in (txn.get("fees") or []):
+            amount = (fee.get("amount") or {}).get("amount")
+            if amount in (None, ""):
+                continue
+            total += flt(amount)
+            seen = True
+    return total if seen else None
+
+
+def _discount_allocations(li: dict) -> list:
+    """Which discounts reduced this line, and by how much.
+
+    Shape matched to the REST webhook's own discount_allocations so a pulled
+    order and a webhook order carry the same thing -- the GraphQL side nests
+    the money and names the code on a union, the webhook side is flat.
+
+    Amount is not used to recompute the price: discountedUnitPriceSet
+    already carries the post-discount figure and is what the line is
+    written from. This is attribution -- which code, worth how much -- for
+    reporting that has to tell one code from another on the same order.
+    """
+    out = []
+    for alloc in (li.get("discountAllocations") or []):
+        money = (alloc.get("allocatedAmountSet") or {}).get("shopMoney") or {}
+        application = alloc.get("discountApplication") or {}
+        out.append({
+            # code for a discount code, title for an automatic or manual one.
+            # Shopify guarantees one or the other, never both.
+            "code": application.get("code") or application.get("title") or "",
+            "amount": flt(money.get("amount") or 0),
+        })
+    return out
 
 
 def _line_item_qty(li: dict) -> float:

@@ -410,6 +410,33 @@ def setup_custom_fields():
             "description": "Per-provider risk level and the facts behind it.",
         },
         {
+            "fieldname": "sh_handling_hours",
+            "label": "Handling Hours",
+            "fieldtype": "Float",
+            "precision": "2",
+            "read_only": 1,
+            "insert_after": "sh_risk_detail",
+            "description": (
+                "Hours from the order being placed to its dispatch being confirmed, "
+                "written once on the first Delivery Note. Measured from midnight on "
+                "the order date, since a Sales Order carries no order time -- so a "
+                "same-day dispatch reads as hours rather than zero."
+            ),
+        },
+        {
+            "fieldname": "sh_payment_fee",
+            "label": "Payment Processing Fee",
+            "fieldtype": "Currency",
+            "read_only": 1,
+            "insert_after": "sh_handling_hours",
+            "description": (
+                "What the payment gateway charged on this order, summed across its "
+                "successful sale and capture transactions. Shopify Payments reports "
+                "a real fee; most third-party gateways report none, so blank means "
+                "not reported rather than free."
+            ),
+        },
+        {
             "fieldname": "sh_shopify_notes",
             "label": "Shopify Notes",
             "fieldtype": "Small Text",

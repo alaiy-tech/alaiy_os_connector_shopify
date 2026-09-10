@@ -250,6 +250,11 @@ def _upsert_order_unlocked(order, order_id):
     so.sh_financial_status = order.get("financial_status", "")
     so.sh_fulfillment_status = order.get("fulfillment_status", "")
     so.sh_shopify_notes = order.get("note") or ""
+    # Same reasoning as the risk block below: only the pull carries a fee,
+    # the REST webhook has no transactions at all, so an absent value must
+    # leave whatever a prior sync recorded rather than blanking it.
+    if order.get("payment_fee") is not None and hasattr(so, "sh_payment_fee"):
+        so.sh_payment_fee = order["payment_fee"]
     # Shopify's fraud verdict. Only the pull path carries it -- the REST
     # webhook payload has no risk block at all -- so leave whatever a prior
     # sync stored rather than blanking a real HIGH on a webhook update.
