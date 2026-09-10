@@ -1058,6 +1058,7 @@ def _reconcile_inventory(dry_run, query, log):
     # query="created_at:>=2026-01-01 created_at:<2026-04-01". Each window
     # touches a disjoint set of products, so the concurrent runs never contend
     # on the same Bins. None means the whole catalogue.
+    pages_done = 0
     for page_nodes in client.execute_paginated(_PRODUCTS_STOCK_QUERY, {"after": None, "query": query}, ["products"]):
         for node in page_nodes:
             for variant in (node.get("variants", {}).get("nodes") or []):
@@ -1095,6 +1096,29 @@ def _reconcile_inventory(dry_run, query, log):
                         "warehouse": warehouse,
                         "qty": flt(qty),
                     })
+
+        # Progress after each page, not only at the end. A sweep over ~3,000
+        # variants takes minutes, and a log row sitting at running with every
+        # counter on zero is indistinguishable from a job that hung -- which
+        # is exactly how the last one looked while it was working correctly.
+        # One small write per page (a few hundred products), not per variant.
+        pages_done += 1
+        if log:
+            # Appended to log_messages as well as the counters, so the row
+            # reads as a running commentary the way the other syncs' do
+            # rather than three numbers that change with no explanation.
+            note = (
+                f"Page {pages_done}: {checked} variants checked, "
+                f"{len(corrections)} correction(s) queued."
+            )
+            previous = frappe.db.get_value("Shopify Sync Log", log.name, "log_messages") or ""
+            frappe.db.set_value("Shopify Sync Log", log.name, {
+                "pages_done": pages_done,
+                "items_processed": checked,
+                "items_created": len(corrections),
+                "log_messages": (previous + "\n" + note).strip(),
+            }, update_modified=False)
+            frappe.db.commit()
 
     summary = {
         "checked": checked,
