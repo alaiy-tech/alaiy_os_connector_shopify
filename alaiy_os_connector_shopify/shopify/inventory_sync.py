@@ -994,6 +994,12 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, trigger="schedul
     write. Items Shopify reports at a location this site has no warehouse
     mapping for are skipped and counted, not guessed at.
 
+    Active products only by default. `query` is a Shopify search filter, so
+    pass one explicitly to widen or narrow that -- query="" is not a way to
+    ask for everything, since an empty string falls back to the default;
+    use query="status:active OR status:draft" or similar to be deliberate
+    about it.
+
     dry_run=True reports what would change without writing.
 
     Writes a Shopify Sync Log row for the same reason every other sync here
@@ -1059,7 +1065,17 @@ def _reconcile_inventory(dry_run, query, log):
     # touches a disjoint set of products, so the concurrent runs never contend
     # on the same Bins. None means the whole catalogue.
     pages_done = 0
-    for page_nodes in client.execute_paginated(_PRODUCTS_STOCK_QUERY, {"after": None, "query": query}, ["products"]):
+    # Active products only unless the caller asked for something else.
+    # Stock on a draft or archived product is not stock anyone can sell, and
+    # sweeping them meant paging through the entire Shopify catalogue -- 25
+    # products per request -- to correct quantities nothing would ever read.
+    # The admin Inventory page counts Active items too, so an unfiltered
+    # sweep also reported a different population than the page it sits on.
+    effective_query = query or "status:active"
+
+    for page_nodes in client.execute_paginated(
+        _PRODUCTS_STOCK_QUERY, {"after": None, "query": effective_query}, ["products"]
+    ):
         for node in page_nodes:
             for variant in (node.get("variants", {}).get("nodes") or []):
                 variant_id = variant.get("legacyResourceId")
