@@ -62,6 +62,12 @@ def archive_item(item_code: str):
             # ever writes it again.
             if listing and listing.sh_shopify_status != "Archived":
                 listing.db_set("sh_shopify_status", "Archived", update_modified=False)
+                # nosemgrep: committed independently of the fingerprint-clear
+                # block below, which has its own separate commit and can be
+                # skipped entirely (no entity found) or fail on its own --
+                # the fact that Shopify really did archive this product must
+                # be durable on its own, not bundled with a second, unrelated
+                # write that might not run at all.
                 frappe.db.commit()
 
             # Clear fingerprint on successful archive so a subsequent push_item
