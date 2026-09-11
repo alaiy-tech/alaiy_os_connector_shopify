@@ -57,7 +57,6 @@ from alaiy_os_connector_shopify.shopify.product.tags import (
 )
 from alaiy_os_connector_shopify.shopify.product.importer import (
     run_full_product_import,
-    _wipe_all_items,
     _import_product,
     _apply_existing_variant_content,
     _apply_existing_template_content,
