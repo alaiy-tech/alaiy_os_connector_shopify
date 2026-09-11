@@ -39,13 +39,18 @@ def trigger_inventory_push():
 
 
 @frappe.whitelist()
-def trigger_missing_product_import(statuses=None, collection_id=None):
+def trigger_missing_product_import(statuses=None, collection_id=None, location_id=None):
     """
     Catch-up import: only products never linked locally at all. Existing
     products are never re-verified or touched, unlike trigger_product_import
     (run_full_product_import), which re-checks the whole catalog every run --
     see run_missing_product_import's own docstring for why this is the
     lighter, safer choice for "pull whatever's new" rather than a full resync.
+
+    location_id scopes to products actually stocked at one Shopify Location
+    (e.g. a site's own default warehouse, not every supplier's location on
+    the same store) -- see run_missing_product_import's own docstring for
+    why this can't be pushed into the Shopify query itself.
     """
     return _enqueue_sync(
         "products",
@@ -53,6 +58,7 @@ def trigger_missing_product_import(statuses=None, collection_id=None):
         timeout=3600,
         statuses=statuses,
         collection_id=collection_id,
+        location_id=location_id,
     )
 
 

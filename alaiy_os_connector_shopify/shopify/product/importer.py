@@ -198,7 +198,27 @@ def run_full_product_import(trigger="manual", log_name=None, statuses=None):
     return log.name
 
 
-def run_missing_product_import(trigger="manual", log_name=None, statuses=None, collection_id=None):
+def _product_stocked_at_location(node: dict, location_id: str) -> bool:
+    """Whether any variant of this product node carries an inventory level
+    at the given Shopify Location (its numeric legacyResourceId).
+
+    Reads inventoryLevels off each variant's inventoryItem, exactly as
+    _PRODUCTS_QUERY already fetches it (see queries.py, "location{legacyResourceId}"
+    under a 3-level cap) -- no extra Shopify call, since the query already
+    carries this on every product regardless of whether a location filter
+    is in play.
+    """
+    location_id = str(location_id)
+    for variant in (node.get("variants", {}).get("nodes") or []):
+        levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
+        for level in levels:
+            if str((level.get("location") or {}).get("legacyResourceId") or "") == location_id:
+                return True
+    return False
+
+
+def run_missing_product_import(trigger="manual", log_name=None, statuses=None, collection_id=None,
+                                location_id=None):
     """
     Catch-up import: only products never linked locally at all -- checked
     by Shopify product id BEFORE any real work (Item lookups, fingerprint
@@ -216,10 +236,22 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
     Uses the same "products" sync_type lock as run_full_product_import,
     so the two can never run concurrently and race on the same Items.
 
-    collection_id scopes the catch-up to one Shopify
-    collection (its numeric legacyResourceId) instead of the whole
-    catalog -- combined with the status filter via AND, matching
-    Shopify's own product search syntax.
+    collection_id scopes the catch-up to one Shopify collection (its
+    numeric legacyResourceId) instead of the whole catalog -- combined
+    with the status filter via AND, matching Shopify's own product
+    search syntax.
+
+    location_id scopes to products actually stocked at one Shopify
+    Location (its numeric legacyResourceId) -- e.g. an admin's own
+    default warehouse, not every supplier's location on the same store.
+    Unlike status/collection_id this can't be pushed into Shopify's
+    search query at all: location isn't a searchable product field,
+    only a per-variant inventory fact. So Shopify still returns every
+    product matching status/collection, and the location check happens
+    per-product after fetching, against inventoryLevels already carried
+    on each variant in _PRODUCTS_QUERY -- a product with no variant
+    stocked at location_id is skipped, same as a status/collection
+    mismatch, not fetched again more cheaply some other way.
 
     bench --site <site> execute \
         alaiy_os_connector_shopify.shopify.product.importer.run_missing_product_import
@@ -277,6 +309,9 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                     continue  # already linked -- no fingerprint check, no write, no risk
                 processed += 1
                 if not status_map.import_allows(node.get("status"), allowed_statuses):
+                    skipped += 1
+                    continue
+                if location_id and not _product_stocked_at_location(node, location_id):
                     skipped += 1
                     continue
                 try:
