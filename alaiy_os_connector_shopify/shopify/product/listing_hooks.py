@@ -33,6 +33,16 @@ def on_listing_update(doc, method=None):
     parent) changed: push the product if enabled, archive it if just
     disabled. Mirrors the old on_item_change enable/disable machine, keyed
     off the Listing instead of Item.sync_to_shopify.
+
+    is_enabled turning on auto-pushes ONLY when this Listing already has a
+    real sh_shopify_product_id -- a refresh of a product that already
+    exists on Shopify. For one that has never been published at all, this
+    would otherwise create a brand-new Shopify product as a silent side
+    effect of a single settings toggle, with no explicit action anyone took
+    to actually publish anything. The first-ever push for a never-published
+    Listing must go through an explicit publish call (product_sync.push_item
+    with force=True) instead -- enabling sync only takes effect starting
+    with the next real edit's own save.
     """
     if doc.flags.from_shopify_sync:
         # Provisioning insert (backfill / inbound import) -- data mirrored
@@ -40,7 +50,7 @@ def on_listing_update(doc, method=None):
         return
     if not _connector_enabled():
         return
-    if doc.is_enabled:
+    if doc.is_enabled and doc.sh_shopify_product_id:
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.product_sync.push_item",
             queue="short", timeout=120, item_code=doc.item,
