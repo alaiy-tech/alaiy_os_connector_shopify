@@ -39,12 +39,28 @@ def trigger_inventory_push():
 
 
 @frappe.whitelist()
+def trigger_missing_product_import(statuses=None, collection_id=None):
+    """
+    Catch-up import: only products never linked locally at all. Existing
+    products are never re-verified or touched, unlike trigger_product_import
+    (run_full_product_import), which re-checks the whole catalog every run --
+    see run_missing_product_import's own docstring for why this is the
+    lighter, safer choice for "pull whatever's new" rather than a full resync.
+    """
+    return _enqueue_sync(
+        "products",
+        "alaiy_os_connector_shopify.shopify.product.importer.run_missing_product_import",
+        timeout=3600,
+        statuses=statuses,
+        collection_id=collection_id,
+    )
+
+
+@frappe.whitelist()
 def trigger_product_import(statuses=None):
     """
-    Import products from Shopify. First run (nothing imported yet) wipes
-    first as a safety net, then imports everything. Every run after that
-    is a real create/update/skip sync -- no wipe -- see
-    run_full_product_import's docstring for why.
+    Import products from Shopify. A real create/update/skip sync every
+    time, never a wipe -- see run_full_product_import's docstring for why.
     """
     return _enqueue_sync(
         "products",
