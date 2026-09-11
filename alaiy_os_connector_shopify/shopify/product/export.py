@@ -43,12 +43,41 @@ from alaiy_os_connector_shopify.shopify.product import status as status_map
 LOCK_TIMEOUT_SECONDS = 30
 
 
+@frappe.whitelist(methods=["POST"])
+def publish_now(item_code: str):
+    """The real "Publish" capability, at the SPL level -- a genuine second
+    action alongside is_enabled ("Enable Sync"), not something each client
+    app should have to reimplement on its own. One-time push, right now,
+    regardless of whether continuous sync (is_enabled) is on -- ensures a
+    Listing exists (default_enabled=0, so this is never what turns
+    continuous sync on) and force-pushes past the is_enabled gate. See
+    push_item's own force param for why that gate exists to bypass.
+
+    Callers that need their own precondition (e.g. an app-specific
+    approval gate) should check it before calling this, then call this
+    rather than reimplementing ensure_listing + the enqueue themselves --
+    see alaiy_os_thesolist.api.shopify_push.publish_item.
+    """
+    from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
+
+    listing = ensure_listing(item_code, default_enabled=0)
+    if not listing:
+        frappe.throw(frappe._("Could not create a Shopify Product Listing for this item."))
+
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.product_sync.push_item",
+        queue="short", timeout=120, item_code=item_code, force=True,
+        enqueue_after_commit=True,
+    )
+    return {"ok": True, "item_code": item_code, "published": True}
+
+
 def push_item(item_code: str, allowed_statuses=None, force=False):
     """force=True skips the is_enabled gate for a one-off manual push
     ("Publish") -- lets a single push happen without turning on continuous
     auto-push-on-every-edit (that's what enabling the Listing is for). A
     Listing must already exist either way; force does not create one --
-    see api.shopify_push.publish_item, which ensures it first."""
+    see publish_now, which ensures it first."""
     item = frappe.get_doc("Item", item_code)
     # The Shopify Product Listing's is_enabled is the sole live gate now
     # (replaces Item.sync_to_shopify) -- no enabled Listing, nothing pushes,
