@@ -43,11 +43,17 @@ from alaiy_os_connector_shopify.shopify.product import status as status_map
 LOCK_TIMEOUT_SECONDS = 30
 
 
-def push_item(item_code: str, allowed_statuses=None):
+def push_item(item_code: str, allowed_statuses=None, force=False):
+    """force=True skips the is_enabled gate for a one-off manual push
+    ("Publish") -- lets a single push happen without turning on continuous
+    auto-push-on-every-edit (that's what enabling the Listing is for). A
+    Listing must already exist either way; force does not create one --
+    see api.shopify_push.publish_item, which ensures it first."""
     item = frappe.get_doc("Item", item_code)
     # The Shopify Product Listing's is_enabled is the sole live gate now
-    # (replaces Item.sync_to_shopify) -- no enabled Listing, nothing pushes.
-    if not listing_resolver.is_enabled(item):
+    # (replaces Item.sync_to_shopify) -- no enabled Listing, nothing pushes,
+    # unless force explicitly asked for a one-off push anyway.
+    if not force and not listing_resolver.is_enabled(item):
         return
 
     # allowed_statuses is the dashboard's per-run choice; None means fall back to

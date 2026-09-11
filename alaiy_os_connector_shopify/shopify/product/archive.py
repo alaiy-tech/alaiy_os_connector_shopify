@@ -53,6 +53,17 @@ def archive_item(item_code: str):
                 message=str(errors),
             )
         else:
+            # canonical.py's own push payload reads sh_shopify_status as the
+            # Active/Draft input and assumes ("pushing never leaves ARCHIVED
+            # -- archive_item() overrides this back to ARCHIVED explicitly")
+            # that this write already happens here. It never did -- the
+            # Listing's copy sat frozen at whatever it was seeded to when
+            # first created, forever, since nothing else in the connector
+            # ever writes it again.
+            if listing and listing.sh_shopify_status != "Archived":
+                listing.db_set("sh_shopify_status", "Archived", update_modified=False)
+                frappe.db.commit()
+
             # Clear fingerprint on successful archive so a subsequent push_item
             # (when re-enabled or unarchived) detects the status change and pushes.
             from alaiy_os_connector_shopify.shopify.sync_engine import entities
