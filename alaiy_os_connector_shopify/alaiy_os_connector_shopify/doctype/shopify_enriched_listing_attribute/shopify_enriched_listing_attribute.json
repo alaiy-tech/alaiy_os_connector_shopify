@@ -7,7 +7,9 @@
  "engine": "InnoDB",
  "field_order": [
   "key",
-  "value"
+  "value",
+  "source",
+  "source_url"
  ],
  "fields": [
   {
@@ -26,6 +28,21 @@
    "fieldtype": "Long Text",
    "in_list_view": 1,
    "label": "Value"
+  },
+  {
+   "description": "Which rung of the evidence ladder this value came from. Worked out from the evidence, not from what the agent said about it — see listing/provenance.py.",
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "\npublished\nmetafield\nweb\nproduct\nrevised",
+   "read_only": 1
+  },
+  {
+   "description": "The specific evidence: the store metafield it was read from, or the URL of the page it was read off.",
+   "fieldname": "source_url",
+   "fieldtype": "Small Text",
+   "label": "Source Detail",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,

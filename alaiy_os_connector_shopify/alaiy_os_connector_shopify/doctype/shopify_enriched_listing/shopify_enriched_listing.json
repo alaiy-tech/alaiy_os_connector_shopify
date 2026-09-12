@@ -36,6 +36,7 @@
   "raw_section",
   "attributes_json",
   "variants_json",
+  "research_json",
   "output_json"
  ],
  "fields": [
@@ -233,6 +234,14 @@
    "fieldname": "variants_json",
    "fieldtype": "Code",
    "label": "Variants (JSON)",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "description": "What this run searched for and which pages it actually read. Recorded by the tools as they ran, so it is what happened rather than what the agent reports having done.",
+   "fieldname": "research_json",
+   "fieldtype": "Code",
+   "label": "Research (JSON)",
    "options": "JSON",
    "read_only": 1
   },
