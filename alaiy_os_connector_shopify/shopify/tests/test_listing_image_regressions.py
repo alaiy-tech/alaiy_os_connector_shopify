@@ -186,6 +186,95 @@ class RunStepAlwaysNotifiesBatching(unittest.TestCase):
 		)
 
 
+class ApiMatchesTheControllerItCalls(unittest.TestCase):
+	"""Every method listing/api.py calls on an enriched listing must exist.
+
+	publish_listing_images shipped calling `enriched.apply_images(listing)` on a
+	controller that had no such method, and every check in this repo passed: the
+	module imported, test_no_undefined_names walks NAMES and an attribute on an
+	instance is not one, and no test exercised that endpoint. It surfaced as a 500
+	the first time someone pressed Save on the Media card.
+
+	The api module and the doctype controller are two halves of one contract that
+	nothing else pins, so it is pinned here — by reading the calls out of the
+	source rather than by listing them, so a method added to api.py tomorrow is
+	covered without anyone remembering to add it.
+	"""
+
+	#: Inherited from frappe's Document, so absent from the controller's own
+	#: class body and not a defect.
+	_DOCUMENT_METHODS = {
+		"save", "insert", "set", "get", "append", "db_set", "reload", "delete",
+		"check_permission", "run_method", "get_doc_before_save", "set_onload",
+	}
+
+	def test_every_enriched_listing_method_api_calls_exists(self):
+		api_src = _read("alaiy_os_connector_shopify/listing/api.py")
+		ctrl_src = _read(
+			"alaiy_os_connector_shopify/alaiy_os_connector_shopify/doctype/"
+			"shopify_enriched_listing/shopify_enriched_listing.py"
+		)
+
+		defined = {
+			node.name
+			for node in ast.walk(ast.parse(ctrl_src))
+			if isinstance(node, ast.FunctionDef)
+		}
+
+		# `enriched` is the name api.py binds an enriched listing document to.
+		called = {
+			node.func.attr
+			for node in ast.walk(ast.parse(api_src))
+			if isinstance(node, ast.Call)
+			and isinstance(node.func, ast.Attribute)
+			and isinstance(node.func.value, ast.Name)
+			and node.func.value.id == "enriched"
+		}
+
+		missing = sorted(called - defined - self._DOCUMENT_METHODS)
+		self.assertEqual(
+			missing,
+			[],
+			f"listing/api.py calls {missing} on a Shopify Enriched Listing, and the "
+			"controller defines no such method — every call site is a 500 waiting "
+			"for someone to press the button",
+		)
+
+	def test_both_publish_routes_share_apply_images(self):
+		"""Approval and a photo-only publish must apply imagery the same way.
+
+		apply_images exists precisely so the two cannot drift; an approval that
+		inlined the two syncs again would start the drift silently.
+		"""
+		ctrl_src = _read(
+			"alaiy_os_connector_shopify/alaiy_os_connector_shopify/doctype/"
+			"shopify_enriched_listing/shopify_enriched_listing.py"
+		)
+		tree = ast.parse(ctrl_src)
+		push = next(
+			n for n in ast.walk(tree)
+			if isinstance(n, ast.FunctionDef) and n.name == "_push_to_listing"
+		)
+		calls = {
+			n.func.attr
+			for n in ast.walk(push)
+			if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+		}
+		self.assertIn("apply_images", calls)
+		self.assertNotIn(
+			"_sync_images",
+			calls,
+			"_push_to_listing should reach the image syncs through apply_images, "
+			"not call them itself",
+		)
+
+
+def _read(relpath):
+	root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+	with open(os.path.join(root, relpath), encoding="utf-8") as fh:
+		return fh.read()
+
+
 def _is_nudge(stmt):
 	return (
 		isinstance(stmt, ast.Expr)
