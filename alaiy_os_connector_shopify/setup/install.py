@@ -29,10 +29,94 @@ def _provision():
     `listing_channels` hook, so all this app provides for it is the adapter in
     listing/channel.py and the field the review record writes back.
     """
+    adopt_enriched_listing_doctypes()
     ensure_base_data()
     sync_connector_registry()
     sync_agent_registry()
     sync_listing_custom_fields()
+
+
+#: The Module Def the enriched-listing doctypes must belong to for this app to
+#: keep them, and for `alaiy_os_agent_shopify_listing`'s uninstall not to drop
+#: them. See adopt_enriched_listing_doctypes.
+LISTING_MODULE = "Alaiy OS Connector Shopify"
+
+#: The parent and its three child tables. The children matter as much as the
+#: parent -- they are separate doctypes with their own tables, so a parent that
+#: survived while `tabShopify Enriched Listing Attribute` was dropped would leave
+#: every listing with no attributes and no variants.
+ENRICHED_DOCTYPES = (
+    "Shopify Enriched Listing",
+    "Shopify Enriched Listing Attribute",
+    "Shopify Enriched Listing Image",
+    "Shopify Enriched Listing Variant",
+)
+
+
+def adopt_enriched_listing_doctypes():
+    """Make sure the enriched-listing doctypes belong to THIS app's module.
+
+    Without this, uninstalling `alaiy_os_agent_shopify_listing` DROPS THE TABLES
+    and every enrichment on the site goes with them.
+
+    `frappe.installer.remove_app` reads no JSON file. It takes the `Module Def`
+    rows belonging to the app being removed and, for each, does
+
+        frappe.get_all("DocType", filters={"module": module_name})
+        ...
+        frappe.db.sql_ddl(f"DROP TABLE IF EXISTS `tab{doctype}`")
+
+    So survival turns on one field on one row in the site database --
+    `DocType.module` -- at the instant the uninstall runs. On a site that
+    enriched anything before the migration that field still names the old app,
+    which is the app that created it: adopting the doctype JSONs into this one
+    changed the files, not the database.
+
+    ## Why this runs on every migrate and not just once
+
+    It began as a patch, and a patch was not enough. Patches are recorded in
+    `Patch Log` and never run again, while `sync_all()` re-imports every
+    installed app's doctype JSONs on every migrate -- and while the old app is
+    still installed, its JSON claims these same four doctypes for its own
+    module. One migrate to adopt them, a second migrate that re-imported the old
+    app's copy, and the field would be back to the old app with the patch marked
+    done. The uninstall after that drops the tables.
+
+    `after_migrate` runs in `post_schema_updates`, after patches AND after
+    `sync_all()`, so putting it here makes it the last word on every single
+    migrate rather than on one of them.
+
+    Idempotent, and a no-op on a site that never had the old app: it writes only
+    where the value is not already ours. Safe to keep permanently -- once the old
+    app is gone nothing sets the field back, and this finds nothing to do.
+    """
+    if not frappe.db.exists("Module Def", LISTING_MODULE):
+        # This app's own module is created by its install. If it is not here yet
+        # there is nothing to move the doctypes onto; the next migrate catches it.
+        return
+
+    moved = []
+    for doctype in ENRICHED_DOCTYPES:
+        if not frappe.db.exists("DocType", doctype):
+            # Never installed on this site, or already dropped. Either way there
+            # is nothing to rescue and nothing to fail over.
+            continue
+        if frappe.db.get_value("DocType", doctype, "module") == LISTING_MODULE:
+            continue
+
+        # set_value rather than a document save: this is one field on a DocType
+        # row, and saving a DocType re-runs the schema updater over a table a
+        # migration has no reason to rewrite.
+        frappe.db.set_value("DocType", doctype, "module", LISTING_MODULE, update_modified=False)
+        moved.append(doctype)
+
+    if moved:
+        # Worth a line in the migrate output. Whoever is reading it is often
+        # about to uninstall the old app, and this is the step that makes that
+        # safe.
+        print(f"Adopted {len(moved)} enriched-listing doctype(s) onto {LISTING_MODULE}: {', '.join(moved)}")
+
+    frappe.db.commit()
 
 
 def ensure_base_data():
