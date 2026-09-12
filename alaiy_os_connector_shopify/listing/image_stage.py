@@ -159,6 +159,7 @@ def run_step(item_code, step, work):
     if not frappe.db.exists(ENRICHED_DOCTYPE, item_code):
         # The only way here is a run that saved its listing and had it deleted
         # before this job ran. Nothing to patch, and nothing worth failing over.
+        _nudge_batches(item_code)
         return
 
     _set_state(item_code, "Running", None)
@@ -171,6 +172,7 @@ def run_step(item_code, step, work):
         frappe.log_error(title=f"Listing images {item_code}: {step} failed")
         _set_state(item_code, "Failed", _summary(str(exc)))
         _publish(item_code, "Failed")
+        _nudge_batches(item_code)
         return
 
     rendered = result["images"]
@@ -193,11 +195,38 @@ def run_step(item_code, step, work):
         tokens=result.get("image_tokens") or 0,
     )
     _publish(item_code, status)
-    # There used to be a `_nudge_batches` call here, telling bulk enrichment that
-    # this product's imagery had settled so a batch parked in "Generating Images"
-    # could close. Bulk enrichment belonged to the standalone listing agent and
-    # went with it; `alaiy_os_agents` owns batching now, and it does not park on
-    # this signal. Nothing else ever read it.
+    _nudge_batches(item_code)
+
+
+def _nudge_batches(item_code):
+    """Tell bulk enrichment this product's imagery is settled.
+
+    `alaiy_os_agents` owns batching now, but it still parks on exactly this
+    signal: a batch whose runs have all finished sits in "Generating Images"
+    while any of its products has imagery in flight (`bulk._images_pending`),
+    and `bulk.finalize_images` is what closes it. Stage two is the only thing
+    that knows the imagery has settled, so the nudge has to come from here —
+    without it a bulk batch with images enabled never leaves that state.
+
+    Called on every exit from `run_step`, including the failed and
+    listing-vanished paths: the batch is waiting for this product to stop being
+    in flight, not for it to succeed.
+
+    Never allowed to fail the job. The images themselves are already applied by
+    the time this runs, and a bulk batch that has to be closed by hand is a far
+    smaller problem than losing them.
+    """
+    try:
+        from alaiy_os_agents.agents.listing.bulk import finalize_images
+    except ImportError:
+        # `alaiy_os_agents` is not installed. The channel works without it —
+        # there is simply no batching on this bench to notify.
+        return
+
+    try:
+        finalize_images(item_code)
+    except Exception:
+        frappe.log_error(title=f"Listing images {item_code}: batch nudge failed")
 
 
 def _render(step, item_code, work):
