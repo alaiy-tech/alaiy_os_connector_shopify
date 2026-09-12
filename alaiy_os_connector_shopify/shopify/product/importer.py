@@ -1,11 +1,10 @@
 """
 Shopify → Alaiy OS product import.
 
-First run (nothing imported yet) wipes any stray unlinked Item mappings
-as a safety net, then imports every product from Shopify fresh. Every
-run after that is a real sync: new Shopify products are created,
-products whose Shopify data changed since the last import are updated,
-and unchanged products are skipped untouched -- no wipe.
+A real create/update/skip sync every time, including the first run: new
+Shopify products are created, products whose Shopify data changed since
+the last import are updated, and unchanged products are skipped
+untouched. Never wipes -- see run_full_product_import's docstring for why.
 
 Handles:
 - Templates and variants (creates Item + item variants)
@@ -49,32 +48,28 @@ def _fit_item_name(name: str) -> str:
     return (name or "")[:_ITEM_NAME_MAX_LENGTH]
 
 
-def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
-                            statuses=None):
+def run_full_product_import(trigger="manual", log_name=None, statuses=None):
     """
-    Import products from Shopify into Alaiy OS. First run (no product ever
-    imported yet) wipes first as a safety net against duplicates, then
-    imports everything fresh. Every run after that is a real sync: new
-    Shopify products are created, changed ones are updated, unchanged ones
-    are skipped untouched -- no wipe, since re-wiping a live catalog on
-    every click is both wasteful (redoes thousands of unchanged items) and
-    risky (this exact wipe emptied real stock data once when a scheduler
-    fired mid-wipe).
+    Import products from Shopify into Alaiy OS. A real create/update/skip
+    sync every time: new Shopify products are created, changed ones are
+    updated, unchanged ones are skipped untouched.
+
+    Never wipes -- removed entirely. The first-run auto-wipe
+    this used to do as a "safety net against duplicates" was the exact
+    logic that once emptied real stock data live when a scheduler fired
+    mid-wipe -- the risk it was meant to guard against was smaller than the
+    risk it was itself. A brand-new site's first import simply creates
+    everything fresh with nothing to skip; there was never a real need to
+    wipe first.
 
     Args:
         trigger: "manual", "scheduled", or "webhook"
         log_name: Optional existing log to reuse
-        wipe_existing: True/False to force the wipe phase explicitly; None
-            (default) auto-detects first-run by checking whether any
-            product Synced Entity exists yet.
 
     Returns:
         Log name (for tracking progress)
     """
     allowed_statuses = status_map.parse_statuses(statuses)
-
-    if wipe_existing is None:
-        wipe_existing = not frappe.db.exists("Shopify Synced Entity", {"entity_type": "product"})
 
     log = load_or_create_log("products", trigger, log_name)
 
@@ -102,11 +97,6 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
     frappe.db.commit()
 
     try:
-        # Wipe phase
-        if wipe_existing:
-            _wipe_all_items()
-            _append_log(log, "Wiped all Items for a fresh import.")
-
         # Import phase
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
         client = ShopifyGraphQLClient()
@@ -208,7 +198,27 @@ def run_full_product_import(trigger="manual", log_name=None, wipe_existing=None,
     return log.name
 
 
-def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
+def _product_stocked_at_location(node: dict, location_id: str) -> bool:
+    """Whether any variant of this product node carries an inventory level
+    at the given Shopify Location (its numeric legacyResourceId).
+
+    Reads inventoryLevels off each variant's inventoryItem, exactly as
+    _PRODUCTS_QUERY already fetches it (see queries.py, "location{legacyResourceId}"
+    under a 3-level cap) -- no extra Shopify call, since the query already
+    carries this on every product regardless of whether a location filter
+    is in play.
+    """
+    location_id = str(location_id)
+    for variant in (node.get("variants", {}).get("nodes") or []):
+        levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
+        for level in levels:
+            if str((level.get("location") or {}).get("legacyResourceId") or "") == location_id:
+                return True
+    return False
+
+
+def run_missing_product_import(trigger="manual", log_name=None, statuses=None, collection_id=None,
+                                location_id=None):
     """
     Catch-up import: only products never linked locally at all -- checked
     by Shopify product id BEFORE any real work (Item lookups, fingerprint
@@ -225,6 +235,23 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
 
     Uses the same "products" sync_type lock as run_full_product_import,
     so the two can never run concurrently and race on the same Items.
+
+    collection_id scopes the catch-up to one Shopify collection (its
+    numeric legacyResourceId) instead of the whole catalog -- combined
+    with the status filter via AND, matching Shopify's own product
+    search syntax.
+
+    location_id scopes to products actually stocked at one Shopify
+    Location (its numeric legacyResourceId) -- e.g. an admin's own
+    default warehouse, not every supplier's location on the same store.
+    Unlike status/collection_id this can't be pushed into Shopify's
+    search query at all: location isn't a searchable product field,
+    only a per-variant inventory fact. So Shopify still returns every
+    product matching status/collection, and the location check happens
+    per-product after fetching, against inventoryLevels already carried
+    on each variant in _PRODUCTS_QUERY -- a product with no variant
+    stocked at location_id is skipped, same as a status/collection
+    mismatch, not fetched again more cheaply some other way.
 
     bench --site <site> execute \
         alaiy_os_connector_shopify.shopify.product.importer.run_missing_product_import
@@ -260,7 +287,12 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
         # Let Shopify filter by status rather than fetching every product
         # and discarding most locally. None when no explicit choice was
         # made, which leaves the query unfiltered exactly as before.
-        variables = {"after": None, "query": status_map.search_filter(allowed_statuses)}
+        status_query = status_map.search_filter(allowed_statuses)
+        if collection_id:
+            query = f"collection_id:{collection_id}" + (f" AND ({status_query})" if status_query else "")
+        else:
+            query = status_query
+        variables = {"after": None, "query": query}
 
         processed = created = skipped = failed = pages = 0
         cancelled = False
@@ -277,6 +309,9 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
                     continue  # already linked -- no fingerprint check, no write, no risk
                 processed += 1
                 if not status_map.import_allows(node.get("status"), allowed_statuses):
+                    skipped += 1
+                    continue
+                if location_id and not _product_stocked_at_location(node, location_id):
                     skipped += 1
                     continue
                 try:
@@ -322,64 +357,6 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None):
         raise
 
     return log.name
-
-
-def _wipe_all_items():
-    """
-    Full destructive wipe of every previously-imported Shopify Item (any
-    Item with sh_shopify_product_id set) before a fresh import -- but
-    NOT genuinely local/manual items, which are left untouched. Per
-    explicit decision: re-importing should always start Shopify-linked
-    data from zero, without disturbing anything created directly in
-    Alaiy OS.
-
-    Deliberately scoped to Items and their direct child tables only:
-    Sales Orders, Delivery Notes, Stock Entries, Stock Ledger Entries, and
-    GL Entries are never touched here -- those are real transactional/
-    financial records, and this function has no business deciding they
-    should disappear. A Stock Entry referencing a since-deleted item_code
-    is left as a harmless dangling reference rather than destroyed; the
-    fresh import recreates the Item under the same item_code (SKU) and
-    its own new opening-stock Stock Entry.
-
-    Raw SQL throughout: going through frappe.delete_doc one Item at a time
-    fires Item doc_events per row (and cascades) -- confirmed live to flood
-    the job queue past its cap on a large catalog. Raw DELETE bypasses that.
-    """
-    shopify_item = "(SELECT name FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != '')"
-
-    # Opening-stock Stock Entries are ones _set_opening_stock itself
-    # creates (Material Receipt, exactly one Shopify item per entry) --
-    # only those get cleared, matched by that exact shape (single line
-    # item), never a manually-created multi-item Material Receipt that
-    # just happens to include one of these items among others.
-    own_stock_entries = """
-        SELECT sed.parent FROM `tabStock Entry Detail` sed
-        JOIN `tabStock Entry` se ON se.name = sed.parent
-        WHERE se.stock_entry_type = 'Material Receipt'
-          AND sed.item_code IN {shopify_item}
-        GROUP BY sed.parent
-        HAVING COUNT(*) = 1
-    """.format(shopify_item=shopify_item)
-
-    frappe.db.sql(f"DELETE FROM `tabGL Entry` WHERE voucher_type = 'Stock Entry' AND voucher_no IN ({own_stock_entries})")
-    frappe.db.sql(f"DELETE FROM `tabStock Ledger Entry` WHERE voucher_type = 'Stock Entry' AND voucher_no IN ({own_stock_entries})")
-    frappe.db.sql(f"DELETE FROM `tabStock Entry Detail` WHERE parent IN ({own_stock_entries})")
-    frappe.db.sql(f"DELETE FROM `tabStock Entry` WHERE name IN ({own_stock_entries})")
-    frappe.db.sql(f"UPDATE `tabBin` SET actual_qty = 0, projected_qty = 0, reserved_qty = 0 WHERE item_code IN {shopify_item}")
-
-    frappe.db.sql(f"DELETE FROM `tabItem Price` WHERE item_code IN {shopify_item}")
-    frappe.db.sql("DELETE FROM `tabShopify Synced Entity` WHERE entity_type = 'product'")
-    frappe.db.sql(f"DELETE FROM `tabItem Default` WHERE parent IN {shopify_item}")
-    frappe.db.sql(f"DELETE FROM `tabItem Variant Attribute` WHERE parent IN {shopify_item}")
-    frappe.db.sql(f"DELETE FROM `tabItem Barcode` WHERE parent IN {shopify_item}")
-    # Listing now owns the id too -- wipe its rows along with the Item,
-    # else a stale Listing carrying the old product/variant id survives the
-    # wipe and confuses the next import's "does this already exist" checks.
-    frappe.db.sql(f"DELETE FROM `tabShopify Listing Variant` WHERE parent IN {shopify_item}")
-    frappe.db.sql(f"DELETE FROM `tabShopify Product Listing` WHERE name IN {shopify_item}")
-    frappe.db.sql("DELETE FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''")
-    frappe.db.commit()
 
 
 def _shopify_node_fingerprint(node: dict) -> str:

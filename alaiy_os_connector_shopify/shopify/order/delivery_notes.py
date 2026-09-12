@@ -4,7 +4,7 @@ order_sync.py, unchanged.
 """
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, get_datetime, now_datetime, time_diff_in_hours
 
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _resolve_item_code
 from alaiy_os_connector_shopify.shopify.order.warehouse import _force_valid_warehouse
@@ -41,6 +41,49 @@ def _resolve_expense_account(company):
         {"company": company, "root_type": "Expense", "is_group": 0, "disabled": 0},
         "name",
     )
+
+
+def _record_handling_hours(so_name, dn):
+    """Hours from the order being placed to its dispatch being confirmed.
+
+    Written once, on the FIRST Delivery Note for an order. A split shipment
+    produces several, and overwriting on each would leave the figure
+    describing the last parcel rather than how long the customer waited to
+    hear their order had shipped.
+
+    transaction_date is a Date with no time-of-day, so this is measured from
+    midnight on the order date. That is the only start point available --
+    the Sales Order carries no order timestamp -- and it is consistent
+    across every order, which is what an average and an on-time percentage
+    need. It does mean a same-day dispatch reads as some hours rather than
+    zero.
+
+    Never raises: a reporting figure must not be the reason a Delivery Note
+    that already submitted fails its transaction.
+    """
+    try:
+        if not frappe.db.has_column("Sales Order", "sh_handling_hours"):
+            return
+        if frappe.db.get_value("Sales Order", so_name, "sh_handling_hours"):
+            return
+
+        placed = frappe.db.get_value("Sales Order", so_name, "transaction_date")
+        if not placed:
+            return
+
+        hours = time_diff_in_hours(dn.creation or now_datetime(), get_datetime(placed))
+        if hours is None or hours < 0:
+            # A Delivery Note dated before its own order is a data problem,
+            # not a fast dispatch. Recording a negative would drag an
+            # average below zero and hide it.
+            return
+        frappe.db.set_value("Sales Order", so_name, "sh_handling_hours", flt(hours),
+                            update_modified=False)
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: could not record handling hours for {so_name}",
+            message=frappe.get_traceback(),
+        )
 
 
 def _create_delivery_note_if_needed(so_name):
@@ -86,6 +129,7 @@ def _create_delivery_note_if_needed(so_name):
             dn.flags.from_shopify_sync = True
             dn.insert()
             dn.submit()
+            _record_handling_hours(so_name, dn)
         frappe.db.commit()
     except Exception:
         frappe.log_error(
@@ -275,6 +319,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             dn.flags.from_shopify_sync = True
             dn.insert()
             dn.submit()
+            _record_handling_hours(so.name, dn)
         frappe.db.commit()
     except Exception:
         frappe.log_error(

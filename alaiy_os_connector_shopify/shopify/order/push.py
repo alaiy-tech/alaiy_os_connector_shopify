@@ -261,7 +261,33 @@ def push_order_create(sales_order: str):
         )
 
 
-def push_order_cancel(order_id: str, sales_order: str):
+def _queue_retry_or_log(entity_type: str, payload: dict, title: str):
+    """Queue a failed outbound push for retry, or log it if queuing fails.
+
+    The fallback matters more than it looks: if the queue itself is broken,
+    losing the original error too would leave nothing at all to diagnose
+    from. So the traceback is always written somewhere.
+    """
+    from alaiy_os_connector_shopify.shopify.sync_engine import retry_queue
+
+    traceback = frappe.get_traceback()
+    try:
+        retry_queue.enqueue("outbound", entity_type, payload)
+        frappe.log_error(title=title + " -- queued for retry", message=traceback)
+    except Exception:
+        frappe.log_error(title=title, message=traceback)
+
+
+def push_order_cancel(order_id: str, sales_order: str, reason: str = "OTHER",
+                      refund: bool = False, notify_customer: bool = False):
+    """Cancel the order on Shopify.
+
+    reason/refund/notify_customer are parameters rather than constants because
+    a fraud rejection is a different act from an ordinary cancellation: it
+    should be recorded on Shopify as FRAUD, and the customer's money returned
+    rather than held against an order nobody will ship. The defaults keep
+    every existing caller behaving exactly as before.
+    """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     # restock=False tells Shopify this inventory is gone for good (a
@@ -279,19 +305,35 @@ def push_order_cancel(order_id: str, sales_order: str):
         client = ShopifyGraphQLClient()
         data = client.execute(_ORDER_CANCEL_MUTATION, {
             "orderId": _to_gid(order_id),
-            "reason": "OTHER",
-            "refund": False,
+            "reason": reason,
+            "refund": refund,
             "restock": not has_shipped,
-            "notifyCustomer": False,
+            "notifyCustomer": notify_customer,
         })
         errors = (data.get("orderCancel") or {}).get("orderCancelUserErrors") or []
         if errors:
+            # Not queued for retry: orderCancelUserErrors means Shopify
+            # understood the request and refused it (already cancelled, or a
+            # state that forbids cancelling). Retrying gets the same answer
+            # five more times and then alerts someone about a decision
+            # Shopify has already made.
             frappe.log_error(
                 title=f"Shopify: order cancel push failed for {sales_order}",
                 message=str(errors),
             )
     except Exception:
-        frappe.log_error(
+        # An exception is the transient case -- a network blip, a timeout, a
+        # rate limit that survived the client's own retry. Queued so it is
+        # attempted again with backoff instead of the cancellation being lost
+        # on the one attempt it happened to get.
+        _queue_retry_or_log(
+            "order",
+            {
+                "order_id": str(order_id),
+                "sales_order": sales_order,
+                "reason": reason,
+                "refund": refund,
+                "notify_customer": notify_customer,
+            },
             title=f"Shopify: order cancel push failed for {sales_order}",
-            message=frappe.get_traceback(),
         )

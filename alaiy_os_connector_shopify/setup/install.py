@@ -83,6 +83,7 @@ def sync_connector_registry():
     _ensure_list_view_column("Sales Order", "sh_shopify_order_name", "Shopify Order #")
     _ensure_list_view_column("Sales Order", "sh_fulfillment_status", "Shopify Fulfillment Status")
     _ensure_list_view_column("Sales Order", "sh_financial_status", "Shopify Financial Status")
+    _ensure_list_view_column("Sales Order", "sh_risk_level", "Shopify Risk")
     _ensure_list_view_column("Delivery Note", "sh_delivery_status", "Shopify Delivery Status")
     _drop_orphaned_singles_value("Shopify Connector Settings", "sh_api_version")
 
@@ -428,10 +429,70 @@ def setup_custom_fields():
             "insert_after": "sh_financial_status",
         },
         {
+            "fieldname": "sh_risk_recommendation",
+            "label": "Shopify Risk Recommendation",
+            "fieldtype": "Select",
+            "options": "\nNONE\nACCEPT\nINVESTIGATE\nCANCEL",
+            "read_only": 1,
+            "in_standard_filter": 1,
+            "insert_after": "sh_fulfillment_status",
+            "description": "Shopify's own recommended action for this order.",
+        },
+        {
+            "fieldname": "sh_risk_level",
+            "label": "Shopify Risk",
+            "fieldtype": "Select",
+            "options": "\nPENDING\nNONE\nLOW\nMEDIUM\nHIGH",
+            "read_only": 1,
+            # On the list view because a HIGH-risk order has to be visible
+            # before someone opens it -- the point of the flag is to stop a
+            # fraudulent order shipping, which happens from the list.
+            "in_list_view": 1,
+            "in_standard_filter": 1,
+            "insert_after": "sh_risk_recommendation",
+            "description": "Shopify's fraud analysis. The worst level across all assessing providers.",
+        },
+        {
+            "fieldname": "sh_risk_detail",
+            "label": "Shopify Risk Detail",
+            "fieldtype": "Small Text",
+            "read_only": 1,
+            "insert_after": "sh_risk_level",
+            "depends_on": "eval:doc.sh_risk_level && doc.sh_risk_level != 'NONE'",
+            "description": "Per-provider risk level and the facts behind it.",
+        },
+        {
+            "fieldname": "sh_handling_hours",
+            "label": "Handling Hours",
+            "fieldtype": "Float",
+            "precision": "2",
+            "read_only": 1,
+            "insert_after": "sh_risk_detail",
+            "description": (
+                "Hours from the order being placed to its dispatch being confirmed, "
+                "written once on the first Delivery Note. Measured from midnight on "
+                "the order date, since a Sales Order carries no order time -- so a "
+                "same-day dispatch reads as hours rather than zero."
+            ),
+        },
+        {
+            "fieldname": "sh_payment_fee",
+            "label": "Payment Processing Fee",
+            "fieldtype": "Currency",
+            "read_only": 1,
+            "insert_after": "sh_handling_hours",
+            "description": (
+                "What the payment gateway charged on this order, summed across its "
+                "successful sale and capture transactions. Shopify Payments reports "
+                "a real fee; most third-party gateways report none, so blank means "
+                "not reported rather than free."
+            ),
+        },
+        {
             "fieldname": "sh_shopify_notes",
             "label": "Shopify Notes",
             "fieldtype": "Small Text",
-            "insert_after": "sh_fulfillment_status",
+            "insert_after": "sh_risk_detail",
             "description": "Synced both directions with Shopify's order note field.",
             # Orders here are typically submitted immediately -- without
             # this, the field is silently read-only the moment the Sales

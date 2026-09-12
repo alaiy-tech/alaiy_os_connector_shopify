@@ -67,6 +67,12 @@ def _update_order_unlocked(order, order_id):
         # a note to empty on Shopify is a legitimate edit that should sync
         # too, not get silently ignored.
         updates["sh_shopify_notes"] = order.get("note") or ""
+    if order.get("payment_fee") is not None:
+        # Only when reported. Absent means the gateway did not tell us, not
+        # that processing was free, so a missing fee must never overwrite a
+        # figure an earlier pull recorded.
+        if frappe.db.has_column("Sales Order", "sh_payment_fee"):
+            updates["sh_payment_fee"] = order["payment_fee"]
     if "tags" in order:
         from alaiy_os_connector_shopify.shopify.order.push import parse_tags, strip_status_tag
         updates["sh_shopify_order_tags"] = ",".join(strip_status_tag(parse_tags(order.get("tags"))))
@@ -82,6 +88,53 @@ def _update_order_unlocked(order, order_id):
         for field, value in updates.items():
             frappe.db.set_value("Sales Order", so_name, field, value)
         frappe.db.commit()
+
+    # Shopify has cancelled this order. Nothing below applies to a cancelled
+    # order -- the line-item diff, Delivery Note creation and the invoice
+    # trigger all assume a live one -- and none of them notices, because until
+    # now this path read only financial_status and fulfillment_status. An
+    # order cancelled AFTER we imported it therefore stayed open locally
+    # forever: still "To Deliver and Bill", still unfulfilled, ageing past its
+    # SLA on the dashboard against an order Shopify shows as Cancelled and
+    # Refunded. The dedicated orders/cancelled path was the only cancel path,
+    # and it does nothing when the cancel predates the Sales Order (an order
+    # re-imported later, e.g. by a catalogue reimport, never sees it).
+    #
+    # _cancel_sales_order rather than a bare so.cancel(): it already cascades
+    # through a linked Sales Invoice or Purchase Order and retries the
+    # TimestampMismatch race, so every cancel goes through one path whichever
+    # webhook delivers it.
+    # financial_status "refunded" counts as cancelled here for the same reason
+    # the scheduled poll treats it that way (see _finished_on_shopify): a
+    # merchant can end an order by refunding it in full and removing its lines
+    # rather than cancelling it, which leaves cancelled_at null while the order
+    # is just as finished -- Refunded, "Fulfillment not required", nothing left
+    # to ship. Only a full refund; "partially_refunded" is a live order with
+    # some money returned and the rest still to fulfil.
+    # ...and the third way, which hides behind a misleading status: refunding
+    # an order line by line rather than in one go leaves financial_status at
+    # "partially_refunded" even after the last line is gone, because that
+    # field describes the money and not whether anything is left to ship.
+    # current_quantity is the post-edit truth and "quantity" is the untouched
+    # original -- the same distinction order.utils._line_item_qty exists for.
+    # Read directly rather than importing it: this needs the one comparison,
+    # and that module pulls in the whitelisted-endpoint surface with it.
+    # A payload carrying no line items at all is NOT treated as empty -- that
+    # means the webhook told us nothing, and cancelling on a blank read is far
+    # worse than waiting for the poll to ask Shopify properly.
+    lines = order.get("line_items") or []
+    every_line_removed = bool(lines) and all(
+        float(li.get("current_quantity", li.get("quantity", 1)) or 0) <= 0
+        for li in lines
+    )
+
+    if (order.get("cancelled_at")
+            or financial_status.lower() == "refunded"
+            or every_line_removed):
+        if frappe.db.get_value("Sales Order", so_name, "docstatus") == 1:
+            from alaiy_os_connector_shopify.shopify.order.webhook import _cancel_sales_order
+            _cancel_sales_order(so_name)
+        return False
 
     # State guard: only sync line items if order hasn't shipped yet
     if _can_modify_order_items(fulfillment_status):
