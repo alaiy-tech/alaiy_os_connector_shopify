@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Build artifacts from `pip install -e .` / setup.py — never part of the app.
+*.egg-info/

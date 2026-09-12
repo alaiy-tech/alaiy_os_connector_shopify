@@ -7,9 +7,26 @@ app_license = "MIT"
 
 required_apps = ["alaiy_os", "erpnext"]
 
-after_migrate = [
-    "alaiy_os_connector_shopify.setup.install.sync_connector_registry"
+# One function rather than a list, because the three things it does are ordered:
+# the roles exist before the doctype permissions referencing them mean anything,
+# and the OS Connector Registry row exists before the agent pack's tool rows can
+# Link to it. See setup/install.after_migrate.
+after_install = "alaiy_os_connector_shopify.setup.install.after_install"
+
+after_migrate = "alaiy_os_connector_shopify.setup.install.after_migrate"
+
+# Drops the agent pack's OS Agent Registry row and the listing agent's custom
+# field. Run history (OS Agent Run) and the is_enriched column are deliberately
+# left behind; see the functions themselves.
+before_uninstall = [
+    "alaiy_os_connector_shopify.setup.install.unregister_agent",
+    "alaiy_os_connector_shopify.setup.install.remove_listing_custom_fields",
 ]
+
+# Shopify as the channel-agnostic listing agent in alaiy_os_agents sees it: its
+# fields, its rules, its validator, and how to read and write a listing. That
+# agent owns the run and the desk surfaces; this app owns the channel knowledge.
+listing_channels = ["alaiy_os_connector_shopify.listing.channel.channel"]
 
 before_request = [
     "alaiy_os_connector_shopify.shopify.order_push.snapshot_before_update_child_qty_rate"

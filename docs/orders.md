@@ -4,6 +4,15 @@ Shopify orders sync into Alaiy OS as **Sales Orders**, with fulfillment → Deli
 
 The Sales Order is the single authoritative business document — Shopify has no separate "invoice" object, so the Sales Invoice is derived from the order's paid state.
 
+> **Only paid orders are synced.** `pull.py:run_orders_sync` queries Shopify with
+> `financial_status:paid`. Unpaid, pending and authorised orders never enter Alaiy OS
+> unless a webhook happens to create one, and no date range widens that — it is a
+> filter on the sync, not on the query.
+>
+> Every figure in `sales.py` and every sales tool in the [agent pack](agents.md)
+> therefore reports paid orders only, and says so in its `coverage.note`. This is the
+> single most important caveat on any Shopify revenue or order-count answer.
+
 ---
 
 ## Custom fields
