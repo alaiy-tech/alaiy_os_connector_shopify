@@ -10,6 +10,7 @@
   "item_variant",
   "source_url",
   "url",
+  "cutout_url",
   "brief",
   "note"
  ],
@@ -48,6 +49,14 @@
    "in_list_view": 1,
    "label": "URL",
    "options": "URL"
+  },
+  {
+   "description": "The retouched product clipped to a transparent background, so a different background can be applied later without re-rendering the photo. Only set when the site has a house image style that keeps one.",
+   "fieldname": "cutout_url",
+   "fieldtype": "Data",
+   "label": "Cutout URL",
+   "options": "URL",
+   "read_only": 1
   },
   {
    "columns": 3,
