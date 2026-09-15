@@ -414,6 +414,11 @@ def fill_children_from_item(listing):
     existing variant row only has its blank fields backfilled, and no row
     is ever removed -- so merchant edits, explicit overrides and a variant
     deliberately switched off all survive.
+
+    Images are the exception to "runs on every save": they're only seeded
+    from the Item until the Listing has a sh_shopify_product_id, after
+    which Shopify's own image list is authoritative. See the comment above
+    the image loop below.
     """
     if not listing.item:
         return
@@ -434,28 +439,34 @@ def fill_children_from_item(listing):
     if not listing.listing_product_type and tmpl.sh_shopify_product_type:
         listing.listing_product_type = tmpl.sh_shopify_product_type
 
-    # Merge, never rebuild. An "is the table empty" check would only ever
-    # fill a brand-new Listing: one that already holds a single row would
-    # never gain the variant its Item picked up afterwards, which is the gap
-    # the "Populate from Item" button existed to paper over.
+    # Only seed images from the Item before the Listing exists on Shopify.
+    # Once sh_shopify_product_id is set, Shopify's own image list (routed in
+    # here by the inbound webhook) is authoritative and complete -- topping
+    # it up from the Item would re-add the Item's local /files/... copy of a
+    # photo Shopify already has under its own cdn.shopify.com URL. The two
+    # URLs point at the same picture but never match as strings, so this
+    # used to add a permanent duplicate on every save, which the webhook's
+    # own "did the image set change" check then saw as real drift and kept
+    # rewriting -- and pushing that duplicate to Shopify created a second
+    # image there too, feeding the same loop from the other side.
     #
-    # Adding only what is missing is also what makes this safe to run on
-    # every save. The Listing's own images can outnumber the Item's -- the
-    # upload path writes every parent image straight here, not via the Item
-    # -- so rebuilding the table from the Item's narrower view would silently
-    # drop real images that only ever lived on the Listing.
-    existing_images = {
-        (row.image or "").strip() for row in (listing.images or []) if row.image
-    }
-    next_sort_order = len(listing.images or [])
-    for url in _template_image_urls(tmpl):
-        if (url or "").strip() in existing_images:
-            continue
-        listing.append("images", {
-            "image": url, "source": "Original", "sort_order": next_sort_order,
-        })
-        existing_images.add((url or "").strip())
-        next_sort_order += 1
+    # A Listing not yet on Shopify has no such authoritative source yet, so
+    # it still gets seeded here -- that's the gap the "Populate from Item"
+    # button used to paper over, and the reason this merges instead of
+    # skipping a non-empty table.
+    if not listing.sh_shopify_product_id:
+        existing_images = {
+            (row.image or "").strip() for row in (listing.images or []) if row.image
+        }
+        next_sort_order = len(listing.images or [])
+        for url in _template_image_urls(tmpl):
+            if (url or "").strip() in existing_images:
+                continue
+            listing.append("images", {
+                "image": url, "source": "Original", "sort_order": next_sort_order,
+            })
+            existing_images.add((url or "").strip())
+            next_sort_order += 1
 
     rows_by_variant = {
         (row.item_variant or "").strip(): row

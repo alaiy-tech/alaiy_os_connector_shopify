@@ -156,6 +156,38 @@ class TestVariantMerge(unittest.TestCase):
         self.assertIn("TSHIRT-OLD", [r.item_variant for r in listing.variants])
 
 
+class TestImageMerge(unittest.TestCase):
+    def test_a_new_listing_still_gets_seeded_from_the_item(self):
+        # No sh_shopify_product_id yet -- this Listing has never touched
+        # Shopify, so there is no authoritative image list to defer to.
+        listing = _Listing(images=[])
+        template = types.SimpleNamespace(
+            name="TSHIRT", image=None, has_variants=0,
+            sh_shopify_product_id=None, sh_shopify_category=None,
+            sh_shopify_product_type=None, _urls=["/files/tshirt.jpg"])
+        _fill(listing, template=template)
+        self.assertEqual([r.image for r in listing.images], ["/files/tshirt.jpg"])
+
+    def test_the_items_local_copy_is_not_re_added_once_on_shopify(self):
+        # This is the regression: a webhook has already routed Shopify's
+        # own cdn.shopify.com URL into the Listing's image table. The
+        # Item's /files/... copy of that same photo must not be appended
+        # on top of it just because the URL strings don't match -- Shopify
+        # is authoritative for images once sh_shopify_product_id is set.
+        listing = _Listing(
+            images=[_Row(image="https://cdn.shopify.com/s/files/1/foo.jpg?v=123",
+                          source="Original", sort_order=0)],
+            sh_shopify_product_id="999")
+        template = types.SimpleNamespace(
+            name="TSHIRT", image=None, has_variants=0,
+            sh_shopify_product_id="999", sh_shopify_category=None,
+            sh_shopify_product_type=None, _urls=["/files/foo.jpg"])
+        _fill(listing, template=template)
+        self.assertEqual(len(listing.images), 1)
+        self.assertEqual(listing.images[0].image,
+                          "https://cdn.shopify.com/s/files/1/foo.jpg?v=123")
+
+
 class TestNoItemIsANoOp(unittest.TestCase):
     def test_listing_without_an_item_does_nothing(self):
         listing = _Listing(item=None)
