@@ -69,6 +69,15 @@ def archive_item(item_code: str):
                 # be durable on its own, not bundled with a second, unrelated
                 # write that might not run at all.
                 frappe.db.commit()
+            # Same write, on the Item. This function never touched it before --
+            # confirmed live, 230 Item/Listing sh_shopify_status mismatches
+            # across the catalogue, this path being one real cause. Most
+            # reads (admin aggregates, reports, low-stock scoping) still key
+            # off Item.sh_shopify_status; leaving it stale there mislabels a
+            # genuinely-archived product as Active in every one of them.
+            if item.get("sh_shopify_status") != "Archived":
+                frappe.db.set_value("Item", item.name, "sh_shopify_status", "Archived", update_modified=False)
+                frappe.db.commit()
 
             # Clear fingerprint on successful archive so a subsequent push_item
             # (when re-enabled or unarchived) detects the status change and pushes.
