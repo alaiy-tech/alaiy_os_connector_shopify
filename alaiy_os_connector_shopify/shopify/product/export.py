@@ -80,12 +80,17 @@ def publish_now(item_code: str, status: str = None):
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
     from alaiy_os_connector_shopify.shopify.product.status import LOCAL_VALUES
 
-    is_new_listing = not listing_resolver.get_listing(item_code)
     listing = ensure_listing(item_code, default_enabled=0)
     if not listing:
         frappe.throw(frappe._("Could not create a Shopify Product Listing for this item."))
+    # Never pushed to Shopify before -- the real "going live for the first
+    # time" signal. The Listing row itself being new is NOT the same thing:
+    # Listings are now created automatically at supplier-approval time
+    # (well before Publish is ever clicked), so is_new_listing was always
+    # False here and a caller's explicit status choice was silently dropped.
+    never_pushed = not listing.sh_shopify_product_id
 
-    if status and is_new_listing:
+    if status and never_pushed:
         if status not in LOCAL_VALUES:
             frappe.throw(frappe._("Invalid status {0}. Must be one of {1}.").format(status, ", ".join(LOCAL_VALUES)))
         frappe.db.set_value("Shopify Product Listing", listing.name, "sh_shopify_status", status)

@@ -299,7 +299,16 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     listing = frappe.new_doc("Shopify Product Listing")
     listing.item = tmpl.name
     listing.is_enabled = 1 if default_enabled else 0
-    listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
+    # sh_shopify_product_id (not sh_shopify_status) is the real signal for
+    # "does this already exist on Shopify". An inbound import sets both the
+    # id and the real status on the Item before this ever runs, so that path
+    # is unaffected. A fresh supplier approval has neither -- it has never
+    # been pushed, so this must not default to Active just because
+    # sh_shopify_status happened to be unset.
+    if tmpl.sh_shopify_product_id:
+        listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
+    else:
+        listing.sh_shopify_status = tmpl.sh_shopify_status or "Draft"
     # sh_shopify_product_id is a real, independently-writable field (not a
     # fetch_from view) -- copy the Item's current value explicitly, or a
     # freshly-created Listing would start with a blank id.
