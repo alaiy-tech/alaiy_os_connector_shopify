@@ -195,29 +195,61 @@ def _handle_product_update(product_id: str, product: dict):
         )
         return
 
-    _update_item_from_shopify(item, product)
+    # Shopify has been observed redelivering the same products/update event
+    # seconds apart (a slow first response, or one merchant edit firing more
+    # than once) -- confirmed live: two deliveries for the same template 18
+    # seconds apart, both racing _update_item_from_shopify's own
+    # TimestampMismatchError retry against each other. Each appended its own
+    # tag/image rows before saving, and the loser's reload-and-retry landed
+    # mid-way through the other's still-uncommitted write, which is what
+    # made ERPNext's validate_attributes() see an empty attributes table on
+    # a real template that has one -- not a corrupt record, a genuine race.
+    # export.py._push_product already locks an Item for the same reason on
+    # the outbound side; this is that same guard for the inbound side, which
+    # never had one.
+    from .export import LOCK_TIMEOUT_SECONDS
+    try:
+        item.lock(timeout=LOCK_TIMEOUT_SECONDS)
+    except frappe.DocumentLockedError:
+        # Another delivery for this same product is already applying its
+        # update. Shopify's own webhook is not the only source of truth for
+        # "did this apply" -- letting the in-flight one finish and dropping
+        # this redelivery is safe: _update_item_from_shopify rebuilds every
+        # field fresh from `product` on each call, but a REDELIVERY carries
+        # the same `product` body the in-flight call already has, so there
+        # is nothing this one would apply that the other one is not already
+        # applying.
+        frappe.logger().info(
+            f"Product {product_id}: update already in flight, skipping this redelivery"
+        )
+        return
 
-    # Recompute and store the fingerprint for the post-update state so the
-    # hourly outbound reconciliation (push_changed_items_only) doesn't see
-    # this inbound-driven change as "different from last push" and push it
-    # straight back to Shopify.
-    item = frappe.get_doc("Item", item.name)
-    settings = frappe.get_single("Shopify Connector Settings")
-    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
-    listing = listing_resolver.get_listing(item.name)
-    # Only re-fingerprint when a Listing exists (i.e. this product is
-    # outbound-managed) -- the canonical must match what an outbound push
-    # would build, which now reads the Listing. No Listing => outbound never
-    # pushes this product anyway, so there's nothing to guard against.
-    if listing:
-        if not listing.is_enabled or product.get("status") == "archived":
-            entities.save(entity, erpnext_fingerprint=None)
-        else:
-            variants = _variants_of(item)
-            canonical = _product_canonical(item, variants, settings, listing)
-            entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
+    try:
+        _update_item_from_shopify(item, product)
 
-    frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
+        # Recompute and store the fingerprint for the post-update state so the
+        # hourly outbound reconciliation (push_changed_items_only) doesn't see
+        # this inbound-driven change as "different from last push" and push it
+        # straight back to Shopify.
+        item = frappe.get_doc("Item", item.name)
+        settings = frappe.get_single("Shopify Connector Settings")
+        from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+        listing = listing_resolver.get_listing(item.name)
+        # Only re-fingerprint when a Listing exists (i.e. this product is
+        # outbound-managed) -- the canonical must match what an outbound push
+        # would build, which now reads the Listing. No Listing => outbound never
+        # pushes this product anyway, so there's nothing to guard against.
+        if listing:
+            if not listing.is_enabled or product.get("status") == "archived":
+                entities.save(entity, erpnext_fingerprint=None)
+            else:
+                variants = _variants_of(item)
+                canonical = _product_canonical(item, variants, settings, listing)
+                entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
+
+        frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
+    finally:
+        item.unlock()
  
 
 def _save_listing_with_retry(listing, _attempt=0):
