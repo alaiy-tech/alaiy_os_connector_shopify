@@ -44,7 +44,7 @@ LOCK_TIMEOUT_SECONDS = 30
 
 
 @frappe.whitelist(methods=["POST"])
-def publish_now(item_code: str):
+def publish_now(item_code: str, status: str = None):
     """The real "Publish" capability, at the SPL level -- a genuine second
     action alongside is_enabled ("Enable Sync"), not something each client
     app should have to reimplement on its own. One-time push, right now,
@@ -53,16 +53,42 @@ def publish_now(item_code: str):
     continuous sync on) and force-pushes past the is_enabled gate. See
     push_item's own force param for why that gate exists to bypass.
 
+    status (one of status.LOCAL_VALUES -- "Active", "Draft", "Archived")
+    lets a caller choose what the product goes live as on Shopify, rather
+    than falling through to ensure_listing's own "Active" default for a
+    brand-new Listing with no real Shopify status yet. Ignored on an
+    EXISTING Listing that already has a status of its own -- this pushes
+    what's already there, it does not silently reclassify an already-live
+    product because a caller's default happened to differ.
+
     Callers that need their own precondition (e.g. an app-specific
     approval gate) should check it before calling this, then call this
     rather than reimplementing ensure_listing + the enqueue themselves --
     see alaiy_os_thesolist.api.shopify_push.publish_item.
-    """
-    from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
 
+    Whitelisted, so reachable directly over the API, not only through a
+    client app's own gate -- write access on Shopify Connector Settings
+    (the same permission the Shopify Desk page itself requires) is the
+    actual gate here. A client app's own approval check (e.g. thesolist's
+    "must be Approved") is a business rule on top of this, not a
+    substitute for it: without this, any logged-in user could call this
+    endpoint directly and push a product live, skipping that app's own
+    review entirely.
+    """
+    frappe.has_permission("Shopify Connector Settings", "write", throw=True)
+
+    from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
+    from alaiy_os_connector_shopify.shopify.product.status import LOCAL_VALUES
+
+    is_new_listing = not listing_resolver.get_listing(item_code)
     listing = ensure_listing(item_code, default_enabled=0)
     if not listing:
         frappe.throw(frappe._("Could not create a Shopify Product Listing for this item."))
+
+    if status and is_new_listing:
+        if status not in LOCAL_VALUES:
+            frappe.throw(frappe._("Invalid status {0}. Must be one of {1}.").format(status, ", ".join(LOCAL_VALUES)))
+        frappe.db.set_value("Shopify Product Listing", listing.name, "sh_shopify_status", status)
 
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.product_sync.push_item",
