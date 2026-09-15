@@ -271,7 +271,9 @@ def coverage(company=None):
     # aggregate fields: from v16 the query builder rejects a SQL function written
     # as a string in `fields` and wants `{"MIN": "transaction_date"}` instead, and
     # a module that already speaks SQL does not need a second dialect to say MIN.
-    row = frappe.db.sql(
+    # `where` only ever holds fixed literal clause strings (never a caller-supplied
+    # value); every actual value is bound through `params` below.
+    row = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT MIN(so.transaction_date) AS first_order_date,
                MAX(so.transaction_date) AS last_order_date,
@@ -490,7 +492,11 @@ def sales_summary(
     conditions = " AND ".join(where)
     company_currency = _currency(company)
 
-    money_rows = frappe.db.sql(
+    # `bucket` and `conditions` are built from fixed literal fragments -- `bucket`
+    # is a `BUCKET_SQL` lookup keyed by `granularity`, already validated against
+    # `GRANULARITIES` above via `_one_of`, and `conditions` comes from `_sold_where`,
+    # whose clauses are all literal strings. Every actual value is bound below.
+    money_rows = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT {bucket} AS bucket,
                COUNT(DISTINCT so.name) AS order_count,
@@ -507,7 +513,7 @@ def sales_summary(
         {**params, "company_currency": company_currency},
         as_dict=True,
     )
-    unit_rows = frappe.db.sql(
+    unit_rows = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT {bucket} AS bucket, SUM(soi.qty) AS units
         FROM `tabSales Order Item` soi
@@ -579,7 +585,10 @@ def top_selling_products(
     # product, and it is several unrelated ones. That matters more for `variant`
     # than for `item` -- every line has an item_code, but a line written before
     # the variant id was mapped has no variant.
-    rows = frappe.db.sql(
+    #
+    # `key` and `order` are two-way ternaries over `group_by`/`by`, both already
+    # validated against a closed set via `_one_of` above -- not caller-supplied text.
+    rows = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT {key} AS group_key,
                MAX(soi.item_code) AS item_code,
@@ -598,7 +607,7 @@ def top_selling_products(
         {**params, "limit": limit},
         as_dict=True,
     )
-    overall = frappe.db.sql(
+    overall = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT SUM(soi.qty) AS units,
                SUM(soi.base_net_amount) AS product_sales,
@@ -683,7 +692,11 @@ def product_sales(
 
     # One query, unlike sales_summary: money is per line here (base_net_amount),
     # so the join does not multiply anything and there is nothing to merge.
-    rows = frappe.db.sql(
+    #
+    # `bucket` is a `BUCKET_SQL` lookup already validated via `_one_of` above, and
+    # `where` only ever holds fixed literal clause strings -- values are bound
+    # through `params`.
+    rows = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT {bucket} AS bucket,
                COUNT(DISTINCT so.name) AS order_count,
@@ -862,10 +875,12 @@ def list_shopify_orders(
         params["item_code"] = item_code
     conditions = " AND ".join(where)
 
-    total = frappe.db.sql(
+    # `where` only ever holds fixed literal clause strings; values are bound
+    # through `params`.
+    total = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"SELECT COUNT(*) FROM `tabSales Order` so WHERE {conditions}", params
     )[0][0]
-    rows = frappe.db.sql(
+    rows = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT so.name AS sales_order,
                so.sh_shopify_order_id,

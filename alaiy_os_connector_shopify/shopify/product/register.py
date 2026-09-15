@@ -116,7 +116,10 @@ def list_listings(status=None, is_enabled=None, pushed=None, search=None, page_n
         params["search"] = f"%{search}%"
     conditions = " AND ".join(where)
 
-    total = frappe.db.sql(
+    # `LISTING_DOCTYPE` is a module-level constant, `conditions` comes from `where`
+    # above whose clauses are all fixed literal strings, and `search` is bound
+    # through `params` -- nothing here is caller-controlled SQL text.
+    total = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT COUNT(*)
         FROM `tab{LISTING_DOCTYPE}` spl
@@ -126,7 +129,7 @@ def list_listings(status=None, is_enabled=None, pushed=None, search=None, page_n
         params,
     )[0][0]
 
-    rows = frappe.db.sql(
+    rows = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT spl.name AS item_code,
                spl.is_enabled,
@@ -315,17 +318,20 @@ def listing_gaps(gap=None, limit=None, enabled_only=1):
         f"FROM `tab{LISTING_DOCTYPE}` spl LEFT JOIN `tabItem` it ON it.name = spl.item"
     )
 
+    # `condition` here is always one of the fixed values in `_GAP_SQL` (iterated,
+    # not selected by caller input); `from_clause`/`base_conditions` are built from
+    # module constants and fixed literal fragments, with `params` bound throughout.
     counts = {}
     for name, condition in _GAP_SQL.items():
         counts[name] = cint(
-            frappe.db.sql(
+            frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
                 f"SELECT COUNT(*) {from_clause} WHERE {base_conditions} AND ({condition})",
                 params,
             )[0][0]
         )
 
     total = cint(
-        frappe.db.sql(f"SELECT COUNT(*) {from_clause} WHERE {base_conditions}", params)[0][0]
+        frappe.db.sql(f"SELECT COUNT(*) {from_clause} WHERE {base_conditions}", params)[0][0]  # nosemgrep: frapsec-sql-format-injection
     )
 
     result = {
@@ -348,7 +354,9 @@ def listing_gaps(gap=None, limit=None, enabled_only=1):
         result["listings"] = []
         return result
 
-    rows = frappe.db.sql(
+    # `gap` was checked against `_GAP_SQL`'s keys above (frappe.throw otherwise),
+    # so `_GAP_SQL[gap]` is one of the module's own fixed condition strings.
+    rows = frappe.db.sql(  # nosemgrep: frapsec-sql-format-injection
         f"""
         SELECT spl.name AS item_code, it.item_name, spl.sh_shopify_status AS status,
                it.sh_shopify_product_id AS product_id, spl.last_synced_at
