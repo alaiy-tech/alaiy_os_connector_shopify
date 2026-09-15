@@ -1,6 +1,156 @@
+"""Install/migrate-time provisioning, run only from `bench` CLI operations.
+
+Every function here runs from `after_install`, `after_migrate`, or
+`before_uninstall` (see hooks.py) -- never from a whitelisted endpoint or a
+web request. That is why `ignore_permissions=True` is used throughout: there
+is no end-user session to check against during a site's own install/migrate,
+and some of these steps (creating the roles themselves) have to run before
+there is a permission model to check against at all.
+
+The manual `frappe.db.commit()` calls are deliberate for the same reason:
+`_provision()` runs a sequence of independent, idempotent steps during
+`bench migrate`, and each should durably land even if a later step in the
+same run fails, rather than being rolled back together with it.
+"""
 import json
 
 import frappe
+
+
+def after_install():
+    """Everything a fresh install needs, in the order it needs it."""
+    _provision()
+
+
+def after_migrate():
+    """The same, because every step is idempotent by construction.
+
+    The ordering is the reason this is a function rather than a list of entries
+    in hooks.py: `sync_agent_registry` writes tool rows carrying `connector =
+    "shopify"`, and the OS Agent Tool child controller resolves that Link on
+    save, so the connector row has to exist first. A hooks list expresses that
+    ordering by accident of line order; here it is expressed once, on purpose.
+    """
+    _provision()
+
+
+def _provision():
+    """Roles, the connector row, the agent pack, and the enrichment field.
+
+    One agent is registered from here: `sync_agent_registry` writes the read-only
+    question-answering pack (pack_meta.py). The listing agent is not ours --
+    `alaiy_os_agents` owns it and reaches this connector through the
+    `listing_channels` hook, so all this app provides for it is the adapter in
+    listing/channel.py and the field the review record writes back.
+    """
+    adopt_enriched_listing_doctypes()
+    ensure_base_data()
+    sync_connector_registry()
+    sync_agent_registry()
+    sync_listing_custom_fields()
+
+
+#: The Module Def the enriched-listing doctypes must belong to for this app to
+#: keep them, and for `alaiy_os_agent_shopify_listing`'s uninstall not to drop
+#: them. See adopt_enriched_listing_doctypes.
+LISTING_MODULE = "Alaiy OS Connector Shopify"
+
+#: The parent and its three child tables. The children matter as much as the
+#: parent -- they are separate doctypes with their own tables, so a parent that
+#: survived while `tabShopify Enriched Listing Attribute` was dropped would leave
+#: every listing with no attributes and no variants.
+ENRICHED_DOCTYPES = (
+    "Shopify Enriched Listing",
+    "Shopify Enriched Listing Attribute",
+    "Shopify Enriched Listing Image",
+    "Shopify Enriched Listing Variant",
+)
+
+
+def adopt_enriched_listing_doctypes():
+    """Make sure the enriched-listing doctypes belong to THIS app's module.
+
+    Without this, uninstalling `alaiy_os_agent_shopify_listing` DROPS THE TABLES
+    and every enrichment on the site goes with them.
+
+    `frappe.installer.remove_app` reads no JSON file. It takes the `Module Def`
+    rows belonging to the app being removed and, for each, does
+
+        frappe.get_all("DocType", filters={"module": module_name})
+        ...
+        frappe.db.sql_ddl(f"DROP TABLE IF EXISTS `tab{doctype}`")
+
+    So survival turns on one field on one row in the site database --
+    `DocType.module` -- at the instant the uninstall runs. On a site that
+    enriched anything before the migration that field still names the old app,
+    which is the app that created it: adopting the doctype JSONs into this one
+    changed the files, not the database.
+
+    ## Why this runs on every migrate and not just once
+
+    It began as a patch, and a patch was not enough. Patches are recorded in
+    `Patch Log` and never run again, while `sync_all()` re-imports every
+    installed app's doctype JSONs on every migrate -- and while the old app is
+    still installed, its JSON claims these same four doctypes for its own
+    module. One migrate to adopt them, a second migrate that re-imported the old
+    app's copy, and the field would be back to the old app with the patch marked
+    done. The uninstall after that drops the tables.
+
+    `after_migrate` runs in `post_schema_updates`, after patches AND after
+    `sync_all()`, so putting it here makes it the last word on every single
+    migrate rather than on one of them.
+
+    Idempotent, and a no-op on a site that never had the old app: it writes only
+    where the value is not already ours. Safe to keep permanently -- once the old
+    app is gone nothing sets the field back, and this finds nothing to do.
+    """
+    if not frappe.db.exists("Module Def", LISTING_MODULE):
+        # This app's own module is created by its install. If it is not here yet
+        # there is nothing to move the doctypes onto; the next migrate catches it.
+        return
+
+    moved = []
+    for doctype in ENRICHED_DOCTYPES:
+        if not frappe.db.exists("DocType", doctype):
+            # Never installed on this site, or already dropped. Either way there
+            # is nothing to rescue and nothing to fail over.
+            continue
+        if frappe.db.get_value("DocType", doctype, "module") == LISTING_MODULE:
+            continue
+
+        # set_value rather than a document save: this is one field on a DocType
+        # row, and saving a DocType re-runs the schema updater over a table a
+        # migration has no reason to rewrite.
+        frappe.db.set_value("DocType", doctype, "module", LISTING_MODULE, update_modified=False)
+        moved.append(doctype)
+
+    if moved:
+        # Worth a line in the migrate output. Whoever is reading it is often
+        # about to uninstall the old app, and this is the step that makes that
+        # safe.
+        print(f"Adopted {len(moved)} enriched-listing doctype(s) onto {LISTING_MODULE}: {', '.join(moved)}")
+
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+
+
+def ensure_base_data():
+    """Create this app's roles if they are missing. Safe to run repeatedly."""
+    _create_roles()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+
+
+def _create_roles():
+    from alaiy_os_connector_shopify.roles import APP_ROLES
+
+    for role_name in APP_ROLES:
+        if not frappe.db.exists("Role", role_name):
+            frappe.get_doc(
+                {
+                    "doctype": "Role",
+                    "role_name": role_name,
+                    "desk_access": 1,
+                }
+            ).insert(ignore_permissions=True)
 
 
 def sync_connector_registry():
@@ -60,7 +210,7 @@ def sync_connector_registry():
                 doc.set(key, val)
         doc.save(ignore_permissions=True)
 
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
     _update_alaiy_os_sidebar()
 
 
@@ -81,7 +231,7 @@ def _update_alaiy_os_sidebar():
         create_or_update_workspace_sidebar()
         create_or_update_os_settings_workspace()
         create_or_update_os_settings_workspace_sidebar()
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
     except Exception:
         frappe.log_error(
             title="Shopify connector: sidebar update failed",
@@ -93,7 +243,7 @@ def _fix_settings_as_single():
     frappe.db.sql(
         "UPDATE `tabDocType` SET issingle=1 WHERE name='Shopify Connector Settings' AND issingle=0"
     )
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _backfill_singles_defaults(doctype, fieldnames):
@@ -121,7 +271,7 @@ def _backfill_singles_defaults(doctype, fieldnames):
         if not field or field.default in (None, ""):
             continue
         frappe.db.set_single_value(doctype, fieldname, field.default)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _drop_orphaned_singles_value(doctype, fieldname):
@@ -137,7 +287,7 @@ def _drop_orphaned_singles_value(doctype, fieldname):
         "DELETE FROM `tabSingles` WHERE doctype=%s AND field=%s",
         (doctype, fieldname),
     )
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _ensure_list_view_column(doctype, fieldname, label):
@@ -158,7 +308,7 @@ def _ensure_list_view_column(doctype, fieldname, label):
     fields.append({"fieldname": fieldname, "label": label})
     settings.fields = json.dumps(fields)
     settings.save(ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def setup_custom_fields():
@@ -574,7 +724,7 @@ def setup_custom_fields():
     _remove_deprecated_item_fields()
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
     create_custom_fields(custom_fields, update=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _remove_deprecated_item_fields():
@@ -587,7 +737,7 @@ def _remove_deprecated_item_fields():
         name = f"Item-{fieldname}"
         if frappe.db.exists("Custom Field", name):
             frappe.delete_doc("Custom Field", name, ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _unlock_disabled_field_on_variants():
@@ -611,6 +761,144 @@ def _unlock_disabled_field_on_variants():
             if not any(d.field_name == "disabled" for d in settings.fields):
                 settings.append("fields", {"field_name": "disabled"})
                 settings.save(ignore_permissions=True)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
         except Exception:
             pass
+
+
+# --- the agent pack ----------------------------------------------------------
+# The manifest is pack_meta.py; these only write it. Editing a tool description
+# or prompts/pack.md and running `bench migrate` is the whole reconcile loop.
+
+#: Fields an admin owns once the row exists. `is_enabled` is the switch that
+#: turns the pack on for a site, and a migrate that reset it would turn every
+#: pack back on behind whoever switched it off.
+_AGENT_RUNTIME_FIELDS = {"is_enabled"}
+
+#: Not fields on the row at all: `agent_id` is the name, and `tools` is a child
+#: table that is rebuilt wholesale below rather than set like a scalar.
+_AGENT_NON_REGISTRY_FIELDS = {"agent_id", "tools"}
+
+
+def sync_agent_registry():
+    """Upsert this connector's OS Agent Registry pack. Safe to call repeatedly."""
+    if not frappe.db.exists("DocType", "OS Agent Registry"):
+        # Core not installed yet, or predates the agent engine.
+        return
+
+    from alaiy_os_connector_shopify import pack_meta
+
+    meta = pack_meta.build_pack_meta()
+    agent_id = meta["agent_id"]
+
+    if frappe.db.exists("OS Agent Registry", agent_id):
+        doc = frappe.get_doc("OS Agent Registry", agent_id)
+    else:
+        doc = frappe.new_doc("OS Agent Registry")
+        doc.agent_id = agent_id
+
+    for key, value in meta.items():
+        if key in _AGENT_NON_REGISTRY_FIELDS or key in _AGENT_RUNTIME_FIELDS:
+            continue
+        doc.set(key, value)
+
+    doc.set("tools", [pack_meta.as_registry_tool(tool) for tool in meta["tools"]])
+
+    # save() inserts when new. The OS Agent Tool child controller validates every
+    # handler dotted path and every parameters_schema here, so a typo in the
+    # manifest fails at migrate with the tool named, rather than mid-run.
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+
+
+def unregister_agent():
+    """Drop the pack row on uninstall, keeping the run history that points at it.
+
+    `force=True` because past `OS Agent Run` rows link to this row, and Frappe
+    would otherwise refuse the delete to protect them. Deleting the runs instead
+    would throw away the record of what the pack actually did on this site,
+    which is the opposite of what an uninstall should cost.
+    """
+    if not frappe.db.exists("DocType", "OS Agent Registry"):
+        return
+
+    from alaiy_os_connector_shopify.pack_meta import PACK_ID
+
+    if frappe.db.exists("OS Agent Registry", PACK_ID):
+        frappe.delete_doc("OS Agent Registry", PACK_ID, force=True, ignore_permissions=True)
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+
+
+# --- the listing channel -----------------------------------------------------
+# The enrichment tools, the rules, the validator and the four Shopify Enriched
+# Listing doctypes were adopted from the retired `alaiy_os_agent_shopify_listing`
+# app. What was genuinely Shopify's in it is knowledge about *the channel*, and
+# the app that owns the channel is this one.
+#
+# The agent itself is NOT registered here. `alaiy_os_agents` owns one
+# channel-agnostic listing agent for the whole site and reaches this connector
+# through the `listing_channels` hook (see listing/channel.py), so registering a
+# second Shopify-specific agent would put two listing agents on one bench --
+# which is the thing that migration existed to remove. The Amazon connector draws
+# the same line.
+#
+# What stays here is the one field the review record writes back.
+
+_LISTING_CUSTOM_FIELDS = {
+    "Shopify Product Listing": [
+        {
+            "fieldname": "is_enriched",
+            "label": "Enriched",
+            "fieldtype": "Check",
+            "insert_after": "is_enabled",
+            "default": "0",
+            "read_only": 1,
+            "in_list_view": 1,
+            "in_standard_filter": 1,
+            "description": (
+                "An approved AI enrichment is live on this listing. Set when its "
+                "Shopify Enriched Listing is approved; cleared when the listing agent "
+                "re-runs, so it always means the CURRENT content passed review."
+            ),
+        }
+    ],
+}
+
+
+def sync_listing_custom_fields():
+    """Create `is_enriched` on Shopify Product Listing. Idempotent.
+
+    A Custom Field rather than a column in the doctype's own JSON, even though
+    this app owns that doctype: it describes the enrichment lifecycle rather than
+    the listing, `shopify_enriched_listing.py` is what sets and clears it, and
+    keeping it a Custom Field lets an uninstall drop the field without touching
+    the column.
+    """
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+
+    present = {
+        doctype: fields
+        for doctype, fields in _LISTING_CUSTOM_FIELDS.items()
+        if frappe.db.exists("DocType", doctype)
+    }
+    if not present:
+        return
+
+    create_custom_fields(present, update=True)
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+    frappe.clear_cache()
+
+
+def remove_listing_custom_fields():
+    """Drop the listing agent's custom fields on uninstall.
+
+    The underlying column is left in place -- dropping it would destroy the
+    enriched flag for every listing, and a reinstall re-adopts the column as-is.
+    """
+    for doctype, fields in _LISTING_CUSTOM_FIELDS.items():
+        for field in fields:
+            name = f"{doctype}-{field['fieldname']}"
+            if frappe.db.exists("Custom Field", name):
+                frappe.delete_doc("Custom Field", name, ignore_permissions=True)
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+    frappe.clear_cache()

@@ -1,1 +1,23 @@
 requests
+
+# The house studio finish (listing/image_style.py) composites the retouched
+# product onto the client's background. Frappe already pins the same major, so
+# this is declared rather than installed — but it is a real import of ours and
+# should not depend on Frappe happening to want it.
+Pillow~=12.2.0
+
+# Separating the product from its background (listing/image_style.py, the
+# "segment" matte). rembg is the wrapper; onnxruntime actually runs the model,
+# and is named explicitly because it is the heavy half and the one with the
+# wheel constraints. The ~180MB model file itself is NOT vendored: rembg
+# downloads it to ~/.rembg on first use.
+rembg~=2.0.84
+onnxruntime~=1.29
+
+# Repairing the mask rembg returns (image_style._repair): labelling the holes it
+# punched through a product so the ones that are the product can be filled and
+# the ones you can genuinely see through cannot. rembg pulls both in already —
+# declared for the same reason Pillow is, because these are real imports of ours
+# and should not rest on what a dependency happens to want.
+numpy>=2.3,<3
+scipy>=1.16.3,<2

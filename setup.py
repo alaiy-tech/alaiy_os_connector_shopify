@@ -1,7 +1,14 @@
 from setuptools import setup, find_packages
 
 with open("requirements.txt") as f:
-    install_requires = f.read().strip().split("\n")
+    # Comments and blank lines are stripped rather than passed through: the file
+    # explains why each of the image dependencies is here, and a "#" line handed
+    # to install_requires is not a requirement specifier — it fails the build.
+    install_requires = [
+        line.strip()
+        for line in f
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
 setup(
     name="alaiy_os_connector_shopify",

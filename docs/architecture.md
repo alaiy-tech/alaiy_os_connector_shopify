@@ -93,6 +93,29 @@ Token refresh is also proactive: `sync_jobs._maybe_refresh_token` refreshes on t
 | `test_connection.test_connection` | Validate credentials, mint a test token. |
 | `webhooks.handle_webhook` | Guest webhook endpoint (HMAC-validated). |
 
+### `api/agent.py` — the agent pack's handlers
+
+Seventeen read-only endpoints the AI agent pack calls. Listed in full in
+[Agents](agents.md); the important thing here is that they exist as a separate
+module *because the permission gate travels with the call*. A tool pointed
+straight at `shopify/product/register.py` or `shopify/graphql_client.py` would
+run the same code with the gate removed.
+
+| Group | Methods | Gate |
+|---|---|---|
+| Register reads | `list_listings`, `get_listing`, `get_listing_gaps`, `get_listing_drift`, `get_catalog_health`, `list_collections` | `has_permission("Shopify Product Listing", "read")` |
+| Links | `get_listing_link` | `has_permission("Item", "read")` |
+| Live Shopify | `compare_listing`, `get_store_counts`, `get_collection_products` | `roles.require_manager()` |
+| Sales | `get_sales_summary`, `get_top_selling_products`, `get_product_sales`, `compare_sales_periods`, `list_shopify_orders`, `get_orders_sync_status` | `has_permission("Sales Order", "read")` |
+| Export | `export_csv` | `has_permission("File", "create")` |
+
+### `listing/review.py` — approving an enrichment
+
+`approve_listings` — the enriched-listing list view's bulk **Approve**. Not an
+agent tool: nothing in `listing/channel.py`'s handlers reaches it, because
+approval is the human act that publishes an enrichment. Mirrors the Amazon
+connector's `listing/review.py`. See [Agents](agents.md).
+
 Whitelisted trigger endpoints create a Sync Log row then enqueue on the `long` queue — nothing sync-heavy runs inside a web request.
 
 ---

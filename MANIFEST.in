@@ -1,2 +1,5 @@
 include *.md
-recursive-include alaiy_os_connector_shopify *.json *.js *.css *.html *.png *.svg
+# *.md is here for prompts/pack.md and prompts/listing.md, which pack_meta.py
+# and listing/agent_meta.py read at import time -- without it a built package
+# installs code that cannot find its own prompt.
+recursive-include alaiy_os_connector_shopify *.json *.js *.css *.html *.png *.svg *.md

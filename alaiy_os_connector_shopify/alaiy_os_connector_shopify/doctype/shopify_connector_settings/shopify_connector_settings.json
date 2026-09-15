@@ -73,6 +73,7 @@
    "fieldname": "sh_client_secret",
    "fieldtype": "Password",
    "label": "Client Secret",
+   "permlevel": 1,
    "reqd": 1
   },
   {
@@ -80,7 +81,8 @@
    "fieldname": "sh_access_token",
    "fieldtype": "Password",
    "hidden": 1,
-   "label": "Access Token"
+   "label": "Access Token",
+   "permlevel": 1
   },
   {
    "description": "When the current access token was last minted.",
@@ -101,6 +103,7 @@
    "fieldname": "sh_webhook_secret",
    "fieldtype": "Password",
    "label": "Webhook Secret",
+   "permlevel": 1,
    "reqd": 1
   },
   {
@@ -310,6 +313,30 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Shopify Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Shopify Viewer"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "System Manager",
    "write": 1
   }
  ],
