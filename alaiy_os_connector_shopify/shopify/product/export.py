@@ -621,6 +621,16 @@ def _push_product_unlocked(item):
     listing_resolver.set_product_id(item.name, product_id)
     frappe.db.set_value("Shopify Product Listing", listing.name,
                         "last_synced_at", frappe.utils.now_datetime())
+    # Same dual-write, for status. Item.sh_shopify_status is otherwise only
+    # ever written by an inbound import (importer.py) -- a push out (here)
+    # never used to touch it, so it silently went stale the moment a Listing
+    # was published or its status changed by any path other than a pull.
+    # Confirmed live: the supplier portal's own "Live" badge reads this Item
+    # field, not the Listing's, and kept showing Live for a product already
+    # flipped back to Draft on real Shopify.
+    pushed_status = "Archived" if re_archive else listing.sh_shopify_status
+    if item.get("sh_shopify_status") != pushed_status:
+        frappe.db.set_value("Item", item.name, "sh_shopify_status", pushed_status)
 
     # Match by SKU, not response order -- productSet's variants connection
     # isn't documented to preserve submission order, and getting this wrong
