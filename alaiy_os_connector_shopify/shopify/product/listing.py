@@ -439,6 +439,19 @@ def fill_children_from_item(listing):
     if not listing.listing_product_type and tmpl.sh_shopify_product_type:
         listing.listing_product_type = tmpl.sh_shopify_product_type
 
+    # Item.sh_shopify_tags is a Table MultiSelect (one row per tag) -- the
+    # Listing's own copy is a plain comma-separated field, matching what
+    # canonical.py actually sends to Shopify. Blank-only, same rule as
+    # category/product_type above -- an admin's own edit here is never
+    # overwritten.
+    if not listing.listing_tags:
+        item_tags = frappe.get_all(
+            "Item Shopify Tag", filters={"parent": tmpl.name, "parenttype": "Item"},
+            pluck="shopify_tag", order_by="idx asc",
+        )
+        if item_tags:
+            listing.listing_tags = ", ".join(item_tags)
+
     # Only seed images from the Item before the Listing exists on Shopify.
     # Once sh_shopify_product_id is set, Shopify's own image list (routed in
     # here by the inbound webhook) is authoritative and complete -- topping
