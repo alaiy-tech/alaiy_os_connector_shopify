@@ -937,6 +937,11 @@ def save_listing(listing, item_code=None):
         ))
 
     try:
+        # ignore_permissions=True: this handler is called only through
+        # `alaiy_os_agents`'s channel adapter (see channel.py), which has already
+        # gated whether the calling user may run the listing agent on this product
+        # before any handler here is invoked -- there is no separate per-write
+        # permission model on this side of that boundary to check against.
         doc.save(ignore_permissions=True)
     except frappe.exceptions.ValidationError as exc:
         # The clamps above cover the cases we have actually seen. This is the
@@ -954,7 +959,10 @@ def save_listing(listing, item_code=None):
             "its name in `needs_review`."
         )
 
-    frappe.db.commit()
+    # Paired with the explicit rollback above: either branch leaves the
+    # transaction in a definite state rather than the ambient one it would
+    # otherwise inherit from whatever request/job cycle this runs inside.
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit
 
     return {
         "name": doc.name,

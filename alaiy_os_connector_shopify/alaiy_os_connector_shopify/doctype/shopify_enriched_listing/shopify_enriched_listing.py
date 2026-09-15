@@ -64,11 +64,19 @@ class ShopifyEnrichedListing(Document):
         self._apply_content(listing_doc)
         self.apply_images(listing_doc)
 
+        # ignore_permissions=True: this fires from on_update, after the save that
+        # set self.status = "Approved" has already gone through this document's
+        # own permission check (Desk UI) or the channel adapter's gate (agent
+        # write path, see handlers.save_listing) -- approving IS the permission
+        # to publish to the sibling listing doctype, not a second write to check.
         listing_doc.save(ignore_permissions=True)
 
         self._sync_tags()
 
-        frappe.db.commit()
+        # Committed immediately: on_update runs inside the triggering save's own
+        # transaction, and a sync (Shopify push, if enabled) reading this listing
+        # right after must see the just-approved content, not an uncommitted write.
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit
 
     def _sync_tags(self):
         """Push the enriched tag list onto the Item's Shopify tag list.
@@ -135,11 +143,13 @@ class ShopifyEnrichedListing(Document):
 
         self._apply_content(listing_doc)
 
+        # See _push_to_listing's identical save -- same on_update trust chain.
         listing_doc.save(ignore_permissions=True)
 
         self._sync_tags()
 
-        frappe.db.commit()
+        # See _push_to_listing's identical commit.
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit
 
     # Enriched field -> the Shopify Product Listing field it publishes into.
     CONTENT_FIELDS = {

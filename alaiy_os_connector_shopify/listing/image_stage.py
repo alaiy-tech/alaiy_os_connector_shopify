@@ -324,7 +324,11 @@ def _apply_once(item_code, rendered):
             produced += 1
 
     doc.save(ignore_permissions=True)
-    frappe.db.commit()
+    # Committed immediately: a concurrent retry (see `_apply`) re-reads this document
+    # expecting to see what the other attempt just wrote, and the image itself was
+    # already paid for -- losing the row to an uncommitted transaction would lose
+    # the render, not just the write.
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit
     return produced
 
 
@@ -376,7 +380,10 @@ def _set_state(item_code, status, error, tokens=None):
         spent = frappe.db.get_value(ENRICHED_DOCTYPE, item_code, "image_tokens") or 0
         values["image_tokens"] = spent + tokens
     frappe.db.set_value(ENRICHED_DOCTYPE, item_code, values, update_modified=False)
-    frappe.db.commit()
+    # Committed immediately so a poller reading image_status (e.g. is_pending) from
+    # another request sees this background job's progress right away, not whenever
+    # the request cycle this job happens to run inside would otherwise commit.
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit
 
 
 def _publish(item_code, status):

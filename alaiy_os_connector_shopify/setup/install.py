@@ -1,3 +1,17 @@
+"""Install/migrate-time provisioning, run only from `bench` CLI operations.
+
+Every function here runs from `after_install`, `after_migrate`, or
+`before_uninstall` (see hooks.py) -- never from a whitelisted endpoint or a
+web request. That is why `ignore_permissions=True` is used throughout: there
+is no end-user session to check against during a site's own install/migrate,
+and some of these steps (creating the roles themselves) have to run before
+there is a permission model to check against at all.
+
+The manual `frappe.db.commit()` calls are deliberate for the same reason:
+`_provision()` runs a sequence of independent, idempotent steps during
+`bench migrate`, and each should durably land even if a later step in the
+same run fails, rather than being rolled back together with it.
+"""
 import json
 
 import frappe
@@ -116,13 +130,13 @@ def adopt_enriched_listing_doctypes():
         # safe.
         print(f"Adopted {len(moved)} enriched-listing doctype(s) onto {LISTING_MODULE}: {', '.join(moved)}")
 
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def ensure_base_data():
     """Create this app's roles if they are missing. Safe to run repeatedly."""
     _create_roles()
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _create_roles():
@@ -196,7 +210,7 @@ def sync_connector_registry():
                 doc.set(key, val)
         doc.save(ignore_permissions=True)
 
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
     _update_alaiy_os_sidebar()
 
 
@@ -217,7 +231,7 @@ def _update_alaiy_os_sidebar():
         create_or_update_workspace_sidebar()
         create_or_update_os_settings_workspace()
         create_or_update_os_settings_workspace_sidebar()
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
     except Exception:
         frappe.log_error(
             title="Shopify connector: sidebar update failed",
@@ -229,7 +243,7 @@ def _fix_settings_as_single():
     frappe.db.sql(
         "UPDATE `tabDocType` SET issingle=1 WHERE name='Shopify Connector Settings' AND issingle=0"
     )
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _backfill_singles_defaults(doctype, fieldnames):
@@ -257,7 +271,7 @@ def _backfill_singles_defaults(doctype, fieldnames):
         if not field or field.default in (None, ""):
             continue
         frappe.db.set_single_value(doctype, fieldname, field.default)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _drop_orphaned_singles_value(doctype, fieldname):
@@ -273,7 +287,7 @@ def _drop_orphaned_singles_value(doctype, fieldname):
         "DELETE FROM `tabSingles` WHERE doctype=%s AND field=%s",
         (doctype, fieldname),
     )
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _ensure_list_view_column(doctype, fieldname, label):
@@ -294,7 +308,7 @@ def _ensure_list_view_column(doctype, fieldname, label):
     fields.append({"fieldname": fieldname, "label": label})
     settings.fields = json.dumps(fields)
     settings.save(ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def setup_custom_fields():
@@ -710,7 +724,7 @@ def setup_custom_fields():
     _remove_deprecated_item_fields()
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
     create_custom_fields(custom_fields, update=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _remove_deprecated_item_fields():
@@ -723,7 +737,7 @@ def _remove_deprecated_item_fields():
         name = f"Item-{fieldname}"
         if frappe.db.exists("Custom Field", name):
             frappe.delete_doc("Custom Field", name, ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def _unlock_disabled_field_on_variants():
@@ -747,7 +761,7 @@ def _unlock_disabled_field_on_variants():
             if not any(d.field_name == "disabled" for d in settings.fields):
                 settings.append("fields", {"field_name": "disabled"})
                 settings.save(ignore_permissions=True)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
         except Exception:
             pass
 
@@ -794,7 +808,7 @@ def sync_agent_registry():
     # handler dotted path and every parameters_schema here, so a typo in the
     # manifest fails at migrate with the tool named, rather than mid-run.
     doc.save(ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 def unregister_agent():
@@ -812,7 +826,7 @@ def unregister_agent():
 
     if frappe.db.exists("OS Agent Registry", PACK_ID):
         frappe.delete_doc("OS Agent Registry", PACK_ID, force=True, ignore_permissions=True)
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
 # --- the listing channel -----------------------------------------------------
@@ -871,7 +885,7 @@ def sync_listing_custom_fields():
         return
 
     create_custom_fields(present, update=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
     frappe.clear_cache()
 
 
@@ -886,5 +900,5 @@ def remove_listing_custom_fields():
             name = f"{doctype}-{field['fieldname']}"
             if frappe.db.exists("Custom Field", name):
                 frappe.delete_doc("Custom Field", name, ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
     frappe.clear_cache()

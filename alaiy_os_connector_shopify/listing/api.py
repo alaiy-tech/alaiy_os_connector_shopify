@@ -221,7 +221,11 @@ def revert_listing_image(item_code, source_url):
             source_url,
             note="Reverted to the original photo by a reviewer.",
         )
-        frappe.db.commit()
+        # Committed immediately: the render this discards was already paid for at
+        # the image service, and a poller reading image_status right after this
+        # request must see the revert, not whatever this request cycle would
+        # otherwise commit on.
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit
 
     return {"item_code": item_code, "source_url": source_url, "reverted": len(filled)}
 
@@ -244,6 +248,10 @@ def ensure_enriched_listing(item_code):
     if not frappe.db.exists(base.LISTING_DOCTYPE, item_code):
         frappe.throw(f"No {base.LISTING_DOCTYPE} found for item_code '{item_code}'.")
     listing = frappe.get_doc(base.LISTING_DOCTYPE, item_code)
+    # "write", not "read": this seeds a Shopify Enriched Listing draft that an
+    # admin can then edit -- the same rights as editing the enrichment by hand,
+    # matching revert_listing_image and publish_listing_images below.
+    listing.check_permission("write")
     # Nothing is owed on the imagery here -- no render was queued, this is a hand
     # edit -- so the row must not claim otherwise. save_listing's own rule: every
     # seeded photo already has its url, so "Ready", and no photos is "Not
@@ -318,6 +326,9 @@ def _ensure_enriched_listing(item_code, listing, image_status="Queued"):
             "url": url,
         })
 
+    # ignore_permissions=True: both callers (enrich_listing_image,
+    # ensure_enriched_listing above) already check permission on the source
+    # listing before reaching this private helper.
     doc.insert(ignore_permissions=True)
 
 
@@ -360,8 +371,13 @@ def publish_listing_images(item_code):
 
     listing = frappe.get_doc(base_listing_doctype(), item_code)
     enriched.apply_images(listing)
+    # ignore_permissions=True: `enriched.check_permission("write")` above already
+    # gated this call; `listing` is the same product's other doctype, not a
+    # second, unchecked write surface.
     listing.save(ignore_permissions=True)
-    frappe.db.commit()
+    # Committed immediately so the poll this endpoint's caller makes right after
+    # sees the publish, not whatever this request cycle would otherwise commit on.
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit
 
     return {
         "item_code": item_code,

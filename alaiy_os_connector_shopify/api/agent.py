@@ -130,6 +130,8 @@ def list_collections(search=None, limit=None):
         row["last_synced"] = str(row["last_synced"]) if row["last_synced"] else None
         row["is_smart"] = bool(row["is_smart"])
     return {
+        # frappe.db.count bypasses DocType permissions on its own, but _may_read
+        # above already gated this whole function on the same doctype/ptype.
         "total": frappe.db.count("Shopify Collection", filters),
         "returned": len(rows),
         "collections": rows,
