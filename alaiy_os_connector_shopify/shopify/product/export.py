@@ -65,7 +65,18 @@ def publish_now(item_code: str, status: str = None):
     approval gate) should check it before calling this, then call this
     rather than reimplementing ensure_listing + the enqueue themselves --
     see alaiy_os_thesolist.api.shopify_push.publish_item.
+
+    Whitelisted, so reachable directly over the API, not only through a
+    client app's own gate -- write access on Shopify Connector Settings
+    (the same permission the Shopify Desk page itself requires) is the
+    actual gate here. A client app's own approval check (e.g. thesolist's
+    "must be Approved") is a business rule on top of this, not a
+    substitute for it: without this, any logged-in user could call this
+    endpoint directly and push a product live, skipping that app's own
+    review entirely.
     """
+    frappe.has_permission("Shopify Connector Settings", "write", throw=True)
+
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
     from alaiy_os_connector_shopify.shopify.product.status import LOCAL_VALUES
 
