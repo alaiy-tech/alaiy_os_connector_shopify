@@ -337,12 +337,25 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
         "status": product.get("status") or "",
     })
 
-    # Status: active/draft/archived is a PER-MARKETPLACE concern -- it only
-    # ever affects the Shopify LISTING, NEVER the shared Item (disabling the
-    # Item would hide the product on every other connector too, and Shopify
-    # must never mutate the marketplace-agnostic default). Archived => disable
-    # the Listing. No Listing (e.g. it was just deleted) => nothing to do;
-    # leave the Item completely untouched.
+    # Status: active/draft/archived is meant to be a PER-MARKETPLACE concern --
+    # the comment here used to claim it "never affects the shared Item", but
+    # _apply_product_meta above sets item.sh_shopify_status unconditionally
+    # (importer.py's own local_status branch), so that was never actually
+    # true. Confirmed live: archiving a product on Shopify updated the Item's
+    # copy here while the Listing's own copy (what canonical.py/export.py
+    # read for outbound pushes) stayed frozen at the old value -- so the next
+    # outbound push read the Listing's stale "Active" and un-archived the
+    # product right back on Shopify. Mirror the Item's new status onto the
+    # Listing so outbound pushes see the same truth this webhook just wrote.
+    if listing and product.get("status"):
+        from alaiy_os_connector_shopify.shopify.product import status as status_map
+        new_listing_status = status_map.to_local(product["status"])
+        if new_listing_status and listing.sh_shopify_status != new_listing_status:
+            listing.sh_shopify_status = new_listing_status
+            listing_dirty = True
+
+    # Archived => disable the Listing (stops outbound sync from re-pushing
+    # it). No Listing (e.g. it was just deleted) => nothing to do.
     if product.get("status") == "archived" and listing and listing.is_enabled:
         listing.is_enabled = 0
         listing_dirty = True
