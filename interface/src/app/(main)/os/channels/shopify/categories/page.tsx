@@ -1,3 +1,5 @@
+"use client";
+
 import { PageHeader } from "@alaiy-os/layout/page-header";
 
 import { fetchResourceList, refreshShopifyTaxonomy } from "@/lib/frappe/shopify-sync";
