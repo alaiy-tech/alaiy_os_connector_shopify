@@ -8,7 +8,7 @@
   },
   "description": {
    "type": "string",
-   "description": "The product description, for the listing's `listing_description`. 2-4 short paragraphs of plain text (no HTML, no markdown). Say what the product is, what it is made of, how it is used, and what is included. The search terms a shopper would use must appear naturally in the prose \u2014 worked into real sentences, never listed or repeated for their own sake. Never invent specifications not supported by the data or the photos."
+   "description": "The product description, for the listing's `listing_description`. A single continuous block of plain text (no HTML, no markdown) with NO line breaks or paragraph breaks \u2014 one unbroken string of prose, not a multi-paragraph text. Say what the product is, what it is made of, how it is used, and what is included. The search terms a shopper would use must appear naturally in the prose \u2014 worked into real sentences, never listed or repeated for their own sake. Never invent specifications not supported by the data or the photos."
   },
   "category": {
    "type": "string",

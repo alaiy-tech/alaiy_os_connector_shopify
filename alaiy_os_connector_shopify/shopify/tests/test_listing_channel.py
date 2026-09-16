@@ -45,7 +45,7 @@ def _good_listing(**overrides):
         "title": "Stainless Steel Insulated Water Bottle, 750 ml",
         "description": (
             "This insulated bottle keeps drinks cold for 24 hours and hot for 12. "
-            "The double-walled stainless steel body resists dents and will not sweat.\n\n"
+            "The double-walled stainless steel body resists dents and will not sweat. "
             "A wide mouth takes ice cubes and a bottle brush. The lid seals against "
             "leaks in a bag, and the powder-coated finish keeps its grip when wet."
         ),
@@ -202,7 +202,7 @@ class TestValidatorAcceptsGoodWork(unittest.TestCase):
         """A validator that rejects '&' or '< 5 kg' would block honest copy."""
         listing = _good_listing(
             description=(
-                "Rated for loads under 5 kg and built for speed & durability.\n\n"
+                "Rated for loads under 5 kg and built for speed & durability. "
                 "The 2 m USB-C to HDMI lead is rated < 60 W, which suits any laptop."
             )
         )
@@ -214,7 +214,7 @@ class TestValidatorAcceptsGoodWork(unittest.TestCase):
     def test_a_hyphenated_word_is_not_markdown(self):
         listing = _good_listing(
             description=(
-                "A powder-coated, double-walled bottle for everyday carry.\n\n"
+                "A powder-coated, double-walled bottle for everyday carry. "
                 "Dishwasher-safe and built to last a decade of use."
             )
         )
@@ -239,11 +239,14 @@ class TestValidatorCatchesRealDefects(unittest.TestCase):
         self.assertIn("repeats the description", self._defects(seo_description=good["description"]))
 
     def test_html_and_markdown_in_the_description(self):
-        self.assertIn("HTML", self._defects(description="<p>One</p>\n\n<p>Two</p>"))
-        self.assertIn("markdown", self._defects(description="Intro line here.\n\n* one\n* two"))
+        self.assertIn("HTML", self._defects(description="<p>One</p> <p>Two</p>"))
+        self.assertIn("markdown", self._defects(description="Intro line here, **bold** claim."))
 
-    def test_a_single_paragraph_description(self):
-        self.assertIn("paragraph", self._defects(description="Just the one paragraph, alone."))
+    def test_a_line_break_in_the_description(self):
+        self.assertIn(
+            "line break",
+            self._defects(description="One sentence here.\nAnother sentence here."),
+        )
 
     def test_promotional_filler(self):
         self.assertIn("banned promotional phrase", self._defects(title="Bottle HOT SALE today"))

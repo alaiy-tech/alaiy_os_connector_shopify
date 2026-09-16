@@ -726,7 +726,10 @@ def save_listing(listing, item_code=None):
         doc.item_code = item_code
 
     doc.status = "Needs Review"
-    doc.description = listing.get("description")
+    # Collapsed to a single line: the model is told to write one continuous
+    # block of prose, but this is the backstop for when it still emits a line
+    # break, so a stray "\n" never reaches the listing.
+    doc.description = re.sub(r"\s+", " ", (_flatten(listing.get("description")) or "")).strip() or None
     doc.category = listing.get("category")
     doc.product_type = listing.get("product_type")
     doc.seo_title = listing.get("seo_title")
