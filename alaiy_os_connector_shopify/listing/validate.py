@@ -47,11 +47,6 @@ SEO_TITLE_MAX = 60
 #: Shopify's own `seo.description` limit. Past this it is silently truncated.
 SEO_DESCRIPTION_MAX = 320
 
-#: The prompt asks for 2-4 short paragraphs. One long wall and ten fragments are
-#: both wrong, and both are things models produce.
-DESCRIPTION_MIN_PARAGRAPHS = 2
-DESCRIPTION_MAX_PARAGRAPHS = 4
-
 TITLE_MIN, TITLE_MAX = 10, 255
 
 #: Attributes whose value is meaningless without a unit. "1.5" is not a weight.
@@ -145,25 +140,18 @@ def validate(listing):
     else:
         if _HTML.search(description):
             defects.append(
-                "description contains HTML. Plain text only -- write the paragraphs "
-                "as prose with blank lines between them."
+                "description contains HTML. Plain text only -- write it as a single "
+                "continuous block of prose."
             )
         if _MARKDOWN.search(description):
             defects.append(
                 "description contains markdown (a list, a heading or bold). Plain text "
-                "only, in 2-4 short paragraphs of real sentences."
+                "only, as a single continuous block of prose."
             )
-        paragraphs = [p for p in re.split(r"\n\s*\n", description) if p.strip()]
-        if len(paragraphs) < DESCRIPTION_MIN_PARAGRAPHS:
+        if "\n" in description:
             defects.append(
-                f"description is {len(paragraphs)} paragraph(s); write "
-                f"{DESCRIPTION_MIN_PARAGRAPHS}-{DESCRIPTION_MAX_PARAGRAPHS}, separated "
-                "by blank lines."
-            )
-        elif len(paragraphs) > DESCRIPTION_MAX_PARAGRAPHS:
-            defects.append(
-                f"description is {len(paragraphs)} paragraphs, over the maximum of "
-                f"{DESCRIPTION_MAX_PARAGRAPHS}. Tighten it."
+                "description contains a line break. Write it as one unbroken block of "
+                "prose -- no paragraph breaks, no line breaks."
             )
         _banned_in(description, "description", defects)
 
