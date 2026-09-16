@@ -81,15 +81,18 @@ class ShopifyEnrichedListing(Document):
     def _sync_tags(self):
         """Push the enriched tag list onto the Item's Shopify tag list.
 
-        Tags are Item-level (`Item.sh_shopify_tags`, a Table MultiSelect of Item
-        Shopify Tag rows -> Shopify Tag), not a Shopify Product Listing field, so this
-        writes to a different doctype than `_push_to_listing`'s other syncs. Guarded
-        because Shopify Tag/Item Shopify Tag belong to the Shopify connector app and
-        may not be installed. Self-heals any Shopify Tag master that doesn't exist
-        locally yet, mirroring the connector's own import-side behaviour — a tag an
-        admin just approved should not silently fail to publish because nothing has
-        cached it before. A tag containing '<' or '>' is skipped (Frappe's own name
-        validation rejects those characters on a Shopify Tag insert).
+        `_apply_content` already put the same tags on the listing's own
+        `listing_tags` (what the listing itself, and the admin product page,
+        read) as part of the listing save. This writes the same list to
+        `Item.sh_shopify_tags` (a Table MultiSelect of Item Shopify Tag rows
+        -> Shopify Tag) as well, since that is still what the actual Shopify
+        push (canonical.py) reads. Guarded because Shopify Tag/Item Shopify
+        Tag belong to the Shopify connector app and may not be installed.
+        Self-heals any Shopify Tag master that doesn't exist locally yet,
+        mirroring the connector's own import-side behaviour — a tag an admin
+        just approved should not silently fail to publish because nothing has
+        cached it before. A tag containing '<' or '>' is skipped (Frappe's own
+        name validation rejects those characters on a Shopify Tag insert).
         """
         if not self.shopify_tags:
             return
@@ -176,6 +179,13 @@ class ShopifyEnrichedListing(Document):
             value = self.get(field)
             if (value or "").strip():
                 listing_doc.set(listing_field, value)
+
+        # shopify_tags is newline-separated (see _sync_tags); listing_tags is
+        # the comma-separated form the listing itself, and the admin product
+        # page, use.
+        tag_names = [t.strip() for t in (self.shopify_tags or "").splitlines() if t.strip()]
+        if tag_names:
+            listing_doc.listing_tags = ", ".join(tag_names)
 
         self._sync_attributes_as_metafields(listing_doc)
 
