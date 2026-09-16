@@ -84,8 +84,12 @@ def _remote_product(product_id):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     client = ShopifyGraphQLClient()
-    body = client.execute(_PRODUCT_BY_ID_QUERY, {"id": f"gid://shopify/Product/{product_id}"})
-    return (body.get("data") or {}).get("product")
+    # execute() already returns the unwrapped `data` object (see its own
+    # docstring) -- an extra .get("data") here always missed and returned
+    # None, so compare_listing reported every real Shopify product as
+    # "never pushed" regardless of whether it actually existed.
+    data = client.execute(_PRODUCT_BY_ID_QUERY, {"id": f"gid://shopify/Product/{product_id}"})
+    return (data or {}).get("product")
 
 
 def _local_side(listing, item, settings):

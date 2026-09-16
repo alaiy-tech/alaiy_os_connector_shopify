@@ -81,6 +81,32 @@ def trigger_product_import(statuses=None):
 
 
 @frappe.whitelist()
+def search_shopify_products(term, limit=20):
+    """Live Shopify title/SKU search for the admin "Search for a product…"
+    picker -- runs synchronously (not queued like the bulk pulls above): a
+    single search is fast enough to just return the answer directly, and
+    queuing it would mean polling a log for what should be an instant
+    keystroke-driven result.
+    """
+    from alaiy_os_connector_shopify.shopify.product.importer import search_products_live
+
+    return search_products_live(term, limit=int(limit) if limit else 20)
+
+
+@frappe.whitelist()
+def import_shopify_product(product_id):
+    """Pull and import exactly one Shopify product by id -- the pull step
+    of the "Search for a product…" flow, once the admin has picked a match
+    from search_shopify_products. Synchronous for the same reason: one
+    product is fast enough to not need a background job or a log to poll.
+    """
+    from alaiy_os_connector_shopify.shopify.product.importer import import_single_product
+
+    created, reason = import_single_product(product_id)
+    return {"created": created, "reason": reason}
+
+
+@frappe.whitelist()
 def trigger_product_export(statuses=None):
     """
     Bulk push every local (not-yet-linked) product to Shopify in one go --
