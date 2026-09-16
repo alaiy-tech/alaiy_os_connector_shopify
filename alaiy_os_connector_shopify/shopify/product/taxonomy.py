@@ -167,7 +167,14 @@ def scheduled_fetch_shopify_taxonomy():
     confirmed live: aborted mid-node, leaving a transaction to roll back.
     Re-enqueue the real work under our own explicit long timeout instead of
     ever running it under the scheduler's own job wrapper.
+
+    Confirmed live on a site with this app installed but never configured
+    (no Shop URL/token): this ran anyway on the daily cron, every day,
+    crashing with "Shopify Shop URL is not configured." -- guard on
+    is_enabled the same way every other scheduled entry point does.
     """
+    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+        return
     frappe.enqueue(fetch_shopify_taxonomy, queue="long", timeout=3600, trigger="scheduled")
 
 

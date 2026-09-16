@@ -14,6 +14,7 @@
   "listing_price",
   "listing_category",
   "listing_product_type",
+  "listing_tags",
   "listing_seo_title",
   "listing_seo_description",
   "images",
@@ -86,6 +87,12 @@
    "fieldname": "listing_product_type",
    "fieldtype": "Data",
    "label": "Listing Product Type"
+  },
+  {
+   "description": "Comma-separated. Filled automatically at import/pull and at supplier-approval promotion from Shopify's own tags; an admin can still override it here.",
+   "fieldname": "listing_tags",
+   "fieldtype": "Small Text",
+   "label": "Listing Tags"
   },
   {
    "fieldname": "images",

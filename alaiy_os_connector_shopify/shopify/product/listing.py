@@ -299,7 +299,26 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     listing = frappe.new_doc("Shopify Product Listing")
     listing.item = tmpl.name
     listing.is_enabled = 1 if default_enabled else 0
-    listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
+    # sh_shopify_product_id (not sh_shopify_status) is the real signal for
+    # "does this already exist on Shopify". An inbound import sets both the
+    # id and the real status on the Item before this ever runs, so that path
+    # is unaffected. A fresh supplier approval has neither -- it has never
+    # been pushed.
+    #
+    # tmpl.sh_shopify_status is NOT trustworthy as "unset" here: the Item
+    # custom field itself carries "Active" as its own schema default
+    # (setup/install.py), which Frappe applies the instant the Item is
+    # inserted -- before this ever runs. So tmpl.sh_shopify_status reads
+    # "Active" for a genuinely never-decided product too, and the previous
+    # `tmpl.sh_shopify_status or "Draft"` fallback never actually fired
+    # (the field is never falsy). Confirmed live: a fresh supplier approval
+    # published Active on first Publish despite the caller explicitly
+    # choosing Draft. Only trust the Item's own status once it's known to
+    # already exist on Shopify.
+    if tmpl.sh_shopify_product_id:
+        listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
+    else:
+        listing.sh_shopify_status = "Draft"
     # sh_shopify_product_id is a real, independently-writable field (not a
     # fetch_from view) -- copy the Item's current value explicitly, or a
     # freshly-created Listing would start with a blank id.
@@ -438,6 +457,19 @@ def fill_children_from_item(listing):
         listing.listing_category = tmpl.sh_shopify_category
     if not listing.listing_product_type and tmpl.sh_shopify_product_type:
         listing.listing_product_type = tmpl.sh_shopify_product_type
+
+    # Item.sh_shopify_tags is a Table MultiSelect (one row per tag) -- the
+    # Listing's own copy is a plain comma-separated field, matching what
+    # canonical.py actually sends to Shopify. Blank-only, same rule as
+    # category/product_type above -- an admin's own edit here is never
+    # overwritten.
+    if not listing.listing_tags:
+        item_tags = frappe.get_all(
+            "Item Shopify Tag", filters={"parent": tmpl.name, "parenttype": "Item"},
+            pluck="shopify_tag", order_by="idx asc",
+        )
+        if item_tags:
+            listing.listing_tags = ", ".join(item_tags)
 
     # Only seed images from the Item before the Listing exists on Shopify.
     # Once sh_shopify_product_id is set, Shopify's own image list (routed in
