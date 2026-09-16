@@ -26,7 +26,9 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 
-from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
+from alaiy_os_connector_shopify.shopify.product.queries import (
+    _PRODUCTS_QUERY, _PRODUCT_BY_ID_QUERY, _PRODUCT_SEARCH_QUERY,
+)
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute, _dedupe_item_uoms
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
 from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty, _variant_location_levels, _variant_inventory_item_id
@@ -196,6 +198,77 @@ def run_full_product_import(trigger="manual", log_name=None, statuses=None):
         raise
 
     return log.name
+
+
+def search_products_live(term: str, limit: int = 20) -> list:
+    """Live Shopify title/SKU search for the admin "Search for a product…"
+    picker -- lets an admin pull in one specific product instead of running
+    a full sweep to find it.
+
+    Searches title and SKU together (Shopify's product search has no single
+    field that covers both), OR'd so either match surfaces the product.
+    Wildcards on both sides since an admin is typing a fragment, not the
+    exact title -- same reasoning register.py's local search LIKE already
+    uses for the same kind of lookup.
+
+    Returns [{product_id, title, handle, status, image}], the lightweight
+    shape _PRODUCT_SEARCH_QUERY fetches -- enough to recognise the right
+    match, not the full product (see import_single_product for that).
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    term = (term or "").strip()
+    if not term:
+        return []
+
+    escaped = term.replace('"', '\\"')
+    query = f'title:*{escaped}* OR sku:*{escaped}*'
+
+    client = ShopifyGraphQLClient()
+    data = client.execute(_PRODUCT_SEARCH_QUERY, {"query": query, "first": limit})
+    nodes = ((data or {}).get("products") or {}).get("nodes") or []
+    return [
+        {
+            "product_id": node.get("legacyResourceId"),
+            "title": node.get("title"),
+            "handle": node.get("handle"),
+            "status": node.get("status"),
+            "image": (node.get("featuredImage") or {}).get("url"),
+        }
+        for node in nodes
+    ]
+
+
+def import_single_product(product_id: str) -> tuple:
+    """Pull and import exactly one Shopify product by its numeric id -- the
+    admin "Search for a product…" flow's actual pull step, once the admin
+    has picked a match from search_products_live.
+
+    Fetches the SAME node shape the bulk pull uses (_PRODUCT_BY_ID_QUERY,
+    built from the shared _PRODUCT_NODE_FIELDS) and hands it to
+    _import_product -- no new import logic, just a new entry point into the
+    existing one. _import_product already re-checks the status setting
+    itself (see its own docstring), so an archived product is refused here
+    with the same reason a bulk pull would give, not silently imported.
+
+    Returns (created: bool, reason: str), same shape _import_product
+    returns. Raises if the product id doesn't resolve to a real Shopify
+    product at all (deleted since the search, or a bad id) -- there's
+    nothing sensible to import in that case, unlike a merely-archived one.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    product_id = str(product_id or "").strip()
+    if not product_id:
+        frappe.throw("A product id is required.")
+
+    client = ShopifyGraphQLClient()
+    data = client.execute(_PRODUCT_BY_ID_QUERY, {"id": f"gid://shopify/Product/{product_id}"})
+    node = (data or {}).get("product")
+    if not node:
+        frappe.throw(f"Shopify product {product_id} was not found -- it may have been deleted.")
+
+    return _import_product(node)
 
 
 def _product_stocked_at_location(node: dict, location_id: str) -> bool:

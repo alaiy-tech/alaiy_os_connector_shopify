@@ -156,6 +156,28 @@ query ProductById($id: ID!) {
 }
 """
 
+# Search-as-you-type product lookup, for the admin "Search for a product…"
+# picker -- title/handle/status/image only. Deliberately not the full
+# _PRODUCT_NODE_FIELDS: that node is expensive enough (variants, metafields,
+# inventory levels per location) that running it on every keystroke would be
+# slow, and a search result only needs enough to let an admin recognise the
+# right match before pulling it in full via _PRODUCT_BY_ID_QUERY.
+_PRODUCT_SEARCH_QUERY = """
+query SearchProducts($query: String!, $first: Int!) {
+  products(first: $first, query: $query, sortKey: RELEVANCE) {
+    nodes {
+      legacyResourceId
+      title
+      handle
+      status
+      featuredImage {
+        url
+      }
+    }
+  }
+}
+"""
+
 # Continuation fetch for the rare product with more than 250 metafields --
 # _PRODUCTS_QUERY's inline metafields(first: 250) already covers the
 # overwhelming majority; this only runs when that page's hasNextPage is true.
