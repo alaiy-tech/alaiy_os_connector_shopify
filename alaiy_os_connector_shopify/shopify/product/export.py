@@ -557,7 +557,9 @@ def _push_product_unlocked(item):
         return  # unchanged since our own last push -- avoid spamming the API
 
     client = ShopifyGraphQLClient()
-    product_input = _product_set_input(item, variants, settings, listing, client)
+    # Listing's copy first (dual-written on every push below), Item as fallback.
+    product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
+    product_input = _product_set_input(item, variants, settings, listing, client, is_new_product=not product_id)
 
     identifier = None
     # Only ever set True inside the product_id branch below (re-archiving only
@@ -566,8 +568,6 @@ def _push_product_unlocked(item):
     # first-time push) skipped that branch entirely and crashed on the
     # unconditional `if re_archive` further down with UnboundLocalError.
     re_archive = False
-    # Listing's copy first (dual-written on every push below), Item as fallback.
-    product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
     if product_id:
         identifier = {
             "id": f"gid://shopify/Product/{product_id}"}
@@ -637,7 +637,7 @@ def _push_product_unlocked(item):
         # Re-fetch item, rebuild variants list and payload, then retry the sync
         item = frappe.get_doc("Item", item.name)
         variants = _variants_of(item)
-        product_input = _product_set_input(item, variants, settings, listing, client)
+        product_input = _product_set_input(item, variants, settings, listing, client, is_new_product=not product_id)
 
         data = client.execute(_PRODUCT_SET_MUTATION, {
             "input": product_input,
@@ -689,7 +689,7 @@ def _push_product_unlocked(item):
             item = frappe.get_doc("Item", item.name)
             listing = listing_resolver.get_listing(item.name)
             variants = _variants_of(item)
-            product_input = _product_set_input(item, variants, settings, listing, client)
+            product_input = _product_set_input(item, variants, settings, listing, client, is_new_product=True)
 
             data = client.execute(_PRODUCT_SET_MUTATION, {
                 "input": product_input,
