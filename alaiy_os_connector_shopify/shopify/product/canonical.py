@@ -72,7 +72,7 @@ def _split_options_over_limit(option_names: list) -> tuple:
     return kept, overflow
 
 
-def _product_set_input(item, variants: list, settings, listing, client=None) -> dict:
+def _product_set_input(item, variants: list, settings, listing, client=None, is_new_product: bool = False) -> dict:
     """Shared by templates (variants = real children) and simple items
     (variants = [item] itself, standing in as its own only variant). Always
     the full desired state, never a partial patch -- used for both a normal
@@ -95,7 +95,7 @@ def _product_set_input(item, variants: list, settings, listing, client=None) -> 
         "status": status_map.to_shopify(listing.sh_shopify_status),
         "productOptions": _product_options_payload(option_names, variants),
         "variants": [
-            _variant_set_payload(v, settings, option_names, listing) for v in variants
+            _variant_set_payload(v, settings, option_names, listing, is_new_product) for v in variants
         ],
     }
     metafields = []
