@@ -238,6 +238,21 @@ mutation PushProduct($input: ProductSetInput!, $identifier: ProductSetIdentifier
 }
 """
 
+_PRODUCT_VARIANTS_BULK_UPDATE_MUTATION = """
+mutation UpdateVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+    productVariants {
+      id
+      price
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
 _TAXONOMY_SEARCH_QUERY = """
 query SearchTaxonomy($search: String!) {
   taxonomy {

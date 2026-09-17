@@ -35,7 +35,9 @@ from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClie
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
-from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_SET_MUTATION, _PRODUCT_UPDATE_MUTATION
+from alaiy_os_connector_shopify.shopify.product.queries import (
+    _PRODUCT_SET_MUTATION, _PRODUCT_UPDATE_MUTATION, _PRODUCT_VARIANTS_BULK_UPDATE_MUTATION,
+)
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical, _product_set_input
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 from alaiy_os_connector_shopify.shopify.product import status as status_map
@@ -126,6 +128,113 @@ def push_item(item_code: str, allowed_statuses=None, force=False):
         _push_product(frappe.get_doc("Item", item.variant_of))
     else:
         _push_product(item)
+
+
+@frappe.whitelist(methods=["POST"])
+def update_variant_prices_api(item_code_to_price, domain=None):
+    """Whitelisted HTTP entry point for update_variant_prices below -- a
+    caller over the API sends item_code_to_price as a JSON object string,
+    same convention as every other dict-shaped whitelisted param in this
+    app. A same-process Python caller (e.g. alaiy_os_thesolist) should call
+    update_variant_prices directly instead, passing a real dict."""
+    frappe.has_permission("Shopify Connector Settings", "write", throw=True)
+    import json
+
+    payload = json.loads(item_code_to_price) if isinstance(item_code_to_price, str) else item_code_to_price
+    return update_variant_prices(payload, domain=domain)
+
+
+def update_variant_prices(item_code_to_price: dict, domain=None):
+    """Price-ONLY push via productVariantsBulkUpdate -- deliberately NOT
+    push_item/productSet.
+
+    productSet always resends the product's entire desired state (title,
+    description, images, tags, category, every variant's price) from
+    Alaiy OS's local copy. If a merchant edited the product directly on
+    Shopify since Alaiy OS last synced, any productSet call -- including a
+    price-only INTENT -- silently reverts that live edit back to our stale
+    copy. For an automated push firing unattended (e.g. a flash sale's
+    scheduled activate/restore, with no human reviewing the diff first),
+    that's a real, unacceptable risk, not a hypothetical -- confirmed by
+    reading canonical.py's _product_set_input, which rebuilds every field
+    from Solist's DB with no diff against live Shopify state.
+
+    productVariantsBulkUpdate takes only {id, price, ...} per variant --
+    title/images/tags/description are never part of the payload, so they
+    are physically impossible for this call to touch. Confirmed current
+    and stable against Shopify's live API docs for the API version this
+    connector already targets.
+
+    Only ever updates variants that already exist on Shopify (this
+    mutation cannot create a product or variant) -- an Item Code with no
+    resolvable Shopify variant is reported back as a failure, never
+    silently routed through push_item/productSet as a fallback, since that
+    would reintroduce the exact risk this function exists to avoid.
+
+    item_code_to_price: {item_code: float}. Returns
+    {"updated": [item_code, ...], "failed": {item_code: reason, ...}}.
+    """
+    updated, failed = [], {}
+
+    # productVariantsBulkUpdate takes one productId + an array of variants,
+    # so multiple sale variants of the same parent product batch into a
+    # single call rather than one call per variant.
+    by_product = {}
+    for item_code, price in item_code_to_price.items():
+        item = frappe.db.get_value("Item", item_code, ["variant_of", "name"], as_dict=True)
+        if not item:
+            failed[item_code] = "Item not found."
+            continue
+        template_name = item.variant_of or item.name
+        listing = listing_resolver.get_listing(template_name)
+        if not listing:
+            failed[item_code] = "No Shopify Product Listing exists for this item yet."
+            continue
+
+        variant_id = listing_resolver.variant_shopify_id(listing, item_code)
+        product_id = listing.sh_shopify_product_id or frappe.db.get_value(
+            "Item", template_name, "sh_shopify_product_id"
+        )
+        if not variant_id or not product_id:
+            failed[item_code] = "This item has never been pushed to Shopify -- no variant/product id yet."
+            continue
+
+        by_product.setdefault(product_id, []).append((item_code, variant_id, price))
+
+    if not by_product:
+        return {"updated": updated, "failed": failed}
+
+    client = ShopifyGraphQLClient()
+    for product_id, rows in by_product.items():
+        variables = {
+            "productId": f"gid://shopify/Product/{product_id}",
+            "variants": [
+                # Shopify's price field is a String, same formatting
+                # convention as _variant_set_payload's own productSet push.
+                {"id": f"gid://shopify/ProductVariant/{variant_id}", "price": f"{price:.2f}"}
+                for _item_code, variant_id, price in rows
+            ],
+        }
+        try:
+            data = client.execute(_PRODUCT_VARIANTS_BULK_UPDATE_MUTATION, variables)
+            result = data.get("productVariantsBulkUpdate") or {}
+            errors = result.get("userErrors") or []
+            if errors:
+                message = "; ".join(e.get("message", "") for e in errors)
+                for item_code, _variant_id, _price in rows:
+                    failed[item_code] = message
+                continue
+            for item_code, _variant_id, _price in rows:
+                updated.append(item_code)
+        except Exception:
+            frappe.log_error(
+                title="Shopify connector: update_variant_prices failed",
+                message=frappe.get_traceback(),
+            )
+            for item_code, _variant_id, _price in rows:
+                failed[item_code] = "Request to Shopify failed -- see Error Log."
+
+    return {"updated": updated, "failed": failed}
 
 
 def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
