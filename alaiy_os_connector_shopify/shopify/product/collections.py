@@ -123,6 +123,18 @@ mutation Unpublish($id: ID!, $input: [PublicationInput!]!) {
 }
 """
 
+_COLLECTION_SALE_METAFIELDS_QUERY = """
+query CollectionSaleMetafields($id: ID!) {
+  collection(id: $id) {
+    title
+    handle
+    saleStart: metafield(namespace: "custom", key: "sale_start") { value }
+    saleEnd: metafield(namespace: "custom", key: "sale_end") { value }
+    showCountdown: metafield(namespace: "custom", key: "show_countdown") { value }
+  }
+}
+"""
+
 _PRODUCT_COLLECTIONS_QUERY = """
 query ProductCollections($id: ID!) {
   product(id: $id) {
@@ -353,6 +365,43 @@ def get_collection_products(collection_name: str):
                                 len(products), update_modified=False)
         frappe.db.commit()
     return products
+
+
+@frappe.whitelist()
+def get_collection_sale_metafields(collection_name: str):
+    """Read-only pull of a collection's own custom.sale_start/sale_end/
+    show_countdown metafields, if a merchant (or an app on the storefront
+    theme) already set them on Shopify directly -- e.g. a pre-existing
+    flash sale that predates this connector's own Flash Sale feature.
+
+    Never writes anything back to Shopify -- this is a one-way read so a
+    client app (thesolist's Flash Sale doctype) can pull an already-live
+    sale's real schedule into its own record, rather than re-typing dates
+    an admin already set on the Shopify collection itself.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    gid = frappe.db.get_value("Shopify Collection", collection_name, "sh_collection_gid")
+    if not gid:
+        return None
+
+    client = ShopifyGraphQLClient()
+    data = client.execute(_COLLECTION_SALE_METAFIELDS_QUERY, {"id": gid})
+    collection = data.get("collection")
+    if not collection:
+        return None
+
+    def _value(field):
+        node = collection.get(field)
+        return node.get("value") if node else None
+
+    return {
+        "title": collection.get("title"),
+        "handle": collection.get("handle"),
+        "sale_start": _value("saleStart"),
+        "sale_end": _value("saleEnd"),
+        "show_countdown": (_value("showCountdown") or "").lower() == "true",
+    }
 
 
 @frappe.whitelist()
