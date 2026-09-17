@@ -89,25 +89,35 @@ def build_metafields_input(listing, product_gid: str) -> list:
     ]
 
 
+_METAFIELDS_SET_BATCH_LIMIT = 25  # Shopify's own cap on metafieldsSet's input array
+
+
 def push_listing_metafields(listing, product_gid: str, client):
     """Best-effort: logs and returns rather than failing the whole product
-    push over a metafield issue."""
+    push over a metafield issue. Batched at Shopify's own 25-metafield-per-call
+    limit -- a product with more than 25 metafields (common once tags, SEO
+    apps, and flash-sale fields all land on the same Listing) would otherwise
+    have its ENTIRE push rejected with "Exceeded the maximum metafields input
+    limit of 25", including metafields that had nothing to do with whatever
+    change triggered this call."""
     rows = build_metafields_input(listing, product_gid)
     if not rows:
         return
-    try:
-        data = client.execute(_METAFIELDS_SET_MUTATION, {"metafields": rows})
-        errors = (data.get("metafieldsSet") or {}).get("userErrors") or []
-        if errors:
+    for i in range(0, len(rows), _METAFIELDS_SET_BATCH_LIMIT):
+        batch = rows[i:i + _METAFIELDS_SET_BATCH_LIMIT]
+        try:
+            data = client.execute(_METAFIELDS_SET_MUTATION, {"metafields": batch})
+            errors = (data.get("metafieldsSet") or {}).get("userErrors") or []
+            if errors:
+                frappe.log_error(
+                    title=f"Shopify: metafieldsSet userErrors for {listing.item}",
+                    message=str(errors),
+                )
+        except Exception:
             frappe.log_error(
-                title=f"Shopify: metafieldsSet userErrors for {listing.item}",
-                message=str(errors),
+                title=f"Shopify: failed to push metafields for {listing.item}",
+                message=frappe.get_traceback(),
             )
-    except Exception:
-        frappe.log_error(
-            title=f"Shopify: failed to push metafields for {listing.item}",
-            message=frappe.get_traceback(),
-        )
 
 
 @frappe.whitelist()
