@@ -26,27 +26,30 @@ def after_migrate():
     """The same, because every step is idempotent by construction.
 
     The ordering is the reason this is a function rather than a list of entries
-    in hooks.py: `sync_agent_registry` writes tool rows carrying `connector =
-    "shopify"`, and the OS Agent Tool child controller resolves that Link on
-    save, so the connector row has to exist first. A hooks list expresses that
-    ordering by accident of line order; here it is expressed once, on purpose.
+    in hooks.py: the agent's tool rows carry `connector = "shopify"` and the OS
+    Agent Tool child controller resolves that Link on save, so the connector row
+    has to exist first. alaiy_os_agents writes those rows on its own migrate now,
+    which does not remove the constraint -- it only moves the writer -- and the
+    rest of what `_provision` does is ordered the same way regardless. A hooks
+    list expresses that ordering by accident of line order; here it is expressed
+    once, on purpose.
     """
     _provision()
 
 
 def _provision():
-    """Roles, the connector row, the agent pack, and the enrichment field.
+    """Roles, the connector row, and the enrichment field.
 
-    One agent is registered from here: `sync_agent_registry` writes the read-only
-    question-answering pack (pack_meta.py). The listing agent is not ours --
-    `alaiy_os_agents` owns it and reaches this connector through the
-    `listing_channels` hook, so all this app provides for it is the adapter in
-    listing/channel.py and the field the review record writes back.
+    No agent is registered from here any more. Both of this connector's agents
+    belong to `alaiy_os_agents`: it owns the channel-agnostic listing agent and
+    reaches this app through `listing_channels`, and it now builds the read-only
+    question-answering agent too, from `agent_export.py` through
+    `connector_agents`. What this app provides for either is the same thing --
+    channel knowledge and the handlers behind it.
     """
     adopt_enriched_listing_doctypes()
     ensure_base_data()
     sync_connector_registry()
-    sync_agent_registry()
     sync_listing_custom_fields()
 
 
@@ -766,66 +769,37 @@ def _unlock_disabled_field_on_variants():
             pass
 
 
-# --- the agent pack ----------------------------------------------------------
-# The manifest is pack_meta.py; these only write it. Editing a tool description
-# or prompts/pack.md and running `bench migrate` is the whole reconcile loop.
-
-#: Fields an admin owns once the row exists. `is_enabled` is the switch that
-#: turns the pack on for a site, and a migrate that reset it would turn every
-#: pack back on behind whoever switched it off.
-_AGENT_RUNTIME_FIELDS = {"is_enabled"}
-
-#: Not fields on the row at all: `agent_id` is the name, and `tools` is a child
-#: table that is rebuilt wholesale below rather than set like a scalar.
-_AGENT_NON_REGISTRY_FIELDS = {"agent_id", "tools"}
-
-
-def sync_agent_registry():
-    """Upsert this connector's OS Agent Registry pack. Safe to call repeatedly."""
-    if not frappe.db.exists("DocType", "OS Agent Registry"):
-        # Core not installed yet, or predates the agent engine.
-        return
-
-    from alaiy_os_connector_shopify import pack_meta
-
-    meta = pack_meta.build_pack_meta()
-    agent_id = meta["agent_id"]
-
-    if frappe.db.exists("OS Agent Registry", agent_id):
-        doc = frappe.get_doc("OS Agent Registry", agent_id)
-    else:
-        doc = frappe.new_doc("OS Agent Registry")
-        doc.agent_id = agent_id
-
-    for key, value in meta.items():
-        if key in _AGENT_NON_REGISTRY_FIELDS or key in _AGENT_RUNTIME_FIELDS:
-            continue
-        doc.set(key, value)
-
-    doc.set("tools", [pack_meta.as_registry_tool(tool) for tool in meta["tools"]])
-
-    # save() inserts when new. The OS Agent Tool child controller validates every
-    # handler dotted path and every parameters_schema here, so a typo in the
-    # manifest fails at migrate with the tool named, rather than mid-run.
-    doc.save(ignore_permissions=True)
-    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+# --- the agent lifecycle -----------------------------------------------------
+# Writing the OS Agent Registry row is no longer done here. `agent_export.export()`
+# declares what this connector can be asked; alaiy_os_agents reads it through the
+# `connector_agents` hook and upserts the row on its own migrate, with the model,
+# the turn budget and the prompt it decides for every connector agent on the bench.
+#
+# The uninstall stays, because that app cannot do it for us -- see below.
 
 
 def unregister_agent():
-    """Drop the pack row on uninstall, keeping the run history that points at it.
+    """Drop this connector's agent row on uninstall, keeping the run history.
+
+    alaiy_os_agents owns the row but cannot close this case. Its
+    `registry.unregister` fires when *it* is uninstalled, not when a connector is,
+    and its `registry.sync` upserts what the hooks declare without pruning what
+    they have stopped declaring -- so uninstalling this app alone would leave the
+    row behind with its handlers no longer importing, advertising an app that is
+    gone.
 
     `force=True` because past `OS Agent Run` rows link to this row, and Frappe
     would otherwise refuse the delete to protect them. Deleting the runs instead
-    would throw away the record of what the pack actually did on this site,
+    would throw away the record of what the agent actually did on this site,
     which is the opposite of what an uninstall should cost.
     """
     if not frappe.db.exists("DocType", "OS Agent Registry"):
         return
 
-    from alaiy_os_connector_shopify.pack_meta import PACK_ID
+    from alaiy_os_connector_shopify.agent_export import AGENT_ID
 
-    if frappe.db.exists("OS Agent Registry", PACK_ID):
-        frappe.delete_doc("OS Agent Registry", PACK_ID, force=True, ignore_permissions=True)
+    if frappe.db.exists("OS Agent Registry", AGENT_ID):
+        frappe.delete_doc("OS Agent Registry", AGENT_ID, force=True, ignore_permissions=True)
         frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
