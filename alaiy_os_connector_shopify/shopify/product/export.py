@@ -96,6 +96,13 @@ def publish_now(item_code: str, status: str = None):
         if status not in LOCAL_VALUES:
             frappe.throw(frappe._("Invalid status {0}. Must be one of {1}.").format(status, ", ".join(LOCAL_VALUES)))
         frappe.db.set_value("Shopify Product Listing", listing.name, "sh_shopify_status", status)
+        # Dual-write onto Item synchronously too -- every admin read (Catalogue,
+        # dashboard, low-stock, reports) queries Item.sh_shopify_status, not the
+        # Listing's. The real push below only reaches that field asynchronously
+        # (see _push_product_unlocked's own dual-write) once the queued job
+        # actually runs; until then Item would keep showing the old status even
+        # though this call already committed the real, intended one.
+        frappe.db.set_value("Item", item_code, "sh_shopify_status", status)
 
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.product_sync.push_item",

@@ -3,6 +3,8 @@ Inbound Sync: Handle Shopify product changes via webhooks -- moved
 verbatim from product_sync.py, unchanged.
 """
 
+import time
+
 import frappe
 from frappe.utils import flt
 
@@ -224,6 +226,7 @@ def _handle_product_update(product_id: str, product: dict):
         )
         return
 
+    locked_item = item
     try:
         _update_item_from_shopify(item, product)
 
@@ -231,6 +234,14 @@ def _handle_product_update(product_id: str, product: dict):
         # hourly outbound reconciliation (push_changed_items_only) doesn't see
         # this inbound-driven change as "different from last push" and push it
         # straight back to Shopify.
+        #
+        # Reassigning `item` here (rather than a differently-named var) used
+        # to leave the unlock below calling .unlock() on THIS fresh instance,
+        # which never held the lock -- the original locked_item's file lock
+        # was orphaned every time this ran, confirmed live as the real cause
+        # of later saves on the same Item hitting DocumentLockedError against
+        # a lock that no in-memory reference could ever clear (only the
+        # 3-hour hard expiry eventually did).
         item = frappe.get_doc("Item", item.name)
         settings = frappe.get_single("Shopify Connector Settings")
         from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
@@ -249,7 +260,7 @@ def _handle_product_update(product_id: str, product: dict):
 
         frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
     finally:
-        item.unlock()
+        locked_item.unlock()
  
 
 def _save_listing_with_retry(listing, _attempt=0):
@@ -409,6 +420,23 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
     item.flags.dont_update_variants = True
     try:
         with _as_administrator():
+            # Confirmed live (instrumented is_locked directly at the failure
+            # site): item.save() here ALWAYS threw DocumentLockedError, with
+            # no lock file ever observably present a moment before or after --
+            # because _handle_product_update's own item.lock() call, one level
+            # up, is still held for the ENTIRE duration of this function, and
+            # Document.save()'s own check_if_locked() does not special-case
+            # "the current call chain is the one holding this lock." lock()
+            # and save() on the same instance are fundamentally incompatible
+            # in this Frappe version -- file_lock.create_lock's own docstring
+            # even says the mechanism is "primarily for locking documents for
+            # background submission," not this save-through-the-ORM pattern.
+            # Unlocking immediately before the actual write is what makes the
+            # write possible at all; the outer function's finally still
+            # re-covers unlock for the redelivery-skip path that returns
+            # before ever reaching here.
+            if item.is_locked:
+                item.unlock()
             item.save()
     except frappe.TimestampMismatchError:
         # Confirmed live: this Item got saved by something else (our own
@@ -531,6 +559,18 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
             if row:
                 if flt(row.variant_price) != price:
                     row.variant_price = price
+                    listing_dirty = True
+                # For a simple (single-variant) product, listing_price is a
+                # separate field admin UIs display as "the" price -- confirmed
+                # live, an inbound price change correctly updated the row
+                # (the real push source, per variant_price()'s own resolver
+                # priority) but left listing_price showing a stale number,
+                # misleading anyone reading the Listing form directly rather
+                # than through the resolver. Keep both in step for a simple
+                # product, same symmetry the outbound price-edit endpoint
+                # already keeps.
+                if listing and sku == listing.item and flt(listing.listing_price) != price:
+                    listing.listing_price = price
                     listing_dirty = True
             else:
                 _set_item_price(sku, price, settings)
