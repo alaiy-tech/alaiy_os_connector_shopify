@@ -30,9 +30,13 @@ def _connector_enabled():
 def on_listing_update(doc, method=None):
     """
     A Listing (or any of its variant/image child rows -- they save with the
-    parent) changed: push the product if enabled, archive it if just
-    disabled. Mirrors the old on_item_change enable/disable machine, keyed
-    off the Listing instead of Item.sync_to_shopify.
+    parent) changed: push the product if enabled. is_enabled ("Enable Sync")
+    only gates whether local edits keep auto-pushing to Shopify -- it is not
+    a status control. Turning it off just stops syncing; it must never
+    archive the live Shopify product on its own. Archived/Active/Draft is
+    controlled solely by the Listing's own sh_shopify_status field (pushed
+    via publish_now / push_item's productSet, or the archive/unarchive
+    actions that explicitly set it) -- never as a side effect of this toggle.
 
     is_enabled turning on auto-pushes ONLY when this Listing already has a
     real sh_shopify_product_id -- a refresh of a product that already
@@ -43,18 +47,6 @@ def on_listing_update(doc, method=None):
     Listing must go through an explicit publish call (product_sync.push_item
     with force=True) instead -- enabling sync only takes effect starting
     with the next real edit's own save.
-
-    The archive branch requires is_enabled to have ACTUALLY JUST TURNED OFF
-    in this save (has_value_changed), not merely "is currently 0" --
-    confirmed live as a real bug: publish_now's one-off publish (Publish to
-    Shopify) deliberately leaves is_enabled at 0 forever (it is not
-    "Enable Sync"), but once sh_shopify_product_id gets written back after
-    that first push, ANY later save of the Listing for any unrelated reason
-    (image sync, tag update, variant row edit) hit this elif with
-    is_enabled still 0 and a real product_id, silently archiving a product
-    on live Shopify that nobody asked to take down. Item 30072004 (pulled
-    Active from the supplier's own store, reviewed, and published) is a
-    live confirmed case of this.
     """
     if doc.flags.from_shopify_sync:
         # Provisioning insert (backfill / inbound import) -- data mirrored
@@ -68,25 +60,14 @@ def on_listing_update(doc, method=None):
             queue="short", timeout=120, item_code=doc.item,
             enqueue_after_commit=True,
         )
-    elif doc.sh_shopify_product_id and not doc.is_new() and doc.has_value_changed("is_enabled"):
-        frappe.enqueue(
-            "alaiy_os_connector_shopify.shopify.product_sync.archive_item",
-            queue="short", timeout=60, item_code=doc.item,
-            enqueue_after_commit=True,
-        )
 
 
 def on_listing_trash(doc, method=None):
-    """Deleting the Listing takes the product off Shopify (archive: hidden,
-    order history intact), same terminal state as unchecking then removing."""
-    if not _connector_enabled():
-        return
-    if doc.sh_shopify_product_id:
-        frappe.enqueue(
-            "alaiy_os_connector_shopify.shopify.product_sync.archive_item",
-            queue="short", timeout=60, item_code=doc.item,
-            enqueue_after_commit=True,
-        )
+    """Deleting the Listing just unlinks it locally -- it must never archive
+    the live Shopify product as a side effect. Archiving is an explicit
+    status action (sh_shopify_status), not something a local delete should
+    trigger on its own."""
+    return
 
 
 # ── Slim Item hooks (data upkeep only -- never push directly) ────────────────
