@@ -311,6 +311,14 @@ def generate_product_images(
             "cannot generate images). Do NOT retry; return each image with url=null "
             "so the team can retouch it manually."
         )
+    if image_style.finish_needs_client(style) and not llm.image_client().image_support().get(
+        "remove_background"
+    ):
+        frappe.throw(
+            "Image finishing is not available on this site (the active AI client "
+            "cannot remove backgrounds). Do NOT retry; return each image with "
+            "url=null so the team can retouch it manually."
+        )
 
     # A URL-only product has no Shopify Enriched Listing for stage two to patch, so
     # there is nowhere to deliver the images later — render them inline.
@@ -416,7 +424,16 @@ def already_enhanced(item_code):
 
     rows = frappe.get_all(
         "Shopify Enriched Listing Image",
-        filters={"parent": item_code, "parenttype": base.ENRICHED_DOCTYPE},
+        # kind != "lifestyle": a lifestyle variant (listing/api.py's
+        # accept_lifestyle_image) shares its source_url with the photo it was
+        # generated from but is not that photo's hero retouch. Left unexcluded,
+        # a lifestyle row with a url would make gate 3 above believe THIS photo
+        # was already enhanced and hand back the lifestyle image in its place.
+        filters={
+            "parent": item_code,
+            "parenttype": base.ENRICHED_DOCTYPE,
+            "kind": ["!=", "lifestyle"],
+        },
         fields=["source_url", "url"],
     )
     return {row.source_url: row.url for row in rows if row.source_url and row.url}
@@ -452,12 +469,16 @@ def render_generated(item_code, work):
     style = image_style.load()
     retouch = retouch_wanted(style)
 
-    # Only a job that is actually going to generate needs the service — a job that
-    # is only compositing does not, and neither does one queued purely to write an
+    # Only a job that is actually going to call out needs the client — one that
+    # neither retouches nor finishes through Photoroom (a `segment`/`flood` site
+    # with retouch off) does not, and neither does one queued purely to write an
     # earlier run's results back onto the listing.
-    client = llm.image_client() if (urls and retouch) else None
-    if client and not client.image_support().get("generate"):
+    needs_finish_client = image_style.finish_needs_client(style)
+    client = llm.image_client() if (urls and (retouch or needs_finish_client)) else None
+    if client and retouch and not client.image_support().get("generate"):
         frappe.throw("Image enhancement is not available on this site.")
+    if client and needs_finish_client and not client.image_support().get("remove_background"):
+        frappe.throw("Image finishing is not available on this site.")
 
     # Resolved on THIS thread, before the pool starts: reading a stored Frappe File
     # or downloading an external photo needs the site context, which a worker thread
@@ -478,7 +499,7 @@ def render_generated(item_code, work):
             return _try_generate(client, images.data_uri(source), style)
         # No generative step at all: the photograph's own pixels are what get
         # composited, so nothing can alter the product.
-        return _try_finish(base64.b64decode(source["data"]), source["media_type"], style)
+        return _try_finish(base64.b64decode(source["data"]), source["media_type"], style, client)
 
     results = []
     if sources:
@@ -570,16 +591,16 @@ def retouch_wanted(style):
     return True if not style else bool(style.get("retouch"))
 
 
-def _try_finish(content, media_type, style):
+def _try_finish(content, media_type, style, client=None):
     """One photo, composited onto the house ground and nothing else.
 
     The counterpart to _try_generate for a site whose style has retouching off.
-    Same (payload, error) contract, so the caller does not care which ran — but no
-    image service is involved, nothing is charged, and the product's pixels reach
-    the canvas exactly as the photographer took them.
+    Same (payload, error) contract, so the caller does not care which ran. `client`
+    is only used (and only needed) when the style's matte is `photoroom` — the
+    `segment`/`flood` mattes never call out, so nothing is charged for those.
     """
     try:
-        finished = image_style.apply_finish(content, style)
+        finished = image_style.apply_finish(content, style, client)
     except Exception as exc:
         return None, str(exc)
 
@@ -625,7 +646,7 @@ def _try_generate(client, reference_data_uri, style=None):
     if not style:
         return {"content": content, "media_type": media_type, "usage": payload.get("usage")}, None
 
-    finished = image_style.apply_finish(content, style)
+    finished = image_style.apply_finish(content, style, client)
     return {
         "content": finished["image"],
         # apply_finish reports no media type when it left the image alone.
