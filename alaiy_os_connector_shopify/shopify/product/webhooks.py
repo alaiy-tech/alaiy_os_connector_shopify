@@ -560,6 +560,18 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
                 if flt(row.variant_price) != price:
                     row.variant_price = price
                     listing_dirty = True
+                # For a simple (single-variant) product, listing_price is a
+                # separate field admin UIs display as "the" price -- confirmed
+                # live, an inbound price change correctly updated the row
+                # (the real push source, per variant_price()'s own resolver
+                # priority) but left listing_price showing a stale number,
+                # misleading anyone reading the Listing form directly rather
+                # than through the resolver. Keep both in step for a simple
+                # product, same symmetry the outbound price-edit endpoint
+                # already keeps.
+                if listing and sku == listing.item and flt(listing.listing_price) != price:
+                    listing.listing_price = price
+                    listing_dirty = True
             else:
                 _set_item_price(sku, price, settings)
         compare_at_price = flt(variant.get("compare_at_price") or variant.get("compareAtPrice") or 0)
