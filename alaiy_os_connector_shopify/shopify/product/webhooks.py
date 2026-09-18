@@ -3,6 +3,8 @@ Inbound Sync: Handle Shopify product changes via webhooks -- moved
 verbatim from product_sync.py, unchanged.
 """
 
+import time
+
 import frappe
 from frappe.utils import flt
 
@@ -224,6 +226,7 @@ def _handle_product_update(product_id: str, product: dict):
         )
         return
 
+    locked_item = item
     try:
         _update_item_from_shopify(item, product)
 
@@ -231,6 +234,14 @@ def _handle_product_update(product_id: str, product: dict):
         # hourly outbound reconciliation (push_changed_items_only) doesn't see
         # this inbound-driven change as "different from last push" and push it
         # straight back to Shopify.
+        #
+        # Reassigning `item` here (rather than a differently-named var) used
+        # to leave the unlock below calling .unlock() on THIS fresh instance,
+        # which never held the lock -- the original locked_item's file lock
+        # was orphaned every time this ran, confirmed live as the real cause
+        # of later saves on the same Item hitting DocumentLockedError against
+        # a lock that no in-memory reference could ever clear (only the
+        # 3-hour hard expiry eventually did).
         item = frappe.get_doc("Item", item.name)
         settings = frappe.get_single("Shopify Connector Settings")
         from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
@@ -249,7 +260,7 @@ def _handle_product_update(product_id: str, product: dict):
 
         frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
     finally:
-        item.unlock()
+        locked_item.unlock()
  
 
 def _save_listing_with_retry(listing, _attempt=0):
@@ -410,7 +421,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
     try:
         with _as_administrator():
             item.save()
-    except frappe.TimestampMismatchError:
+    except (frappe.TimestampMismatchError, frappe.DocumentLockedError):
         # Confirmed live: this Item got saved by something else (our own
         # outbound push, a sibling-variant cascade, another webhook for
         # the same product) in the same second this function loaded it --
@@ -420,9 +431,18 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
         # kept from the stale `item`), so it's safe to just reload a
         # current copy and replay the whole update once rather than lose
         # it entirely.
+        #
+        # DocumentLockedError included for the same reason -- confirmed
+        # live, a concurrent request/job can hold the file lock in the
+        # narrow window between this save's own is_locked check and the
+        # write, even though _handle_product_update's own item.lock() call
+        # (the caller, one level up) is meant to serialize this exact race.
+        # A short backoff before reload-and-retry rides out that window
+        # instead of dropping a real inbound Shopify change outright.
         if _retry_count >= 2:
             raise
         frappe.db.rollback()
+        time.sleep(1)
         fresh_item = frappe.get_doc("Item", item.name)
         return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1)
     frappe.db.commit()
