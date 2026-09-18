@@ -420,8 +420,25 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
     item.flags.dont_update_variants = True
     try:
         with _as_administrator():
+            # Confirmed live (instrumented is_locked directly at the failure
+            # site): item.save() here ALWAYS threw DocumentLockedError, with
+            # no lock file ever observably present a moment before or after --
+            # because _handle_product_update's own item.lock() call, one level
+            # up, is still held for the ENTIRE duration of this function, and
+            # Document.save()'s own check_if_locked() does not special-case
+            # "the current call chain is the one holding this lock." lock()
+            # and save() on the same instance are fundamentally incompatible
+            # in this Frappe version -- file_lock.create_lock's own docstring
+            # even says the mechanism is "primarily for locking documents for
+            # background submission," not this save-through-the-ORM pattern.
+            # Unlocking immediately before the actual write is what makes the
+            # write possible at all; the outer function's finally still
+            # re-covers unlock for the redelivery-skip path that returns
+            # before ever reaching here.
+            if item.is_locked:
+                item.unlock()
             item.save()
-    except (frappe.TimestampMismatchError, frappe.DocumentLockedError):
+    except frappe.TimestampMismatchError:
         # Confirmed live: this Item got saved by something else (our own
         # outbound push, a sibling-variant cascade, another webhook for
         # the same product) in the same second this function loaded it --
@@ -431,18 +448,9 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
         # kept from the stale `item`), so it's safe to just reload a
         # current copy and replay the whole update once rather than lose
         # it entirely.
-        #
-        # DocumentLockedError included for the same reason -- confirmed
-        # live, a concurrent request/job can hold the file lock in the
-        # narrow window between this save's own is_locked check and the
-        # write, even though _handle_product_update's own item.lock() call
-        # (the caller, one level up) is meant to serialize this exact race.
-        # A short backoff before reload-and-retry rides out that window
-        # instead of dropping a real inbound Shopify change outright.
         if _retry_count >= 2:
             raise
         frappe.db.rollback()
-        time.sleep(1)
         fresh_item = frappe.get_doc("Item", item.name)
         return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1)
     frappe.db.commit()
