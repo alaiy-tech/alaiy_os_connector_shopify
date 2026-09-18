@@ -1,4 +1,4 @@
-"""Pure-logic tests for the agent pack manifest, its CSV export and its arithmetic.
+"""Pure-logic tests for the agent export, its CSV export and its arithmetic.
 
 Run via `bench run-tests` alongside the rest of this directory (needs a site
 context, same as the other tests in this app -- `frappe.throw` wants translations
@@ -13,23 +13,26 @@ the CSV envelope threshold (an off-by-one exports the summary line instead of
 the rows), the handler prefix (a tool pointed past `api/agent.py` runs with the
 permission gate removed), and the three separate status vocabularies never
 sharing a parameter name.
+
+Since the agent moved to `alaiy_os_agents`, the export is also a contract with
+another app: it has to carry everything that app needs and nothing it decides for
+itself. `TestExport` is that contract.
 """
 
 import inspect
-import json
 import unittest
 
-from alaiy_os_connector_shopify import csv_export, pack_meta, sales
+from alaiy_os_connector_shopify import agent_export, csv_export, sales
 from alaiy_os_connector_shopify.shopify.product import register
 
 
 class TestPackManifest(unittest.TestCase):
     def test_tool_ids_are_unique(self):
-        ids = [tool["tool_id"] for tool in pack_meta.TOOLS]
+        ids = [tool["tool_id"] for tool in agent_export.TOOLS]
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_every_tool_is_fully_specified(self):
-        for tool in pack_meta.TOOLS:
+        for tool in agent_export.TOOLS:
             for key in ("tool_id", "description", "handler", "parameters_schema"):
                 self.assertTrue(tool.get(key), f"{tool.get('tool_id')} is missing {key}")
             self.assertIsInstance(tool["required_permissions"], list)
@@ -41,20 +44,70 @@ class TestPackManifest(unittest.TestCase):
         would run the same code with the gate removed. A string test, so it
         needs no site and no imports.
         """
-        for tool in pack_meta.TOOLS:
+        for tool in agent_export.TOOLS:
             self.assertTrue(
                 tool["handler"].startswith("alaiy_os_connector_shopify.api.agent."),
                 f"{tool['tool_id']} points outside api/agent.py: {tool['handler']}",
             )
 
-    def test_registry_rows_carry_json_and_the_connector(self):
-        for tool in pack_meta.TOOLS:
-            row = pack_meta.as_registry_tool(tool)
-            self.assertEqual(row["connector"], pack_meta.CONNECTOR_ID)
-            self.assertEqual(json.loads(row["parameters_schema"])["type"], "object")
-            if row["required_permissions"]:
-                for entry in json.loads(row["required_permissions"]):
-                    self.assertEqual(set(entry), {"doctype", "ptype"})
+    def test_exported_tools_carry_the_connector_and_a_usable_schema(self):
+        for tool in agent_export.export()["tools"]:
+            # The gate that makes factory.py refuse the whole agent while this
+            # connector is disabled.
+            self.assertEqual(tool["connector"], agent_export.CONNECTOR_ID)
+            # Dicts, not JSON text: alaiy_os_agents serialises on the way to the
+            # child row, and two files with an opinion on that is one too many.
+            self.assertEqual(tool["parameters_schema"]["type"], "object")
+            for entry in tool["required_permissions"] or []:
+                self.assertEqual(set(entry), {"doctype", "ptype"})
+
+    def test_the_export_carries_what_the_agent_app_needs(self):
+        """The contract with alaiy_os_agents, in one place.
+
+        A missing key here does not fail loudly: `meta.build` raises on the
+        migrate that reads it, naming this app, in someone else's repo.
+        """
+        export = agent_export.export()
+        self.assertEqual(
+            set(export), {"agent_id", "label", "icon", "description", "rules", "tools"}
+        )
+        self.assertTrue(export["rules"].strip())
+        self.assertEqual(len(export["tools"]), len(agent_export.TOOLS))
+
+    def test_the_export_decides_nothing_the_agent_app_decides(self):
+        """No model, no turn budget, no prompt shape, no reply contract.
+
+        A connector setting any of them again is the drift the export exists to
+        stop, and it would silently win -- `meta.build` copies what it is given
+        for the keys it does not own.
+        """
+        export = agent_export.export()
+        for owned_elsewhere in (
+            "model",
+            "max_turns",
+            "system_prompt",
+            "output_format",
+            "output_schema",
+            "chat_skill",
+        ):
+            self.assertNotIn(owned_elsewhere, export)
+        self.assertFalse(hasattr(agent_export, "MODEL"))
+        self.assertFalse(hasattr(agent_export, "MAX_TURNS"))
+
+    def test_the_rules_keep_the_one_thing_this_channel_must_not_get_wrong(self):
+        """Shopify does not adjudicate listings, and nothing here may imply it does.
+
+        This is the fact with a merchant's afternoon attached to it: `get_listing_gaps`
+        is this system's judgement and `get_listing_drift` compares us against our own
+        record of the last push, neither is Shopify's verdict, and Shopify publishes no
+        verdict at all. It governs four tools and a fifth that does not exist, so it
+        lives in the rules rather than in any one description -- and the rules are only
+        reachable by the agent if they survive the move.
+        """
+        rules = agent_export.export()["rules"]
+        self.assertIn("There is no Shopify issues feed", rules)
+        self.assertIn("Only paid orders are synced", rules)
+        self.assertIn("Never call any of it a payout", rules)
 
     def test_live_tools_declare_no_doctype_permission(self):
         """A live Shopify call is gated on a ROLE, which the field cannot express.
@@ -90,11 +143,11 @@ class TestPackManifest(unittest.TestCase):
     def test_nothing_is_named_issues(self):
         """Shopify has no issues feed; naming a local judgement `issues` would lie.
 
-        See pack_meta's docstring. `get_listing_gaps` is our own judgement and
+        See agent_export's docstring. `get_listing_gaps` is our own judgement and
         `get_listing_drift` is local-vs-last-push; neither is Shopify's verdict,
         because Shopify does not have one.
         """
-        for tool in pack_meta.TOOLS:
+        for tool in agent_export.TOOLS:
             self.assertNotIn("issue", tool["tool_id"])
 
     def test_the_three_status_vocabularies_never_share_a_parameter_name(self):
@@ -105,7 +158,7 @@ class TestPackManifest(unittest.TestCase):
         read one tool must not be able to carry a value into another.
         """
         by_param = {}
-        for tool in pack_meta.TOOLS:
+        for tool in agent_export.TOOLS:
             for name, spec in tool["parameters_schema"].get("properties", {}).items():
                 if "enum" not in spec:
                     continue
@@ -115,17 +168,17 @@ class TestPackManifest(unittest.TestCase):
             self.assertEqual(len(enums), 1, f"parameter {name} carries {len(enums)} vocabularies")
 
         # And each vocabulary is reachable under exactly one name.
-        self.assertEqual(by_param["status"], {tuple(pack_meta._LISTING_STATUSES)})
-        self.assertEqual(by_param["financial_status"], {tuple(pack_meta._FINANCIAL_STATUSES)})
-        self.assertEqual(by_param["fulfillment_status"], {tuple(pack_meta._FULFILLMENT_STATUSES)})
+        self.assertEqual(by_param["status"], {tuple(agent_export._LISTING_STATUSES)})
+        self.assertEqual(by_param["financial_status"], {tuple(agent_export._FINANCIAL_STATUSES)})
+        self.assertEqual(by_param["fulfillment_status"], {tuple(agent_export._FULFILLMENT_STATUSES)})
 
     def test_manifest_vocabularies_match_the_modules_that_enforce_them(self):
         """The schema enum and the runtime validator must not drift apart."""
-        self.assertEqual(tuple(pack_meta._FINANCIAL_STATUSES), sales.FINANCIAL_STATUSES)
-        self.assertEqual(tuple(pack_meta._FULFILLMENT_STATUSES), sales.FULFILLMENT_STATUSES)
-        self.assertEqual(tuple(pack_meta._LISTING_STATUSES), register.LISTING_STATUSES)
-        self.assertEqual(tuple(pack_meta._GAPS), tuple(register._GAP_SQL))
-        self.assertEqual(tuple(pack_meta._GRANULARITIES), sales.GRANULARITIES)
+        self.assertEqual(tuple(agent_export._FINANCIAL_STATUSES), sales.FINANCIAL_STATUSES)
+        self.assertEqual(tuple(agent_export._FULFILLMENT_STATUSES), sales.FULFILLMENT_STATUSES)
+        self.assertEqual(tuple(agent_export._LISTING_STATUSES), register.LISTING_STATUSES)
+        self.assertEqual(tuple(agent_export._GAPS), tuple(register._GAP_SQL))
+        self.assertEqual(tuple(agent_export._GRANULARITIES), sales.GRANULARITIES)
 
     def test_every_gap_names_the_resolver_it_mirrors(self):
         """register._GAP_SQL restates listing.py's fallback chains in SQL.
@@ -139,10 +192,10 @@ class TestPackManifest(unittest.TestCase):
     def test_the_pack_and_the_connector_agree_on_the_id(self):
         from alaiy_os_connector_shopify.connector_meta import connector_meta
 
-        self.assertEqual(pack_meta.CONNECTOR_ID, connector_meta["connector_id"])
+        self.assertEqual(agent_export.CONNECTOR_ID, connector_meta["connector_id"])
 
     def _tool(self, tool_id):
-        return next(t for t in pack_meta.TOOLS if t["tool_id"] == tool_id)
+        return next(t for t in agent_export.TOOLS if t["tool_id"] == tool_id)
 
 
 class TestCsvRowShapes(unittest.TestCase):

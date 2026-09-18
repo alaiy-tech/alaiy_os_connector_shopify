@@ -185,7 +185,7 @@ def export_csv(rows_json: str, filename: str = "export", columns: str = ""):
     and unlike the rest of this app: every one of these errors is fixable by the
     caller on its next attempt — different columns, fewer rows, valid JSON — and
     saying which is more use than a PermissionError-shaped failure. The
-    model-facing description of all three arguments lives in pack_meta.py.
+    model-facing description of all three arguments lives in agent_export.py.
     """
     if not rows_json or not rows_json.strip():
         return {"saved": False, "error": "rows_json was empty — pass the rows to export."}

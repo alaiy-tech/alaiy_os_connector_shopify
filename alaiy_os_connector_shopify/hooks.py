@@ -7,17 +7,23 @@ app_license = "MIT"
 
 required_apps = ["alaiy_os", "erpnext"]
 
-# One function rather than a list, because the three things it does are ordered:
-# the roles exist before the doctype permissions referencing them mean anything,
-# and the OS Connector Registry row exists before the agent pack's tool rows can
-# Link to it. See setup/install.after_migrate.
+# One function rather than a list, because the things it does are ordered: the
+# roles exist before the doctype permissions referencing them mean anything, and
+# the OS Connector Registry row exists before anything can Link to it -- which now
+# includes the agent's tool rows, written by alaiy_os_agents on its own migrate.
+# See setup/install.after_migrate.
 after_install = "alaiy_os_connector_shopify.setup.install.after_install"
 
 after_migrate = "alaiy_os_connector_shopify.setup.install.after_migrate"
 
-# Drops the agent pack's OS Agent Registry row and the listing agent's custom
+# Drops this connector's OS Agent Registry row and the listing agent's custom
 # field. Run history (OS Agent Run) and the is_enriched column are deliberately
 # left behind; see the functions themselves.
+#
+# alaiy_os_agents writes that row now but cannot clean this case up: its
+# `registry.unregister` fires when *it* is uninstalled, not when a connector is,
+# and its `registry.sync` upserts what the hooks declare without pruning what they
+# have stopped declaring. So the hook stays here.
 before_uninstall = [
     "alaiy_os_connector_shopify.setup.install.unregister_agent",
     "alaiy_os_connector_shopify.setup.install.remove_listing_custom_fields",
@@ -27,6 +33,21 @@ before_uninstall = [
 # fields, its rules, its validator, and how to read and write a listing. That
 # agent owns the run and the desk surfaces; this app owns the channel knowledge.
 listing_channels = ["alaiy_os_connector_shopify.listing.channel.channel"]
+
+# The Shopify question-answering agent, as alaiy_os_agents builds it. This app
+# used to build it itself: agent_export.py (then pack_meta.py) named a model and a
+# turn budget, carried its own prompt, and setup/install.py upserted an OS Agent
+# Registry row on every migrate. None of that was Shopify knowledge -- what
+# Shopify can be asked is, which model answers and in what shape is a decision
+# about the product, and three connectors answering it separately is three prompts
+# drifting apart.
+#
+# So this exports what only this app knows -- a description, the tools, and the
+# Shopify facts that govern how their answers are read -- and that app builds the
+# agent around it. Same direction as `listing_channels` above, and not in
+# required_apps for the same reason: without the agent app the hook is simply
+# never read.
+connector_agents = ["alaiy_os_connector_shopify.agent_export.export"]
 
 before_request = [
     "alaiy_os_connector_shopify.shopify.order_push.snapshot_before_update_child_qty_rate"

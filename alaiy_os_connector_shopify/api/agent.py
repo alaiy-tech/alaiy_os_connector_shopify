@@ -2,7 +2,7 @@
 # For license information, please see license.txt
 """The whitelisted surface the agent pack calls. One gate, one delegation, each.
 
-`pack_meta.py` names every handler here by dotted path, and nothing else. That
+`agent_export.py` names every handler here by dotted path, and nothing else. That
 is the whole reason this module exists rather than the manifest pointing at
 `shopify/product/register.py` or `sales.py` directly: core resolves a handler
 with `frappe.get_attr` and calls `handler(**input)`, so either layer would work
