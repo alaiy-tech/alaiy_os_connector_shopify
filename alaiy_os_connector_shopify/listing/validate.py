@@ -88,12 +88,52 @@ _NO_UNIT = re.compile(r"^[\d\s.,x×*/-]+$")
 #: A currency symbol, a currency code, or the word price.
 _PRICE = re.compile(r"[$£€¥₹]\s*\d|\b\d+(?:[.,]\d+)?\s*(?:usd|eur|gbp|inr|aud|cad)\b|\bprice\b", re.I)
 
-#: Enough consecutive capitals to be shouting rather than an acronym or a code.
-_SHOUTING = re.compile(r"\b[A-Z][A-Z0-9]{5,}\b")
+#: Enough consecutive capital LETTERS to be shouting rather than an acronym or a
+#: code. Letters only, deliberately: a reference/model number like "AR170920265"
+#: or "116610LN" is exactly the letter+digit shape the house style asks titles to
+#: end with, and matching digits here made every such title a false "shouting"
+#: defect -- the dominant cause of a wasted save_listing retry turn in practice.
+_SHOUTING = re.compile(r"\b[A-Z]{6,}\b")
 
 
 def _text(value):
     return (value or "").strip() if isinstance(value, str) else ""
+
+
+def _truncate_at_word(text, limit):
+    """`text`, cut to at most `limit` chars without splitting a word mid-way."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(",.;:-")
+    return cut or text[:limit]
+
+
+def normalize(listing):
+    """`listing`, with the one defect that is mechanical rather than a real
+    rewrite already fixed, so `save_listing` does not spend a whole model turn
+    round-tripping something Python can settle on its own.
+
+    Only `seo_title` duplicating `title` verbatim qualifies: it happens because
+    the model has nothing shorter to put there yet, and the fix -- Shopify's own
+    behaviour of cutting a long seo_title at `SEO_TITLE_MAX` -- is exactly what a
+    human would do by hand, not a rewrite the model needs to be asked for. Every
+    other defect (a shouting title, promotional filler, an invented price) is
+    left alone: those are the model's mistake to correct, and silently patching
+    them here would hide what its next attempt actually needs to fix.
+    """
+    listing = dict(listing or {})
+    title = _text(listing.get("title"))
+    seo_title = _text(listing.get("seo_title"))
+    if seo_title and title and seo_title.lower() == title.lower():
+        shortened = _truncate_at_word(title, SEO_TITLE_MAX)
+        # Only when truncation actually makes it shorter -- a title that
+        # already fits under SEO_TITLE_MAX truncates to itself, and that is
+        # still identical to `title`. There is no mechanical fix for that case;
+        # it genuinely needs different, shorter copy, so it is left for the
+        # model's retry rather than "normalized" into the same defect.
+        if shortened.lower() != title.lower():
+            listing["seo_title"] = shortened
+    return listing
 
 
 def _banned_in(text, where, defects):

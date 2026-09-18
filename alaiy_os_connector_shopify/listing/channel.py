@@ -165,6 +165,7 @@ def channel():
             "get_reference_values": f"{_SELF}.get_reference_values",
             "save_listing": f"{_SELF}.save_listing",
             "validate": f"{_SELF}.validate",
+            "normalize": f"{_SELF}.normalize",
             "register": f"{_SELF}.register",
             "prepare_images": f"{_SELF}.prepare_images",
             # No "health" -- see the module docstring.
@@ -209,6 +210,13 @@ def validate(listing):
     from alaiy_os_connector_shopify.listing.validate import validate as _validate
 
     return _validate(listing)
+
+
+def normalize(listing):
+    """`listing`, with any mechanical (non-content) defect already fixed."""
+    from alaiy_os_connector_shopify.listing.validate import normalize as _normalize
+
+    return _normalize(listing)
 
 
 def prepare_images(product=None, enabled=False, image_urls=None):
