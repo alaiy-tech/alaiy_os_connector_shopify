@@ -25,16 +25,23 @@ Two things live in this module:
     thread; pure Pillow apart from the matte.
 
 How the product is separated from its background is the one real choice in here,
-and there are two ways:
+and there are three ways:
 
-  * `segment` — a segmentation model (rembg / ISNet) computes an alpha mask. It
-    reads the photo and outputs an opacity per pixel; it does not draw anything.
-    The product's own pixels are carried through untouched, which is the whole
-    reason this is the default: the background is altered and the product is not,
-    by construction rather than by asking a generative model nicely.
+  * `photoroom` — Photoroom's Image Editing API (v2/edit) does the matting, the
+    flat background fill AND the AI shadow, in one call. The DEFAULT: it costs a
+    network round trip and a per-photo fee that `segment` did not, but it is a
+    production matting service rather than a local mask, and it draws the shadow
+    itself instead of this module faking one in Pillow. See `_finish_photoroom`.
+  * `segment` — a local segmentation model (rembg / ISNet) computes an alpha
+    mask. It reads the photo and outputs an opacity per pixel; it does not draw
+    anything. The product's own pixels are carried through untouched — no
+    network call, no per-photo fee, but the shadow and background fill are still
+    hand-rolled Pillow (see `_compose` / `_cast_shadow`), and this catalog's own
+    photos are the evidence ISNet needs over rembg's u2net default (see
+    `segment_model` below). Kept for a site with no Photoroom key.
   * `flood` — fill inward from the frame edge over near-white pixels. No model, no
-    dependency, and no cost, but it only works on a photo that is ALREADY on a
-    clean, even, pale ground. Kept for exactly that case.
+    network call, no dependency, and no cost, but it only works on a photo that is
+    ALREADY on a clean, even, pale ground. Kept for exactly that case.
 
 Either way the compositor refuses rather than guesses: if what comes back is not a
 believable separation, the original image is returned with a note a reviewer can
@@ -54,6 +61,7 @@ and a connector every Shopify site installs must not carry one store's brand
 guidelines. No provider means no finish.
 """
 
+import base64
 import io
 import threading
 
@@ -72,10 +80,12 @@ CONF_KEY = "listing_image_style"
 DEFAULTS = {
     # The ground every product is composited onto.
     "background": None,
-    # How the product is separated from its background: "segment" (a model
-    # computes an alpha mask and the product's pixels are untouched) or "flood"
-    # (fill in from the frame edge; needs an already-clean pale background).
-    "matte": "segment",
+    # How the product is separated from its background: "photoroom" (a hosted
+    # matting service that also draws the background fill and shadow), "segment"
+    # (a local model computes an alpha mask and the product's pixels are
+    # untouched, background/shadow composited here in Pillow) or "flood" (fill in
+    # from the frame edge; needs an already-clean pale background).
+    "matte": "photoroom",
     # Which segmentation model, when matte is "segment". ISNet over rembg's u2net
     # default on the strength of the catalog it will actually see: u2net erases a
     # bag's chain strap and a watch bracelet almost entirely, which for a jewelry
@@ -263,15 +273,19 @@ def _build():
 # ── the compositor ───────────────────────────────────────────────────────────
 
 
-def apply_finish(content, spec):
+def apply_finish(content, spec, client=None):
     """
     Put one rendered photo onto the house ground. Returns
 
         {"image": bytes, "mime": str, "cutout": bytes|None, "note": str|None}
 
-    `content` is what the image service returned; `spec` is `load()`'s. Touches no
-    Frappe at all — it runs on a worker thread beside the render (see
-    image_generation._try_generate), where there is no site context to read.
+    `content` is what the image service returned; `spec` is `load()`'s. `client`
+    is the active `ai_client` (see `alaiy_os.engine.llm.image_client`), needed
+    only when `spec["matte"] == "photoroom"` — the default — and otherwise
+    unused. Touches no Frappe at all — it runs on a worker thread beside the
+    render (see image_generation._try_generate), where there is no site context
+    to read; `client` is resolved on the main thread and handed in for exactly
+    that reason (see engine/ai_client.py's threading contract).
 
     Never raises and never approximates. If the render did not come back on a clean
     empty ground, `image` is `content` unchanged and `note` says the finish was
@@ -280,17 +294,33 @@ def apply_finish(content, spec):
     white background is merely off-brand.
     """
     try:
-        return _finish(content, spec)
+        return _finish(content, spec, client)
     except Exception as exc:
         return _skipped(content, f"could not be processed ({exc})")
 
 
-def _finish(content, spec):
+def finish_needs_client(spec):
+    """Whether `apply_finish` on this style needs an `ai_client` at all.
+
+    True only for the default `photoroom` matte — `segment` and `flood` are
+    local and never touch the network. Read by image_generation.py before it
+    pays to resolve (and gate-check) a client that a `segment`/`flood` site has
+    no use for.
+    """
+    return bool(spec) and (spec.get("matte") or DEFAULTS["matte"]) == "photoroom"
+
+
+def _finish(content, spec, client):
+    matte = spec.get("matte") or DEFAULTS["matte"]
+
+    if matte == "photoroom":
+        return _finish_photoroom(content, spec, client)
+
     image = Image.open(io.BytesIO(content))
     image.load()
     image = image.convert("RGB")
 
-    if (spec.get("matte") or DEFAULTS["matte"]) == "segment":
+    if matte == "segment":
         alpha = _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
         alpha = _repair(image, alpha)
     else:
@@ -324,13 +354,158 @@ def _finish(content, spec):
     }
 
 
+# ── the Photoroom finish ──────────────────────────────────────────────────
+
+# Photoroom's AI shadow has no literal offset/opacity knobs (see
+# `engine/ai_client.py`'s PHOTOROOM_SHADOW_MODES) — the closest it exposes is a
+# hard/soft edge plus an intensity. A blur this small or smaller is read as
+# "hard" the way the house style's own DEFAULTS (blur=0.012) is meant to be.
+_PHOTOROOM_HARD_BLUR_MAX = 0.02
+
+# The two shadow.*Override fields that pin the shadow's geometry, not just its
+# darkness — sent alongside shadow_intensity, never on their own (Photoroom's
+# override mode needs at least one; this module always supplies all three
+# together). Left unset, a first production photo came back with a shadow at
+# an inconsistent angle and length, because Photoroom guessed both itself.
+#
+# "short" (Photoroom's own 10° preset): the shortest, tightest shadow the
+# override exposes — matching "a short drop... sitting on the surface, not
+# floating" (see DEFAULTS["shadow"]) far better than the longer presets, which
+# read as a raking, elongated shadow rather than a contact shadow.
+_PHOTOROOM_SHADOW_SPREAD = "short"
+# "behind": light from the front, shadow directly behind/below the subject —
+# not off to a side, which is what a "behindLeft"/"behindRight" preset (or an
+# unset direction, left to Photoroom's own guess) would produce.
+_PHOTOROOM_SHADOW_DIRECTION = "behind"
+
+
+def _finish_photoroom(content, spec, client):
+    """The Photoroom equivalent of `_finish`'s segment/flood branches, in one
+    round trip instead of a local mask plus Pillow compositing.
+
+    Two calls, not one, and deliberately in this order:
+
+      1. A transparent cutout, cropped tight to the subject
+         (`outputSize=croppedSubject`) — this both measures the product's own
+         pixel size (there is no local mask to read it from any more) and IS
+         the `keep_cutout` artifact, so asking for it is never wasted work.
+      2. The finish itself: matted, given the house background colour and an
+         AI shadow, at a canvas size and padding computed from (1) using
+         EXACTLY the padding/aspect/max_size arithmetic `_compose` used to use
+         — so the product's scale relative to the rest of the catalog, and the
+         floor-not-target reading of `padding`, are unchanged by moving the
+         compositing itself off this module and onto Photoroom. The padding is
+         sent as four exact pixel values (not a fraction), which pins the
+         product's on-canvas size — Photoroom is not left to decide how much
+         to scale it to "fill" the frame.
+
+    Needs a live Photoroom key to verify the exact placement behaviour this
+    relies on (that explicit `outputSize` + pixel `paddingSides` together fully
+    pin the subject's size and position) — see the module docstring's note on
+    where this integration came from and check a real product photo against it
+    before relying on it in production.
+    """
+    if not client:
+        return _skipped(content, "no background/matting provider is configured")
+
+    # Re-encoded as PNG rather than sent as-is: `content` may be whatever format
+    # the image service (or the original photo) used, and re-encoding through
+    # Pillow here means this never has to guess a media type for the data URI —
+    # every other caller of this module (`_encode`) already treats PNG as the
+    # standard interchange format.
+    source = Image.open(io.BytesIO(content))
+    source.load()
+    frame_w, frame_h = source.size
+    data_uri = f"data:image/png;base64,{base64.b64encode(_encode(source.convert('RGB'))).decode('ascii')}"
+
+    cutout_bytes, _ = _photoroom_call(client, data_uri, output_size="croppedSubject")
+    cutout = Image.open(io.BytesIO(cutout_bytes))
+    cutout.load()
+    if cutout.mode != "RGBA" or not cutout.getbbox():
+        return _skipped(content, "no product could be separated from the background")
+
+    width, height = cutout.size
+    padding = float(spec.get("padding", DEFAULTS["padding"]))
+    aspect = float(spec.get("aspect") or DEFAULTS["aspect"])
+    max_size = int(spec.get("max_size") or DEFAULTS["max_size"])
+    usable = max(1.0 - 2.0 * padding, 0.05)
+
+    # Same formula _compose used: the canvas starts at the size of the photo the
+    # product was shot in (so a photo that already has room keeps its own
+    # framing) and only grows past that to satisfy the padding floor.
+    canvas_h = max(frame_h, frame_w / aspect, height / usable, width / (usable * aspect))
+    canvas_w = canvas_h * aspect
+
+    longest = max(canvas_w, canvas_h)
+    if longest > max_size:
+        scale = max_size / longest
+        canvas_w *= scale
+        canvas_h *= scale
+        width, height = max(1, round(width * scale)), max(1, round(height * scale))
+
+    canvas_w, canvas_h = max(1, round(canvas_w)), max(1, round(canvas_h))
+    pad_left = (canvas_w - width) // 2
+    pad_top = (canvas_h - height) // 2
+    # The remainder, not a second halving — so left+right add up to EXACTLY
+    # canvas_w - width even when that is odd, and the product is not shifted by
+    # a rounding pixel that would show up as an off-centre crop on review.
+    pad_right = canvas_w - width - pad_left
+    pad_bottom = canvas_h - height - pad_top
+
+    shadow = dict(DEFAULTS["shadow"], **(spec.get("shadow") or {}))
+    opacity = float(shadow.get("opacity") or 0)
+    mode = "none" if opacity <= 0 else ("hard" if float(shadow.get("blur") or 0) <= _PHOTOROOM_HARD_BLUR_MAX else "soft")
+
+    finished_bytes, finished_media_type = _photoroom_call(
+        client,
+        data_uri,
+        background_color=spec["background"],
+        shadow=mode,
+        shadow_intensity=opacity if mode != "none" else None,
+        # "Short" + "behind": a tight, near-vertical contact shadow directly
+        # under the product — see _PHOTOROOM_SHADOW_SPREAD/_DIRECTION. Without
+        # these Photoroom guesses the shadow's angle and length per photo,
+        # which is what read as "improper" against a real product photo.
+        shadow_spread=_PHOTOROOM_SHADOW_SPREAD if mode != "none" else None,
+        shadow_direction=_PHOTOROOM_SHADOW_DIRECTION if mode != "none" else None,
+        output_size=f"{canvas_w}x{canvas_h}",
+        padding_sides={
+            "top": f"{pad_top}px",
+            "bottom": f"{pad_bottom}px",
+            "left": f"{pad_left}px",
+            "right": f"{pad_right}px",
+        },
+    )
+
+    return {
+        "image": finished_bytes,
+        "mime": finished_media_type,
+        "cutout": cutout_bytes if spec.get("keep_cutout") else None,
+        "note": None,
+    }
+
+
+def _photoroom_call(client, data_uri, **kwargs):
+    """One `remove_background` round trip -> (raw bytes, media_type).
+
+    Thin wrapper so `_finish_photoroom` reads as two calls rather than two
+    b64-decodes; the seam itself is `alaiy_os.engine.llm.remove_background`'s
+    contract (`{"b64", "media_type"}`), reached here via the client instance
+    handed down from the main thread — see `apply_finish`'s docstring on why
+    this never resolves its own client.
+    """
+    result = client.remove_background(data_uri, **kwargs)
+    return base64.b64decode(result["b64"]), result.get("media_type") or "image/png"
+
+
 def _segment_alpha(image, model):
     """An opacity mask for the product, from a segmentation model.
 
     The model is only ever asked for the MASK — `only_mask=True`. It never gets to
     compose or repaint anything, so whatever it decides about the edges, the pixels
-    that survive are the photograph's own. That is the property that makes this the
-    default: the background changes and the product cannot.
+    that survive are the photograph's own: the background changes and the product
+    cannot. Kept as the local fallback for exactly that guarantee, for a site with
+    no Photoroom key.
 
     Alpha matting is deliberately off. rembg can refine the edge with it, at rather
     more than double the time, and on this catalog's photography it made no visible

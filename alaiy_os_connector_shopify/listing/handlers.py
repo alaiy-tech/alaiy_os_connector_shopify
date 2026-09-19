@@ -50,6 +50,16 @@ LISTING_DOCTYPE = "Shopify Product Listing"
 # The DocType the agent writes to, for admin review.
 ENRICHED_DOCTYPE = "Shopify Enriched Listing"
 
+# `Shopify Enriched Listing Image.kind` values for a row that is an ADDITIONAL
+# photo generated from another one (listing/api.py's accept_lifestyle_image /
+# accept_worn_image) rather than a render OF that other photo. They share their
+# source_url with the photo they were generated from but must never be touched
+# by that photo's own render lifecycle — see image_stage.clear_rendered and
+# image_generation.already_enhanced, both of which exclude these kinds so that
+# re-enriching or reverting the original photo cannot blank an additional one
+# beside it, and a run cannot mistake one for that photo's own retouch result.
+ADDITIONAL_IMAGE_KINDS = ("lifestyle", "worn")
+
 # The metafield namespace an approved enrichment publishes its attributes into
 # (see ShopifyEnrichedListing._sync_attributes_as_metafields, which imports this
 # so the two cannot drift). It is also the namespace read back as "what this
