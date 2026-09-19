@@ -23,16 +23,17 @@ named photos (`source_urls`) or pays for a photo twice (`force`). Neither is in
 the listing agent's declared tool schema, deliberately — a run enriching a
 product always covers all of its photos and never pays twice.
 
-`preview_lifestyle_image`/`accept_lifestyle_image` and
-`preview_worn_image`/`accept_worn_image` are a different shape again: each pair
-is a synchronous preview followed by an explicit keep, not a queue, because a
-single Photoroom call is fast enough to look at before spending on it. Neither
-touches the photo it was made from — both add an ADDITIONAL row
-(`handlers.ADDITIONAL_IMAGE_KINDS`) to the gallery. The two differ in what they
-promise about the product: a lifestyle photo keeps the product's own pixels
-untouched (only the background is generated); a worn photo does not — putting
-something on a model means generating the scene around it, so it is a styled
-render, never a stand-in for the authoritative product photo.
+`generate_lifestyle_image` and `generate_worn_image` are a different shape
+again: synchronous, not queued, because a single Photoroom call is fast
+enough to just wait for. Neither touches the photo it was made from — both
+add an ADDITIONAL row (`handlers.ADDITIONAL_IMAGE_KINDS`) to the gallery
+immediately, no separate "keep" step; `remove_additional_image` is how a
+reviewer discards one, and `regenerate_additional_image` re-runs one with the
+same query in place. The two generators differ in what they promise about the
+product: a lifestyle photo keeps the product's own pixels untouched (only the
+background is generated); a worn photo does not — putting something on a
+model means generating the scene around it, so it is a styled render, never a
+stand-in for the authoritative product photo.
 
 Everything else here queues and returns; poll `get_listing_images`.
 """
@@ -399,24 +400,39 @@ def publish_listing_images(item_code):
     }
 
 
-@frappe.whitelist()
-def preview_lifestyle_image(source_url, query):
+def _generate_additional_image_bytes(client, kind, source_url, query):
+    """Call the right Photoroom capability for `kind`. Returns (bytes, media_type).
+
+    Shared by generation and regeneration, so the two can never drift on which
+    capability or parameters a kind maps to.
     """
-    Generate a lifestyle variant of ONE photo from a free-text query, for preview.
+    from alaiy_os_connector_shopify.listing import images
 
-        POST {"source_url": "https://cdn.../a.jpg", "query": "on a marble countertop"}
-        -> {"source_url": ..., "query": ..., "preview_url": "https://.../lifestyle-abc.png"}
+    source = images.reference_source(source_url)
+    if kind == "lifestyle":
+        result = client.remove_background(images.data_uri(source), background_prompt=query, shadow="soft")
+    else:
+        result = client.virtual_model(images.data_uri(source), prompt=query)
+    return base64.b64decode(result["b64"]), result.get("media_type") or "image/png"
 
-    Synchronous, not queued: unlike a retouch this is a single Photoroom call, and
-    the point is a UI where someone types a query and sees the result seconds
-    later, not a poll. Nothing about the product is touched here — the preview is
-    stored as its own standalone File (see images.save_public_image) so it can be
-    shown and, if it's liked, handed to `accept_lifestyle_image`; if it's not,
-    dropping it costs nothing beyond the one call already made.
 
-    `source_url` is read the same way a retouch reads its reference photo (a
-    stored Frappe File or an external CDN url) — it does not have to be a photo
-    this endpoint has seen before, only one the caller can read.
+@frappe.whitelist()
+def generate_lifestyle_image(item_code, source_url, query):
+    """
+    Generate a lifestyle variant of ONE photo from a free-text query, and save
+    it onto the product's gallery immediately as an ADDITIONAL photo.
+
+        POST {"item_code": "SH-123", "source_url": "https://cdn.../a.jpg",
+              "query": "on a marble countertop"}
+        -> {"item_code": ..., "source_url": ..., "url": "https://.../lifestyle-abc.png",
+            "kind": "lifestyle"}
+
+    No separate "preview, then keep" step: an additional photo never replaces
+    anything (see `_generate_and_save_additional_image`), so there's nothing
+    to lose by it existing on the draft enriched listing the moment it's
+    generated. A reviewer who doesn't want it calls `remove_additional_image`
+    — the same way they'd remove any photo they don't want — rather than the
+    generation itself gating on a separate accept call.
 
     Uses Photoroom's `background.prompt` (via `remove_background`), which keeps
     the product's own pixels untouched and only generates a new background/scene
@@ -424,136 +440,40 @@ def preview_lifestyle_image(source_url, query):
     already rely on: the product is never redrawn, however the photo behind it
     changes.
     """
-    from alaiy_os.engine import llm
-
-    from alaiy_os_connector_shopify.listing import images
-
-    if not frappe.has_permission("OS Agent Run", "create"):
-        # Same gate as enrich_listing_image: this spends real money at a paid
-        # image service.
-        frappe.throw("Not permitted.", frappe.PermissionError)
-    if not (query or "").strip():
-        frappe.throw("A query describing the lifestyle scene is required.")
-
-    client = llm.image_client()
-    if not client.image_support().get("remove_background"):
-        frappe.throw(
-            "Lifestyle images are not available on this site (the active AI "
-            "client cannot remove backgrounds)."
-        )
-
-    source = images.reference_source(source_url)
-    result = client.remove_background(
-        images.data_uri(source), background_prompt=query.strip(), shadow="soft"
-    )
-    preview_url = images.save_public_image(
-        "listing-lifestyle",
-        base64.b64decode(result["b64"]),
-        result.get("media_type") or "image/png",
-    )
-
-    return {"source_url": source_url, "query": query.strip(), "preview_url": preview_url}
-
-
-@frappe.whitelist(methods=["POST"])
-def accept_lifestyle_image(item_code, source_url, preview_url, query=None):
-    """
-    Keep a previewed lifestyle image as an ADDITIONAL photo on the product's
-    gallery — the accept half of `preview_lifestyle_image`'s preview/discard pair.
-
-        POST {"item_code": "SH-123", "source_url": "https://cdn.../a.jpg",
-              "preview_url": "https://.../lifestyle-abc.png", "query": "..."}
-        -> {"item_code": ..., "source_url": ..., "url": ..., "kind": "lifestyle"}
-
-    `query` is kept on the row's `brief` field so a reviewer later sees what
-    was asked for, not just the result. See `_accept_additional_image` for
-    what "additional" means here and why it's never a replacement.
-    """
-    return _accept_additional_image(
-        item_code, source_url, preview_url, "lifestyle", brief=(query or "").strip() or None
-    )
+    return _generate_and_save_additional_image(item_code, source_url, "lifestyle", query, require_query=True)
 
 
 @frappe.whitelist()
-def preview_worn_image(source_url, model_preset=None, scene_preset=None, pose=None, prompt=None):
+def generate_worn_image(item_code, source_url, prompt=None):
     """
     Generate a "worn" variant of one photo — the product shown on a virtual
-    model — for preview.
+    model — and save it immediately as an ADDITIONAL photo. Same shape as
+    `generate_lifestyle_image`; see its docstring for why there's no separate
+    accept step.
 
-        POST {"source_url": "https://cdn.../a.jpg", "scene_preset": "street"}
-        -> {"source_url": ..., "preview_url": "https://.../worn-abc.png"}
+    UNLIKE a lifestyle photo, this does NOT promise the product's own pixels
+    survive untouched — putting something on a model means generating the
+    scene around it, via Photoroom's `virtual_model` (its own docs describe
+    this feature as built for clothing; it is unverified for jewelry/watches
+    on a wrist or hand). Treat the result as a styled render for marketing,
+    never as a stand-in for the authoritative product photo.
 
-    Synchronous, like `preview_lifestyle_image`, and the same preview/discard
-    shape: nothing is kept until `accept_worn_image`.
-
-    UNLIKE `preview_lifestyle_image`, this does NOT promise the product's own
-    pixels survive untouched — putting something on a model means generating
-    the scene around it, via Photoroom's `virtual_model` (its own docs
-    describe this feature as built for clothing; it is unverified for
-    jewelry/watches on a wrist or hand). Treat the result as a styled render
-    for marketing, never as a stand-in for the authoritative product photo.
-
-    All of `model_preset` / `scene_preset` / `pose` / `prompt` are optional —
-    see `alaiy_os.engine.llm.virtual_model` for their Photoroom vocabulary.
+    `prompt` is optional free-text style guidance — see
+    `alaiy_os.engine.llm.virtual_model`.
     """
-    from alaiy_os.engine import llm
-
-    from alaiy_os_connector_shopify.listing import images
-
-    if not frappe.has_permission("OS Agent Run", "create"):
-        frappe.throw("Not permitted.", frappe.PermissionError)
-
-    client = llm.image_client()
-    if not client.image_support().get("virtual_model"):
-        frappe.throw(
-            "Worn photos are not available on this site (the active AI "
-            "client cannot generate virtual-model images)."
-        )
-
-    source = images.reference_source(source_url)
-    result = client.virtual_model(
-        images.data_uri(source),
-        model_preset=model_preset,
-        scene_preset=scene_preset,
-        pose=pose,
-        prompt=prompt,
-    )
-    preview_url = images.save_public_image(
-        "listing-worn",
-        base64.b64decode(result["b64"]),
-        result.get("media_type") or "image/png",
-    )
-
-    return {"source_url": source_url, "preview_url": preview_url}
+    return _generate_and_save_additional_image(item_code, source_url, "worn", prompt, require_query=False)
 
 
-@frappe.whitelist(methods=["POST"])
-def accept_worn_image(item_code, source_url, preview_url, brief=None):
+def _generate_and_save_additional_image(item_code, source_url, kind, query, require_query):
     """
-    Keep a previewed worn image as an ADDITIONAL photo on the product's
-    gallery — the accept half of `preview_worn_image`'s preview/discard pair.
-
-        POST {"item_code": "SH-123", "source_url": "https://cdn.../a.jpg",
-              "preview_url": "https://.../worn-abc.png"}
-        -> {"item_code": ..., "source_url": ..., "url": ..., "kind": "worn"}
-
-    `brief` is free text for a reviewer's benefit (e.g. "street scene, model
-    Avery") — this endpoint does not interpret it. See `_accept_additional_image`.
-    """
-    return _accept_additional_image(
-        item_code, source_url, preview_url, "worn", brief=(brief or "").strip() or None
-    )
-
-
-def _accept_additional_image(item_code, source_url, preview_url, kind, brief=None):
-    """
-    Append an ADDITIONAL photo to a product's gallery — shared by
-    `accept_lifestyle_image` and `accept_worn_image`. `kind` must be one of
-    `handlers.ADDITIONAL_IMAGE_KINDS`.
+    The shared body of `generate_lifestyle_image` / `generate_worn_image`.
+    `kind` must be one of `handlers.ADDITIONAL_IMAGE_KINDS`.
 
     Never a replacement: appends a new `images` row alongside the listing's
     own photo and its house-finish result, the same way a second variant's
-    photo sits beside the first rather than overwriting it.
+    photo sits beside the first rather than overwriting it. `query` is kept
+    on the row's `brief` field, both for a reviewer's benefit and because
+    `regenerate_additional_image` reads it back to run the same request again.
 
     Like `enrich_listing_image`, this seeds a Draft Shopify Enriched Listing if
     the product has never been enriched — an additional shot is not a listing
@@ -562,38 +482,55 @@ def _accept_additional_image(item_code, source_url, preview_url, kind, brief=Non
     is what puts it on the live product afterwards, the same as any other
     photo on this table.
     """
-    from alaiy_os_connector_shopify.listing import handlers as base
+    from alaiy_os.engine import llm
 
+    from alaiy_os_connector_shopify.listing import handlers as base
+    from alaiy_os_connector_shopify.listing import images
+
+    if not frappe.has_permission("OS Agent Run", "create"):
+        # Same gate as enrich_listing_image: this spends real money at a paid
+        # image service.
+        frappe.throw("Not permitted.", frappe.PermissionError)
+    query = (query or "").strip() or None
+    if require_query and not query:
+        frappe.throw("A query describing the scene is required.")
     if not frappe.db.exists(base.LISTING_DOCTYPE, item_code):
         frappe.throw(f"No {base.LISTING_DOCTYPE} found for item_code '{item_code}'.")
 
     listing = frappe.get_doc(base.LISTING_DOCTYPE, item_code)
     listing.check_permission("write")
 
-    _ensure_enriched_listing(item_code, listing)
+    client = llm.image_client()
+    capability = "remove_background" if kind == "lifestyle" else "virtual_model"
+    if not client.image_support().get(capability):
+        frappe.throw(
+            f"{kind.capitalize()} photos are not available on this site (the "
+            f"active AI client cannot {'remove backgrounds' if kind == 'lifestyle' else 'generate virtual-model images'})."
+        )
 
+    content, media_type = _generate_additional_image_bytes(client, kind, source_url, query)
+    url = images.save_public_image(f"listing-{kind}", content, media_type)
+
+    _ensure_enriched_listing(item_code, listing)
     doc = frappe.get_doc(ENRICHED_DOCTYPE, item_code)
     doc.check_permission("write")
-    doc.append("images", {
-        "kind": kind,
-        "source_url": source_url,
-        "url": preview_url,
-        "brief": brief,
-    })
+    doc.append("images", {"kind": kind, "source_url": source_url, "url": url, "brief": query})
     doc.save(ignore_permissions=True)
     # Committed immediately, like publish_listing_images/revert_listing_image:
     # a caller polling get_listing_images right after this request must see the
     # new row, not whatever this request cycle would otherwise commit on.
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit
 
-    return {"item_code": item_code, "source_url": source_url, "url": preview_url, "kind": kind}
+    return {"item_code": item_code, "source_url": source_url, "url": url, "kind": kind}
 
 
 @frappe.whitelist(methods=["POST"])
 def remove_additional_image(item_code, source_url, url):
     """
-    Discard one additional (lifestyle/worn) photo before it's published — the
-    counterpart of `_accept_additional_image` for a photo nobody wants to keep.
+    Discard one additional (lifestyle/worn) photo — the counterpart of
+    `generate_lifestyle_image` / `generate_worn_image` for a photo nobody
+    wants to keep, now that generating one saves it immediately rather than
+    staging it behind a separate accept call.
 
         POST {"item_code": "SH-123", "source_url": "https://cdn.../a.jpg",
               "url": "https://.../lifestyle-abc.png"}
@@ -602,8 +539,8 @@ def remove_additional_image(item_code, source_url, url):
     UNLIKE `revert_listing_image` (which blanks a hero row back to "pending"
     because stage two might still deliver into it), this DELETES the row
     outright: an additional photo has no render lifecycle to preserve — once
-    it's gone, generating another one is a fresh `preview_lifestyle_image` /
-    `preview_worn_image` call, not a re-render of something already queued.
+    it's gone, generating another one is a fresh `generate_lifestyle_image` /
+    `generate_worn_image` call, not a re-render of something already queued.
 
     Matched on `source_url` AND `url` together, not `source_url` alone: two
     additional photos (a lifestyle shot and a worn shot, or two of the same
@@ -646,6 +583,69 @@ def remove_additional_image(item_code, source_url, url):
     return {"item_code": item_code, "removed": removed}
 
 
+@frappe.whitelist()
+def regenerate_additional_image(item_code, source_url, url):
+    """
+    Re-run an additional photo's own generation with the SAME query it was
+    made from, replacing its image in place — the "Enrich" action on a
+    lifestyle/worn tile, as opposed to a hero photo's retouch.
+
+        POST {"item_code": "SH-123", "source_url": "https://cdn.../a.jpg",
+              "url": "https://.../lifestyle-abc.png"}
+        -> {"item_code": ..., "source_url": ..., "url": "https://.../lifestyle-xyz.png",
+            "kind": "lifestyle"}
+
+    Why "regenerate with the same query" rather than "apply the house
+    finish": a lifestyle/worn photo's whole content IS its generative step —
+    there is no separate finish stage the way a hero photo has one — so the
+    useful re-run here is another attempt at the same prompt, for a result
+    that wasn't good enough the first time.
+
+    The row is UPDATED in place — `kind`, `source_url` and `brief` all stay
+    put, only `url` changes — rather than appended again, so re-running never
+    multiplies the gallery. Refuses if the row can no longer be found (e.g.
+    already removed by another tab).
+    """
+    from alaiy_os.engine import llm
+
+    from alaiy_os_connector_shopify.listing import handlers as base
+    from alaiy_os_connector_shopify.listing import images
+
+    if not frappe.has_permission("OS Agent Run", "create"):
+        frappe.throw("Not permitted.", frappe.PermissionError)
+    if not frappe.db.exists(ENRICHED_DOCTYPE, item_code):
+        frappe.throw(f"'{url}' has no additional photo to regenerate.")
+
+    doc = frappe.get_doc(ENRICHED_DOCTYPE, item_code)
+    doc.check_permission("write")
+
+    row = next(
+        (
+            r for r in (doc.images or [])
+            if r.source_url == source_url and r.url == url and r.kind in base.ADDITIONAL_IMAGE_KINDS
+        ),
+        None,
+    )
+    if not row:
+        frappe.throw(f"'{url}' is not an additional photo on {item_code}, so it cannot be regenerated.")
+
+    client = llm.image_client()
+    capability = "remove_background" if row.kind == "lifestyle" else "virtual_model"
+    if not client.image_support().get(capability):
+        frappe.throw("Regenerating this photo is not available on this site.")
+
+    content, media_type = _generate_additional_image_bytes(client, row.kind, source_url, row.brief)
+    new_url = images.save_public_image(f"listing-{row.kind}", content, media_type)
+
+    row.url = new_url
+    doc.save(ignore_permissions=True)
+    # Committed immediately, like every other write here: a caller polling
+    # get_listing_images right after this request must see the new url.
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit
+
+    return {"item_code": item_code, "source_url": source_url, "url": new_url, "kind": row.kind}
+
+
 def base_listing_doctype():
     from alaiy_os_connector_shopify.listing import handlers as base
 
@@ -657,9 +657,9 @@ def get_listing_images(item_code):
     """
     One product's imagery and where it has got to — the poll for
     `enrich_listing_image`, and also how a caller sees the additional photos
-    `accept_lifestyle_image` / `accept_worn_image` added (`kind` in
+    `generate_lifestyle_image` / `generate_worn_image` added (`kind` in
     `handlers.ADDITIONAL_IMAGE_KINDS`; those are never `pending`, since
-    accepting one is a synchronous write, not a queued render).
+    generating one is a synchronous write, not a queued render).
 
         {item_code, image_status, image_error, image_tokens,
          images: [{source_url, item_variant, url, cutout_url, note, kind,
@@ -720,7 +720,7 @@ def get_listing_images(item_code):
                 "cutout_url": row.cutout_url,
                 "note": row.note,
                 # How an additional photo was generated (see
-                # _accept_additional_image) — null on every other row.
+                # _generate_and_save_additional_image) — null on every other row.
                 "brief": row.brief,
                 "kind": row.kind,
                 # Whether this photo is still coming. Without it a caller has to
