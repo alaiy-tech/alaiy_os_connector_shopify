@@ -424,15 +424,15 @@ def already_enhanced(item_code):
 
     rows = frappe.get_all(
         "Shopify Enriched Listing Image",
-        # kind != "lifestyle": a lifestyle variant (listing/api.py's
-        # accept_lifestyle_image) shares its source_url with the photo it was
-        # generated from but is not that photo's hero retouch. Left unexcluded,
-        # a lifestyle row with a url would make gate 3 above believe THIS photo
-        # was already enhanced and hand back the lifestyle image in its place.
+        # An additional photo (handlers.ADDITIONAL_IMAGE_KINDS) shares its
+        # source_url with the photo it was generated from but is not that
+        # photo's hero retouch. Left unexcluded, its row's url would make gate
+        # 3 above believe THIS photo was already enhanced and hand back the
+        # additional image in its place.
         filters={
             "parent": item_code,
             "parenttype": base.ENRICHED_DOCTYPE,
-            "kind": ["!=", "lifestyle"],
+            "kind": ["not in", base.ADDITIONAL_IMAGE_KINDS],
         },
         fields=["source_url", "url"],
     )

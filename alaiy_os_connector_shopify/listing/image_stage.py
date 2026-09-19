@@ -27,6 +27,8 @@ import time
 
 import frappe
 
+from alaiy_os_connector_shopify.listing.handlers import ADDITIONAL_IMAGE_KINDS
+
 ENRICHED_DOCTYPE = "Shopify Enriched Listing"
 
 # Stage two runs on its own queue when the bench defines one, because the whole
@@ -157,13 +159,13 @@ def clear_rendered(item_code, source_url, note=PENDING_NOTE):
             "parent": item_code,
             "parenttype": ENRICHED_DOCTYPE,
             "source_url": source_url,
-            # A lifestyle variant (see listing/api.py's accept_lifestyle_image)
-            # shares its source_url with the photo it was generated from, but it
-            # is not a render OF that photo being redone or discarded — it is a
-            # separate, additional artifact an admin asked for on purpose. Left
-            # unexcluded, re-enriching or reverting the ORIGINAL photo would
-            # silently blank the lifestyle row beside it too.
-            "kind": ["!=", "lifestyle"],
+            # An additional photo (see handlers.ADDITIONAL_IMAGE_KINDS) shares
+            # its source_url with the photo it was generated from, but it is
+            # not a render OF that photo being redone or discarded — it is a
+            # separate artifact an admin asked for on purpose. Left unexcluded,
+            # re-enriching or reverting the ORIGINAL photo would silently
+            # blank it too.
+            "kind": ["not in", ADDITIONAL_IMAGE_KINDS],
         },
         pluck="name",
     )
