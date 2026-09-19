@@ -589,6 +589,63 @@ def _accept_additional_image(item_code, source_url, preview_url, kind, brief=Non
     return {"item_code": item_code, "source_url": source_url, "url": preview_url, "kind": kind}
 
 
+@frappe.whitelist(methods=["POST"])
+def remove_additional_image(item_code, source_url, url):
+    """
+    Discard one additional (lifestyle/worn) photo before it's published — the
+    counterpart of `_accept_additional_image` for a photo nobody wants to keep.
+
+        POST {"item_code": "SH-123", "source_url": "https://cdn.../a.jpg",
+              "url": "https://.../lifestyle-abc.png"}
+        -> {"item_code": ..., "removed": 1}
+
+    UNLIKE `revert_listing_image` (which blanks a hero row back to "pending"
+    because stage two might still deliver into it), this DELETES the row
+    outright: an additional photo has no render lifecycle to preserve — once
+    it's gone, generating another one is a fresh `preview_lifestyle_image` /
+    `preview_worn_image` call, not a re-render of something already queued.
+
+    Matched on `source_url` AND `url` together, not `source_url` alone: two
+    additional photos (a lifestyle shot and a worn shot, or two of the same
+    kind from different queries) can share a source_url, and only the one
+    actually shown for removal should go. Restricted to
+    `handlers.ADDITIONAL_IMAGE_KINDS` so this can never be used to delete a
+    hero or variant row — those are `revert_listing_image`'s job.
+
+    Free and idempotent: removing a photo that's already gone (a double
+    click, or one removed from another tab) reports `removed: 0` rather than
+    throwing.
+    """
+    from alaiy_os_connector_shopify.listing import handlers as base
+
+    if not frappe.db.exists(ENRICHED_DOCTYPE, item_code):
+        return {"item_code": item_code, "removed": 0}
+
+    doc = frappe.get_doc(ENRICHED_DOCTYPE, item_code)
+    doc.check_permission("write")
+
+    keep = []
+    removed = 0
+    for row in doc.images or []:
+        if (
+            row.source_url == source_url
+            and row.url == url
+            and row.kind in base.ADDITIONAL_IMAGE_KINDS
+        ):
+            removed += 1
+            continue
+        keep.append(row)
+
+    if removed:
+        doc.set("images", keep)
+        doc.save(ignore_permissions=True)
+        # Committed immediately, like the accept half: a caller polling
+        # get_listing_images right after this request must see it gone.
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit
+
+    return {"item_code": item_code, "removed": removed}
+
+
 def base_listing_doctype():
     from alaiy_os_connector_shopify.listing import handlers as base
 

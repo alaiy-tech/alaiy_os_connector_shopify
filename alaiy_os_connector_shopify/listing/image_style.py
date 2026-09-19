@@ -362,6 +362,22 @@ def _finish(content, spec, client):
 # "hard" the way the house style's own DEFAULTS (blur=0.012) is meant to be.
 _PHOTOROOM_HARD_BLUR_MAX = 0.02
 
+# The two shadow.*Override fields that pin the shadow's geometry, not just its
+# darkness — sent alongside shadow_intensity, never on their own (Photoroom's
+# override mode needs at least one; this module always supplies all three
+# together). Left unset, a first production photo came back with a shadow at
+# an inconsistent angle and length, because Photoroom guessed both itself.
+#
+# "short" (Photoroom's own 10° preset): the shortest, tightest shadow the
+# override exposes — matching "a short drop... sitting on the surface, not
+# floating" (see DEFAULTS["shadow"]) far better than the longer presets, which
+# read as a raking, elongated shadow rather than a contact shadow.
+_PHOTOROOM_SHADOW_SPREAD = "short"
+# "behind": light from the front, shadow directly behind/below the subject —
+# not off to a side, which is what a "behindLeft"/"behindRight" preset (or an
+# unset direction, left to Photoroom's own guess) would produce.
+_PHOTOROOM_SHADOW_DIRECTION = "behind"
+
 
 def _finish_photoroom(content, spec, client):
     """The Photoroom equivalent of `_finish`'s segment/flood branches, in one
@@ -446,6 +462,12 @@ def _finish_photoroom(content, spec, client):
         background_color=spec["background"],
         shadow=mode,
         shadow_intensity=opacity if mode != "none" else None,
+        # "Short" + "behind": a tight, near-vertical contact shadow directly
+        # under the product — see _PHOTOROOM_SHADOW_SPREAD/_DIRECTION. Without
+        # these Photoroom guesses the shadow's angle and length per photo,
+        # which is what read as "improper" against a real product photo.
+        shadow_spread=_PHOTOROOM_SHADOW_SPREAD if mode != "none" else None,
+        shadow_direction=_PHOTOROOM_SHADOW_DIRECTION if mode != "none" else None,
         output_size=f"{canvas_w}x{canvas_h}",
         padding_sides={
             "top": f"{pad_top}px",
