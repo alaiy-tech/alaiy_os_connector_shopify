@@ -41,7 +41,10 @@ JOB_TIMEOUT = 1800
 
 # The two steps stage two knows how to render, mapped to the module that owns each.
 GENERATE = "generate"
-TRANSLATE = "translate"
+# Alphashop's translate and white-background ops, chained per photo — see
+# image_translation.py. One step, not two, because the main image may need
+# both run in sequence within the same job.
+PREPARE = "prepare"
 
 # How hard _apply tries when another job for the same product is writing at the same
 # time. Small numbers on purpose: the contention window is one document save, so a
@@ -253,10 +256,10 @@ def _render(step, item_code, work):
 
         return render_generated(item_code, work)
 
-    if step == TRANSLATE:
-        from alaiy_os_connector_shopify.listing.image_translation import render_translated
+    if step == PREPARE:
+        from alaiy_os_connector_shopify.listing.image_translation import render_prepared
 
-        return render_translated(item_code, work)
+        return render_prepared(item_code, work)
 
     frappe.throw(f"Unknown image step '{step}'.")
 

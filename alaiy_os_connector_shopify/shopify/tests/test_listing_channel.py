@@ -107,10 +107,11 @@ class TestChannelAdapter(unittest.TestCase):
         """Every handler is called with keywords fixed by the contract.
 
         `agents/listing/tools.py` calls `prepare_images` as
-        `fn(product=, enabled=, image_urls=)` and `save_listing` as
-        `fn(product=, listing=)`. A wrapper whose parameter names follow this
-        app's own vocabulary instead would TypeError mid-run, which is exactly
-        what this catches -- `prepare_images` did, before it was fixed.
+        `fn(product=, translate=, white_bg=, generate=, image_urls=)` and
+        `save_listing` as `fn(product=, listing=)`. A wrapper whose parameter
+        names follow this app's own vocabulary instead would TypeError
+        mid-run, which is exactly what this catches -- `prepare_images` did,
+        before it was fixed.
         """
         import importlib
         import inspect
@@ -120,7 +121,7 @@ class TestChannelAdapter(unittest.TestCase):
             "get_reference_values": set(),
             "save_listing": {"product", "listing"},
             "validate": {"listing"},
-            "prepare_images": {"product", "enabled", "image_urls"},
+            "prepare_images": {"product", "translate", "white_bg", "generate", "image_urls"},
             "register": {"product"},
             "health": {"product"},
         }
