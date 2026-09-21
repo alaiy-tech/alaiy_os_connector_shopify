@@ -629,6 +629,10 @@ def accept_additional_image(item_code, source_url, kind, url, query=None, replac
         if not already:
             doc.append("images", {"kind": kind, "source_url": source_url, "url": url, "brief": query})
 
+    # ignore_permissions=True: `listing.check_permission("write")` above (and,
+    # on the replace_url branch, `doc.check_permission("write")` too) already
+    # gated this write — the same pattern _push_to_listing/enrich_listing_image
+    # use, not a second, unchecked write surface.
     doc.save(ignore_permissions=True)
     # Committed immediately, like publish_listing_images/revert_listing_image:
     # a caller polling get_listing_images right after this request must see the
@@ -654,12 +658,31 @@ def discard_preview_image(url):
     Free and idempotent: discarding a url that isn't a standalone File at all
     (already cleaned up, or never one to begin with) reports `discarded: 0`
     rather than throwing.
+
+    Unlike every other endpoint here, there is no item_code and no listing to
+    check_permission against — `images.save_public_image` deliberately
+    attaches the preview to nothing. Gated instead on the same permission
+    generating one required (`OS Agent Run` create), and restricted to a File
+    whose name actually matches what save_public_image produces for an
+    additional photo (`listing-<kind>-...`) — without both, this would be a
+    generic "delete any File on the site by its public url" primitive, not a
+    preview-cleanup one, for any caller who could guess or discover a url.
     """
+    from alaiy_os_connector_shopify.listing import handlers as base
+
+    if not frappe.has_permission("OS Agent Run", "create"):
+        frappe.throw("Not permitted.", frappe.PermissionError)
     if frappe.db.exists("Shopify Enriched Listing Image", {"url": url}):
         return {"discarded": 0}
     file_name = frappe.db.get_value("File", {"file_url": url}, "name")
     if not file_name:
         return {"discarded": 0}
+    if not any(file_name.startswith(f"listing-{kind}-") for kind in base.ADDITIONAL_IMAGE_KINDS):
+        return {"discarded": 0}
+    # ignore_permissions=True: the has_permission check above already gates
+    # this call, and a standalone preview File — attached to nothing — has no
+    # owning document a normal Frappe permission check would even evaluate
+    # against.
     frappe.delete_doc("File", file_name, ignore_permissions=True, delete_permanently=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit
     return {"discarded": 1}
@@ -718,6 +741,9 @@ def remove_additional_image(item_code, source_url, url):
 
     if removed:
         doc.set("images", keep)
+        # ignore_permissions=True: `doc.check_permission("write")` above
+        # already gated this write, the same pattern accept_additional_image
+        # uses — not a second, unchecked write surface.
         doc.save(ignore_permissions=True)
         # Committed immediately, like the accept half: a caller polling
         # get_listing_images right after this request must see it gone.
