@@ -892,6 +892,14 @@ def save_listing(listing, item_code=None):
             "notes": variant.get("notes"),
         })
 
+    # A lifestyle/worn photo (see ADDITIONAL_IMAGE_KINDS) is an admin's own
+    # request, saved onto this same row the moment it is generated — never
+    # something a run's own image tool produces or knows about. Carried over
+    # by hand before the rebuild below, which would otherwise drop them: the
+    # run's `images` list is that tool's own output, with no way to say
+    # "also keep whatever additional photos already lived here."
+    additional = [row for row in (doc.images or []) if row.kind in ADDITIONAL_IMAGE_KINDS]
+
     # rebuild the image child table from whatever the image tool produced
     doc.set("images", [])
     for img in (listing.get("images") or []):
@@ -902,6 +910,15 @@ def save_listing(listing, item_code=None):
             "url": img.get("url"),
             "brief": img.get("brief"),
             "note": img.get("note"),
+        })
+    for row in additional:
+        doc.append("images", {
+            "kind": row.kind,
+            "item_variant": row.item_variant,
+            "source_url": row.source_url,
+            "url": row.url,
+            "brief": row.brief,
+            "note": row.note,
         })
 
     # A row with no url is one the image step queued: the imagery is rendered after
