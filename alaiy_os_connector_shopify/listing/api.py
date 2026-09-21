@@ -411,7 +411,11 @@ def _generate_additional_image_bytes(client, kind, source_url, query):
     if kind == "lifestyle":
         result = client.remove_background(images.data_uri(source), background_prompt=query, shadow="soft")
     else:
-        result = client.virtual_model(images.data_uri(source), prompt=query)
+        # stage_product ("Product Staging"), not virtual_model: Photoroom
+        # scopes virtual_model to clothing and stage_product to "hard goods,
+        # accessories, bags, jewelry, shoes" - the better fit for a
+        # watch/jewelry catalogue. Same no-pixel-fidelity caveat either way.
+        result = client.stage_product(images.data_uri(source), prompt=query)
     return base64.b64decode(result["b64"]), result.get("media_type") or "image/png"
 
 
@@ -447,21 +451,22 @@ def preview_lifestyle_image(item_code, source_url, query):
 @frappe.whitelist(methods=["POST"])
 def preview_worn_image(item_code, source_url, prompt=None):
     """
-    Generate a "worn" variant of one photo — the product shown on a virtual
-    model — WITHOUT saving it anywhere yet. Same shape as
+    Generate a "worn" variant of one photo — the product held, worn, or set
+    in a full lifestyle scene — WITHOUT saving it anywhere yet. Same shape as
     `preview_lifestyle_image`; see its docstring for why there's a separate
     accept step.
 
     UNLIKE a lifestyle photo, this does NOT promise the product's own pixels
-    survive untouched — putting something on a model means generating the
-    scene around it, via Photoroom's `virtual_model` (its own docs describe
-    this feature as built for clothing; it is unverified for jewelry/watches
-    on a wrist or hand). Treat the result as a styled render for marketing,
-    never as a stand-in for the authoritative product photo — one more reason
-    an explicit accept matters here.
+    survive untouched — staging a scene around it means regenerating the
+    product too, via Photoroom's `stage_product` ("Product Staging" — its own
+    docs scope this to "hard goods, accessories, bags, jewelry, shoes",
+    unlike `virtual_model`, which is clothing-only and this kind used to
+    call). Treat the result as a styled render for marketing, never as a
+    stand-in for the authoritative product photo — one more reason an
+    explicit accept matters here.
 
-    `prompt` is optional free-text style guidance — see
-    `alaiy_os.engine.llm.virtual_model`.
+    `prompt` is optional free-text scene guidance — see
+    `alaiy_os.engine.llm.stage_product`.
     """
     url = _generate_additional_preview(item_code, source_url, "worn", prompt, require_query=False)
     return {"item_code": item_code, "source_url": source_url, "url": url, "kind": "worn", "query": prompt}
@@ -538,11 +543,11 @@ def _generate_additional_preview(item_code, source_url, kind, query, require_que
     listing.check_permission("read")
 
     client = llm.image_client()
-    capability = "remove_background" if kind == "lifestyle" else "virtual_model"
+    capability = "remove_background" if kind == "lifestyle" else "stage_product"
     if not client.image_support().get(capability):
         frappe.throw(
             f"{kind.capitalize()} photos are not available on this site (the "
-            f"active AI client cannot {'remove backgrounds' if kind == 'lifestyle' else 'generate virtual-model images'})."
+            f"active AI client cannot {'remove backgrounds' if kind == 'lifestyle' else 'stage product photos'})."
         )
 
     content, media_type = _generate_additional_image_bytes(client, kind, source_url, query)

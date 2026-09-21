@@ -103,12 +103,14 @@ DEFAULTS = {
     "aspect": 1.0,
     # Longest edge of the finished image. Only ever scales a product DOWN.
     "max_size": 2048,
-    # "Hard, but light": a small blur so the edge stays defined, a low opacity so it
-    # reads as contact with a surface rather than as a second object, and a short
-    # drop. Not a reflection — there is no mirrored copy anywhere in this module.
+    # "Soft, but light": blur above _PHOTOROOM_HARD_BLUR_MAX so
+    # _finish_photoroom's hard/soft read picks Photoroom's ai.soft, a low
+    # opacity so it reads as contact with a surface rather than as a second
+    # object, and a short drop. Not a reflection — there is no mirrored copy
+    # anywhere in this module.
     "shadow": {
         "offset": 0.025,
-        "blur": 0.012,
+        "blur": 0.03,
         "opacity": 0.15,
         "color": "#000000",
     },
@@ -358,8 +360,9 @@ def _finish(content, spec, client):
 
 # Photoroom's AI shadow has no literal offset/opacity knobs (see
 # `engine/ai_client.py`'s PHOTOROOM_SHADOW_MODES) — the closest it exposes is a
-# hard/soft edge plus an intensity. A blur this small or smaller is read as
-# "hard" the way the house style's own DEFAULTS (blur=0.012) is meant to be.
+# hard/soft edge plus an intensity. A blur this small or smaller reads as
+# "hard"; the house style's own DEFAULTS (blur=0.03) sits above it on purpose,
+# to get Photoroom's ai.soft.
 _PHOTOROOM_HARD_BLUR_MAX = 0.02
 
 # The two shadow.*Override fields that pin the shadow's geometry, not just its
