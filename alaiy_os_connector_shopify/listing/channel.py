@@ -51,10 +51,12 @@ identifier `sku` and Shopify calls it `item_code`.
 
 ## Shopify is the first channel with an image step
 
-Amazon declares no `prepare_images` handler, because the producing side never
-moved across, and its prompt tells the model the step is absent. Here it did move:
-`image_generation.py`, `image_translation.py` and `image_stage.py` came over with
-everything else, so the handler is declared.
+Both channels declare a `prepare_images` handler now. Here it acts on all
+three toggles: `translate_images` and `white_bg_images` go to
+`image_translation.py` (alphashop, chained per photo -- see that module),
+`generate_images` goes to `image_generation.py` (AI retouch, a deliberately
+separate capability). `image_stage.py` is the shared background-render
+plumbing both use.
 
 Declaring it is the whole signal -- `has_image_step` is not a key in the returned
 dict on either side, it is what the consumer derives from this handler being
@@ -219,22 +221,42 @@ def normalize(listing):
     return _normalize(listing)
 
 
-def prepare_images(product=None, enabled=False, image_urls=None):
-    """Retouch the product's own photos and its variants'.
+def prepare_images(product=None, translate=False, white_bg=False, generate=False, image_urls=None):
+    """Run whichever of this channel's three image ops were asked for.
 
     The keyword names are the contract's, not this app's: the consumer calls
     every handler with keywords fixed by `channels.py`, and this one arrives as
-    `fn(product=..., enabled=..., image_urls=...)`. Underneath,
-    `generate_product_images` calls the same toggle `generate_images`, and
-    translating between the two names is exactly what this wrapper is for.
+    `fn(product=..., translate=..., white_bg=..., generate=..., image_urls=...)`.
 
-    Whether anything is produced is the tool's decision, not the caller's -- it
-    enhances only when the product already has photos and the toggle is on.
+    `generate` (AI retouch, `image_generation.py`) is exclusive of the other
+    two: a photo either gets regenerated from scratch or gets alphashop's
+    lighter-touch translate/white-background treatment, never both in the
+    same run -- there is no defined way to compose "redraw this photo" with
+    "translate the text on this photo". If `generate` is on, it wins and
+    `translate`/`white_bg` are ignored for this call.
+
+    `translate`/`white_bg` (alphashop, `image_translation.py`) are otherwise
+    independent and may both be on -- see that module for how they compose on
+    the main image.
+
+    Whether anything is produced is each underlying tool's decision, not the
+    caller's -- it acts only when the product already has photos and at least
+    one relevant toggle is on.
     """
-    from alaiy_os_connector_shopify.listing import image_generation
+    if generate:
+        from alaiy_os_connector_shopify.listing import image_generation
 
-    return image_generation.generate_product_images(
-        item_code=product, image_urls=image_urls, generate_images=bool(enabled)
+        return image_generation.generate_product_images(
+            item_code=product, image_urls=image_urls, generate_images=True
+        )
+
+    from alaiy_os_connector_shopify.listing import image_translation
+
+    return image_translation.prepare_product_images(
+        item_code=product,
+        image_urls=image_urls,
+        translate_images=bool(translate),
+        white_bg_images=bool(white_bg),
     )
 
 
