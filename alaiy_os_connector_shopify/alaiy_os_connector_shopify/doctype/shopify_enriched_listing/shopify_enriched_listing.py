@@ -359,16 +359,18 @@ class ShopifyEnrichedListing(Document):
 
         field_specs = filter_matrix.fields()
         secondary_specs = filter_matrix.secondary_fields()
-        case_size_spec = filter_matrix.case_size_field()
+        parsed_specs = filter_matrix.parsed_fields()
 
         for key, detailed_value in self._attributes():
             if not key or not detailed_value:
                 continue
 
-            if case_size_spec and key == case_size_spec["attribute_key"]:
-                mm = filter_matrix.parse_case_size_mm(detailed_value)
-                if mm is not None:
-                    _upsert(case_size_spec["metafield_key"], str(mm), case_size_spec["type"])
+            parsed_spec = parsed_specs.get(key)
+            if parsed_spec:
+                parsed = filter_matrix.parsed_value_for(key, detailed_value)
+                if parsed is not None:
+                    value = json.dumps(parsed) if parsed_spec.get("multi") else str(parsed)
+                    _upsert(parsed_spec["metafield_key"], value, parsed_spec["type"])
                 continue
 
             spec = field_specs.get(key)
@@ -389,6 +391,15 @@ class ShopifyEnrichedListing(Document):
                 if values:
                     value = json.dumps(values) if secondary.get("multi") else values[0]
                     _upsert(secondary["metafield_key"], value, secondary["type"])
+
+        # Values read off the enriched TITLE rather than an `attributes` key
+        # (e.g. `gender`, which the client's prompt deliberately never
+        # writes to `attributes` -- see title_fields' own docstring).
+        for label, title_spec in filter_matrix.title_fields().items():
+            values = filter_matrix.title_value_for(label, self.title)
+            if values:
+                value = json.dumps(values) if title_spec.get("multi") else values[0]
+                _upsert(title_spec["metafield_key"], value, title_spec["type"])
 
     def _attributes(self):
         """(key, value) pairs to publish — the table, or the JSON for an older row."""
