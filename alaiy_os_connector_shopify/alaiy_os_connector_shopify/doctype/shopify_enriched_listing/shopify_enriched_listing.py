@@ -21,7 +21,10 @@ FILTER_NAMESPACE = "uploadify_product"
 # Expand this once a pilot batch's `uploadify_product` values have been
 # spot-checked against a pre-run snapshot; remove the check entirely once the
 # mapping has run clean across a representative sample of the catalog.
-FILTER_SYNC_PILOT_ITEM_CODES = frozenset()
+FILTER_SYNC_PILOT_ITEM_CODES = frozenset([
+	"014212",  # Concord Saratoga watch -- material, movement, dial color, strap, case size
+	"02267",   # Bulgari B.Zero1 ring -- gemstones (stone type + stone color), material
+])
 
 
 class ShopifyEnrichedListing(Document):
