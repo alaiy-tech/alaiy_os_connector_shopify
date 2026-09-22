@@ -1,11 +1,10 @@
 """
 Shopify → Alaiy OS product import.
 
-First run (nothing imported yet) wipes any stray unlinked Item mappings
-as a safety net, then imports every product from Shopify fresh. Every
-run after that is a real sync: new Shopify products are created,
-products whose Shopify data changed since the last import are updated,
-and unchanged products are skipped untouched -- no wipe.
+A real create/update/skip sync every time, including the first run: new
+Shopify products are created, products whose Shopify data changed since
+the last import are updated, and unchanged products are skipped
+untouched. Never wipes -- see run_full_product_import's docstring for why.
 
 Handles:
 - Templates and variants (creates Item + item variants)
@@ -27,7 +26,9 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 
-from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_QUERY
+from alaiy_os_connector_shopify.shopify.product.queries import (
+    _PRODUCTS_QUERY, _PRODUCT_BY_ID_QUERY, _PRODUCT_SEARCH_QUERY,
+)
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute, _dedupe_item_uoms
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
 from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty, _variant_location_levels, _variant_inventory_item_id
@@ -56,14 +57,17 @@ from alaiy_os_connector_shopify.shopify import destructive
 def run_full_product_import(trigger="manual", log_name=None, connection=None, wipe_existing=None,
                             statuses=None, ack_multi_store=False):
     """
-    Import products from Shopify into Alaiy OS. First run (no product ever
-    imported yet) wipes first as a safety net against duplicates, then
-    imports everything fresh. Every run after that is a real sync: new
-    Shopify products are created, changed ones are updated, unchanged ones
-    are skipped untouched -- no wipe, since re-wiping a live catalog on
-    every click is both wasteful (redoes thousands of unchanged items) and
-    risky (this exact wipe emptied real stock data once when a scheduler
-    fired mid-wipe).
+    Import products from Shopify into Alaiy OS. A real create/update/skip
+    sync every time: new Shopify products are created, changed ones are
+    updated, unchanged ones are skipped untouched.
+
+    Never wipes -- removed entirely. The first-run auto-wipe
+    this used to do as a "safety net against duplicates" was the exact
+    logic that once emptied real stock data live when a scheduler fired
+    mid-wipe -- the risk it was meant to guard against was smaller than the
+    risk it was itself. A brand-new site's first import simply creates
+    everything fresh with nothing to skip; there was never a real need to
+    wipe first.
 
     Args:
         trigger: "manual", "scheduled", or "webhook"
@@ -233,7 +237,99 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None, wi
     return log.name
 
 
-def run_missing_product_import(trigger="manual", log_name=None, statuses=None, connection=None):
+def search_products_live(term: str, limit: int = 20, connection=None) -> list:
+    """Live Shopify title/SKU search for the admin "Search for a product…"
+    picker -- lets an admin pull in one specific product instead of running
+    a full sweep to find it.
+
+    Searches title and SKU together (Shopify's product search has no single
+    field that covers both), OR'd so either match surfaces the product.
+    Wildcards on both sides since an admin is typing a fragment, not the
+    exact title -- same reasoning register.py's local search LIKE already
+    uses for the same kind of lookup.
+
+    Returns [{product_id, title, handle, status, image}], the lightweight
+    shape _PRODUCT_SEARCH_QUERY fetches -- enough to recognise the right
+    match, not the full product (see import_single_product for that).
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    term = (term or "").strip()
+    if not term:
+        return []
+
+    escaped = term.replace('"', '\\"')
+    query = f'title:*{escaped}* OR sku:*{escaped}*'
+
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
+    data = client.execute(_PRODUCT_SEARCH_QUERY, {"query": query, "first": limit})
+    nodes = ((data or {}).get("products") or {}).get("nodes") or []
+    return [
+        {
+            "product_id": node.get("legacyResourceId"),
+            "title": node.get("title"),
+            "handle": node.get("handle"),
+            "status": node.get("status"),
+            "image": (node.get("featuredImage") or {}).get("url"),
+        }
+        for node in nodes
+    ]
+
+
+def import_single_product(product_id: str, connection=None) -> tuple:
+    """Pull and import exactly one Shopify product by its numeric id -- the
+    admin "Search for a product…" flow's actual pull step, once the admin
+    has picked a match from search_products_live.
+
+    Fetches the SAME node shape the bulk pull uses (_PRODUCT_BY_ID_QUERY,
+    built from the shared _PRODUCT_NODE_FIELDS) and hands it to
+    _import_product -- no new import logic, just a new entry point into the
+    existing one. _import_product already re-checks the status setting
+    itself (see its own docstring), so an archived product is refused here
+    with the same reason a bulk pull would give, not silently imported.
+
+    Returns (created: bool, reason: str), same shape _import_product
+    returns. Raises if the product id doesn't resolve to a real Shopify
+    product at all (deleted since the search, or a bad id) -- there's
+    nothing sensible to import in that case, unlike a merely-archived one.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    product_id = str(product_id or "").strip()
+    if not product_id:
+        frappe.throw("A product id is required.")
+
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
+    client = ShopifyGraphQLClient(settings)
+    data = client.execute(_PRODUCT_BY_ID_QUERY, {"id": f"gid://shopify/Product/{product_id}"})
+    node = (data or {}).get("product")
+    if not node:
+        frappe.throw(f"Shopify product {product_id} was not found -- it may have been deleted.")
+
+    return _import_product(node, settings)
+
+
+def _product_stocked_at_location(node: dict, location_id: str) -> bool:
+    """Whether any variant of this product node carries an inventory level
+    at the given Shopify Location (its numeric legacyResourceId).
+
+    Reads inventoryLevels off each variant's inventoryItem, exactly as
+    _PRODUCTS_QUERY already fetches it (see queries.py, "location{legacyResourceId}"
+    under a 3-level cap) -- no extra Shopify call, since the query already
+    carries this on every product regardless of whether a location filter
+    is in play.
+    """
+    location_id = str(location_id)
+    for variant in (node.get("variants", {}).get("nodes") or []):
+        levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
+        for level in levels:
+            if str((level.get("location") or {}).get("legacyResourceId") or "") == location_id:
+                return True
+    return False
+
+
+def run_missing_product_import(trigger="manual", log_name=None, statuses=None, collection_id=None,
+                                location_id=None, connection=None):
     """
     Catch-up import: only products never linked locally at all -- checked
     by Shopify product id BEFORE any real work (Item lookups, fingerprint
@@ -250,6 +346,23 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
 
     Uses the same "products" sync_type lock as run_full_product_import,
     so the two can never run concurrently and race on the same Items.
+
+    collection_id scopes the catch-up to one Shopify collection (its
+    numeric legacyResourceId) instead of the whole catalog -- combined
+    with the status filter via AND, matching Shopify's own product
+    search syntax.
+
+    location_id scopes to products actually stocked at one Shopify
+    Location (its numeric legacyResourceId) -- e.g. an admin's own
+    default warehouse, not every supplier's location on the same store.
+    Unlike status/collection_id this can't be pushed into Shopify's
+    search query at all: location isn't a searchable product field,
+    only a per-variant inventory fact. So Shopify still returns every
+    product matching status/collection, and the location check happens
+    per-product after fetching, against inventoryLevels already carried
+    on each variant in _PRODUCTS_QUERY -- a product with no variant
+    stocked at location_id is skipped, same as a status/collection
+    mismatch, not fetched again more cheaply some other way.
 
     bench --site <site> execute \
         alaiy_os_connector_shopify.shopify.product.importer.run_missing_product_import
@@ -286,7 +399,12 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
         # Let Shopify filter by status rather than fetching every product
         # and discarding most locally. None when no explicit choice was
         # made, which leaves the query unfiltered exactly as before.
-        variables = {"after": None, "query": status_map.search_filter(allowed_statuses)}
+        status_query = status_map.search_filter(allowed_statuses)
+        if collection_id:
+            query = f"collection_id:{collection_id}" + (f" AND ({status_query})" if status_query else "")
+        else:
+            query = status_query
+        variables = {"after": None, "query": query}
 
         processed = created = skipped = failed = pages = 0
         cancelled = False
@@ -303,6 +421,9 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                     continue  # already linked -- no fingerprint check, no write, no risk
                 processed += 1
                 if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
+                    skipped += 1
+                    continue
+                if location_id and not _product_stocked_at_location(node, location_id):
                     skipped += 1
                     continue
                 try:

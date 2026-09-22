@@ -38,6 +38,33 @@ What each holds:
 
 ---
 
+## DocTypes adopted with the listing channel — 4
+
+Moved in from the retired `alaiy_os_agent_shopify_listing` app; see [Agents](agents.md).
+
+| DocType | Purpose |
+|---|---|
+| `Shopify Enriched Listing` | The AI enrichment awaiting review, one row per product, keyed on `item_code`. |
+| `Shopify Enriched Listing Attribute` | Child: one attribute the reviewer can edit before approval. |
+| `Shopify Enriched Listing Variant` | Child: per-variant observations and suggestions. Review material only. |
+| `Shopify Enriched Listing Image` | Child: the enhanced-image rows, listing-level and per variant. |
+
+The standalone app's `Shopify Listing Bulk Enrich` / `… Item` did not come across:
+they existed to drive its own bulk-enrichment flow, and batching now belongs to
+`alaiy_os_agents`. A site that ran the old app keeps their tables until they are
+dropped by hand.
+
+## Roles — 2
+
+Created on install by `setup/install.py:_create_roles`, and granted read on this
+connector's DocTypes by permission rows in each doctype's JSON. Creating the Role
+alone grants nothing — both halves are needed. See [Agents](agents.md).
+
+| Role | Grants |
+|---|---|
+| `Shopify Manager` | Everything `System Manager` has on this app's DocTypes bar delete, and the live-Shopify agent tools via `roles.require_manager()`. |
+| `Shopify Viewer` | Read/report/export only. The intended `run_as_user` for a read-only agent pack. |
+
 ## Custom fields added to existing DocTypes — 20 across 5 DocTypes
 
 Created by `setup/install.py::setup_custom_fields`, run on every migrate with `update=True` so property changes re-sync onto existing fields. All prefixed `sh_`.
@@ -63,6 +90,14 @@ Two details that bite:
 
 - `sh_shopify_category_gid` exists only because Frappe's Data Import validates Link values against existing doc names *before* a row reaches the validate hook — so a raw taxonomy GID in `sh_shopify_category` fails the import outright. This plain Data field has no such check; the hook resolves the GID and clears the field.
 - A Table MultiSelect cannot use `fetch_from` (child-table data, not a scalar), so tag and collection inheritance to variants runs through Item's validate hook rather than the field definition. The scalar fields do use `fetch_from` plus `read_only_depends_on: eval:doc.variant_of`.
+
+### Shopify Product Listing — 1
+
+`is_enriched` — set when an approved `Shopify Enriched Listing` is live, cleared when
+the listing agent re-runs, so it always means the CURRENT content passed review.
+Created by `setup/install.py:sync_listing_custom_fields`; kept as a Custom Field
+rather than a column in the doctype's own JSON so an uninstall can drop it without
+touching the column.
 
 ### Sales Order — 5
 

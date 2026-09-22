@@ -72,6 +72,7 @@ from alaiy_os_connector_shopify.shopify.product.taxonomy import (
 from alaiy_os_connector_shopify.shopify.product.export import (
     LOCK_TIMEOUT_SECONDS,
     push_item,
+    publish_now,
     run_bulk_export_to_shopify,
     _variants_of,
     _all_variants_of,

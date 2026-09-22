@@ -30,6 +30,14 @@ Four halves, and only the first is the obvious one:
     the Singles rows at the end safe to do.
 
 Idempotent. Runs post-model-sync, so the new table exists by the time it does.
+
+The old doctype is NOT deleted. Client-site code we don't fully control
+still reads it directly (frappe.get_single / get_cached_doc /
+db.get_single_value), so it stays registered as a read-only mirror of the
+enabled connection -- see shopify_connector_settings.py's docstring and
+sync_legacy_settings_mirror(). This patch only moves the data; keeping the
+mirror in step afterwards is that module's job, called once here right
+after migrating.
 """
 
 import frappe
@@ -54,7 +62,12 @@ def execute():
 		_migrate_single()
 
 	_backfill_sync_log_connection()
-	_retire_old_doctype()
+
+	from alaiy_os_connector_shopify.alaiy_os_connector_shopify.doctype.shopify_connector_settings.shopify_connector_settings import (
+		sync_legacy_settings_mirror,
+	)
+
+	sync_legacy_settings_mirror()
 
 
 def _migrate_single() -> None:
@@ -193,35 +206,3 @@ def _backfill_sync_log_connection() -> None:
 	frappe.db.commit()
 
 
-def _retire_old_doctype() -> None:
-	"""
-	Delete the Single itself, once nothing of it is left worth keeping.
-
-	Removing the folder from the app does not remove the DocType record from a
-	site that already has it: it would sit in the desk forever, still listed
-	under the module, offering a settings form that nothing reads any more.
-
-	Only ever after the values are out. The guard is the Singles rows -- if any
-	survive, the migration above did not finish, and dropping the DocType would
-	take the site's only copy of its Shopify configuration with it.
-	"""
-	if not frappe.db.exists("DocType", OLD):
-		return
-	leftover = frappe.db.sql(
-		"select 1 from `tabSingles` where doctype = %s limit 1", OLD
-	)
-	if leftover:
-		frappe.logger().warning(
-			f"Shopify connector: {OLD} still holds values; leaving the DocType in place."
-		)
-		return
-	try:
-		frappe.delete_doc("DocType", OLD, ignore_missing=True, force=True)
-		frappe.db.commit()
-	except Exception:
-		# Not worth failing a migrate over a leftover form.
-		frappe.db.rollback()
-		frappe.log_error(
-			title="Shopify connector: could not remove the old settings DocType",
-			message=frappe.get_traceback(),
-		)

@@ -54,9 +54,23 @@ def _connector_enabled(doc=None):
 def on_listing_update(doc, method=None):
     """
     A Listing (or any of its variant/image child rows -- they save with the
-    parent) changed: push the product if enabled, archive it if just
-    disabled. Mirrors the old on_item_change enable/disable machine, keyed
-    off the Listing instead of Item.sync_to_shopify.
+    parent) changed: push the product if enabled. is_enabled ("Enable Sync")
+    only gates whether local edits keep auto-pushing to Shopify -- it is not
+    a status control. Turning it off just stops syncing; it must never
+    archive the live Shopify product on its own. Archived/Active/Draft is
+    controlled solely by the Listing's own sh_shopify_status field (pushed
+    via publish_now / push_item's productSet, or the archive/unarchive
+    actions that explicitly set it) -- never as a side effect of this toggle.
+
+    is_enabled turning on auto-pushes ONLY when this Listing already has a
+    real sh_shopify_product_id -- a refresh of a product that already
+    exists on Shopify. For one that has never been published at all, this
+    would otherwise create a brand-new Shopify product as a silent side
+    effect of a single settings toggle, with no explicit action anyone took
+    to actually publish anything. The first-ever push for a never-published
+    Listing must go through an explicit publish call (product_sync.push_item
+    with force=True) instead -- enabling sync only takes effect starting
+    with the next real edit's own save.
     """
     if doc.flags.from_shopify_sync:
         # Provisioning insert (backfill / inbound import) -- data mirrored
@@ -64,31 +78,20 @@ def on_listing_update(doc, method=None):
         return
     if not _connector_enabled(doc):
         return
-    if doc.is_enabled:
+    if doc.is_enabled and doc.sh_shopify_product_id:
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.product_sync.push_item",
             queue="short", timeout=120, item_code=doc.item,
             enqueue_after_commit=True,
         )
-    elif doc.sh_shopify_product_id:
-        frappe.enqueue(
-            "alaiy_os_connector_shopify.shopify.product_sync.archive_item",
-            queue="short", timeout=60, item_code=doc.item,
-            enqueue_after_commit=True,
-        )
 
 
 def on_listing_trash(doc, method=None):
-    """Deleting the Listing takes the product off Shopify (archive: hidden,
-    order history intact), same terminal state as unchecking then removing."""
-    if not _connector_enabled(doc):
-        return
-    if doc.sh_shopify_product_id:
-        frappe.enqueue(
-            "alaiy_os_connector_shopify.shopify.product_sync.archive_item",
-            queue="short", timeout=60, item_code=doc.item,
-            enqueue_after_commit=True,
-        )
+    """Deleting the Listing just unlinks it locally -- it must never archive
+    the live Shopify product as a side effect. Archiving is an explicit
+    status action (sh_shopify_status), not something a local delete should
+    trigger on its own."""
+    return
 
 
 # ── Slim Item hooks (data upkeep only -- never push directly) ────────────────

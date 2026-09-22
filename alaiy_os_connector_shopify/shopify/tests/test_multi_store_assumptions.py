@@ -106,6 +106,13 @@ class TestNoSilentDisableOnAMultiStoreBench(unittest.TestCase):
         # is no one connection entitled to speak for a shared row, and not
         # writing it is the intended outcome.
         "alaiy_os_connector_shopify/doctype/shopify_connection/shopify_connection.py",
+        # The retired Shopify Connector Settings Single, kept only as a
+        # read-only mirror for client code that still reads it directly. On a
+        # bench with several enabled stores there is no single one entitled
+        # to fill this doctype's one shared row, so it mirrors nothing rather
+        # than guessing -- the same shape old single-store client code always
+        # saw (a Single either has values or it doesn't).
+        "alaiy_os_connector_shopify/doctype/shopify_connector_settings/shopify_connector_settings.py",
         # One-shot migrate backfills. They run before anyone has named a
         # store and must not fail a migrate on a site that has none, so
         # asking rather than requiring is right. Worth knowing that on a
@@ -113,6 +120,11 @@ class TestNoSilentDisableOnAMultiStoreBench(unittest.TestCase):
         # predate multi-store and nobody has needed them since.
         "patches/backfill_listing_title_description.py",
         "patches/backfill_simple_listing_price.py",
+        # Shopify's taxonomy tree is the same catalogue for every seller, so
+        # this scheduled entry point is deliberately not fanned out per store
+        # (see test_scheduler_fanout.py) -- "no store enabled yet" correctly
+        # means "nothing to fetch for", not a silent single-store guess.
+        "shopify/product/taxonomy.py",
     }
 
     CALLS = re.compile(r"\b(enabled_connection|enabled_value)\s*\(")

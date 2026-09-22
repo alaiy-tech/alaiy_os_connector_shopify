@@ -231,6 +231,12 @@ def _apply_product_fields(item, listing, row, report):
                 f"{item.name}: sh_shopify_status {status!r} isn't one of {sorted(_VALID_STATUSES)} -- left unchanged")
         else:
             _set_and_log(listing, "sh_shopify_status", status, f"{item.name}.sh_shopify_status", changes)
+            # Same field, Item's own copy -- most reads across the codebase
+            # (admin dashboards, reports, low-stock scoping, supplier
+            # aggregate counts) key off Item.sh_shopify_status directly, not
+            # the Listing's. Leaving it unset here means a bulk status
+            # change made through this exact tool never reaches any of them.
+            _set_and_log(item, "sh_shopify_status", status, f"{item.name}.item_sh_shopify_status", changes)
 
     images_value = (row.get("image_urls") or "").strip()
     if images_value:

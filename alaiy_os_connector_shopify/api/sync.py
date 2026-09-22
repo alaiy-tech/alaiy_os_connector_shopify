@@ -97,12 +97,35 @@ def trigger_inventory_push(connection=None):
 
 
 @frappe.whitelist()
+def trigger_missing_product_import(statuses=None, collection_id=None, location_id=None, connection=None):
+    """
+    Catch-up import: only products never linked locally at all. Existing
+    products are never re-verified or touched, unlike trigger_product_import
+    (run_full_product_import), which re-checks the whole catalog every run --
+    see run_missing_product_import's own docstring for why this is the
+    lighter, safer choice for "pull whatever's new" rather than a full resync.
+
+    location_id scopes to products actually stocked at one Shopify Location
+    (e.g. a site's own default warehouse, not every supplier's location on
+    the same store) -- see run_missing_product_import's own docstring for
+    why this can't be pushed into the Shopify query itself.
+    """
+    return _enqueue_sync(
+        "products",
+        "alaiy_os_connector_shopify.shopify.product.importer.run_missing_product_import",
+        timeout=3600,
+        statuses=statuses,
+        collection_id=collection_id,
+        location_id=location_id,
+        connection=connection,
+    )
+
+
+@frappe.whitelist()
 def trigger_product_import(statuses=None, connection=None):
     """
-    Import products from Shopify. First run (nothing imported yet) wipes
-    first as a safety net, then imports everything. Every run after that
-    is a real create/update/skip sync -- no wipe -- see
-    run_full_product_import's docstring for why.
+    Import products from Shopify. A real create/update/skip sync every
+    time, never a wipe -- see run_full_product_import's docstring for why.
     """
     return _enqueue_sync(
         "products",
@@ -115,6 +138,36 @@ def trigger_product_import(statuses=None, connection=None):
         statuses=statuses,
         connection=connection,
     )
+
+
+@frappe.whitelist()
+def search_shopify_products(term, limit=20, connection=None):
+    """Live Shopify title/SKU search for the admin "Search for a product…"
+    picker -- runs synchronously (not queued like the bulk pulls above): a
+    single search is fast enough to just return the answer directly, and
+    queuing it would mean polling a log for what should be an instant
+    keystroke-driven result.
+    """
+    from alaiy_os_connector_shopify.shopify.product.importer import search_products_live
+
+    connection = connections.resolve(connection)
+    require_access(connection.name)
+    return search_products_live(term, limit=int(limit) if limit else 20, connection=connection)
+
+
+@frappe.whitelist()
+def import_shopify_product(product_id, connection=None):
+    """Pull and import exactly one Shopify product by id -- the pull step
+    of the "Search for a product…" flow, once the admin has picked a match
+    from search_shopify_products. Synchronous for the same reason: one
+    product is fast enough to not need a background job or a log to poll.
+    """
+    from alaiy_os_connector_shopify.shopify.product.importer import import_single_product
+
+    connection = connections.resolve(connection)
+    require_access(connection.name, "write")
+    created, reason = import_single_product(product_id, connection=connection)
+    return {"created": created, "reason": reason}
 
 
 @frappe.whitelist()

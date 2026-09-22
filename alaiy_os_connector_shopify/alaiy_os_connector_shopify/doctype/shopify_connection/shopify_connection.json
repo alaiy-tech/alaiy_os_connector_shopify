@@ -171,7 +171,8 @@
    "fieldname": "sh_client_secret",
    "fieldtype": "Password",
    "label": "Client Secret",
-   "mandatory_depends_on": "eval:doc.is_enabled && doc.sh_auth_method == \"Custom App\""
+   "mandatory_depends_on": "eval:doc.is_enabled && doc.sh_auth_method == \"Custom App\"",
+   "permlevel": 1
   },
   {
    "description": "This store's stable Shopify id, read back at OAuth install time. Blank for a Custom App connection.",
@@ -194,7 +195,8 @@
    "fieldname": "sh_access_token",
    "fieldtype": "Password",
    "hidden": 1,
-   "label": "Access Token"
+   "label": "Access Token",
+   "permlevel": 1
   },
   {
    "description": "When the current access token was last minted.",
@@ -215,7 +217,8 @@
    "fieldname": "sh_webhook_secret",
    "fieldtype": "Password",
    "label": "Webhook Secret",
-   "mandatory_depends_on": "eval:doc.is_enabled"
+   "mandatory_depends_on": "eval:doc.is_enabled",
+   "permlevel": 1
   },
   {
    "fieldname": "sb_defaults",
@@ -433,6 +436,30 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Shopify Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Shopify Viewer"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "System Manager",
    "write": 1
   }
  ],

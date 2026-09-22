@@ -7,9 +7,26 @@ app_license = "MIT"
 
 required_apps = ["alaiy_os", "erpnext"]
 
-after_migrate = [
-    "alaiy_os_connector_shopify.setup.install.sync_connector_registry"
+# One function rather than a list, because the three things it does are ordered:
+# the roles exist before the doctype permissions referencing them mean anything,
+# and the OS Connector Registry row exists before the agent pack's tool rows can
+# Link to it. See setup/install.after_migrate.
+after_install = "alaiy_os_connector_shopify.setup.install.after_install"
+
+after_migrate = "alaiy_os_connector_shopify.setup.install.after_migrate"
+
+# Drops the agent pack's OS Agent Registry row and the listing agent's custom
+# field. Run history (OS Agent Run) and the is_enriched column are deliberately
+# left behind; see the functions themselves.
+before_uninstall = [
+    "alaiy_os_connector_shopify.setup.install.unregister_agent",
+    "alaiy_os_connector_shopify.setup.install.remove_listing_custom_fields",
 ]
+
+# Shopify as the channel-agnostic listing agent in alaiy_os_agents sees it: its
+# fields, its rules, its validator, and how to read and write a listing. That
+# agent owns the run and the desk surfaces; this app owns the channel knowledge.
+listing_channels = ["alaiy_os_connector_shopify.listing.channel.channel"]
 
 before_request = [
     "alaiy_os_connector_shopify.shopify.order_push.snapshot_before_update_child_qty_rate"
@@ -94,10 +111,25 @@ scheduler_events = {
             #
             # Cheap to run often: it only reads a queue table and does nothing
             # at all when that queue is empty.
-            "alaiy_os_connector_shopify.shopify.sync_jobs.scheduled_inventory_pull",
+            "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_pull",
+            # Re-attempt outbound pushes that failed transiently. The retry
+            # queue existed with backoff and a dead-letter state but nothing
+            # ever drained it, so a failed fulfillment or cancel push was a
+            # single Error Log line and no second attempt. Same five-minute
+            # tick as the reconcilers above and just as cheap: it reads one
+            # table and does nothing when that table is empty.
+            "alaiy_os_connector_shopify.shopify.sync_engine.retry_worker.drain",
         ],
     },
     "hourly": [
+        # Refunds land overwhelmingly on delivered, Completed orders, which
+        # sync_order_status deliberately never asks about -- its job is to
+        # close orders still open. A refund with no webhook therefore left
+        # the order reading paid forever and never reached the admin Returns
+        # page, which keys off sh_financial_status. Hourly rather than every
+        # five minutes: the refund webhook is still the fast path, and this
+        # only has to catch what it missed.
+        "alaiy_os_connector_shopify.shopify.order.delivery_status.sync_refund_status",
         "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only",
     ],
     "daily": [
@@ -163,7 +195,15 @@ doc_events = {
     # Enabling the connector has to backfill the Listings that
     # ensure_listing_for_new_item skipped while it was off.
     "Shopify Connection": {
-        "on_update": "alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_listings_on_enable",
+        "on_update": [
+            "alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_listings_on_enable",
+            # Client-site code we don't fully control still reads the retired
+            # Shopify Connector Settings Single directly. Keep tabSingles for
+            # it in step with whichever connection is enabled so that reads
+            # via frappe.db.get_single_value keep working -- see
+            # shopify_connector_settings.py's docstring.
+            "alaiy_os_connector_shopify.alaiy_os_connector_shopify.doctype.shopify_connector_settings.shopify_connector_settings.sync_legacy_settings_mirror",
+        ],
     },
     "Shopify Product Listing": {
         "on_update": "alaiy_os_connector_shopify.shopify.product.listing_hooks.on_listing_update",

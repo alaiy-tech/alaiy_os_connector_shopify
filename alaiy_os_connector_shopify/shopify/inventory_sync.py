@@ -117,7 +117,7 @@ def sync_shopify_locations(trigger="manual", log_name=None, connection=None):
     log = load_or_create_log("locations", trigger, log_name, connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep -- closes the run record; nothing follows it in this job
 
     try:
         client = ShopifyGraphQLClient(connection)
@@ -1058,7 +1058,7 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
     return result
 
 
-def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None):
+def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None, trigger="scheduled", log_name=None):
     """PULL leg, full sweep. Ask Shopify for every linked product's current
     per-location quantity and apply the differences as audited Stock
     Reconciliations.
@@ -1083,7 +1083,19 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None)
     write. Items Shopify reports at a location this site has no warehouse
     mapping for are skipped and counted, not guessed at.
 
+    Active products only by default. `query` is a Shopify search filter, so
+    pass one explicitly to widen or narrow that -- query="" is not a way to
+    ask for everything, since an empty string falls back to the default;
+    use query="status:active OR status:draft" or similar to be deliberate
+    about it.
+
     dry_run=True reports what would change without writing.
+
+    Writes a Shopify Sync Log row for the same reason every other sync here
+    does: this is the full-catalogue stock pull, it takes minutes, and until
+    it appeared in that list there was no way to tell from the desk whether
+    it had ever run, was running now, or had failed halfway. A dry run takes
+    no log -- it changes nothing and is a question, not a sync.
     """
     # enqueue_reconcile_inventory already fans this out one job per store and
     # names the store in `connection`; reading enabled_connection() instead
@@ -1109,6 +1121,29 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None)
     if not dry_run and not query and has_active_sync("inventory", connection=connection):
         return {"skipped": "another inventory sync is already running"}
 
+    # After the active-sync guard, so a run that was refused does not leave a
+    # log row claiming it started.
+    log = None
+    if not dry_run:
+        log = load_or_create_log("inventory", trigger, log_name, connection=connection)
+        log.status = "running"
+        log.save(ignore_permissions=True)
+        frappe.db.commit()  # nosemgrep -- the running marker must be visible to the next tick before the sweep starts
+
+    try:
+        return _reconcile_inventory(dry_run, query, log, connection)
+    except Exception:
+        if log:
+            log.status = "failed"
+            log.finished_at = now_datetime()
+            log.error_message = frappe.get_traceback()[:2000]
+            log.save(ignore_permissions=True)
+            frappe.db.commit()  # nosemgrep -- the failure record must survive the exception being re-raised
+        raise
+
+
+def _reconcile_inventory(dry_run, query, log, connection):
+    """The sweep itself. Split out so every exit path closes the log above."""
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCTS_STOCK_QUERY
     from alaiy_os_connector_shopify.shopify.product.variants import _variant_location_levels
@@ -1128,7 +1163,18 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None)
     # query="created_at:>=2026-01-01 created_at:<2026-04-01". Each window
     # touches a disjoint set of products, so the concurrent runs never contend
     # on the same Bins. None means the whole catalogue.
-    for page_nodes in client.execute_paginated(_PRODUCTS_STOCK_QUERY, {"after": None, "query": query}, ["products"]):
+    pages_done = 0
+    # Active products only unless the caller asked for something else.
+    # Stock on a draft or archived product is not stock anyone can sell, and
+    # sweeping them meant paging through the entire Shopify catalogue -- 25
+    # products per request -- to correct quantities nothing would ever read.
+    # The admin Inventory page counts Active items too, so an unfiltered
+    # sweep also reported a different population than the page it sits on.
+    effective_query = query or "status:active"
+
+    for page_nodes in client.execute_paginated(
+        _PRODUCTS_STOCK_QUERY, {"after": None, "query": effective_query}, ["products"]
+    ):
         for node in page_nodes:
             for variant in (node.get("variants", {}).get("nodes") or []):
                 variant_id = variant.get("legacyResourceId")
@@ -1174,6 +1220,29 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None)
                         "qty": flt(qty),
                     })
 
+        # Progress after each page, not only at the end. A sweep over ~3,000
+        # variants takes minutes, and a log row sitting at running with every
+        # counter on zero is indistinguishable from a job that hung -- which
+        # is exactly how the last one looked while it was working correctly.
+        # One small write per page (a few hundred products), not per variant.
+        pages_done += 1
+        if log:
+            # Appended to log_messages as well as the counters, so the row
+            # reads as a running commentary the way the other syncs' do
+            # rather than three numbers that change with no explanation.
+            note = (
+                f"Page {pages_done}: {checked} variants checked, "
+                f"{len(corrections)} correction(s) queued."
+            )
+            previous = frappe.db.get_value("Shopify Sync Log", log.name, "log_messages") or ""
+            frappe.db.set_value("Shopify Sync Log", log.name, {
+                "pages_done": pages_done,
+                "items_processed": checked,
+                "items_created": len(corrections),
+                "log_messages": (previous + "\n" + note).strip(),
+            }, update_modified=False)
+            frappe.db.commit()  # nosemgrep -- per-page progress is only useful if it is readable while the sweep is still running
+
     summary = {
         "checked": checked,
         "mismatched": len(corrections),
@@ -1183,9 +1252,46 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None)
     }
     if dry_run or not corrections:
         summary["sample"] = corrections[:20]
+        _finish_reconcile_log(log, summary)
         return summary
 
     result = apply_pulled_stock(corrections)
     summary["reconciliations"] = result.get("reconciliations", [])
     summary["skipped_rows"] = result.get("skipped", [])
+    _finish_reconcile_log(log, summary)
     return summary
+
+
+def _finish_reconcile_log(log, summary):
+    """Close the run's log row with what it actually did.
+
+    items_processed is what was checked against Shopify, items_created the
+    corrections applied -- the two numbers someone reads to tell "nothing was
+    wrong" apart from "nothing ran". items_failed counts rows a Stock
+    Reconciliation rejected, which is a partial success worth seeing rather
+    than a silent shortfall.
+    """
+    if not log:
+        return
+    skipped_rows = summary.get("skipped_rows") or []
+    log.status = "success"
+    log.finished_at = now_datetime()
+    log.items_processed = summary.get("checked") or 0
+    log.items_created = len(summary.get("reconciliations") or [])
+    log.items_failed = len(skipped_rows)
+    _append_log(log, (
+        f"Checked {summary.get('checked', 0)} variants against Shopify. "
+        f"{summary.get('mismatched', 0)} differed and were corrected in "
+        f"{len(summary.get('reconciliations') or [])} Stock Reconciliation(s)."
+    ))
+    if summary.get("unknown_variants"):
+        _append_log(log, f"{summary['unknown_variants']} Shopify variant(s) match no local Item.")
+    if summary.get("unmapped_locations"):
+        _append_log(log, (
+            "No warehouse mapping for Shopify location(s): "
+            + ", ".join(str(x) for x in summary["unmapped_locations"])
+        ))
+    if skipped_rows:
+        _append_log(log, f"{len(skipped_rows)} row(s) were rejected by their Stock Reconciliation.")
+    log.save(ignore_permissions=True)
+    frappe.db.commit()  # nosemgrep -- closes the run record; nothing follows it in this job

@@ -388,7 +388,26 @@ def ensure_listing(template_name: str, default_enabled: int = 0):
     # this being set, not left blank.
     listing.connection = tmpl.sh_shopify_connection or None
     listing.is_enabled = 1 if default_enabled else 0
-    listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
+    # sh_shopify_product_id (not sh_shopify_status) is the real signal for
+    # "does this already exist on Shopify". An inbound import sets both the
+    # id and the real status on the Item before this ever runs, so that path
+    # is unaffected. A fresh supplier approval has neither -- it has never
+    # been pushed.
+    #
+    # tmpl.sh_shopify_status is NOT trustworthy as "unset" here: the Item
+    # custom field itself carries "Active" as its own schema default
+    # (setup/install.py), which Frappe applies the instant the Item is
+    # inserted -- before this ever runs. So tmpl.sh_shopify_status reads
+    # "Active" for a genuinely never-decided product too, and the previous
+    # `tmpl.sh_shopify_status or "Draft"` fallback never actually fired
+    # (the field is never falsy). Confirmed live: a fresh supplier approval
+    # published Active on first Publish despite the caller explicitly
+    # choosing Draft. Only trust the Item's own status once it's known to
+    # already exist on Shopify.
+    if tmpl.sh_shopify_product_id:
+        listing.sh_shopify_status = tmpl.sh_shopify_status or "Active"
+    else:
+        listing.sh_shopify_status = "Draft"
     # sh_shopify_product_id is a real, independently-writable field (not a
     # fetch_from view) -- copy the Item's current value explicitly, or a
     # freshly-created Listing would start with a blank id.
@@ -503,6 +522,11 @@ def fill_children_from_item(listing):
     existing variant row only has its blank fields backfilled, and no row
     is ever removed -- so merchant edits, explicit overrides and a variant
     deliberately switched off all survive.
+
+    Images are the exception to "runs on every save": they're only seeded
+    from the Item until the Listing has a sh_shopify_product_id, after
+    which Shopify's own image list is authoritative. See the comment above
+    the image loop below.
     """
     if not listing.item:
         return
@@ -523,28 +547,47 @@ def fill_children_from_item(listing):
     if not listing.listing_product_type and tmpl.sh_shopify_product_type:
         listing.listing_product_type = tmpl.sh_shopify_product_type
 
-    # Merge, never rebuild. An "is the table empty" check would only ever
-    # fill a brand-new Listing: one that already holds a single row would
-    # never gain the variant its Item picked up afterwards, which is the gap
-    # the "Populate from Item" button existed to paper over.
+    # Item.sh_shopify_tags is a Table MultiSelect (one row per tag) -- the
+    # Listing's own copy is a plain comma-separated field, matching what
+    # canonical.py actually sends to Shopify. Blank-only, same rule as
+    # category/product_type above -- an admin's own edit here is never
+    # overwritten.
+    if not listing.listing_tags:
+        item_tags = frappe.get_all(
+            "Item Shopify Tag", filters={"parent": tmpl.name, "parenttype": "Item"},
+            pluck="shopify_tag", order_by="idx asc",
+        )
+        if item_tags:
+            listing.listing_tags = ", ".join(item_tags)
+
+    # Only seed images from the Item before the Listing exists on Shopify.
+    # Once sh_shopify_product_id is set, Shopify's own image list (routed in
+    # here by the inbound webhook) is authoritative and complete -- topping
+    # it up from the Item would re-add the Item's local /files/... copy of a
+    # photo Shopify already has under its own cdn.shopify.com URL. The two
+    # URLs point at the same picture but never match as strings, so this
+    # used to add a permanent duplicate on every save, which the webhook's
+    # own "did the image set change" check then saw as real drift and kept
+    # rewriting -- and pushing that duplicate to Shopify created a second
+    # image there too, feeding the same loop from the other side.
     #
-    # Adding only what is missing is also what makes this safe to run on
-    # every save. The Listing's own images can outnumber the Item's -- the
-    # upload path writes every parent image straight here, not via the Item
-    # -- so rebuilding the table from the Item's narrower view would silently
-    # drop real images that only ever lived on the Listing.
-    existing_images = {
-        (row.image or "").strip() for row in (listing.images or []) if row.image
-    }
-    next_sort_order = len(listing.images or [])
-    for url in _template_image_urls(tmpl):
-        if (url or "").strip() in existing_images:
-            continue
-        listing.append("images", {
-            "image": url, "source": "Original", "sort_order": next_sort_order,
-        })
-        existing_images.add((url or "").strip())
-        next_sort_order += 1
+    # A Listing not yet on Shopify has no such authoritative source yet, so
+    # it still gets seeded here -- that's the gap the "Populate from Item"
+    # button used to paper over, and the reason this merges instead of
+    # skipping a non-empty table.
+    if not listing.sh_shopify_product_id:
+        existing_images = {
+            (row.image or "").strip() for row in (listing.images or []) if row.image
+        }
+        next_sort_order = len(listing.images or [])
+        for url in _template_image_urls(tmpl):
+            if (url or "").strip() in existing_images:
+                continue
+            listing.append("images", {
+                "image": url, "source": "Original", "sort_order": next_sort_order,
+            })
+            existing_images.add((url or "").strip())
+            next_sort_order += 1
 
     rows_by_variant = {
         (row.item_variant or "").strip(): row

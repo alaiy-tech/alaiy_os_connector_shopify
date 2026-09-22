@@ -28,11 +28,11 @@ query { productsCount { count } }
 # this many.
 INVENTORY_LEVELS_PAGE_SIZE = 3
 
-_PRODUCTS_QUERY = """
-query PullProducts($after: String, $query: String, $first: Int = 50) {
-  products(first: $first, after: $after, sortKey: CREATED_AT, query: $query) {
-    edges {
-      node {
+# The full product node, shared by the paged catalogue pull and the
+# single-product fetch below so the two cannot drift apart. `compare.py`
+# maps this shape onto `canonical._product_canonical`'s key set; a field
+# added here that the canonical also carries wants picking up there too.
+_PRODUCT_NODE_FIELDS = """
         legacyResourceId
         handle
         title
@@ -157,11 +157,48 @@ query PullProducts($after: String, $query: String, $first: Int = 50) {
             endCursor
           }
         }
-      }
+"""
+
+_PRODUCTS_QUERY = """
+query PullProducts($after: String, $query: String, $first: Int = 50) {
+  products(first: $first, after: $after, sortKey: CREATED_AT, query: $query) {
+    edges {
+      node {""" + _PRODUCT_NODE_FIELDS + """      }
     }
     pageInfo {
       hasNextPage
       endCursor
+    }
+  }
+}
+"""
+
+# One product by its GID, for compare_listing. Same node as the pull, so a
+# diff is comparing like with like -- a narrower query here would report a
+# field as absent on Shopify when it was only absent from the question.
+_PRODUCT_BY_ID_QUERY = """
+query ProductById($id: ID!) {
+  product(id: $id) {""" + _PRODUCT_NODE_FIELDS + """  }
+}
+"""
+
+# Search-as-you-type product lookup, for the admin "Search for a product…"
+# picker -- title/handle/status/image only. Deliberately not the full
+# _PRODUCT_NODE_FIELDS: that node is expensive enough (variants, metafields,
+# inventory levels per location) that running it on every keystroke would be
+# slow, and a search result only needs enough to let an admin recognise the
+# right match before pulling it in full via _PRODUCT_BY_ID_QUERY.
+_PRODUCT_SEARCH_QUERY = """
+query SearchProducts($query: String!, $first: Int!) {
+  products(first: $first, query: $query, sortKey: RELEVANCE) {
+    nodes {
+      legacyResourceId
+      title
+      handle
+      status
+      featuredImage {
+        url
+      }
     }
   }
 }
@@ -218,6 +255,21 @@ mutation PushProduct($input: ProductSetInput!, $identifier: ProductSetIdentifier
           sku
         }
       }
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+_PRODUCT_VARIANTS_BULK_UPDATE_MUTATION = """
+mutation UpdateVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+    productVariants {
+      id
+      price
     }
     userErrors {
       field

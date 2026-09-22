@@ -177,7 +177,15 @@ def scheduled_fetch_shopify_taxonomy(connection=None):
     name one is naming which store's credentials to fetch it with, and
     swallowing that left the enqueued job to re-resolve on its own, which on a
     bench with several enabled stores has no answer at all.
+
+    Confirmed live on a site with this app installed but never configured
+    (no store connected): this ran anyway on the daily cron, every day,
+    crashing with "Shopify Shop URL is not configured." -- guard on there
+    being an enabled connection the same way every other scheduled entry
+    point does.
     """
+    if connections.enabled_connection() is None:
+        return
     frappe.enqueue(fetch_shopify_taxonomy, queue="long", timeout=3600,
                    trigger="scheduled", connection=connection)
 

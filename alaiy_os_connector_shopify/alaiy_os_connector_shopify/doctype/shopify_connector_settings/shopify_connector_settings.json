@@ -1,0 +1,323 @@
+{
+ "actions": [],
+ "autoname": "",
+ "creation": "2026-09-22 00:00:00.000000",
+ "description": "Retired. Kept only as a read-only mirror of the enabled Shopify Connection, so client code written against the old single-store shape keeps working unmodified. Configure stores under Shopify Connection instead -- nothing here is saved anywhere.",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "is_enabled",
+  "sb_connection",
+  "sh_shop_url",
+  "sh_client_id",
+  "sh_client_secret",
+  "sh_access_token",
+  "sh_token_refreshed_at",
+  "sh_token_expires_at",
+  "sh_webhook_secret",
+  "sb_defaults",
+  "sh_company",
+  "sh_default_warehouse",
+  "sh_return_warehouse",
+  "sh_customer_group",
+  "sh_default_territory",
+  "sh_selling_price_list",
+  "sh_cost_center",
+  "sh_tax_account",
+  "sh_auto_sales_invoice",
+  "sh_invoice_trigger",
+  "sb_locations",
+  "sh_location_map",
+  "sb_sync",
+  "sh_order_status_filter",
+  "sh_fulfillment_sync_direction",
+  "sh_inventory_sync_direction",
+  "sh_inventory_sync_interval",
+  "sh_token_refresh_interval",
+  "sb_product_status",
+  "sh_import_status_active",
+  "sh_import_status_draft",
+  "sh_import_status_archived",
+  "cb_product_status",
+  "sh_export_status_active",
+  "sh_export_status_draft",
+  "sh_export_status_archived"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "is_enabled",
+   "fieldtype": "Check",
+   "label": "Enable Shopify",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_connection",
+   "fieldtype": "Section Break",
+   "label": "API Connection"
+  },
+  {
+   "fieldname": "sh_shop_url",
+   "fieldtype": "Data",
+   "label": "Shop URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_client_id",
+   "fieldtype": "Data",
+   "label": "Client ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_client_secret",
+   "fieldtype": "Password",
+   "label": "Client Secret",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_access_token",
+   "fieldtype": "Password",
+   "hidden": 1,
+   "label": "Access Token",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_token_refreshed_at",
+   "fieldtype": "Datetime",
+   "label": "Token Refreshed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_token_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Token Expires At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_defaults",
+   "fieldtype": "Section Break",
+   "label": "Alaiy OS Defaults"
+  },
+  {
+   "fieldname": "sh_company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_default_warehouse",
+   "fieldtype": "Link",
+   "label": "Default Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_return_warehouse",
+   "fieldtype": "Link",
+   "label": "Return Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_customer_group",
+   "fieldtype": "Link",
+   "label": "Default Customer Group",
+   "options": "Customer Group",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_default_territory",
+   "fieldtype": "Link",
+   "label": "Default Territory",
+   "options": "Territory",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_selling_price_list",
+   "fieldtype": "Link",
+   "label": "Selling Price List",
+   "options": "Price List",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sh_tax_account",
+   "fieldtype": "Link",
+   "label": "Tax Account",
+   "options": "Account",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_auto_sales_invoice",
+   "fieldtype": "Check",
+   "label": "Auto-create Sales Invoice",
+   "read_only": 1
+  },
+  {
+   "default": "Paid and Fulfilled",
+   "fieldname": "sh_invoice_trigger",
+   "fieldtype": "Select",
+   "label": "Generate Invoice When",
+   "options": "Paid and Fulfilled\nPaid",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_locations",
+   "fieldtype": "Section Break",
+   "label": "Inventory Locations"
+  },
+  {
+   "fieldname": "sh_location_map",
+   "fieldtype": "Table",
+   "label": "Warehouse to Location Map",
+   "options": "Shopify Location Map",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_sync",
+   "fieldtype": "Section Break",
+   "label": "Sync Settings"
+  },
+  {
+   "default": "Any",
+   "fieldname": "sh_order_status_filter",
+   "fieldtype": "Select",
+   "label": "Sync Orders With Status",
+   "options": "Open\nAny\nClosed\nCancelled",
+   "read_only": 1
+  },
+  {
+   "default": "Shopify → Alaiy OS (default)",
+   "fieldname": "sh_fulfillment_sync_direction",
+   "fieldtype": "Select",
+   "label": "Fulfillment Sync Direction",
+   "options": "Shopify → Alaiy OS (default)\nAlaiy OS → Shopify (two-way)",
+   "read_only": 1
+  },
+  {
+   "default": "Shopify → Alaiy OS only",
+   "fieldname": "sh_inventory_sync_direction",
+   "fieldtype": "Select",
+   "label": "Inventory Sync Direction",
+   "options": "Shopify → Alaiy OS only\nAlaiy OS → Shopify (two-way)",
+   "read_only": 1
+  },
+  {
+   "default": "30 min",
+   "fieldname": "sh_inventory_sync_interval",
+   "fieldtype": "Select",
+   "label": "Inventory Sync Interval",
+   "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
+   "read_only": 1
+  },
+  {
+   "default": "12 hours",
+   "fieldname": "sh_token_refresh_interval",
+   "fieldtype": "Select",
+   "label": "Token Refresh Interval",
+   "options": "Disabled\n6 hours\n12 hours\n24 hours",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_product_status",
+   "fieldtype": "Section Break",
+   "label": "Product Status Filter"
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_import_status_active",
+   "fieldtype": "Check",
+   "label": "Import Active products",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_import_status_draft",
+   "fieldtype": "Check",
+   "label": "Import Draft products",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_import_status_archived",
+   "fieldtype": "Check",
+   "label": "Import Archived products",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_product_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_export_status_active",
+   "fieldtype": "Check",
+   "label": "Export Active products",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_export_status_draft",
+   "fieldtype": "Check",
+   "label": "Export Draft products",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_export_status_archived",
+   "fieldtype": "Check",
+   "label": "Export Archived products",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-09-22 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Alaiy OS Connector Shopify",
+ "name": "Shopify Connector Settings",
+ "naming_rule": "Set by user",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "Shopify Manager"
+  },
+  {
+   "read": 1,
+   "role": "Shopify Viewer"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "System Manager"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

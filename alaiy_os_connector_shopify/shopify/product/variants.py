@@ -421,7 +421,52 @@ def _variant_canonical(variant, settings, listing) -> dict:
     }
 
 
-def _variant_set_payload(variant, settings, option_names: list, listing) -> dict:
+def _variant_initial_inventory_quantities(variant, settings) -> list:
+    """ProductSetInventoryInput rows for a brand-new product's first push --
+    Shopify only accepts inventoryQuantities on productSet for locations the
+    variant isn't already stocked at when the product doesn't exist yet, so
+    this is never called for a product that already has a product_id (see
+    _push_product_unlocked). Without this, a freshly published product has
+    NO stock recorded at ANY location, so Shopify's own fulfillment routing
+    falls back to whatever it considers the "first active" location instead
+    of the supplier's real one -- confirmed live (thesolist item 10314779918634
+    landed on "HQ New York" despite Item.shopify_location correctly pointing
+    at the supplier's own Shopify Location).
+
+    Resolves the supplier's own Warehouse from Item.shopify_location via the
+    same Shopify Connector Settings.sh_location_map table
+    inventory_sync._resolve_location_pairs already uses (just inverted:
+    location -> warehouse instead of warehouse -> location), so this stays
+    the one source of truth for that mapping rather than inventing a second.
+    A location with no mapped Warehouse, or a Warehouse with no Bin row for
+    this item, means "no known quantity" -- skipped, never pushed as an
+    assumed zero (same rule inventory_sync's own bulk push follows).
+    """
+    location_name = variant.get("shopify_location")
+    if not location_name:
+        return []
+    warehouse = None
+    for row in (settings.get("sh_location_map") or []):
+        if row.shopify_location == location_name and row.warehouse:
+            warehouse = row.warehouse
+            break
+    if not warehouse:
+        return []
+    location_gid = frappe.db.get_value("Shopify Location", location_name, "sh_location_gid")
+    if not location_gid:
+        return []
+    bin_qty = frappe.db.get_value(
+        "Bin", {"item_code": variant.item_code, "warehouse": warehouse}, "actual_qty")
+    if bin_qty is None:
+        return []
+    return [{
+        "locationId": location_gid,
+        "name": "available",
+        "quantity": int(flt(bin_qty)),
+    }]
+
+
+def _variant_set_payload(variant, settings, option_names: list, listing, is_new_product: bool = False) -> dict:
     attrs = {a.attribute: a.attribute_value for a in (variant.attributes or [])}
     payload = {
         "sku": variant.item_code,
@@ -430,6 +475,13 @@ def _variant_set_payload(variant, settings, option_names: list, listing) -> dict
             for name in option_names
         ],
     }
+    if is_new_product:
+        # Only for a product's first-ever push -- see
+        # _variant_initial_inventory_quantities' own docstring for why this
+        # can't also run on an update.
+        inventory_quantities = _variant_initial_inventory_quantities(variant, settings)
+        if inventory_quantities:
+            payload["inventoryQuantities"] = inventory_quantities
     price = listing_resolver.variant_price(listing, variant.item_code, settings)
     if price is not None:
         payload["price"] = f"{price:.2f}"

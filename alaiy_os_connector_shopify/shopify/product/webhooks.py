@@ -3,6 +3,8 @@ Inbound Sync: Handle Shopify product changes via webhooks -- moved
 verbatim from product_sync.py, unchanged.
 """
 
+import time
+
 import frappe
 from frappe.utils import flt
 
@@ -197,29 +199,70 @@ def _handle_product_update(product_id: str, product: dict, connection=None):
         )
         return
 
-    _update_item_from_shopify(item, product, connection=connection)
+    # Shopify has been observed redelivering the same products/update event
+    # seconds apart (a slow first response, or one merchant edit firing more
+    # than once) -- confirmed live: two deliveries for the same template 18
+    # seconds apart, both racing _update_item_from_shopify's own
+    # TimestampMismatchError retry against each other. Each appended its own
+    # tag/image rows before saving, and the loser's reload-and-retry landed
+    # mid-way through the other's still-uncommitted write, which is what
+    # made ERPNext's validate_attributes() see an empty attributes table on
+    # a real template that has one -- not a corrupt record, a genuine race.
+    # export.py._push_product already locks an Item for the same reason on
+    # the outbound side; this is that same guard for the inbound side, which
+    # never had one.
+    from .export import LOCK_TIMEOUT_SECONDS
+    try:
+        item.lock(timeout=LOCK_TIMEOUT_SECONDS)
+    except frappe.DocumentLockedError:
+        # Another delivery for this same product is already applying its
+        # update. Shopify's own webhook is not the only source of truth for
+        # "did this apply" -- letting the in-flight one finish and dropping
+        # this redelivery is safe: _update_item_from_shopify rebuilds every
+        # field fresh from `product` on each call, but a REDELIVERY carries
+        # the same `product` body the in-flight call already has, so there
+        # is nothing this one would apply that the other one is not already
+        # applying.
+        frappe.logger().info(
+            f"Product {product_id}: update already in flight, skipping this redelivery"
+        )
+        return
 
-    # Recompute and store the fingerprint for the post-update state so the
-    # hourly outbound reconciliation (push_changed_items_only) doesn't see
-    # this inbound-driven change as "different from last push" and push it
-    # straight back to Shopify.
-    item = frappe.get_doc("Item", item.name)
-    settings = connections.resolve(connection) if connection else connections.require_enabled()
-    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
-    listing = listing_resolver.get_listing(item.name)
-    # Only re-fingerprint when a Listing exists (i.e. this product is
-    # outbound-managed) -- the canonical must match what an outbound push
-    # would build, which now reads the Listing. No Listing => outbound never
-    # pushes this product anyway, so there's nothing to guard against.
-    if listing:
-        if not listing.is_enabled or product.get("status") == "archived":
-            entities.save(entity, erpnext_fingerprint=None)
-        else:
-            variants = _variants_of(item)
-            canonical = _product_canonical(item, variants, settings, listing)
-            entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
+    locked_item = item
+    try:
+        _update_item_from_shopify(item, product, connection=connection)
 
-    frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
+        # Recompute and store the fingerprint for the post-update state so the
+        # hourly outbound reconciliation (push_changed_items_only) doesn't see
+        # this inbound-driven change as "different from last push" and push it
+        # straight back to Shopify.
+        #
+        # Reassigning `item` here (rather than a differently-named var) used
+        # to leave the unlock below calling .unlock() on THIS fresh instance,
+        # which never held the lock -- the original locked_item's file lock
+        # was orphaned every time this ran, confirmed live as the real cause
+        # of later saves on the same Item hitting DocumentLockedError against
+        # a lock that no in-memory reference could ever clear (only the
+        # 3-hour hard expiry eventually did).
+        item = frappe.get_doc("Item", item.name)
+        settings = connections.resolve(connection) if connection else connections.require_enabled()
+        from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+        listing = listing_resolver.get_listing(item.name)
+        # Only re-fingerprint when a Listing exists (i.e. this product is
+        # outbound-managed) -- the canonical must match what an outbound push
+        # would build, which now reads the Listing. No Listing => outbound never
+        # pushes this product anyway, so there's nothing to guard against.
+        if listing:
+            if not listing.is_enabled or product.get("status") == "archived":
+                entities.save(entity, erpnext_fingerprint=None)
+            else:
+                variants = _variants_of(item)
+                canonical = _product_canonical(item, variants, settings, listing)
+                entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
+
+        frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
+    finally:
+        locked_item.unlock()
  
 
 def _save_listing_with_retry(listing, _attempt=0):
@@ -307,12 +350,25 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
         "status": product.get("status") or "",
     }, connection=connection)
 
-    # Status: active/draft/archived is a PER-MARKETPLACE concern -- it only
-    # ever affects the Shopify LISTING, NEVER the shared Item (disabling the
-    # Item would hide the product on every other connector too, and Shopify
-    # must never mutate the marketplace-agnostic default). Archived => disable
-    # the Listing. No Listing (e.g. it was just deleted) => nothing to do;
-    # leave the Item completely untouched.
+    # Status: active/draft/archived is meant to be a PER-MARKETPLACE concern --
+    # the comment here used to claim it "never affects the shared Item", but
+    # _apply_product_meta above sets item.sh_shopify_status unconditionally
+    # (importer.py's own local_status branch), so that was never actually
+    # true. Confirmed live: archiving a product on Shopify updated the Item's
+    # copy here while the Listing's own copy (what canonical.py/export.py
+    # read for outbound pushes) stayed frozen at the old value -- so the next
+    # outbound push read the Listing's stale "Active" and un-archived the
+    # product right back on Shopify. Mirror the Item's new status onto the
+    # Listing so outbound pushes see the same truth this webhook just wrote.
+    if listing and product.get("status"):
+        from alaiy_os_connector_shopify.shopify.product import status as status_map
+        new_listing_status = status_map.to_local(product["status"])
+        if new_listing_status and listing.sh_shopify_status != new_listing_status:
+            listing.sh_shopify_status = new_listing_status
+            listing_dirty = True
+
+    # Archived => disable the Listing (stops outbound sync from re-pushing
+    # it). No Listing (e.g. it was just deleted) => nothing to do.
     if product.get("status") == "archived" and listing and listing.is_enabled:
         listing.is_enabled = 0
         listing_dirty = True
@@ -366,6 +422,23 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
     item.flags.dont_update_variants = True
     try:
         with _as_administrator():
+            # Confirmed live (instrumented is_locked directly at the failure
+            # site): item.save() here ALWAYS threw DocumentLockedError, with
+            # no lock file ever observably present a moment before or after --
+            # because _handle_product_update's own item.lock() call, one level
+            # up, is still held for the ENTIRE duration of this function, and
+            # Document.save()'s own check_if_locked() does not special-case
+            # "the current call chain is the one holding this lock." lock()
+            # and save() on the same instance are fundamentally incompatible
+            # in this Frappe version -- file_lock.create_lock's own docstring
+            # even says the mechanism is "primarily for locking documents for
+            # background submission," not this save-through-the-ORM pattern.
+            # Unlocking immediately before the actual write is what makes the
+            # write possible at all; the outer function's finally still
+            # re-covers unlock for the redelivery-skip path that returns
+            # before ever reaching here.
+            if item.is_locked:
+                item.unlock()
             item.save()
     except frappe.TimestampMismatchError:
         # Confirmed live: this Item got saved by something else (our own
@@ -488,6 +561,18 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
             if row:
                 if flt(row.variant_price) != price:
                     row.variant_price = price
+                    listing_dirty = True
+                # For a simple (single-variant) product, listing_price is a
+                # separate field admin UIs display as "the" price -- confirmed
+                # live, an inbound price change correctly updated the row
+                # (the real push source, per variant_price()'s own resolver
+                # priority) but left listing_price showing a stale number,
+                # misleading anyone reading the Listing form directly rather
+                # than through the resolver. Keep both in step for a simple
+                # product, same symmetry the outbound price-edit endpoint
+                # already keeps.
+                if listing and sku == listing.item and flt(listing.listing_price) != price:
+                    listing.listing_price = price
                     listing_dirty = True
             else:
                 _set_item_price(sku, price, settings)
