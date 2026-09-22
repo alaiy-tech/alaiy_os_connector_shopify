@@ -122,9 +122,19 @@ def _cancel_for_cancelled_fulfillment(dn_name, status):
     cancelled this fulfillment, so sending it a second cancellation for the
     same one is both wrong and noisy.
 
+    Idempotent: a Delivery Note already cancelled (docstatus 2) is a safe
+    no-op, returning True as if this call had just done it -- the webhook
+    path and the poll can both reach this for the same fulfillment (a
+    redelivered webhook, or the poll catching up moments after the webhook
+    already cancelled it), and ERPNext's own dn.cancel() raises on an
+    already-cancelled document rather than tolerating it.
+
     Returns None -- neither done nor needing a human -- when the whole order
     was cancelled rather than just its fulfillment. See below.
     """
+    if frappe.db.get_value("Delivery Note", dn_name, "docstatus") == 2:
+        return True
+
     # A cancelled Sales Order is a different situation entirely, and ERPNext
     # will not allow this cancel at all: DeliveryNote.on_cancel runs
     # update_reserved_qty, which throws InvalidStatusError ("Sales Order ... is

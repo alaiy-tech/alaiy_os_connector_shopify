@@ -364,6 +364,23 @@ def _sync_tracking(fulfillment, connection=None):
     create can arrive before the order webhook finishes creating one;
     tracking is rarely set on the very first delivery anyway, and a later
     fulfillments/update webhook (or a manual backfill) catches it.
+
+    A cancellation is handled here, not just by the 5-minute poll in
+    delivery_status.py. fulfillments/update fires on a real Shopify
+    fulfillment cancellation the same way it fires for any other change to
+    the Fulfillment object, and the REST payload's own "status" field (see
+    below, distinct from display_status/shipment_status) carries the new
+    lifecycle state -- SUCCESS, CANCELLED, ERROR, FAILURE per Shopify's
+    FulfillmentStatus enum. Confirmed live: this function used to read only
+    display_status/shipment_status (shipping progress -- in transit,
+    delivered), never the fulfillment's own lifecycle status, so a real
+    cancellation webhook landed here and silently updated nothing -- the
+    Delivery Note stayed submitted until the poll got to it, up to 5
+    minutes later, and the poll was the ONLY path that ever reacted to a
+    cancellation at all. Checking status here makes the webhook the fast
+    path Shopify's own event already promises; the poll in
+    delivery_status.py stays as the reconciliation backstop for a webhook
+    that never arrives, not the primary mechanism.
     """
     fulfillment_id = str(fulfillment.get("id") or "")
     if not fulfillment_id:
@@ -385,6 +402,31 @@ def _sync_tracking(fulfillment, connection=None):
         if not dn_name:
             return
         frappe.db.set_value("Delivery Note", dn_name, "sh_shopify_fulfillment_id", fulfillment_id)
+
+    # Cancellation is checked before touching tracking, and returns
+    # immediately either way: a cancelled fulfillment's tracking number is
+    # not "current" tracking any more (see delivery_status.py's own
+    # _CANCELLED handling for the same reasoning), and there is nothing
+    # left to write once the Delivery Note this fulfillment belongs to is
+    # itself cancelled.
+    status = str(fulfillment.get("status") or "").upper()
+    if status in ("CANCELLED", "CANCELED"):
+        from alaiy_os_connector_shopify.shopify.order.delivery_status import (
+            _cancel_for_cancelled_fulfillment,
+        )
+        try:
+            _cancel_for_cancelled_fulfillment(dn_name, status)
+        except Exception:
+            # Must not stop the webhook from returning 200 -- Shopify would
+            # otherwise keep redelivering the same event. The 5-minute poll
+            # picks up any Delivery Note this failed to cancel on its next
+            # tick (sh_delivery_status is only written by that poll on
+            # success, so an unwritten status keeps this row eligible).
+            frappe.log_error(
+                title=f"Shopify: could not cancel {dn_name} from the fulfillment webhook",
+                message=frappe.get_traceback(),
+            )
+        return
 
     tracking_number = fulfillment.get("tracking_number") or ",".join(fulfillment.get("tracking_numbers") or [])
     tracking_url = fulfillment.get("tracking_url") or ",".join(fulfillment.get("tracking_urls") or [])
