@@ -11,18 +11,6 @@ from alaiy_os_connector_shopify.listing.handlers import ATTRIBUTE_NAMESPACE
 
 FILTER_NAMESPACE = "uploadify_product"
 
-# Pilot allowlist for `_sync_filter_attributes_as_metafields`: item codes this
-# runs for while the mapping is being validated against real listings. Empty
-# means the step is a no-op everywhere. Existing `uploadify_product` values on
-# any item code NOT in this set are never read, written or cleared by this
-# code path -- see the function's docstring for why that is safe by
-# construction, not just by this list being small.
-#
-# Expand this once a pilot batch's `uploadify_product` values have been
-# spot-checked against a pre-run snapshot; remove the check entirely once the
-# mapping has run clean across a representative sample of the catalog.
-FILTER_SYNC_PILOT_ITEM_CODES = frozenset()
-
 
 class ShopifyEnrichedListing(Document):
     def on_update(self):
@@ -338,19 +326,23 @@ class ShopifyEnrichedListing(Document):
         `uploadify_product` filter values, alongside the detailed `custom`
         ones `_sync_attributes_as_metafields` already wrote.
 
-        Gated to `FILTER_SYNC_PILOT_ITEM_CODES` while the bucket mapping is
-        validated against real listings; a product not on that list returns
-        immediately and this function touches nothing of its.
+        Gated to the client matrix's own `pilot_item_codes` while the bucket
+        mapping is validated against real listings -- that allowlist is the
+        client's data (its own item codes), not this app's, same as the
+        bucket vocabulary itself, so it arrives through the same
+        `listing_filter_matrix` hook rather than being hardcoded here. A
+        product not on that list, or a client with no matrix installed at
+        all, returns immediately and this function touches nothing of its.
 
         Safe by construction, the same way as `_sync_attributes_as_metafields`:
         merged into `listing_doc.metafields`, keyed by `(namespace, key)`,
         and only for keys this run actually computed a bucket for. A detailed
-        value that matches no bucket, or a client with no `listing_filter_matrix`
-        installed at all, leaves the existing `uploadify_product` row (Uploadify's
-        original value, on any product not in the pilot list, or any key this
-        mapping doesn't cover) completely alone -- never blanked, never guessed.
+        value that matches no bucket leaves the existing `uploadify_product`
+        row (Uploadify's original value, on any product not in the pilot
+        list, or any key this mapping doesn't cover) completely alone --
+        never blanked, never guessed.
         """
-        if self.item_code not in FILTER_SYNC_PILOT_ITEM_CODES:
+        if self.item_code not in filter_matrix.pilot_item_codes():
             return
 
         published = {
@@ -372,6 +364,7 @@ class ShopifyEnrichedListing(Document):
             })
 
         field_specs = filter_matrix.fields()
+        secondary_specs = filter_matrix.secondary_fields()
         case_size_spec = filter_matrix.case_size_field()
 
         for key, detailed_value in self._attributes():
@@ -385,17 +378,23 @@ class ShopifyEnrichedListing(Document):
                 continue
 
             spec = field_specs.get(key)
-            if not spec:
-                continue
-
-            buckets = filter_matrix.bucket_for(key, detailed_value)
-            if not buckets:
+            if spec:
+                buckets = filter_matrix.bucket_for(key, detailed_value)
+                if buckets:
+                    value = json.dumps(buckets) if spec.get("multi") else buckets[0]
+                    _upsert(spec["metafield_key"], value, spec["type"])
                 # No confident match: leave whatever filter value already
                 # exists alone rather than writing a guess or clearing it.
-                continue
 
-            value = json.dumps(buckets) if spec.get("multi") else buckets[0]
-            _upsert(spec["metafield_key"], value, spec["type"])
+            # A key can feed a SECOND metafield besides its `spec` above (e.g.
+            # `gemstones` also feeds Stone Color, not just Stone Type) --
+            # independent of whether the primary match above found anything.
+            secondary = secondary_specs.get(key)
+            if secondary:
+                values = filter_matrix.secondary_value_for(key, detailed_value)
+                if values:
+                    value = json.dumps(values) if secondary.get("multi") else values[0]
+                    _upsert(secondary["metafield_key"], value, secondary["type"])
 
     def _attributes(self):
         """(key, value) pairs to publish — the table, or the JSON for an older row."""
