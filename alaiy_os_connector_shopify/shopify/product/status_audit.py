@@ -20,6 +20,8 @@ import collections
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 _ALL_PRODUCT_STATUS = """
 query AllProductStatus($first: Int!, $after: String) {
   products(first: $first, after: $after) {
@@ -53,7 +55,7 @@ def _live_statuses(client, progress_every=10):
 def run(show=5):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    live, pages = _live_statuses(ShopifyGraphQLClient())
+    live, pages = _live_statuses(ShopifyGraphQLClient(connections.require_enabled()))
     print(f"\nSHOPIFY -- {len(live)} product(s) over {pages} page(s)")
     for status, count in collections.Counter(live.values()).most_common():
         print(f"  {status:<10} {count}")
@@ -162,7 +164,7 @@ def fix_statuses(dry_run=True):
     if isinstance(dry_run, str):
         dry_run = dry_run.strip().lower() not in ("0", "false", "no", "")
 
-    live, _ = _live_statuses(ShopifyGraphQLClient())
+    live, _ = _live_statuses(ShopifyGraphQLClient(connections.require_enabled()))
 
     rows = frappe.db.sql("""
         select it.name, it.sh_shopify_product_id as pid, it.sh_shopify_status as item_status,

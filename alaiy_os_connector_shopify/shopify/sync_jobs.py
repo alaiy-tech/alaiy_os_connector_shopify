@@ -1,6 +1,8 @@
 import frappe
 from frappe.utils import now_datetime, add_to_date, get_datetime
 
+from alaiy_os_connector_shopify import connections
+
 _INTERVAL_MINUTES = {
     "5 min": 5,
     "15 min": 15,
@@ -19,13 +21,37 @@ def check_and_enqueue():
     """
     Called every minute by the Frappe scheduler.
     Checks whether the inventory push or a proactive token refresh is due.
+
+    Split in two, because the two halves are due for different sets of stores.
+    The inventory push and webhook registration are ERPNext-side work and only
+    concern the enabled store; keeping an access token alive concerns every
+    store the bench holds credentials for, including the self-serve
+    connections that are deliberately never enabled and would otherwise have
+    their tokens quietly expire.
     """
     if not frappe.db.exists("DocType", "Shopify Sync Log"):
         return
 
-    settings = frappe.get_single("Shopify Connector Settings")
-    if not settings.is_enabled:
-        return
+    for name in connections.connected_names():
+        settings = frappe.get_cached_doc(connections.DOCTYPE, name)
+        try:
+            _maybe_refresh_token(settings)
+        except Exception:
+            frappe.log_error(
+                title=f"Shopify: token refresh check failed ({name})"[:140],
+                message=frappe.get_traceback(),
+            )
+
+    # Once per enabled store rather than once for "the" enabled store. Each
+    # store's failure is logged against that store and the rest still run --
+    # one seller's expired token or unreachable shop must not stop everybody
+    # else's inventory push, which is exactly what a single shared pass would
+    # have done.
+    connections.for_each("inventory and webhook check", _check_one_store)
+
+
+def _check_one_store(name):
+    settings = frappe.get_cached_doc(connections.DOCTYPE, name)
 
     # Each stage is independent and must not be able to take the others down.
     # Confirmed live: a site ran for days with ZERO webhooks registered while
@@ -33,17 +59,19 @@ def check_and_enqueue():
     # anything raising above it silently skipped the one check whose whole
     # purpose is to recover from a failure. Calling the same function by hand
     # registered all 17 topics immediately.
+    #
+    # The token refresh that used to sit here is now the per-connection loop
+    # in check_and_enqueue, which carries its own isolation: it has to run for
+    # every store holding credentials, not only the enabled ones.
     if (settings.sh_inventory_sync_direction or "") == "Alaiy OS → Shopify (two-way)":
         try:
-            _maybe_enqueue_inventory(settings.sh_inventory_sync_interval or "Disabled")
+            _maybe_enqueue_inventory(
+                settings.sh_inventory_sync_interval or "Disabled", settings
+            )
         except Exception:
-            frappe.log_error(title="Shopify: inventory enqueue check failed",
-                             message=frappe.get_traceback())
-    try:
-        _maybe_refresh_token(settings)
-    except Exception:
-        frappe.log_error(title="Shopify: token refresh check failed",
-                         message=frappe.get_traceback())
+            frappe.log_error(
+                title=f"Shopify: inventory enqueue check failed ({name})"[:140],
+                message=frappe.get_traceback())
 
     _maybe_ensure_webhooks(settings)
 
@@ -51,7 +79,7 @@ def check_and_enqueue():
 def _maybe_ensure_webhooks(settings):
     """
     Self-healing check for webhook registration, which otherwise only
-    ever runs once automatically (on Shopify Connector Settings.is_enabled
+    ever runs once automatically (on Shopify Connection.is_enabled
     flipping on) with no retry if that single attempt fails -- confirmed
     in production: it failed because the Shop URL field wasn't filled in
     yet at that exact instant, and inbound sync then silently never
@@ -62,7 +90,7 @@ def _maybe_ensure_webhooks(settings):
         return
     from alaiy_os_connector_shopify.shopify.webhooks import ensure_webhooks_registered
     try:
-        ensure_webhooks_registered()
+        ensure_webhooks_registered(settings)
     except Exception:
         frappe.log_error(
             title="Shopify: webhook self-heal check failed",
@@ -98,24 +126,26 @@ def _maybe_refresh_token(settings):
 
     from alaiy_os_connector_shopify.shopify.auth import refresh_and_store_access_token
     try:
-        refresh_and_store_access_token()
+        refresh_and_store_access_token(settings)
     except Exception:
         frappe.log_error(
-            title="Shopify: scheduled token refresh failed",
+            title=f"Shopify: scheduled token refresh failed ({settings.name})"[:140],
             message=frappe.get_traceback(),
         )
 
 
-def _maybe_enqueue_inventory(interval_setting):
+def _maybe_enqueue_inventory(interval_setting, settings):
     interval_minutes = _INTERVAL_MINUTES.get(interval_setting)
     if not interval_minutes:
         return
 
     now = now_datetime()
 
+    # Both reads are scoped to this store. Bench-wide, another store's run
+    # would look like this one's and the push would never come due.
     running = frappe.db.get_value(
         "Shopify Sync Log",
-        {"sync_type": "inventory", "status": "running"},
+        {"sync_type": "inventory", "status": "running", "connection": settings.name},
         "started_at",
         order_by="started_at desc",
     )
@@ -126,7 +156,7 @@ def _maybe_enqueue_inventory(interval_setting):
 
     last_success = frappe.db.get_value(
         "Shopify Sync Log",
-        {"sync_type": "inventory", "status": "success"},
+        {"sync_type": "inventory", "status": "success", "connection": settings.name},
         "started_at",
         order_by="started_at desc",
     )
@@ -143,4 +173,55 @@ def _maybe_enqueue_inventory(interval_setting):
         queue="long",
         timeout=3600,
         trigger="scheduled",
+        connection=settings.name,
+    )
+
+
+# ── Scheduled fan-out wrappers ────────────────────────────────────────────
+#
+# The cache syncs below are whitelisted endpoints as well as scheduled jobs,
+# and the two callers mean different things by "no connection". From the desk
+# it means "my store", which connections.resolve answers. From the scheduler
+# it means "every store", and resolving there would sync one seller's tags and
+# silently leave everyone else's stale.
+#
+# Rather than overload the endpoints, hooks.py points at these.
+
+
+def scheduled_sync_tags():
+    """Daily tag cache refresh, once per enabled store."""
+    from alaiy_os_connector_shopify.shopify.product.tags import sync_shopify_tags
+
+    connections.for_each("tag cache", lambda name: sync_shopify_tags(connection=name))
+
+
+def scheduled_sync_collections():
+    """Daily collection cache refresh, once per enabled store."""
+    from alaiy_os_connector_shopify.shopify.product.collections import (
+        sync_shopify_collections,
+    )
+
+    connections.for_each(
+        "collection cache",
+        lambda name: sync_shopify_collections(trigger="scheduled", connection=name),
+    )
+
+
+def scheduled_sync_locations():
+    """Daily location cache refresh, once per enabled store."""
+    from alaiy_os_connector_shopify.shopify.inventory_sync import sync_shopify_locations
+
+    connections.for_each(
+        "location cache",
+        lambda name: sync_shopify_locations(trigger="scheduled", connection=name),
+    )
+
+
+def scheduled_inventory_pull():
+    """The five-minute pull leg, once per enabled store."""
+    from alaiy_os_connector_shopify.shopify.inventory_sync import run_inventory_pull
+
+    connections.for_each(
+        "inventory pull",
+        lambda name: run_inventory_pull(trigger="scheduled", connection=name),
     )

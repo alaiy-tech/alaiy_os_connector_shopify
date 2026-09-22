@@ -11,7 +11,7 @@ connector_meta = {
     "description": "Shopify storefront",
     "icon": "shopping-bag",
     "icon_url": "/assets/alaiy_os_connector_shopify/images/shopify-icon.svg",
-    "settings_doctype": "Shopify Connector Settings",
+    "settings_doctype": "Shopify Connection",
     # The per-connector listing doctype a future AI listing agent writes to
     # for this marketplace. Consumed by OS Connector Registry (requires the
     # matching listing_doctype field on that doctype in alaiy_os).

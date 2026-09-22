@@ -45,7 +45,7 @@ import frappe
 from frappe.utils import cint
 
 LISTING_DOCTYPE = "Shopify Product Listing"
-SETTINGS = "Shopify Connector Settings"
+from alaiy_os_connector_shopify import connections
 
 #: `Shopify Product Listing.sh_shopify_status` -- what the product's state on
 #: Shopify should be. Not to be confused with the two order status vocabularies
@@ -71,8 +71,15 @@ GAPS = {
 }
 
 
-def _selling_price_list():
-    return frappe.db.get_single_value(SETTINGS, "sh_selling_price_list") or "Standard Selling"
+def _selling_price_list(connection=None):
+    """The price list a push reads variant prices from.
+
+    `connection` names a specific store for a multi-store caller; unnamed,
+    keeps the single-enabled-store fallback unchanged.
+    """
+    if connection:
+        return connections.resolve(connection).get("sh_selling_price_list") or "Standard Selling"
+    return connections.enabled_value("sh_selling_price_list") or "Standard Selling"
 
 
 # --- list --------------------------------------------------------------------
@@ -206,7 +213,7 @@ def listing_details(item_code):
         frappe.throw(f"Listing '{item_code}' points at Item '{listing.item}', which does not exist.")
 
     item = frappe.get_doc("Item", listing.item)
-    settings = frappe.get_single(SETTINGS)
+    settings = connections.require_enabled()
     seo = listing_resolver.effective_seo(listing, item)
     images = listing_resolver.effective_images(listing, item, settings)
 
@@ -287,7 +294,7 @@ _GAP_SQL = {
 }
 
 
-def listing_gaps(gap=None, limit=None, enabled_only=1):
+def listing_gaps(gap=None, limit=None, enabled_only=1, connection=None):
     """Data-quality gaps across the register, counted and sampled.
 
     Not "issues". Shopify has no issues feed -- it does not adjudicate listings,
@@ -301,6 +308,9 @@ def listing_gaps(gap=None, limit=None, enabled_only=1):
 
     `enabled_only` defaults on, because a disabled listing is one nobody intends
     to push and its gaps are not problems.
+
+    `connection` names which store's price list to check against, for a
+    multi-store caller; unnamed, keeps the single-enabled-store fallback.
     """
     if gap:
         gap = str(gap).strip()
@@ -309,7 +319,7 @@ def listing_gaps(gap=None, limit=None, enabled_only=1):
     limit = min(cint(limit) or GAP_LIMIT, GAP_MAX_LIMIT)
 
     base = ["1 = 1"]
-    params = {"price_list": _selling_price_list()}
+    params = {"price_list": _selling_price_list(connection)}
     if cint(enabled_only):
         base.append("spl.is_enabled = 1")
     base_conditions = " AND ".join(base)
@@ -431,7 +441,7 @@ def listing_drift(item_code):
             ),
         }
 
-    settings = frappe.get_single(SETTINGS)
+    settings = connections.require_enabled()
     variants = _variants_of(item)
     if item.has_variants and not variants:
         return {

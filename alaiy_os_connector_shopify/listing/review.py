@@ -32,13 +32,19 @@ ENRICHED_DOCTYPE = "Shopify Enriched Listing"
 
 
 @frappe.whitelist()
-def approve_listings(names):
+def approve_listings(names, connection=None):
     """Approve many enriched listings at once -- the list view's "Approve" action.
 
     Each listing is approved through a normal document save, so the same
     `on_update` hook that fires for a one-at-a-time approval pushes each one to
     its Shopify Product Listing. Returns {approved, skipped, failed, errors}:
     already-approved rows are counted as skipped.
+
+    `connection` names which store the list view asked for -- predates
+    multi-store, so it took no store at all. Each row still resolves its own
+    connection off the document as it saves; this only lets a multi-store
+    caller say which store's list it is approving from, matching the other
+    bulk actions on this list view.
     """
     if isinstance(names, str):
         names = json.loads(names)

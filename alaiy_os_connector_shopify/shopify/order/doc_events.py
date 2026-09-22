@@ -14,15 +14,47 @@ from alaiy_os_connector_shopify.shopify.order.snapshot import (
 )
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
+from alaiy_os_connector_shopify import connections
 
-def _connector_enabled():
-    """None of the three functions below checked this -- confirmed live:
-    disabling Shopify Connector Settings.is_enabled did not stop a Sales
-    Order update/submit/cancel from still enqueuing a real push against the
-    live store, since none of them read this field. Same class of gap
-    found and fixed in product/listing_hooks.py's Listing update/trash --
-    checked once, used at the top of every function here."""
-    return bool(frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"))
+
+def _connector_enabled(doc=None):
+    """Is THIS Sales Order's store switched on for the connector.
+
+    Confirmed live: disabling Shopify Connector Settings.is_enabled did not
+    stop a Sales Order update/submit/cancel from still enqueuing a real push
+    against the live store, since none of them read this field. Same class
+    of gap found and fixed in product/listing_hooks.py's Listing update/
+    trash -- checked once, used at the top of every function here.
+
+    Reads the store off the Sales Order itself, not off "the" enabled store
+    -- that stopped naming a single answer once a bench can enable more
+    than one. `doc=None` falls back to the single-enabled-store check,
+    matching this connector's pre-multi-store behaviour exactly.
+
+    An order predating the backfill carries no store, and the fallback then
+    has to answer for it. `enabled_connection` cannot: it returns None on a
+    bench with several stores enabled, which reads here as "switched off" and
+    quietly stops every unattributed order from pushing. Asking whether the
+    store is enabled AND on this bench is a different question from asking
+    whether it is this order's store, and only the first one has an answer --
+    so on a multi-store bench an unattributed order stays unattributed and
+    nothing is pushed on a guess, which is the same refusal connections.py
+    makes for every other unnamed call. It is logged rather than passed over
+    in silence, because from the seller's side an order that never pushes and
+    an order with nothing wrong with it look identical."""
+    conn = doc.get("sh_shopify_connection") if doc is not None else None
+    if conn:
+        return True
+    if connections.enabled_connection() is not None:
+        return True
+    if doc is not None and doc.get("sh_shopify_order_id") and len(connections.enabled_names()) > 1:
+        # Came from Shopify (it has an order id) but predates the backfill, so
+        # there is no way to tell which of the enabled stores it came from.
+        frappe.logger().warning(
+            f"Shopify: {doc.doctype} {doc.name} not pushed -- it names no "
+            f"connection and this bench has several enabled, so which store it "
+            f"belongs to cannot be told. Backfill sh_shopify_connection on it.")
+    return False
 
 
 def on_sales_order_update(doc, method=None):
@@ -33,7 +65,7 @@ def on_sales_order_update(doc, method=None):
         frappe.logger().debug(
             f"Shopify: on_sales_order_update {doc.name} skipped, from_shopify_sync flag set")
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if not doc.get("sh_shopify_order_id"):
         frappe.logger().debug(
@@ -81,7 +113,7 @@ def on_sales_order_submit(doc, method=None):
     """
     if doc.flags.from_shopify_sync:
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if doc.get("sh_shopify_order_id"):
         return  # already a Shopify-origin order, nothing to push
@@ -102,7 +134,7 @@ def on_sales_order_submit(doc, method=None):
 def on_sales_order_cancel(doc, method=None):
     if doc.flags.from_shopify_sync:
         return
-    if not _connector_enabled():
+    if not _connector_enabled(doc):
         return
     if not doc.get("sh_shopify_order_id"):
         return

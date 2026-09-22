@@ -18,6 +18,8 @@ from alaiy_os_connector_shopify.shopify.order.queries import (
 )
 from alaiy_os_connector_shopify.shopify.order.utils import _to_gid
 
+from alaiy_os_connector_shopify import connections
+
 
 def _line_item_discount_total(li: dict) -> float:
     """
@@ -77,9 +79,12 @@ def _apply_shopify_line_item_changes(
     # The order's own currency, not a hardcoded default -- these are all
     # MoneyInput values sent back to the same Shopify order, which is
     # already denominated in whatever currency it was placed in.
-    order_currency = frappe.db.get_value("Sales Order", sales_order, "currency") or "USD"
+    so_fields = frappe.db.get_value(
+        "Sales Order", sales_order, ["currency", "sh_shopify_connection"], as_dict=True) or {}
+    order_currency = so_fields.get("currency") or "USD"
+    connection = so_fields.get("sh_shopify_connection")
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
     try:
         begin_data = client.execute(_ORDER_EDIT_BEGIN_MUTATION, {"id": _to_gid(order_id)})
         begin = begin_data.get("orderEditBegin") or {}

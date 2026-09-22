@@ -1,21 +1,32 @@
 {
   "actions": [],
   "allow_rename": 0,
-  "autoname": "field:tag_name",
+  "autoname": "autoname",
   "creation": "2026-07-17 00:00:00.000000",
   "doctype": "DocType",
   "engine": "InnoDB",
   "field_order": [
+    "connection",
     "tag_name"
   ],
   "fields": [
+    {
+      "fieldname": "connection",
+      "fieldtype": "Link",
+      "label": "Shopify Connection",
+      "options": "Shopify Connection",
+      "in_list_view": 1,
+      "read_only": 1,
+      "search_index": 1,
+      "description": "The Shopify store this row belongs to. Shopify ids are only unique within one store, so every lookup pairs the id with this field -- without it a second store's product 12345 finds the first store's row. Set by the connector; never hand-edited."
+    },
     {
       "fieldname": "tag_name",
       "fieldtype": "Data",
       "in_list_view": 1,
       "label": "Tag",
       "reqd": 1,
-      "unique": 1
+      "description": "Not unique -- two stores can each have their own 'Sale' tag. The row's name is namespaced per store (see shopify/product/tags.py's tag_doc_name), except the default connection's, which stays the bare tag name for backward compatibility."
     }
   ],
   "links": [],

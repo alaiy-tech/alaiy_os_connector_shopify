@@ -133,9 +133,9 @@ scheduler_events = {
         "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only",
     ],
     "daily": [
-        "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_tags",
-        "alaiy_os_connector_shopify.shopify.product_sync.sync_shopify_collections",
-        "alaiy_os_connector_shopify.shopify.inventory_sync.sync_shopify_locations",
+        "alaiy_os_connector_shopify.shopify.sync_jobs.scheduled_sync_tags",
+        "alaiy_os_connector_shopify.shopify.sync_jobs.scheduled_sync_collections",
+        "alaiy_os_connector_shopify.shopify.sync_jobs.scheduled_sync_locations",
         # Full inventory sweep, the backstop under the webhook. A dropped
         # webhook (or one that arrived while the connector was disabled)
         # otherwise leaves local stock silently wrong forever, since nothing
@@ -194,8 +194,16 @@ doc_events = {
     },
     # Enabling the connector has to backfill the Listings that
     # ensure_listing_for_new_item skipped while it was off.
-    "Shopify Connector Settings": {
-        "on_update": "alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_listings_on_enable",
+    "Shopify Connection": {
+        "on_update": [
+            "alaiy_os_connector_shopify.shopify.product.item_hooks.backfill_listings_on_enable",
+            # Client-site code we don't fully control still reads the retired
+            # Shopify Connector Settings Single directly. Keep tabSingles for
+            # it in step with whichever connection is enabled so that reads
+            # via frappe.db.get_single_value keep working -- see
+            # shopify_connector_settings.py's docstring.
+            "alaiy_os_connector_shopify.alaiy_os_connector_shopify.doctype.shopify_connector_settings.shopify_connector_settings.sync_legacy_settings_mirror",
+        ],
     },
     "Shopify Product Listing": {
         "on_update": "alaiy_os_connector_shopify.shopify.product.listing_hooks.on_listing_update",

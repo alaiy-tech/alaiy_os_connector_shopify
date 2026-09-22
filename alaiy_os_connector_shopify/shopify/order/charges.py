@@ -45,7 +45,7 @@ def apply_order_discount(so, order):
     so.discount_amount = disc
 
 
-def build_custom_line_item(li, warehouse, delivery_date=None):
+def build_custom_line_item(li, warehouse, delivery_date=None, connection=None):
     """
     A Shopify line item that maps to no Alaiy OS Item -- a one-off typed onto
     the order, or a product since deleted from Shopify -- represented by a
@@ -58,7 +58,7 @@ def build_custom_line_item(li, warehouse, delivery_date=None):
     arrived as one row of qty 6, and nothing downstream could tell them apart
     again. Returns a row dict, or None if it can't be built.
     """
-    item_code = _ensure_custom_item(li)
+    item_code = _ensure_custom_item(li, connection)
     if not item_code:
         return None
     from alaiy_os_connector_shopify.shopify.order.utils import _line_item_qty
@@ -109,13 +109,20 @@ def _custom_item_code(li):
     return f"{CUSTOM_ITEM_PREFIX} {key}"[:140]
 
 
-def _ensure_custom_item(li=None):
+def _ensure_custom_item(li=None, connection=None):
     """The placeholder Item for this line, created on first use.
 
     Non-stock, so it never touches the stock ledger -- there is no real
     inventory behind a product Shopify no longer has.
+
+    Namespaced per store like any other Item code (see item_code_for): the
+    key this is built from is a Shopify product/variant id, only unique
+    inside one shop, so two sellers' unmapped line items for "product 12345"
+    would otherwise land on one shared placeholder.
     """
-    name = _custom_item_code(li or {})
+    from alaiy_os_connector_shopify.shopify.scoping import item_code_for
+
+    name = item_code_for(connection, _custom_item_code(li or {}))
     if frappe.db.exists("Item", name):
         return name
     try:
@@ -127,6 +134,8 @@ def _ensure_custom_item(li=None):
         item.item_group = frappe.db.get_value("Item Group", {"is_group": 0}, "name") or "All Item Groups"
         item.stock_uom = "Nos"
         item.is_stock_item = 0
+        if connection is not None:
+            item.sh_shopify_connection = getattr(connection, "name", connection)
         item.flags.ignore_permissions = True
         item.insert()
         frappe.db.commit()

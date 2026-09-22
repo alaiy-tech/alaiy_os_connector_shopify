@@ -10,13 +10,13 @@ All under module `Alaiy OS Connector Shopify`. Five are child tables.
 
 | # | DocType | Child table | Fields | Naming |
 |---|---|---|---|---|
-| 1 | `Shopify Connector Settings` | | 25 | Single |
+| 1 | `Shopify Connection` | | 46 | `field:connection_id` |
 | 2 | `Shopify Product Listing` | | 13 | `field:item` |
 | 3 | `Shopify Listing Variant` | yes | 5 | — |
 | 4 | `Shopify Listing Image` | yes | 4 | — |
 | 5 | `Shopify Product Metafield` | yes | 4 | — |
 | 6 | `Shopify Synced Entity` | | 8 | `hash` |
-| 7 | `Shopify Sync Log` | | 13 | `SH-SYNC-.YYYY.-.MM.-.DD.-.######` |
+| 7 | `Shopify Sync Log` | | 14 | `SH-SYNC-.YYYY.-.MM.-.DD.-.######` |
 | 8 | `Shopify Retry Queue Entry` | | 8 | `hash` |
 | 9 | `Shopify Category` | | 6 | tree (`is_tree`, nested set) |
 | 10 | `Shopify Collection` | | 13 | `hash` |

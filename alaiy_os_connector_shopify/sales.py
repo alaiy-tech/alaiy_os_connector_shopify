@@ -93,7 +93,7 @@ import frappe
 from frappe import _
 from frappe.utils import add_days, cint, flt, get_last_day, getdate, nowdate
 
-SETTINGS = "Shopify Connector Settings"
+from alaiy_os_connector_shopify import connections
 
 # Bucket start per granularity, as a MariaDB expression over `so.transaction_date`.
 # `total` groups on a constant expression so one code path serves every
@@ -215,18 +215,21 @@ def _assert_bucket_count(date_from, date_to, granularity):
 
 
 # --- company & currency ------------------------------------------------------
-def _company():
+def _company(connection=None):
     """The company Shopify orders book to.
 
-    `Shopify Connector Settings` is a Single, so unlike the Amazon connector
-    there is no connection to resolve -- but the same three-step fallback
-    applies for the same reason. If `sh_company` was cleared after orders were
-    already synced, the orders themselves still name the company they were
-    booked to, and answering from them beats refusing.
+    `connection` names a specific store for a multi-store caller, read off
+    that connection's own `sh_company`. Unnamed, keeps the fallback that
+    predates multi-store: the one enabled store's `sh_company`, else the
+    site's global default company. If `sh_company` was cleared after orders
+    were already synced, the orders themselves still name the company they
+    were booked to, and answering from them beats refusing.
     """
-    company = frappe.db.get_single_value(SETTINGS, "sh_company") or frappe.defaults.get_global_default(
-        "company"
-    )
+    if connection:
+        company = connections.resolve(connection).get("sh_company")
+    else:
+        company = connections.enabled_value("sh_company")
+    company = company or frappe.defaults.get_global_default("company")
     if not company:
         company = frappe.db.get_value(
             "Sales Order",
@@ -479,14 +482,19 @@ def sales_summary(
     granularity="day",
     financial_status=None,
     fulfillment_status=None,
+    connection=None,
 ):
-    """Revenue, units, orders and average order value over a period, bucketed."""
+    """Revenue, units, orders and average order value over a period, bucketed.
+
+    `connection` names which store's company/currency to report in, for a
+    multi-store bench; unnamed, keeps the single-enabled-store fallback.
+    """
     date_from, date_to = _period(date_from, date_to)
     granularity = _one_of(granularity, GRANULARITIES, "granularity", default="day")
     financial_status, fulfillment_status = _validated_statuses(financial_status, fulfillment_status)
     _assert_bucket_count(date_from, date_to, granularity)
 
-    company = _company()
+    company = _company(connection)
     where, params = _sold_where(company, date_from, date_to, financial_status, fulfillment_status)
     bucket = BUCKET_SQL[granularity]
     conditions = " AND ".join(where)
@@ -559,6 +567,7 @@ def top_selling_products(
     limit=None,
     financial_status=None,
     fulfillment_status=None,
+    connection=None,
 ):
     """The best-selling items or variants over a period, ranked.
 
@@ -566,6 +575,9 @@ def top_selling_products(
     products -- "what sold best" means the t-shirt, not the medium blue one --
     even though the revenue actually lands on variant lines. `variant` is there
     for when the size mix is the question.
+
+    `connection` names which store to report on, for a multi-store bench;
+    unnamed, keeps the single-enabled-store fallback.
     """
     date_from, date_to = _period(date_from, date_to)
     by = _one_of(by, ("revenue", "units"), "ranking", default="revenue")
@@ -573,7 +585,7 @@ def top_selling_products(
     financial_status, fulfillment_status = _validated_statuses(financial_status, fulfillment_status)
     limit = min(cint(limit) or TOP_DEFAULT_LIMIT, TOP_MAX_LIMIT)
 
-    company = _company()
+    company = _company(connection)
     where, params = _sold_where(company, date_from, date_to, financial_status, fulfillment_status)
     conditions = " AND ".join(where)
 
@@ -670,8 +682,13 @@ def product_sales(
     date_from=None,
     date_to=None,
     granularity="month",
+    connection=None,
 ):
-    """How one item or variant sold over a period, bucketed."""
+    """How one item or variant sold over a period, bucketed.
+
+    `connection` names which store to report on, for a multi-store bench;
+    unnamed, keeps the single-enabled-store fallback.
+    """
     item_code = (item_code or "").strip()
     variant_id = (variant_id or "").strip()
     if bool(item_code) == bool(variant_id):
@@ -680,7 +697,7 @@ def product_sales(
     granularity = _one_of(granularity, GRANULARITIES, "granularity", default="month")
     _assert_bucket_count(date_from, date_to, granularity)
 
-    company = _company()
+    company = _company(connection)
     where, params = _sold_where(company, date_from, date_to)
     if item_code:
         where.append("soi.item_code = %(item_code)s")
@@ -777,6 +794,7 @@ def compare_sales_periods(
     baseline_to=None,
     financial_status=None,
     fulfillment_status=None,
+    connection=None,
 ):
     """One period's totals against another's, with the deltas already computed.
 
@@ -784,6 +802,9 @@ def compare_sales_periods(
     part that goes wrong: a percentage change worked out inside a completion
     comes out plausible, unlabelled and occasionally wrong, and this is the
     question people ask most.
+
+    `connection` names which store to compare, for a multi-store bench;
+    unnamed, keeps the single-enabled-store fallback.
     """
     date_from, date_to = _period(date_from, date_to)
     if baseline_from or baseline_to:
@@ -799,6 +820,7 @@ def compare_sales_periods(
         "total",
         financial_status=financial_status,
         fulfillment_status=fulfillment_status,
+        connection=connection,
     )
     baseline = sales_summary(
         base_from,
@@ -806,6 +828,7 @@ def compare_sales_periods(
         "total",
         financial_status=financial_status,
         fulfillment_status=fulfillment_status,
+        connection=connection,
     )
 
     return {
@@ -825,8 +848,12 @@ def list_shopify_orders(
     item_code=None,
     page_no=1,
     page_size=None,
+    connection=None,
 ):
     """A page of the Shopify orders behind the figures above.
+
+    `connection` names which store's orders to list, for a multi-store bench;
+    unnamed, keeps the single-enabled-store fallback.
 
     Paged and shaped like `register.list_listings` on purpose: it is the same
     move -- a total, a page, and `has_more` -- and the pack already teaches a
@@ -853,7 +880,7 @@ def list_shopify_orders(
     page_no = max(cint(page_no), 1)
     page_size = min(cint(page_size) or ORDERS_PAGE_SIZE, ORDERS_MAX_PAGE_SIZE)
 
-    company = _company()
+    company = _company(connection)
     where = [
         "so.sh_shopify_order_id IS NOT NULL",
         "so.sh_shopify_order_id != ''",
@@ -934,15 +961,18 @@ def list_shopify_orders(
     }
 
 
-def orders_sync_status():
+def orders_sync_status(connection=None):
     """Is the order sync working, and how far back does its data reach?
 
     The two halves belong together: a status of "completed" with a coverage
     window starting in March is a working sync that still cannot answer January,
     and either fact alone is misleading. Its own tool rather than a key on every
     result because it is also the answer to "why is this zero".
+
+    `connection` names which store to report on, for a multi-store bench;
+    unnamed, keeps the single-enabled-store fallback.
     """
-    company = _company()
+    company = _company(connection)
     cov = coverage(company)
 
     last_run = frappe.db.get_value(

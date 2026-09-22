@@ -62,7 +62,7 @@ def _create_tax_account(company):
     if not parent:
         frappe.log_error(
             title=f"Shopify: no Liability group to create a Tax account under for {company}",
-            message="Set 'Tax Account' on Shopify Connector Settings manually to book order tax.",
+            message="Set 'Tax Account' on Shopify Connection manually to book order tax.",
         )
         return None
 
@@ -131,3 +131,58 @@ def _append_tax_lines(so, tax_lines, taxes_included, settings):
                 "description": description,
                 "tax_amount": amount,
             })
+
+
+_ROUNDING_TOLERANCE = 0.005
+
+
+def apply_rounding_adjustment(so, order: dict, settings) -> float:
+    """
+    Correct a small gap between Shopify's own order total and Alaiy OS's
+    recalculated one, once so.grand_total exists (after insert, before
+    submit) -- Shopify's booking taxes/shipping/discount as separate rows
+    and letting ERPNext sum them can land a cent or two off from the total
+    Shopify itself already charged the customer, from floating point or a
+    tax rate that doesn't divide evenly across line amounts.
+
+    Shopify's total is what actually got paid, so it wins: the gap is
+    booked as one more Actual tax row against a write-off account, not
+    silently left as a discrepancy between what this order says and what
+    the customer's card was really charged.
+
+    Runs before so.submit(), not after -- the Sales Order's own item/tax
+    tables are still open at that point, so this is one more row on the
+    save already in flight rather than a second full document save.
+
+    Returns the adjustment amount applied (0 if none was needed).
+    """
+    shopify_total = flt(order.get("total_price"))
+    if not shopify_total:
+        return 0.0
+
+    difference = flt(shopify_total - so.grand_total, 2)
+    if abs(difference) <= _ROUNDING_TOLERANCE:
+        return 0.0
+
+    account = settings.get("sh_rounding_write_off_account") or frappe.get_cached_value(
+        "Company", so.company, "write_off_account"
+    )
+    if not account:
+        frappe.log_error(
+            title=f"Shopify order {so.sh_shopify_order_name or so.name}: rounding gap left uncorrected",
+            message=(
+                f"Shopify total {shopify_total} vs Alaiy OS total {so.grand_total} "
+                f"(difference {difference}). Set a Rounding Write Off Account on "
+                "the Shopify Connection, or a Write Off Account on the Company, "
+                "to correct this automatically."
+            ),
+        )
+        return 0.0
+
+    so.append("taxes", {
+        "charge_type": "Actual",
+        "account_head": account,
+        "description": "Rounding adjustment (Shopify total)",
+        "tax_amount": difference,
+    })
+    return difference

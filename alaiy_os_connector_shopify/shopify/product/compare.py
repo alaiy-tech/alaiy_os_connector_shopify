@@ -54,7 +54,7 @@ from alaiy_os_connector_shopify.shopify.product.tags import _item_tags
 from alaiy_os_connector_shopify.shopify.sync_engine.fingerprint import _money
 
 LISTING_DOCTYPE = "Shopify Product Listing"
-SETTINGS = "Shopify Connector Settings"
+from alaiy_os_connector_shopify import connections
 
 #: Fields excluded from the diff, and why. Reported on every result -- see the
 #: module docstring.
@@ -222,7 +222,7 @@ def compare_listing(item_code):
             ),
         }
 
-    settings = frappe.get_single(SETTINGS)
+    settings = connections.require_enabled()
     changes = _diff(_local_side(listing, item, settings), _remote_side(node))
 
     local_variants = _local_variants(listing, item, settings)

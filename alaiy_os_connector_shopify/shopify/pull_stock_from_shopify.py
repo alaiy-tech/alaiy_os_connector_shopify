@@ -43,6 +43,8 @@ Then, once the dry run's mismatch list looks right, apply for real:
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 _VARIANT_LOCATIONS_QUERY = """
 query VariantInventoryLevels($id: ID!) {
   productVariant(id: $id) {
@@ -93,8 +95,8 @@ def run(dry_run=True, slice_index=None, slices=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.inventory_sync import _resolve_location_pairs
 
-    client = ShopifyGraphQLClient()
-    settings = frappe.get_single("Shopify Connector Settings")
+    client = ShopifyGraphQLClient(connections.require_enabled())
+    settings = connections.require_enabled()
     pairs = _resolve_location_pairs(settings, client)
     if not pairs:
         print("No warehouse/location pair resolved -- aborting.", flush=True)

@@ -33,7 +33,7 @@ from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _e
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
 from alaiy_os_connector_shopify.shopify.product.variants import _apply_variant_physical, _set_item_variant_cost, _variant_available_qty, _variant_location_levels, _variant_inventory_item_id
 from alaiy_os_connector_shopify.shopify.product.stock import _set_opening_stock, _default_warehouse_row, _resolve_item_shopify_location, _sync_item_supplier_from_location, resolve_product_shopify_location
-from alaiy_os_connector_shopify.shopify.product.media import _set_item_image, _set_item_slideshow
+from alaiy_os_connector_shopify.shopify.product.media import _set_item_image, _set_item_slideshow, product_image_urls
 from alaiy_os_connector_shopify.shopify.product.taxonomy import ensure_shopify_category
 from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _set_item_tags
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
@@ -49,20 +49,23 @@ def _fit_item_name(name: str) -> str:
     sh_seo_title and downloaded image filenames."""
     return (name or "")[:_ITEM_NAME_MAX_LENGTH]
 
+from alaiy_os_connector_shopify import connections
+from alaiy_os_connector_shopify.shopify.scoping import item_code_for
 
-def run_full_product_import(trigger="manual", log_name=None, statuses=None):
+
+def run_full_product_import(trigger="manual", log_name=None, connection=None,
+                            statuses=None):
     """
     Import products from Shopify into Alaiy OS. A real create/update/skip
     sync every time: new Shopify products are created, changed ones are
     updated, unchanged ones are skipped untouched.
 
-    Never wipes -- removed entirely. The first-run auto-wipe
-    this used to do as a "safety net against duplicates" was the exact
-    logic that once emptied real stock data live when a scheduler fired
-    mid-wipe -- the risk it was meant to guard against was smaller than the
-    risk it was itself. A brand-new site's first import simply creates
-    everything fresh with nothing to skip; there was never a real need to
-    wipe first.
+    Never wipes. The first-run auto-wipe this used to do as a "safety net
+    against duplicates" was the exact logic that once emptied real stock
+    data live when a scheduler fired mid-wipe -- the risk it was meant to
+    guard against was smaller than the risk it was itself. A brand-new
+    site's first import simply creates everything fresh with nothing to
+    skip; there was never a real need to wipe first.
 
     Args:
         trigger: "manual", "scheduled", or "webhook"
@@ -73,7 +76,7 @@ def run_full_product_import(trigger="manual", log_name=None, statuses=None):
     """
     allowed_statuses = status_map.parse_statuses(statuses)
 
-    log = load_or_create_log("products", trigger, log_name)
+    log = load_or_create_log("products", trigger, log_name, connection=connection)
 
     # Concurrency check. This is the ONLY guard -- a separate
     # settings.lock()/unlock() document lock used to run alongside this,
@@ -86,7 +89,8 @@ def run_full_product_import(trigger="manual", log_name=None, statuses=None):
     # manual console unlock every single time a worker was killed during
     # testing. Two guards for one job, only one of which self-heals, was
     # the actual bug. Removed the fragile one.
-    if has_active_sync("products", exclude_name=log.name):
+    if has_active_sync("products", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another products sync is already running."
@@ -101,7 +105,7 @@ def run_full_product_import(trigger="manual", log_name=None, statuses=None):
     try:
         # Import phase
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connection)
         # Let Shopify filter by status rather than fetching every product
         # and discarding most locally. None when no explicit choice was
         # made, which leaves the query unfiltered exactly as before.
@@ -120,7 +124,7 @@ def run_full_product_import(trigger="manual", log_name=None, statuses=None):
             pages += 1
             for node in page_nodes:
                 processed += 1
-                if not status_map.import_allows(node.get("status"), allowed_statuses):
+                if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
                     skipped += 1
                     reason = f"status {node.get('status')} not selected for import"
                     skip_reason_counts[reason] += 1
@@ -128,7 +132,7 @@ def run_full_product_import(trigger="manual", log_name=None, statuses=None):
                         skip_examples.append(f"{node.get('title', 'Unknown')}: {reason}")
                     continue
                 try:
-                    was_created, reason = _import_product(node)
+                    was_created, reason = _import_product(node, connection)
                     if was_created and reason.startswith("updated"):
                         updated += 1
                     elif was_created:
@@ -200,7 +204,7 @@ def run_full_product_import(trigger="manual", log_name=None, statuses=None):
     return log.name
 
 
-def search_products_live(term: str, limit: int = 20) -> list:
+def search_products_live(term: str, limit: int = 20, connection=None) -> list:
     """Live Shopify title/SKU search for the admin "Search for a product…"
     picker -- lets an admin pull in one specific product instead of running
     a full sweep to find it.
@@ -224,7 +228,7 @@ def search_products_live(term: str, limit: int = 20) -> list:
     escaped = term.replace('"', '\\"')
     query = f'title:*{escaped}* OR sku:*{escaped}*'
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
     data = client.execute(_PRODUCT_SEARCH_QUERY, {"query": query, "first": limit})
     nodes = ((data or {}).get("products") or {}).get("nodes") or []
     return [
@@ -239,7 +243,7 @@ def search_products_live(term: str, limit: int = 20) -> list:
     ]
 
 
-def import_single_product(product_id: str) -> tuple:
+def import_single_product(product_id: str, connection=None) -> tuple:
     """Pull and import exactly one Shopify product by its numeric id -- the
     admin "Search for a product…" flow's actual pull step, once the admin
     has picked a match from search_products_live.
@@ -262,13 +266,14 @@ def import_single_product(product_id: str) -> tuple:
     if not product_id:
         frappe.throw("A product id is required.")
 
-    client = ShopifyGraphQLClient()
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
+    client = ShopifyGraphQLClient(settings)
     data = client.execute(_PRODUCT_BY_ID_QUERY, {"id": f"gid://shopify/Product/{product_id}"})
     node = (data or {}).get("product")
     if not node:
         frappe.throw(f"Shopify product {product_id} was not found -- it may have been deleted.")
 
-    return _import_product(node)
+    return _import_product(node, settings)
 
 
 def _product_stocked_at_location(node: dict, location_id: str) -> bool:
@@ -291,7 +296,7 @@ def _product_stocked_at_location(node: dict, location_id: str) -> bool:
 
 
 def run_missing_product_import(trigger="manual", log_name=None, statuses=None, collection_id=None,
-                                location_id=None):
+                                location_id=None, connection=None):
     """
     Catch-up import: only products never linked locally at all -- checked
     by Shopify product id BEFORE any real work (Item lookups, fingerprint
@@ -330,9 +335,10 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
         alaiy_os_connector_shopify.shopify.product.importer.run_missing_product_import
     """
     allowed_statuses = status_map.parse_statuses(statuses)
-    log = load_or_create_log("products", trigger, log_name)
+    log = load_or_create_log("products", trigger, log_name, connection=connection)
 
-    if has_active_sync("products", exclude_name=log.name):
+    if has_active_sync("products", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = now_datetime()
         log.error_message = "Skipped: another products sync is already running."
@@ -356,7 +362,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
         _append_log(log, f"{len(existing_ids)} products already linked locally -- these will be skipped untouched.")
 
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-        client = ShopifyGraphQLClient()
+        client = ShopifyGraphQLClient(connection)
         # Let Shopify filter by status rather than fetching every product
         # and discarding most locally. None when no explicit choice was
         # made, which leaves the query unfiltered exactly as before.
@@ -381,14 +387,14 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                 if product_id in existing_ids:
                     continue  # already linked -- no fingerprint check, no write, no risk
                 processed += 1
-                if not status_map.import_allows(node.get("status"), allowed_statuses):
+                if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
                     skipped += 1
                     continue
                 if location_id and not _product_stocked_at_location(node, location_id):
                     skipped += 1
                     continue
                 try:
-                    was_created, reason = _import_product(node)
+                    was_created, reason = _import_product(node, connection)
                     if was_created:
                         created += 1
                     else:
@@ -463,13 +469,13 @@ def _shopify_node_fingerprint(node: dict) -> str:
         "status": node.get("status"),
         "tags": sorted(node.get("tags") or []),
         "category": (node.get("category") or {}).get("fullName"),
-        "images": [img.get("src") for img in (node.get("images", {}).get("nodes") or [])],
+        "images": product_image_urls(node),
         "variants": variants_fp,
     }
     return fingerprint.fingerprint(canonical)
 
 
-def _update_existing_product(entity, node: dict) -> tuple:
+def _update_existing_product(entity, node: dict, connection=None) -> tuple:
     """
     Product already imported (Synced Entity + Item both exist). Compares a
     fingerprint of Shopify's current data against what was stored at the
@@ -492,10 +498,10 @@ def _update_existing_product(entity, node: dict) -> tuple:
     if entity.external_fingerprint == new_fp:
         return False, "already imported, unchanged"
 
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     template_name = entity.erpnext_name
     variants = node.get("variants", {}).get("nodes", [])
-    images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
+    images = product_image_urls(node)
 
     # If this product has a Listing, its ABSTRACTED fields (images, price)
     # belong to the Listing -- a re-import must NOT overwrite the Item's
@@ -578,13 +584,17 @@ def _warn_if_truncated(node: dict):
         )
 
 
-def _import_product(node: dict) -> tuple:
+def _import_product(node: dict, connection=None) -> tuple:
     """
     Import a single Shopify product, then make sure it has a manageable
     Shopify Product Listing. A product linked/imported inbound must get a
     Listing so it's manageable and so the outbound pipeline (which now reads
     the Listing) sees it -- ensure_listing is idempotent, so re-imports and
     updates never duplicate or clobber merchant edits.
+
+    `connection` is optional -- unset falls back to the single enabled
+    store, matching the behaviour of every caller before this parameter
+    existed.
     """
     # The status choice is applied as a Shopify SEARCH filter in the paginated
     # runs, so a node arriving any other way -- a webhook, a targeted re-import
@@ -592,16 +602,16 @@ def _import_product(node: dict) -> tuple:
     # product archived on Shopify was imported as a fresh, enabled Item on a
     # site with archived import switched off. Re-check the node itself so the
     # setting holds wherever a product comes from.
-    if not status_map.import_allows(node.get("status")):
+    if not status_map.import_allows(node.get("status"), connection=connection):
         return False, f"skipped ({(node.get('status') or 'unknown').lower()} not enabled for import)"
 
     _warn_if_truncated(node)
-    created, reason = _import_product_inner(node)
+    created, reason = _import_product_inner(node, connection)
     product_id = str(node.get("legacyResourceId", ""))
     if product_id:
         entity = None
         try:
-            entity = entities.get_by_external_id("product", product_id)
+            entity = entities.get_by_external_id("product", product_id, connection)
             if entity and entity.erpnext_name:
                 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
                 listing_resolver.ensure_listing(entity.erpnext_name)
@@ -614,7 +624,7 @@ def _import_product(node: dict) -> tuple:
                 message=frappe.get_traceback(),
             )
         try:
-            _sync_product_metafields(entity.erpnext_name if entity else None, node, product_id)
+            _sync_product_metafields(entity.erpnext_name if entity else None, node, product_id, connection)
         except Exception:
             frappe.log_error(
                 title=f"Shopify import: metafields sync failed for product {product_id}",
@@ -623,7 +633,7 @@ def _import_product(node: dict) -> tuple:
     return created, reason
 
 
-def _sync_product_metafields(template_name: str, node: dict, product_id: str):
+def _sync_product_metafields(template_name: str, node: dict, product_id: str, connection=None):
     """Fetch every metafield (all namespaces, all pages) and store them on
     the Listing -- no-op if the product never got a Listing."""
     if not template_name:
@@ -636,7 +646,7 @@ def _sync_product_metafields(template_name: str, node: dict, product_id: str):
     from alaiy_os_connector_shopify.shopify.product.metafields import (
         all_metafields_of, sync_listing_metafields,
     )
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
     product_gid = f"gid://shopify/Product/{product_id}"
     nodes = all_metafields_of(node, client, product_gid=product_gid)
     sync_listing_metafields(listing, nodes)
@@ -646,7 +656,7 @@ def _sync_product_metafields(template_name: str, node: dict, product_id: str):
     frappe.db.commit()
 
 
-def _import_product_inner(node: dict) -> tuple:
+def _import_product_inner(node: dict, connection=None) -> tuple:
     """
     Import a single Shopify product (template + variants) as Alaiy OS Item(s),
     or update it if already imported and Shopify's data has since changed.
@@ -666,7 +676,7 @@ def _import_product_inner(node: dict) -> tuple:
     if not product_id:
         return False, "missing product_id"
 
-    existing_entity = entities.get_by_external_id("product", product_id)
+    existing_entity = entities.get_by_external_id("product", product_id, connection)
     if existing_entity and not frappe.db.exists("Item", existing_entity.erpnext_name):
         # Local item was deleted since the last import/link -- the mapping
         # is stale. Drop it and fall through to a fresh create below,
@@ -676,9 +686,9 @@ def _import_product_inner(node: dict) -> tuple:
         existing_entity = None
 
     if existing_entity:
-        return _update_existing_product(existing_entity, node)
+        return _update_existing_product(existing_entity, node, connection)
 
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     title = node.get("title", f"Product {product_id}").strip()
     description = node.get("descriptionHtml", "")
     vendor = node.get("vendor", "")
@@ -695,7 +705,7 @@ def _import_product_inner(node: dict) -> tuple:
         item_group = node.get("productType", "")
 
     variants = node.get("variants", {}).get("nodes", [])
-    images = [img.get("src") for img in (node.get("images", {}).get("nodes", []) or []) if img.get("src")]
+    images = product_image_urls(node)
 
     # Case 1: Product has multiple variants → template + variant items
     if len(variants) > 1:
@@ -741,9 +751,9 @@ def _apply_existing_variant_content(item_code: str, variant: dict, settings, pro
     item = frappe.get_doc("Item", item_code)
     _apply_variant_physical(item, variant, product_meta)
     if product_meta:
-        _apply_product_meta(item, product_meta)
+        _apply_product_meta(item, product_meta, connection=settings)
     _dedupe_item_uoms(item)
-    location_levels = _variant_location_levels(variant)
+    location_levels = _variant_location_levels(variant, settings)
     # product_location is the fallback for a variant holding no stock
     # anywhere -- ownership is a product fact, not a stock reading.
     resolved_location = _resolve_item_shopify_location(
@@ -820,6 +830,12 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
         opt_title = (variant.get("option1") or variant.get("title") or "").strip()
         sku = f"{template_name}-{opt_title}" if opt_title else f"{template_name}-{v_id}"
 
+    # The Item code this store's SKU maps to. On the default store that is the
+    # bare SKU exactly as before; a second store gets its own namespaced code,
+    # because item_code is Item's primary key and two sellers stocking the
+    # same SKU cannot share one row.
+    sku = item_code_for(settings, sku)
+
     if frappe.db.exists("Item", sku):
         # Repoint whenever Shopify's ids differ from what's stored, not only
         # when the item has none. A merchant deleting a product and recreating
@@ -829,8 +845,27 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
         # the item keeps a dead product id, and the new template ends up with
         # zero children. Confirmed live on a duplicate-product cleanup.
         current = frappe.db.get_value(
-            "Item", sku, ["sh_shopify_variant_id", "sh_shopify_product_id", "variant_of"], as_dict=True
+            "Item", sku,
+            ["sh_shopify_variant_id", "sh_shopify_product_id", "variant_of",
+             "sh_shopify_connection"],
+            as_dict=True,
         ) or {}
+
+        # Never repoint across stores. Namespacing makes a collision unlikely,
+        # but an Item can still carry another store's ids -- imported before
+        # this existed, or hand-edited -- and rewriting them here would hand
+        # that seller's product to this one: their next stock push would go to
+        # this store's shop. Refusing leaves the row alone and reports it.
+        owner = current.get("sh_shopify_connection")
+        this_store = getattr(settings, "name", settings)
+        if owner and this_store and owner != this_store:
+            frappe.log_error(
+                title=f"Shopify: {sku} belongs to another store"[:140],
+                message=(f"Item {sku} is owned by connection {owner}, so the import "
+                         f"for {this_store} left it untouched rather than repointing "
+                         f"it at product {product_id}."),
+            )
+            return None
         if v_id and current.get("sh_shopify_variant_id") != v_id:
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", v_id)
         if product_id and current.get("sh_shopify_product_id") != product_id:
@@ -840,6 +875,8 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
         # from everything that walks the new one's children.
         if template_name and current.get("variant_of") and current["variant_of"] != template_name:
             frappe.db.set_value("Item", sku, "variant_of", template_name)
+        if this_store and not owner:
+            frappe.db.set_value("Item", sku, "sh_shopify_connection", this_store)
         if v_id:
             listing_resolver.set_product_id(template_name, product_id)
             listing_resolver.set_variant_id(template_name, sku, v_id)
@@ -877,6 +914,7 @@ def _ensure_variant_exists_locally(template_name: str, variant: dict, product_id
     v_item.include_item_in_buying = 1
     v_item.sh_shopify_product_id = product_id
     v_item.sh_shopify_variant_id = v_id
+    v_item.sh_shopify_connection = getattr(settings, "name", settings)
     template = frappe.get_doc("Item", template_name)
     template_attrs = [r.attribute for r in (template.attributes or [])]
     selected_options = variant.get("selectedOptions")
@@ -919,7 +957,7 @@ def _apply_existing_template_content(template_name: str, product_meta: dict, ima
     (skip_abstracted) they must NOT overwrite the Item image -- the caller
     routes them to the Listing instead."""
     template = frappe.get_doc("Item", template_name)
-    _apply_product_meta(template, product_meta)
+    _apply_product_meta(template, product_meta, connection=settings)
     _dedupe_item_uoms(template)
     template.flags.from_shopify_sync = True
     template.flags.ignore_permissions = True
@@ -957,8 +995,16 @@ def _import_simple_product(
     sku = (variant.get("sku") or "").strip()
     if not sku:
         sku = f"SH-{product_id}"  # Fallback to Shopify ID if no SKU
+    # Namespaced per store -- the default store's SKUs stay bare (see
+    # item_code_for), every other store's take a prefix so two sellers
+    # stocking the same SKU never collide on Item's primary key.
+    sku = item_code_for(settings, sku)
 
-    # Check if Item with this SKU already exists
+    # Check if Item with this SKU already exists. Namespaced, so this only
+    # ever matches another connector's pre-existing Item (Cloudstore etc.)
+    # for the default store -- no other connector is namespace-aware, so a
+    # namespaced store's variants always fall through to a fresh create
+    # instead of reusing a bare-SKU Item someone else made.
     if frappe.db.exists("Item", sku):
         # Whether this Item is already linked to Shopify -- Listing's
         # copy first (owning template if it's a variant), Item as fallback.
@@ -977,15 +1023,17 @@ def _import_simple_product(
             # belongs on the template, not this leaf variant.
             if variant_of:
                 frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
+                frappe.db.set_value("Item", variant_of, "sh_shopify_connection", getattr(settings, "name", settings))
                 listing_resolver.set_product_id(variant_of, product_id)
                 if product_meta:
                     _apply_existing_template_content(variant_of, product_meta, images, settings)
-                entity = entities.get_or_new("product", "Item", variant_of, product_id)
+                entity = entities.get_or_new("product", "Item", variant_of, product_id, connection=settings)
                 entities.save(entity, external_id=product_id, erpnext_name=variant_of)
 
             # Link the item itself
             frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
             frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
+            frappe.db.set_value("Item", sku, "sh_shopify_connection", getattr(settings, "name", settings))
             if not variant_of:
                 listing_resolver.set_product_id(sku, product_id)
             listing_resolver.set_variant_id(variant_of or sku, sku, variant.get("legacyResourceId"))
@@ -1002,7 +1050,7 @@ def _import_simple_product(
 
             # Save Synced Entity mapping for the simple item if no parent template
             if not variant_of:
-                entity = entities.get_or_new("product", "Item", sku, product_id)
+                entity = entities.get_or_new("product", "Item", sku, product_id, connection=settings)
                 entities.save(entity, external_id=product_id, erpnext_name=sku)
 
             frappe.db.commit()
@@ -1036,12 +1084,16 @@ def _import_simple_product(
     # Link to Shopify
     item.sh_shopify_product_id = product_id
     item.sh_shopify_variant_id = variant.get("legacyResourceId")
+    # Which store this Item belongs to -- without this, a lookup by Shopify
+    # id alone (webhooks, inventory sync, the importer's own re-run) cannot
+    # tell this store's product from another seller's.
+    item.sh_shopify_connection = getattr(settings, "name", settings)
 
     default_warehouse_row = _default_warehouse_row(settings)
     if default_warehouse_row:
         item.append("item_defaults", default_warehouse_row)
 
-    location_levels = _variant_location_levels(variant)
+    location_levels = _variant_location_levels(variant, settings)
     resolved_location = _resolve_item_shopify_location(location_levels, settings, item_name)
     if resolved_location:
         item.shopify_location = resolved_location
@@ -1091,7 +1143,7 @@ def _import_simple_product(
     # this import" apart from "changed" instead of always seeing a blank
     # baseline and treating every product as changed on its first re-check.
     entities.save(
-        entities.get_or_new("product", "Item", item_name, product_id),
+        entities.get_or_new("product", "Item", item_name, product_id, connection=settings),
         erpnext_doctype="Item",
         erpnext_name=item_name,
         external_id=product_id,
@@ -1120,6 +1172,11 @@ def _import_product_with_variants(
         ch for ch in title.lower().replace(" ", "-") if ch.isalnum() or ch == "-"
     ).strip("-")[:60]
     template_name = f"{slug}-{product_id}" if slug else f"sh-{product_id}"
+    # Namespaced per store, same as a simple product's SKU (see
+    # item_code_for). product_id is only unique within its own shop, so two
+    # sellers can each have a product 12345 and land on the identical
+    # template_name here without this.
+    template_name = item_code_for(settings, template_name)
 
     # Check if template already exists -- since template_name is now
     # product_id-suffixed, this can only be true if the exact same
@@ -1176,6 +1233,15 @@ def _import_product_with_variants(
     # empty one -- otherwise the new Shopify template steals the
     # sh_shopify_product_id while the real content stays orphaned on the
     # original template no one links to anymore.
+    # NOTE: matches by the BARE Shopify SKU on purpose -- a non-Shopify
+    # connector (Cloudstore) has never heard of this store's `store::SKU`
+    # namespace, so any Item it already created can only exist under the
+    # bare code. This means cross-connector reuse only ever finds a match
+    # for the default store (item_code_for is a no-op there); a namespaced
+    # store's variants always fall through to a fresh create instead of
+    # reusing another connector's existing Item. Correct for now -- no
+    # other connector is namespace-aware yet -- but worth revisiting if
+    # that changes.
     reused_template_name = None
     for v in variants:
         v_sku = (v.get("sku") or "").strip()
@@ -1207,10 +1273,11 @@ def _import_product_with_variants(
         template = frappe.get_doc("Item", template_name)
         if not template.sh_shopify_product_id:
             frappe.db.set_value("Item", template_name, "sh_shopify_product_id", product_id)
+            frappe.db.set_value("Item", template_name, "sh_shopify_connection", getattr(settings, "name", settings))
             listing_resolver.set_product_id(template_name, product_id)
         if product_meta:
             _apply_existing_template_content(template_name, product_meta, images, settings)
-        entity = entities.get_or_new("product", "Item", template_name, product_id)
+        entity = entities.get_or_new("product", "Item", template_name, product_id, connection=settings)
         entities.save(entity, external_id=product_id, erpnext_name=template_name)
     else:
         # Create template Item
@@ -1234,6 +1301,7 @@ def _import_product_with_variants(
 
         # Link to Shopify
         template.sh_shopify_product_id = product_id
+        template.sh_shopify_connection = getattr(settings, "name", settings)
 
         if product_meta:
             _apply_product_meta(template, product_meta)
@@ -1256,8 +1324,12 @@ def _import_product_with_variants(
     # Create variant Items
     for idx, variant in enumerate(variants):
         sku = (variant.get("sku") or "").strip()
-        if not sku:
-            sku = f"{template_name}-{idx+1}"  # Fallback naming
+        if sku:
+            sku = item_code_for(settings, sku)
+        else:
+            # template_name is already namespaced above, so this fallback
+            # inherits the same store prefix without a second call.
+            sku = f"{template_name}-{idx+1}"
 
         # Check for SKU conflict
         if frappe.db.exists("Item", sku):
@@ -1271,11 +1343,13 @@ def _import_product_with_variants(
                 variant_of = existing_parent_of or template_name
                 frappe.db.set_value("Item", sku, "sh_shopify_product_id", product_id)
                 frappe.db.set_value("Item", sku, "sh_shopify_variant_id", variant.get("legacyResourceId"))
+                frappe.db.set_value("Item", sku, "sh_shopify_connection", getattr(settings, "name", settings))
                 frappe.db.set_value("Item", sku, "variant_of", variant_of)
                 listing_resolver.set_variant_id(variant_of, sku, variant.get("legacyResourceId"))
 
                 # Also link its parent template to Shopify
                 frappe.db.set_value("Item", variant_of, "sh_shopify_product_id", product_id)
+                frappe.db.set_value("Item", variant_of, "sh_shopify_connection", getattr(settings, "name", settings))
                 listing_resolver.set_product_id(variant_of, product_id)
 
                 # Auto-linking only ever wrote the Shopify IDs -- pull in
@@ -1285,7 +1359,7 @@ def _import_product_with_variants(
                                                 product_location=product_location)
 
                 # Create Synced Entity pairing for the template/product
-                entity = entities.get_or_new("product", "Item", variant_of, product_id)
+                entity = entities.get_or_new("product", "Item", variant_of, product_id, connection=settings)
                 entities.save(entity, external_id=product_id, erpnext_name=variant_of)
                 continue
             elif existing_id == product_id:
@@ -1333,13 +1407,14 @@ def _import_product_with_variants(
         # Link to Shopify
         variant_item.sh_shopify_product_id = product_id
         variant_item.sh_shopify_variant_id = variant.get("legacyResourceId")
+        variant_item.sh_shopify_connection = getattr(settings, "name", settings)
         _apply_variant_physical(variant_item, variant, product_meta)
 
         default_warehouse_row = _default_warehouse_row(settings)
         if default_warehouse_row:
             variant_item.append("item_defaults", default_warehouse_row)
 
-        location_levels = _variant_location_levels(variant)
+        location_levels = _variant_location_levels(variant, settings)
         # Falls back to the product's own location for a variant holding no
         # stock anywhere -- ownership is a product fact, not a stock reading.
         resolved_location = _resolve_item_shopify_location(
@@ -1389,7 +1464,7 @@ def _import_product_with_variants(
     # comment: stamping external_fingerprint now avoids a blank baseline
     # making every product look "changed" on the very next import run.
     entities.save(
-        entities.get_or_new("product", "Item", template_name, product_id),
+        entities.get_or_new("product", "Item", template_name, product_id, connection=settings),
         erpnext_doctype="Item",
         erpnext_name=template_name,
         external_id=product_id,
@@ -1400,8 +1475,14 @@ def _import_product_with_variants(
     return True, "created"
 
 
-def _apply_product_meta(item, node: dict):
-    """Apply product meta to Item -- status, tags, category, collections, SEO."""
+def _apply_product_meta(item, node: dict, connection=None):
+    """Apply product meta to Item -- status, tags, category, collections, SEO.
+
+    `connection` scopes the Shopify Tag rows this stamps -- falls back to
+    the Item's own sh_shopify_connection when not given explicitly, which
+    every fresh-create caller has already set on `item` before reaching
+    here.
+    """
     from alaiy_os_connector_shopify.shopify.product import status as status_map
     local_status = status_map.to_local(node.get("status"))
     if local_status:
@@ -1431,14 +1512,15 @@ def _apply_product_meta(item, node: dict):
 
     tags = _normalize_tags(node.get("tags"))
     if tags:
-        _set_item_tags(item, tags)
+        _set_item_tags(item, tags, connection=connection or item.get("sh_shopify_connection"))
     collection_titles = [
         n.get("title") for n in ((node.get("collections") or {}).get("nodes") or [])
         if n.get("title")
     ]
     if collection_titles:
         from alaiy_os_connector_shopify.shopify.product.collections import _set_item_collections
-        _set_item_collections(item, collection_titles)
+        _set_item_collections(item, collection_titles,
+                              connection=connection or item.get("sh_shopify_connection"))
     category = node.get("category")
     if category:
         cat_name = category.get("fullName") or category.get("name")

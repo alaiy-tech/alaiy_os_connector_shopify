@@ -65,10 +65,10 @@ def get_listing(item_code):
 
 
 @frappe.whitelist()
-def get_listing_gaps(gap=None, limit=None, enabled_only=1):
+def get_listing_gaps(gap=None, limit=None, enabled_only=1, connection=None):
     """Data-quality gaps across the register. Not Shopify's opinion -- ours."""
     _may_read(LISTING_DOCTYPE)
-    return register.listing_gaps(gap=gap, limit=limit, enabled_only=enabled_only)
+    return register.listing_gaps(gap=gap, limit=limit, enabled_only=enabled_only, connection=connection)
 
 
 @frappe.whitelist()
@@ -96,10 +96,10 @@ def get_catalog_health():
 
 
 @frappe.whitelist()
-def get_listing_link(item_code=None, product_id=None):
+def get_listing_link(item_code=None, product_id=None, connection=None):
     """The Shopify admin and storefront URLs for one product. No Shopify call."""
     _may_read("Item")
-    return links.listing_link(item_code=item_code, product_id=product_id)
+    return links.listing_link(item_code=item_code, product_id=product_id, connection=connection)
 
 
 @frappe.whitelist()
@@ -197,7 +197,12 @@ def get_collection_products(collection_name):
 # --- sales -------------------------------------------------------------------
 @frappe.whitelist()
 def get_sales_summary(
-    date_from, date_to=None, granularity="day", financial_status=None, fulfillment_status=None
+    date_from,
+    date_to=None,
+    granularity="day",
+    financial_status=None,
+    fulfillment_status=None,
+    connection=None,
 ):
     """Revenue, units, orders and average order value over a period, bucketed."""
     _may_read("Sales Order")
@@ -207,6 +212,7 @@ def get_sales_summary(
         granularity=granularity,
         financial_status=financial_status,
         fulfillment_status=fulfillment_status,
+        connection=connection,
     )
 
 
@@ -219,6 +225,7 @@ def get_top_selling_products(
     limit=None,
     financial_status=None,
     fulfillment_status=None,
+    connection=None,
 ):
     """The best-selling items or variants over a period, ranked."""
     _may_read("Sales Order")
@@ -230,11 +237,19 @@ def get_top_selling_products(
         limit=limit,
         financial_status=financial_status,
         fulfillment_status=fulfillment_status,
+        connection=connection,
     )
 
 
 @frappe.whitelist()
-def get_product_sales(item_code=None, variant_id=None, date_from=None, date_to=None, granularity="month"):
+def get_product_sales(
+    item_code=None,
+    variant_id=None,
+    date_from=None,
+    date_to=None,
+    granularity="month",
+    connection=None,
+):
     """How one item or variant sold over a period, bucketed."""
     _may_read("Sales Order")
     return sales.product_sales(
@@ -243,6 +258,7 @@ def get_product_sales(item_code=None, variant_id=None, date_from=None, date_to=N
         date_from=date_from,
         date_to=date_to,
         granularity=granularity,
+        connection=connection,
     )
 
 
@@ -255,6 +271,7 @@ def compare_sales_periods(
     baseline_to=None,
     financial_status=None,
     fulfillment_status=None,
+    connection=None,
 ):
     """One period's totals against another's, with the deltas already computed."""
     _may_read("Sales Order")
@@ -266,6 +283,7 @@ def compare_sales_periods(
         baseline_to=baseline_to,
         financial_status=financial_status,
         fulfillment_status=fulfillment_status,
+        connection=connection,
     )
 
 
@@ -277,6 +295,7 @@ def list_shopify_orders(
     fulfillment_status=None,
     item_code=None,
     page_no=1,
+    connection=None,
 ):
     """A page of the Shopify orders behind the sales figures."""
     _may_read("Sales Order")
@@ -287,14 +306,15 @@ def list_shopify_orders(
         fulfillment_status=fulfillment_status,
         item_code=item_code,
         page_no=page_no,
+        connection=connection,
     )
 
 
 @frappe.whitelist()
-def get_orders_sync_status():
+def get_orders_sync_status(connection=None):
     """Is the order sync working, and how far back does its data reach?"""
     _may_read("Sales Order")
-    return sales.orders_sync_status()
+    return sales.orders_sync_status(connection=connection)
 
 
 # --- the one write -----------------------------------------------------------

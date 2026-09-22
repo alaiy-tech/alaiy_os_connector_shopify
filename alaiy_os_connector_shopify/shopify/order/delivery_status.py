@@ -39,6 +39,10 @@ decision, so that is reported and nothing is unwound.
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
+from alaiy_os_connector_shopify import connections
+
 # The only state that will not change again.
 #
 # DELIVERED is deliberately NOT terminal, which is not obvious: a merchant can
@@ -72,7 +76,7 @@ query($ids: [ID!]!) {
 """
 
 
-def _pending_delivery_notes(limit=None):
+def _pending_delivery_notes(limit=None, connection=None):
     """Delivery Notes whose Shopify fulfillment could still change state.
 
     A delivered parcel stays in this set: Shopify lets a merchant mark a
@@ -84,11 +88,11 @@ def _pending_delivery_notes(limit=None):
     """
     return frappe.get_all(
         "Delivery Note",
-        filters={
+        filters=owned_by("Delivery Note", connection, {
             "docstatus": 1,
             "sh_shopify_fulfillment_id": ["is", "set"],
             "sh_delivery_status": ["not in", list(_TERMINAL)],
-        },
+        }),
         fields=["name", "sh_shopify_fulfillment_id", "sh_delivery_status"],
         order_by="modified asc",
         limit=limit,
@@ -205,11 +209,15 @@ def sync_delivery_status(limit=None):
     Shopify-side failure must not take down whatever else the scheduler is
     doing in the same tick.
     """
-    settings = frappe.get_cached_doc("Shopify Connector Settings")
-    if not settings.is_enabled:
-        return {"ok": False, "reason": "connector disabled"}
+    return connections_summary("delivery status",
+                               lambda name: _sync_delivery_status_for(name, limit))
 
-    pending = _pending_delivery_notes(limit)
+
+def _sync_delivery_status_for(connection_name, limit=None):
+    """One store's pass. See sync_delivery_status."""
+    settings = frappe.get_cached_doc(connections.DOCTYPE, connection_name)
+
+    pending = _pending_delivery_notes(limit, connection_name)
     summary = {"ok": True, "checked": len(pending), "updated": 0, "delivered": 0,
                "cancelled": 0, "reverted": 0, "order_cancelled": 0,
                "needs_human": 0, "failed": 0}
@@ -217,7 +225,9 @@ def sync_delivery_status(limit=None):
         return summary
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    # This store's own credentials. Built bare, every store's pass would
+    # call the default store's shop.
+    client = ShopifyGraphQLClient(settings)
 
     by_legacy_id = {str(dn.sh_shopify_fulfillment_id): dn for dn in pending}
     ids = list(by_legacy_id)
@@ -361,7 +371,7 @@ query($ids: [ID!]!) {
 """
 
 
-def _open_shopify_orders(limit=None):
+def _open_shopify_orders(limit=None, connection=None):
     """Submitted Sales Orders from Shopify whose state could still change here.
 
     docstatus 1 only: a draft was never submitted and a 2 is already cancelled,
@@ -378,11 +388,11 @@ def _open_shopify_orders(limit=None):
     """
     return frappe.get_all(
         "Sales Order",
-        filters={
+        filters=owned_by("Sales Order", connection, {
             "docstatus": 1,
             "sh_shopify_order_id": ["is", "set"],
             "status": ["not in", ("Completed", "Closed")],
-        },
+        }),
         fields=["name", "sh_shopify_order_id"],
         order_by="modified asc",
         limit=limit,
@@ -494,11 +504,15 @@ def sync_order_status(limit=None):
     Returns a summary rather than raising: runs unattended, and a Shopify-side
     failure must not take down the rest of the scheduler tick.
     """
-    settings = frappe.get_cached_doc("Shopify Connector Settings")
-    if not settings.is_enabled:
-        return {"ok": False, "reason": "connector disabled"}
+    return connections_summary("order status",
+                               lambda name: _sync_order_status_for(name, limit))
 
-    open_orders = _open_shopify_orders(limit)
+
+def _sync_order_status_for(connection_name, limit=None):
+    """One store's pass. See sync_order_status."""
+    settings = frappe.get_cached_doc(connections.DOCTYPE, connection_name)
+
+    open_orders = _open_shopify_orders(limit, connection_name)
     summary = {"ok": True, "checked": len(open_orders), "cancelled": 0, "failed": 0,
                "financial_status_updated": 0, "refunds_found": 0}
     if not open_orders:
@@ -507,7 +521,9 @@ def sync_order_status(limit=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.order.webhook import _cancel_sales_order
 
-    client = ShopifyGraphQLClient()
+    # This store's own credentials. Built bare, every store's pass would
+    # call the default store's shop.
+    client = ShopifyGraphQLClient(settings)
     by_legacy_id = {str(o.sh_shopify_order_id): o.name for o in open_orders}
     ids = list(by_legacy_id)
 
@@ -568,6 +584,30 @@ def sync_order_status(limit=None):
     return summary
 
 
+def connections_summary(label, run):
+    """
+    Run a scheduled sweep once per enabled store, keeping each store's result.
+
+    connections.for_each does the isolation -- one store's failure is logged
+    against that store and the rest still run -- but returns nothing, and both
+    of these sweeps report a summary that the desk and the tests read. This
+    keeps that shape: a dict per store, plus the bench-wide "ok" the single-
+    store callers already expect.
+    """
+    results = {}
+
+    def one(name):
+        results[name] = run(name)
+
+    connections.for_each(label, one)
+    if not results:
+        return {"ok": False, "reason": "connector disabled"}
+    if len(results) == 1:
+        # A single-store bench gets exactly the summary it always got.
+        return next(iter(results.values()))
+    return {"ok": True, "by_connection": results}
+
+
 def sync_refund_status(limit=500):
     """Ask Shopify which orders it considers refunded, and record it.
 
@@ -589,20 +629,24 @@ def sync_refund_status(limit=500):
     Least-recently-checked first, so a large history is covered across
     several runs rather than one unbounded pass.
     """
-    settings = frappe.get_cached_doc("Shopify Connector Settings")
-    if not settings.is_enabled:
-        return {"ok": False, "reason": "connector disabled"}
+    return connections_summary("refund status",
+                               lambda name: _sync_refund_status_for(name, limit))
+
+
+def _sync_refund_status_for(connection_name, limit=500):
+    """One store's pass. See sync_refund_status."""
+    settings = frappe.get_cached_doc(connections.DOCTYPE, connection_name)
 
     # Everything Shopify might have refunded that we do not already know is
     # refunded. docstatus 1 only -- a cancelled order's money is settled by
     # the cancel path, and a draft was never paid.
     rows = frappe.get_all(
         "Sales Order",
-        filters={
+        filters=owned_by("Sales Order", connection_name, {
             "docstatus": 1,
             "sh_shopify_order_id": ["is", "set"],
             "sh_financial_status": ["not in", ["refunded", "partially_refunded", "voided"]],
-        },
+        }),
         fields=["name", "sh_shopify_order_id"],
         order_by="modified asc",
         limit=limit,
@@ -614,7 +658,9 @@ def sync_refund_status(limit=500):
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    client = ShopifyGraphQLClient()
+    # This store's own credentials. Built bare, every store's pass would
+    # call the default store's shop.
+    client = ShopifyGraphQLClient(settings)
     by_legacy_id = {str(r.sh_shopify_order_id): r.name for r in rows}
     ids = list(by_legacy_id)
 

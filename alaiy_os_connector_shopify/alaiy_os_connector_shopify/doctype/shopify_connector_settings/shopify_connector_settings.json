@@ -1,6 +1,8 @@
 {
- "creation": "2026-07-02 00:00:00.000000",
- "docstatus": 0,
+ "actions": [],
+ "autoname": "",
+ "creation": "2026-09-22 00:00:00.000000",
+ "description": "Retired. Kept only as a read-only mirror of the enabled Shopify Connection, so client code written against the old single-store shape keeps working unmodified. Configure stores under Shopify Connection instead -- nothing here is saved anywhere.",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
@@ -47,7 +49,8 @@
    "default": "0",
    "fieldname": "is_enabled",
    "fieldtype": "Check",
-   "label": "Enable Shopify"
+   "label": "Enable Shopify",
+   "read_only": 1
   },
   {
    "fieldname": "sb_connection",
@@ -55,56 +58,50 @@
    "label": "API Connection"
   },
   {
-   "description": "Your Shopify store domain, e.g. myshop.myshopify.com",
    "fieldname": "sh_shop_url",
    "fieldtype": "Data",
    "label": "Shop URL",
-   "reqd": 1
+   "read_only": 1
   },
   {
-   "description": "Client ID from your Shopify custom app (Developer Dashboard)",
    "fieldname": "sh_client_id",
    "fieldtype": "Data",
    "label": "Client ID",
-   "reqd": 1
+   "read_only": 1
   },
   {
-   "description": "Client Secret from your Shopify custom app",
    "fieldname": "sh_client_secret",
    "fieldtype": "Password",
    "label": "Client Secret",
    "permlevel": 1,
-   "reqd": 1
+   "read_only": 1
   },
   {
-   "description": "Access token (auto-managed by Test Connection)",
    "fieldname": "sh_access_token",
    "fieldtype": "Password",
    "hidden": 1,
    "label": "Access Token",
-   "permlevel": 1
+   "permlevel": 1,
+   "read_only": 1
   },
   {
-   "description": "When the current access token was last minted.",
    "fieldname": "sh_token_refreshed_at",
    "fieldtype": "Datetime",
    "label": "Token Refreshed At",
    "read_only": 1
   },
   {
-   "description": "When the current access token expires, per Shopify's own expires_in. Client credentials tokens are short-lived (observed ~24h) — the scheduled refresh below keeps this from ever being hit.",
    "fieldname": "sh_token_expires_at",
    "fieldtype": "Datetime",
    "label": "Token Expires At",
    "read_only": 1
   },
   {
-   "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions. Required: webhooks are rejected outright if this isn't set, rather than silently accepted unverified.",
    "fieldname": "sh_webhook_secret",
    "fieldtype": "Password",
    "label": "Webhook Secret",
    "permlevel": 1,
-   "reqd": 1
+   "read_only": 1
   },
   {
    "fieldname": "sb_defaults",
@@ -116,73 +113,71 @@
    "fieldtype": "Link",
    "label": "Company",
    "options": "Company",
-   "reqd": 1
+   "read_only": 1
   },
   {
-   "description": "Warehouse for fulfilling Shopify orders",
    "fieldname": "sh_default_warehouse",
    "fieldtype": "Link",
    "label": "Default Warehouse",
    "options": "Warehouse",
-   "reqd": 1
+   "read_only": 1
   },
   {
-   "description": "Where a Shopify refund's Sales Return lands. Leave blank to use Default Warehouse instead -- someone downstream (e.g. a supplier portal's own returns routing) decides where it really ends up from there.",
    "fieldname": "sh_return_warehouse",
    "fieldtype": "Link",
    "label": "Return Warehouse",
-   "options": "Warehouse"
+   "options": "Warehouse",
+   "read_only": 1
   },
   {
    "fieldname": "sh_customer_group",
    "fieldtype": "Link",
    "label": "Default Customer Group",
    "options": "Customer Group",
-   "reqd": 1
+   "read_only": 1
   },
   {
-   "description": "Territory assigned to Customers auto-created from Shopify orders. Falls back to any existing Territory if left blank -- there's no guarantee a site has one named 'All Territories'.",
    "fieldname": "sh_default_territory",
    "fieldtype": "Link",
    "label": "Default Territory",
-   "options": "Territory"
+   "options": "Territory",
+   "read_only": 1
   },
   {
    "fieldname": "sh_selling_price_list",
    "fieldtype": "Link",
    "label": "Selling Price List",
    "options": "Price List",
-   "reqd": 1
+   "read_only": 1
   },
   {
    "fieldname": "sh_cost_center",
    "fieldtype": "Link",
    "label": "Cost Center",
    "options": "Cost Center",
-   "reqd": 1
+   "read_only": 1
   },
   {
-   "description": "Account that tax lines pulled from Shopify orders (e.g. CGST, SGST, VAT) are booked against. Leave blank to auto-resolve/create a 'Shopify Tax' account under the company.",
    "fieldname": "sh_tax_account",
    "fieldtype": "Link",
    "label": "Tax Account",
-   "options": "Account"
+   "options": "Account",
+   "read_only": 1
   },
   {
    "default": "1",
-   "description": "Auto-create + submit a Sales Invoice for Shopify orders. Submitting that invoice in Alaiy OS also marks the order Paid on Shopify.",
    "fieldname": "sh_auto_sales_invoice",
    "fieldtype": "Check",
-   "label": "Auto-create Sales Invoice"
+   "label": "Auto-create Sales Invoice",
+   "read_only": 1
   },
   {
    "default": "Paid and Fulfilled",
-   "depends_on": "sh_auto_sales_invoice",
-   "description": "When to generate the invoice. 'Paid and Fulfilled' (recommended) waits for both payment and shipment -- correct for Cash on Delivery, where payment lands only on delivery. 'Paid' invoices as soon as the order is paid.",
    "fieldname": "sh_invoice_trigger",
    "fieldtype": "Select",
    "label": "Generate Invoice When",
-   "options": "Paid and Fulfilled\nPaid"
+   "options": "Paid and Fulfilled\nPaid",
+   "read_only": 1
   },
   {
    "fieldname": "sb_locations",
@@ -190,11 +185,11 @@
    "label": "Inventory Locations"
   },
   {
-   "description": "Map Alaiy OS warehouses to Shopify locations for multi-location inventory sync. Run 'Sync Locations' first to load Shopify locations. Leave empty to push only the Default Warehouse to Shopify's primary location (single-location mode).",
    "fieldname": "sh_location_map",
    "fieldtype": "Table",
    "label": "Warehouse to Location Map",
-   "options": "Shopify Location Map"
+   "options": "Shopify Location Map",
+   "read_only": 1
   },
   {
    "fieldname": "sb_sync",
@@ -203,48 +198,43 @@
   },
   {
    "default": "Any",
-   "description": "Filter for which orders to pull from Shopify",
    "fieldname": "sh_order_status_filter",
    "fieldtype": "Select",
    "label": "Sync Orders With Status",
    "options": "Open\nAny\nClosed\nCancelled",
-   "reqd": 1
+   "read_only": 1
   },
   {
    "default": "Shopify → Alaiy OS (default)",
-   "description": "Direction fulfillment sync runs in. 'Shopify → Alaiy OS' (default): a Shopify fulfillment auto-creates a submitted Delivery Note here -- today's only behavior, unchanged when left at default. 'Alaiy OS → Shopify (two-way)': in addition, submitting a Delivery Note here (e.g. a warehouse scanning items out against a Sales Order) creates a real Shopify fulfillment with tracking info. Safe to switch either way at any time -- no reinstall needed.",
    "fieldname": "sh_fulfillment_sync_direction",
    "fieldtype": "Select",
    "label": "Fulfillment Sync Direction",
    "options": "Shopify → Alaiy OS (default)\nAlaiy OS → Shopify (two-way)",
-   "reqd": 1
+   "read_only": 1
   },
   {
    "default": "Shopify → Alaiy OS only",
-   "description": "Direction inventory sync runs in. 'Shopify → Alaiy OS only': a Shopify stock change updates the local Bin here; nothing is ever pushed from Alaiy OS to Shopify. 'Alaiy OS → Shopify (two-way)': in addition, the scheduled push below sends local Bin changes to Shopify. Safe to switch either way at any time.",
    "fieldname": "sh_inventory_sync_direction",
    "fieldtype": "Select",
    "label": "Inventory Sync Direction",
    "options": "Shopify → Alaiy OS only\nAlaiy OS → Shopify (two-way)",
-   "reqd": 1
+   "read_only": 1
   },
   {
    "default": "30 min",
-   "description": "How often to push Alaiy OS stock levels to Shopify (only used when Inventory Sync Direction is two-way)",
    "fieldname": "sh_inventory_sync_interval",
    "fieldtype": "Select",
    "label": "Inventory Sync Interval",
    "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
-   "reqd": 1
+   "read_only": 1
   },
   {
    "default": "12 hours",
-   "description": "How often to proactively mint a fresh access token, so a sync never has to hit an expired-token error first. Shopify's client_credentials tokens for this app were observed to last ~24h.",
    "fieldname": "sh_token_refresh_interval",
    "fieldtype": "Select",
    "label": "Token Refresh Interval",
    "options": "Disabled\n6 hours\n12 hours\n24 hours",
-   "reqd": 1
+   "read_only": 1
   },
   {
    "fieldname": "sb_product_status",
@@ -253,23 +243,24 @@
   },
   {
    "default": "1",
-   "description": "Unticking a status excludes it from Import Products entirely -- those products are counted as skipped, not created.",
    "fieldname": "sh_import_status_active",
    "fieldtype": "Check",
-   "label": "Import Active products"
+   "label": "Import Active products",
+   "read_only": 1
   },
   {
    "default": "1",
    "fieldname": "sh_import_status_draft",
    "fieldtype": "Check",
-   "label": "Import Draft products"
+   "label": "Import Draft products",
+   "read_only": 1
   },
   {
    "default": "1",
-   "description": "Archived products are hidden from Shopify's sales channels but keep their order history.",
    "fieldname": "sh_import_status_archived",
    "fieldtype": "Check",
-   "label": "Import Archived products"
+   "label": "Import Archived products",
+   "read_only": 1
   },
   {
    "fieldname": "cb_product_status",
@@ -279,68 +270,53 @@
    "default": "1",
    "fieldname": "sh_export_status_active",
    "fieldtype": "Check",
-   "label": "Export Active products"
+   "label": "Export Active products",
+   "read_only": 1
   },
   {
    "default": "1",
    "fieldname": "sh_export_status_draft",
    "fieldtype": "Check",
-   "label": "Export Draft products"
+   "label": "Export Draft products",
+   "read_only": 1
   },
   {
    "default": "1",
-   "description": "Pushing an archived product unarchives it to Draft for the update, then archives it again.",
    "fieldname": "sh_export_status_archived",
    "fieldtype": "Check",
-   "label": "Export Archived products"
+   "label": "Export Archived products",
+   "read_only": 1
   }
  ],
- "is_single": 1,
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
  "links": [],
- "modified": "2026-07-02 00:00:00.000000",
+ "modified": "2026-09-22 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Alaiy OS Connector Shopify",
  "name": "Shopify Connector Settings",
+ "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [
   {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
    "read": 1,
-   "report": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
+   "role": "System Manager"
   },
   {
-   "create": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
    "read": 1,
-   "report": 1,
-   "role": "Shopify Manager",
-   "share": 1,
-   "write": 1
+   "role": "Shopify Manager"
   },
   {
-   "export": 1,
-   "print": 1,
    "read": 1,
-   "report": 1,
    "role": "Shopify Viewer"
   },
   {
    "permlevel": 1,
    "read": 1,
-   "role": "System Manager",
-   "write": 1
+   "role": "System Manager"
   }
  ],
- "sort_field": "modified",
+ "sort_field": "creation",
  "sort_order": "DESC",
  "states": [],
  "track_changes": 0

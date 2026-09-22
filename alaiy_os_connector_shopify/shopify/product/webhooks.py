@@ -16,8 +16,10 @@ from alaiy_os_connector_shopify.shopify.product.canonical import _product_canoni
 from alaiy_os_connector_shopify.shopify.product.export import _variants_of
 from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
 
+from alaiy_os_connector_shopify import connections
 
-def handle_product_webhook(topic: str, payload: dict):
+
+def handle_product_webhook(topic: str, payload: dict, connection=None):
     """
     Handle product events from Shopify webhooks.
     Topics: products/create, products/update, products/delete
@@ -40,11 +42,11 @@ def handle_product_webhook(topic: str, payload: dict):
 
     try:
         if topic == "products/delete":
-            _handle_product_delete(product_id, product)
+            _handle_product_delete(product_id, product, connection)
         elif topic == "products/create":
-            _handle_product_create(product_id, product)
+            _handle_product_create(product_id, product, connection)
         elif topic == "products/update":
-            _handle_product_update(product_id, product)
+            _handle_product_update(product_id, product, connection)
     except frappe.DocumentLockedError:
         # The Item is locked by an in-flight outbound push (or a stale lock
         # left by a killed worker). Not a real failure -- Shopify retries the
@@ -145,25 +147,25 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
     }
 
 
-def _handle_product_create(product_id: str, product: dict):
+def _handle_product_create(product_id: str, product: dict, connection=None):
     """New product on Shopify - create Alaiy OS Item."""
-    entity = entities.get_by_external_id("product", product_id)
+    entity = entities.get_by_external_id("product", product_id, connection)
 
     if entity:
         # Already linked - treat as update
-        return _handle_product_update(product_id, product)
+        return _handle_product_update(product_id, product, connection)
 
     # New product - import it (reuses the one-time-import logic, translated
     # from the webhook's REST shape into the GraphQL node shape it expects).
     from alaiy_os_connector_shopify.shopify.product.importer import _import_product
     node = _webhook_product_to_graphql_node(product)
-    _import_product(node)
+    _import_product(node, connection)
     frappe.logger().info(f"Created Item from Shopify product {product_id}")
 
 
-def _handle_product_update(product_id: str, product: dict):
+def _handle_product_update(product_id: str, product: dict, connection=None):
     """Product updated on Shopify - update Alaiy OS Item if Shopify is newer."""
-    entity = entities.get_by_external_id("product", product_id)
+    entity = entities.get_by_external_id("product", product_id, connection)
 
     if not entity:
         return  # Product not linked to Alaiy OS
@@ -228,7 +230,7 @@ def _handle_product_update(product_id: str, product: dict):
 
     locked_item = item
     try:
-        _update_item_from_shopify(item, product)
+        _update_item_from_shopify(item, product, connection=connection)
 
         # Recompute and store the fingerprint for the post-update state so the
         # hourly outbound reconciliation (push_changed_items_only) doesn't see
@@ -243,7 +245,7 @@ def _handle_product_update(product_id: str, product: dict):
         # a lock that no in-memory reference could ever clear (only the
         # 3-hour hard expiry eventually did).
         item = frappe.get_doc("Item", item.name)
-        settings = frappe.get_single("Shopify Connector Settings")
+        settings = connections.resolve(connection) if connection else connections.require_enabled()
         from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
         listing = listing_resolver.get_listing(item.name)
         # Only re-fingerprint when a Listing exists (i.e. this product is
@@ -283,7 +285,7 @@ def _save_listing_with_retry(listing, _attempt=0):
         _save_listing_with_retry(fresh, _attempt=1)
 
 
-def _update_item_from_shopify(item, product: dict, _retry_count=0):
+def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=None):
     """
     Update Alaiy OS Item from Shopify product (inbound sync).
 
@@ -300,7 +302,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
     _retry_count is internal only -- see the TimestampMismatchError handling
     at the bottom of this function.
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
 
     from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
     listing = listing_resolver.get_listing(item.name)
@@ -346,7 +348,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
         "tags": [tags] if tags else [],
         "category": {"name": category.get("name") or category.get("full_name")} if category.get("name") or category.get("full_name") else None,
         "status": product.get("status") or "",
-    })
+    }, connection=connection)
 
     # Status: active/draft/archived is meant to be a PER-MARKETPLACE concern --
     # the comment here used to claim it "never affects the shared Item", but
@@ -452,7 +454,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
             raise
         frappe.db.rollback()
         fresh_item = frappe.get_doc("Item", item.name)
-        return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1)
+        return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1, connection=connection)
     frappe.db.commit()
 
     # Images are LISTING-scoped too. With a Listing, route Shopify's images
@@ -617,9 +619,9 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
         )
 
 
-def _handle_product_delete(product_id: str, product: dict):
+def _handle_product_delete(product_id: str, product: dict, connection=None):
     """Product deleted on Shopify - unlink Alaiy OS Item (preserve local data)."""
-    entity = entities.get_by_external_id("product", product_id)
+    entity = entities.get_by_external_id("product", product_id, connection)
 
     if not entity:
         return

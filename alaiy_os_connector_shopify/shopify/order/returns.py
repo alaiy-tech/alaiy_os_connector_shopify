@@ -32,6 +32,8 @@ flag? -- rather than being wired up by default.
 """
 
 import frappe
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from frappe.utils import flt
 
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _resolve_item_code
@@ -40,11 +42,13 @@ from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_default_
 from alaiy_os_connector_shopify.shopify.order.delivery_notes import _fill_expense_accounts
 from alaiy_os_connector_shopify.shopify.order.invoice import _fill_item_accounts, _resolve_bank_cash_account
 
+from alaiy_os_connector_shopify import connections
 
-def handle_refund_webhook(topic, payload):
+
+def handle_refund_webhook(topic, payload, connection=None):
     """refunds/create -- payload is the Shopify Refund object (REST-shaped)."""
     try:
-        _process_refund(payload)
+        _process_refund(payload, connection)
     except Exception:
         frappe.log_error(
             title=f"Shopify: refund webhook {topic} failed",
@@ -52,22 +56,33 @@ def handle_refund_webhook(topic, payload):
         )
 
 
-def _process_refund(refund):
+def _process_refund(refund, connection=None):
     refund_id = str(refund.get("id") or "")
     if not refund_id:
         return
+    # Resolve the order within the store the webhook came from. Both halves
+    # matter: a Shopify order id is only unique inside one shop, so an
+    # unscoped lookup can return another seller's Sales Order -- and this
+    # function goes on to post a Credit Note and a refund Payment Entry
+    # against whatever it finds, which would move real money on the wrong
+    # seller's books.
+    #
+    # Reading the store off the row it found would not help. That answers
+    # "whose order did I happen to land on", not "whose refund is this", and
+    # would faithfully scope every check below to the wrong store.
+    order_id = str(refund.get("order_id") or "")
+    so_name = get_active_sales_order(order_id, connection)
+    if not so_name or frappe.db.get_value("Sales Order", so_name, "docstatus") != 1:
+        return
+
     # Idempotent: Shopify redelivers webhooks, and a merchant edit on an
     # already-processed refund shouldn't create a second return. Check BOTH
     # documents -- a no_restock refund never creates a Delivery Note at all,
     # so checking only that would let a redelivery duplicate the Credit Note.
     for doctype in ("Delivery Note", "Sales Invoice"):
-        if frappe.db.exists(doctype, {"sh_shopify_refund_id": refund_id}):
+        if frappe.db.exists(doctype, owned_by(
+                doctype, connection, {"sh_shopify_refund_id": refund_id})):
             return
-
-    order_id = str(refund.get("order_id") or "")
-    so_name = get_active_sales_order(order_id)
-    if not so_name or frappe.db.get_value("Sales Order", so_name, "docstatus") != 1:
-        return
 
     # Two separate maps, deliberately -- money and stock are different
     # questions on the same refund.
@@ -101,7 +116,7 @@ def _process_refund(refund):
             # line item) -- _resolve_item_code already falls through
             # sku -> variant id -> title, so a null here is handled.
             "sku": li.get("sku"), "variant_id": li.get("variant_id"), "title": li.get("title"),
-        })
+        }, connection)
         if not item_code:
             frappe.log_error(
                 title=f"Shopify: refund {refund_id} line item didn't match any Item",
@@ -116,8 +131,8 @@ def _process_refund(refund):
     refund_amount = _settled_refund_amount(refund)
 
     with _as_administrator():
-        _make_sales_return(so_name, restock_qty, refund_id)
-        si_name = _make_credit_note(so_name, credit_qty, refund_id)
+        _make_sales_return(so_name, restock_qty, refund_id, connection)
+        si_name = _make_credit_note(so_name, credit_qty, refund_id, connection)
         if si_name:
             if refund_amount > 0:
                 _refund_payment_entry(si_name, refund_amount)
@@ -205,7 +220,7 @@ def _trim_return_items(doc, qty_by_item):
     return bool(doc.items)
 
 
-def _land_return_in_warehouse(dn):
+def _land_return_in_warehouse(dn, connection=None):
     """
     sh_return_warehouse if configured, else the connector's Default
     Warehouse -- same self-heal shape as warehouse.py's
@@ -215,7 +230,7 @@ def _land_return_in_warehouse(dn):
     a manual quality check) decides where the item really ends up from
     here -- this just gives it somewhere valid to land first.
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     warehouse = settings.sh_return_warehouse or _resolve_default_warehouse(settings)
     for item in dn.items:
         item.warehouse = warehouse
@@ -249,7 +264,7 @@ def _source_delivery_note(so_name, qty_by_item):
     return rows[0].parent if rows else None
 
 
-def _make_sales_return(so_name, qty_by_item, refund_id):
+def _make_sales_return(so_name, qty_by_item, refund_id, connection=None):
     dn_name = _source_delivery_note(so_name, qty_by_item)
     if not dn_name:
         return None  # nothing restockable shipped -- no stock to bring back
@@ -257,17 +272,20 @@ def _make_sales_return(so_name, qty_by_item, refund_id):
     try:
         # Same last-point re-check as _make_credit_note -- see that
         # function's comment for why.
-        if frappe.db.exists("Delivery Note", {"sh_shopify_refund_id": refund_id}):
+        if frappe.db.exists("Delivery Note", owned_by(
+                "Delivery Note", connection,
+                {"sh_shopify_refund_id": refund_id})):
             return None
         from erpnext.controllers.sales_and_purchase_return import make_return_doc
         dn = make_return_doc("Delivery Note", dn_name)
         if not _trim_return_items(dn, qty_by_item):
             return None
-        _land_return_in_warehouse(dn)
+        _land_return_in_warehouse(dn, connection)
         for row in dn.items:
             row.allow_zero_valuation_rate = 1
         _fill_expense_accounts(dn)
         dn.sh_shopify_refund_id = refund_id
+        dn.sh_shopify_connection = connection
         # ERPNext's own validate_return_against requires a return's
         # conversion_rate to exactly match the document it's returning
         # against -- confirmed live that make_return_doc doesn't always
@@ -316,7 +334,7 @@ def _source_sales_invoice(so_name, qty_by_item):
     return None
 
 
-def _make_credit_note(so_name, qty_by_item, refund_id):
+def _make_credit_note(so_name, qty_by_item, refund_id, connection=None):
     si_name = _source_sales_invoice(so_name, qty_by_item)
     if not si_name:
         return None  # not invoiced yet -- nothing to credit
@@ -330,16 +348,19 @@ def _make_credit_note(so_name, qty_by_item, refund_id):
         # mechanism unconfirmed, but the failure mode is real). This is the
         # last point before an irreversible insert, so it's the last chance
         # to catch a redundant run regardless of cause.
-        if frappe.db.exists("Sales Invoice", {"sh_shopify_refund_id": refund_id}):
+        if frappe.db.exists("Sales Invoice", owned_by(
+                "Sales Invoice", connection,
+                {"sh_shopify_refund_id": refund_id})):
             return None
         from erpnext.controllers.sales_and_purchase_return import make_return_doc
-        settings = frappe.get_single("Shopify Connector Settings")
+        settings = connections.resolve(connection) if connection else connections.require_enabled()
         si = make_return_doc("Sales Invoice", si_name)
         if not _trim_return_items(si, qty_by_item):
             return None
         si.update_stock = 0  # stock already returned via the Sales Return above
         _fill_item_accounts(si, settings)
         si.sh_shopify_refund_id = refund_id
+        si.sh_shopify_connection = connection
         # Same reasoning as _make_sales_return: ERPNext requires an exact
         # conversion_rate match against the document being returned against,
         # and make_return_doc doesn't always carry it over.
