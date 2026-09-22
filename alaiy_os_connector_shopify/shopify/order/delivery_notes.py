@@ -102,6 +102,12 @@ def _create_delivery_note_if_needed(so_name):
     against_sales_order check _sync_fulfillments's per-fulfillment-id
     check doesn't cover here.
     """
+    # Same reasoning as the matching commit in _sync_fulfillments: MariaDB's
+    # REPEATABLE-READ isolation means a long-running worker's transaction
+    # can still read a pre-cancel snapshot of this order's Delivery Notes
+    # even seconds after another worker committed the cancel, unless this
+    # forces a fresh one first.
+    frappe.db.commit()
     if frappe.db.exists("Delivery Note Item", {"against_sales_order": so_name}):
         return
 
@@ -169,6 +175,22 @@ def _sync_fulfillments(so_name, fulfillments):
         fulfillment_id = str(fulfillment.get("id") or "")
         if not fulfillment_id:
             continue
+        # A committed transaction boundary, not a no-op flush: MariaDB's
+        # default REPEATABLE-READ isolation takes a consistent snapshot at
+        # a transaction's first read, so a long-running worker whose
+        # transaction opened before a DIFFERENT worker cancelled this same
+        # fulfillment's Delivery Note (via _sync_tracking, in the
+        # fulfillments/update webhook) can still read the pre-cancel state
+        # here even seconds later -- the write is genuinely committed, this
+        # transaction just hasn't started a fresh snapshot to see it.
+        # Confirmed live on a real order: fulfillment cancelled and
+        # committed 3 full seconds before this exact check ran, and it
+        # still created a duplicate Delivery Note for the same (now
+        # cancelled) fulfillment id. frappe.db.commit() ends the current
+        # transaction and starts a new one on the next statement, which is
+        # what actually makes this existence check current rather than
+        # merely making its own writes visible sooner.
+        frappe.db.commit()
         # Scoped to the order's own store: a Shopify fulfillment id is only
         # unique inside one shop, so unscoped this reads another seller's
         # Delivery Note as proof that this fulfillment is already handled and
@@ -414,6 +436,28 @@ def _sync_tracking(fulfillment, connection=None):
         from alaiy_os_connector_shopify.shopify.order.delivery_status import (
             _cancel_for_cancelled_fulfillment,
         )
+        from alaiy_os_connector_shopify.shopify.order.locking import (
+            _acquire_order_lock, _release_order_lock,
+        )
+
+        # Same shared per-order lock _update_order already takes for the
+        # order-level webhook path. Confirmed live: fulfillments/update
+        # (cancelling this DN) and a near-simultaneous orders/updated can
+        # both be in flight within a couple of seconds of each other --
+        # _update_order's own fallback (_create_delivery_note_if_needed,
+        # fired when Shopify's order-level fulfillment_status payload
+        # hadn't yet caught up with the fulfillment's own already-cancelled
+        # status) read "no Delivery Note exists yet" in the gap between
+        # this function's read and its cancel, and created a SECOND one for
+        # the same order -- leaving the order reading shipped/Completed
+        # forever even though the real Delivery Note was correctly
+        # cancelled. Confirmed live on a real order (TS27771): two Delivery
+        # Notes for one Sales Order, one correctly cancelled, one orphaned
+        # and still submitted. Taking the same lock here closes that
+        # window -- whichever webhook gets there first finishes its whole
+        # write before the other can even read.
+        order_id = str(fulfillment.get("order_id") or "")
+        locked = _acquire_order_lock(order_id, connection=connection) if order_id else True
         try:
             _cancel_for_cancelled_fulfillment(dn_name, status)
         except Exception:
@@ -426,6 +470,9 @@ def _sync_tracking(fulfillment, connection=None):
                 title=f"Shopify: could not cancel {dn_name} from the fulfillment webhook",
                 message=frappe.get_traceback(),
             )
+        finally:
+            if locked and order_id:
+                _release_order_lock(order_id, connection=connection)
         return
 
     tracking_number = fulfillment.get("tracking_number") or ",".join(fulfillment.get("tracking_numbers") or [])

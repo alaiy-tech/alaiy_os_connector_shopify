@@ -74,6 +74,8 @@ class FakeDB:
         self.docs = {}   # (doctype, name) -> _Doc
         self.logged_errors = []
         self.set_value_calls = []
+        self.locks_acquired = []  # order of GET_LOCK calls, for race-guard tests
+        self.locks = set()
         FakeDB.instance = self
 
     def add(self, doctype, name, **fields):
@@ -153,6 +155,16 @@ class FakeDB:
         return bool(self.get_all(doctype, filters))
 
     def db_sql(self, query, params=None):
+        if "GET_LOCK" in query:
+            name = params[0]
+            self.locks_acquired.append(name)
+            if name in self.locks:
+                return [[0]]
+            self.locks.add(name)
+            return [[1]]
+        if "RELEASE_LOCK" in query:
+            self.locks.discard(params[0])
+            return [[1]]
         return [[0]]
 
 
@@ -240,6 +252,65 @@ class TestWebhookCancelsExistingDeliveryNote(_BaseWebhookCancellationTest):
         delivery_notes._sync_tracking(fulfillment, connection="default")
 
         self.assertEqual(dn.docstatus, 2)
+
+
+class TestWebhookCancellationTakesTheOrderLock(_BaseWebhookCancellationTest):
+    """Confirmed live on a real order (TS27771): fulfillments/update
+    (cancelling a Delivery Note) and a near-simultaneous orders/updated can
+    both be in flight within a couple of seconds of each other --
+    _update_order's own fallback (_create_delivery_note_if_needed) read "no
+    Delivery Note exists yet" in the gap between this function's read and
+    its cancel, and created a SECOND Delivery Note for the same order,
+    leaving the order reading shipped forever even though the real one was
+    correctly cancelled. _sync_tracking's cancellation branch must take the
+    same shared per-order lock _update_order already does, so the two
+    webhook paths can never race on the same order."""
+
+    def test_cancellation_acquires_and_releases_the_shared_order_lock(self):
+        self._make_dn(dn_name="DN-0009", fulfillment_id="900")
+        fulfillment = {"id": "900", "status": "cancelled", "order_id": "777"}
+
+        delivery_notes._sync_tracking(fulfillment, connection="default")
+
+        # locking.py's _lock_name: "shopify_order_<connection>_<order_id>"
+        # when a connection is given -- same name _update_order would use
+        # for the SAME order, so the two paths genuinely serialise.
+        self.assertEqual(self.db.locks_acquired, ["shopify_order_default_777"])
+        # Released afterward -- must not stay held past this one call.
+        self.assertNotIn("shopify_order_default_777", self.db.locks)
+
+    def test_lock_is_released_even_if_the_cancel_raises(self):
+        """The lock must not leak if _cancel_for_cancelled_fulfillment
+        itself blows up -- a real Frappe error, not the expected paid-
+        invoice/dead-order outcomes, which is what the try/except in
+        _sync_tracking's cancellation branch exists to guarantee."""
+        # No Sales Order fixture at all -- frappe.get_doc will raise inside
+        # _cancel_for_cancelled_fulfillment when it tries to load the
+        # Delivery Note's linked order state.
+        self.db.add(
+            "Delivery Note", "DN-0010", docstatus=1,
+            sh_shopify_fulfillment_id="901",
+        )
+        # No Delivery Note Item row at all -- so_names comes back empty and
+        # _cancel_for_cancelled_fulfillment's own guards short-circuit
+        # cleanly rather than raising; simulate a real failure instead by
+        # making frappe.get_doc blow up for this specific Delivery Note.
+        original_get_doc = self.db.get_doc
+
+        def _blow_up(doctype, name=None):
+            if doctype == "Delivery Note" and name == "DN-0010":
+                raise RuntimeError("simulated Frappe failure")
+            return original_get_doc(doctype, name)
+
+        with patch.object(frappe, "get_doc", side_effect=_blow_up):
+            fulfillment = {"id": "901", "status": "cancelled", "order_id": "778"}
+            # Must not propagate -- the webhook handler's own try/except
+            # (one layer up, in webhook.py) is the real safety net, but
+            # _sync_tracking's finally must release the lock regardless.
+            delivery_notes._sync_tracking(fulfillment, connection="default")
+
+        self.assertNotIn("shopify_order_default_778", self.db.locks)
+        self.assertEqual(len(self.db.logged_errors), 1)
 
 
 class TestWebhookCancellationIsIdempotent(_BaseWebhookCancellationTest):
