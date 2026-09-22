@@ -122,9 +122,19 @@ def _cancel_delivery_note_for_unfulfilment(dn_name, reason, *, push_to_shopify):
     is about to read as never shipped) and is reported for a human rather
     than unwound automatically.
 
+    Idempotent: a Delivery Note already cancelled (docstatus 2) is a safe
+    no-op, returning True as if this call had just done it -- the webhook
+    path and the poll can both reach this for the same fulfillment (a
+    redelivered webhook, or the poll catching up moments after the webhook
+    already cancelled it), and ERPNext's own dn.cancel() raises on an
+    already-cancelled document rather than tolerating it.
+
     Returns None -- neither done nor needing a human -- when the whole order
     was cancelled rather than just its fulfillment. See below.
     """
+    if frappe.db.get_value("Delivery Note", dn_name, "docstatus") == 2:
+        return True
+
     # A cancelled Sales Order is a different situation entirely, and ERPNext
     # will not allow this cancel at all: DeliveryNote.on_cancel runs
     # update_reserved_qty, which throws InvalidStatusError ("Sales Order ... is
