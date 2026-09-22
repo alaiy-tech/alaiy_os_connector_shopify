@@ -206,7 +206,7 @@ def enable_listings_by_status(statuses=None, connection=None):
 
 
 @frappe.whitelist()
-def get_sync_status(sync_type=None, connection=None):
+def get_sync_status(sync_type=None, connection=None):  # nosemgrep: frapsec-no-permission-check -- require_access() below IS the permission check; see api/__init__.py's module docstring for why it has to be called explicitly rather than relying on frappe.get_list's own doctype permissions alone
     """Recent sync runs. Scoped to one store when the bench has more than one,
     so a seller's dashboard never shows somebody else's last import."""
     connection_name = connections.resolve_optional_name(connection)
@@ -239,7 +239,7 @@ def get_sync_status(sync_type=None, connection=None):
 
 
 @frappe.whitelist()
-def get_dashboard_stats(connection=None):
+def get_dashboard_stats(connection=None):  # nosemgrep: frapsec-no-permission-check -- require_access() below IS the permission check; frappe.db.count bypasses doctype permissions entirely, which is exactly why this module gates access itself, see api/__init__.py
     """
     Stat cards for the Shopify desk page -- plain counts, no Shopify API
     calls, so this stays fast even with the catalog at 20k+ items.

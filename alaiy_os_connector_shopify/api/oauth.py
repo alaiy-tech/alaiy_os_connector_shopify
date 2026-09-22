@@ -36,7 +36,7 @@ def start_install(shop: str, connection_id: str = None, label: str = None):
     return {"redirect_url": url}
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frapsec-guest-accessible -- required by the OAuth protocol itself, see the docstring below
 def callback():
     """
     Shopify redirects here once the seller approves (or denies) the install.

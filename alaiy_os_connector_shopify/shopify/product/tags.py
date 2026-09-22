@@ -66,6 +66,12 @@ def _set_item_tags(item, tag_names: list, connection=None):
             continue
         doc_name = tag_doc_name(connection, tag_name)
         if not frappe.db.exists("Shopify Tag", doc_name):
+            # Every whitelisted caller of this function (product import,
+            # trigger_update_listings) already checks require_access() before
+            # reaching here -- this only creates an internal reference/cache
+            # row (the master tag list a MultiSelect picks from), not
+            # something a caller directly names or controls.
+            # nosemgrep: frapsec-ignore-permissions
             frappe.get_doc({
                 "doctype": "Shopify Tag",
                 "tag_name": tag_name,
@@ -141,6 +147,10 @@ def sync_shopify_tags(connection=None):
                     continue
                 doc_name = tag_doc_name(connection, tag_name)
                 if not frappe.db.exists("Shopify Tag", doc_name):
+                    # require_access(connection.name, "write") above already
+                    # gates this whole call -- this only creates the internal
+                    # reference/cache row the MultiSelect picks from.
+                    # nosemgrep: frapsec-ignore-permissions
                     frappe.get_doc({
                         "doctype": "Shopify Tag",
                         "tag_name": tag_name,

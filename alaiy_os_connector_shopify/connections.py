@@ -325,5 +325,8 @@ def create(
     doc.owner_app = owner_app
     doc.is_default = 1 if is_default else 0
     doc.is_enabled = 1 if is_enabled else 0
+    # Programmatic registration by another app (owner_app), not a Desk user
+    # action -- there is no session whose permissions would make sense to
+    # check here. # nosemgrep: frapsec-ignore-permissions
     doc.insert(ignore_permissions=True)
     return doc

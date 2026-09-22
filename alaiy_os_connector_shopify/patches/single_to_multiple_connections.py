@@ -116,6 +116,9 @@ def _migrate_single() -> None:
 	doc.is_enabled = 0
 	doc.flags.ignore_permissions = True
 	doc.flags.ignore_mandatory = True
+	# A site migration runs with no session/user context to check permissions
+	# against -- there is no caller here to authorise or refuse.
+	# nosemgrep: frapsec-ignore-permissions
 	doc.insert(ignore_permissions=True)
 
 	_move_passwords(doc.name)

@@ -84,6 +84,13 @@ def store_access_token(connection, access_token: str, expires_in=None) -> None:
         },
         update_modified=False,
     )
+    # Explicit commit, not left to the caller's own transaction: this runs
+    # mid-sync, sometimes deep inside an hours-long product/order import
+    # (graphql_client.py) or a scheduled proactive-refresh job (sync_jobs.py).
+    # If the rest of that operation later fails and rolls back, the freshly
+    # minted token must not roll back with it -- losing it would force a
+    # re-auth even though the token is still genuinely valid on Shopify's
+    # side. # nosemgrep: frapsec-manual-commit
     frappe.db.commit()
     # The in-memory document still holds whatever it was loaded with; a caller
     # that reads the token straight after this must see the new one.
