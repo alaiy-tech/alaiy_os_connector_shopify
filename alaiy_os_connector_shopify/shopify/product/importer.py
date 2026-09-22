@@ -50,59 +50,31 @@ def _fit_item_name(name: str) -> str:
     return (name or "")[:_ITEM_NAME_MAX_LENGTH]
 
 from alaiy_os_connector_shopify import connections
-from alaiy_os_connector_shopify.shopify.scoping import item_code_for, owned_by
-from alaiy_os_connector_shopify.shopify import destructive
+from alaiy_os_connector_shopify.shopify.scoping import item_code_for
 
 
-def run_full_product_import(trigger="manual", log_name=None, connection=None, wipe_existing=None,
-                            statuses=None, ack_multi_store=False):
+def run_full_product_import(trigger="manual", log_name=None, connection=None,
+                            statuses=None):
     """
     Import products from Shopify into Alaiy OS. A real create/update/skip
     sync every time: new Shopify products are created, changed ones are
     updated, unchanged ones are skipped untouched.
 
-    Never wipes -- removed entirely. The first-run auto-wipe
-    this used to do as a "safety net against duplicates" was the exact
-    logic that once emptied real stock data live when a scheduler fired
-    mid-wipe -- the risk it was meant to guard against was smaller than the
-    risk it was itself. A brand-new site's first import simply creates
-    everything fresh with nothing to skip; there was never a real need to
-    wipe first.
+    Never wipes. The first-run auto-wipe this used to do as a "safety net
+    against duplicates" was the exact logic that once emptied real stock
+    data live when a scheduler fired mid-wipe -- the risk it was meant to
+    guard against was smaller than the risk it was itself. A brand-new
+    site's first import simply creates everything fresh with nothing to
+    skip; there was never a real need to wipe first.
 
     Args:
         trigger: "manual", "scheduled", or "webhook"
         log_name: Optional existing log to reuse
-        wipe_existing: True/False to force the wipe phase explicitly; None
-            (default) auto-detects first-run by checking whether any
-            product Synced Entity exists yet.
-        ack_multi_store: the wipe phase deletes every Shopify-linked Item on
-            the bench, not just this connection's, because the rows carry
-            nothing yet that says which store they came from. On a bench with
-            more than one connection the wipe refuses unless this is set --
-            see shopify/destructive.py.
 
     Returns:
         Log name (for tracking progress)
     """
     allowed_statuses = status_map.parse_statuses(statuses)
-
-    if wipe_existing is None:
-        # "Has THIS store imported before", not "has anyone". Unscoped, the
-        # first seller's rows make every later seller's first import look like
-        # a re-run.
-        #
-        # Which is the safe direction as it happens -- it skips the wipe -- so
-        # this is not correcting a live data-loss bug. It is making the
-        # question the right one, because the answer also has to be right once
-        # the wipe itself is scoped to a store: at that point "no rows for me"
-        # genuinely means a first run for me, and wiping my own catalogue is
-        # correct where wiping the bench's never was.
-        wipe_existing = not frappe.db.exists(
-            "Shopify Synced Entity",
-            owned_by("Shopify Synced Entity",
-                     connections.resolve_optional_name(connection),
-                     {"entity_type": "product"}),
-        )
 
     log = load_or_create_log("products", trigger, log_name, connection=connection)
 
@@ -131,11 +103,6 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None, wi
     frappe.db.commit()
 
     try:
-        # Wipe phase
-        if wipe_existing:
-            _wipe_all_items(ack_multi_store=ack_multi_store)
-            _append_log(log, "Wiped all Items for a fresh import.")
-
         # Import phase
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
         client = ShopifyGraphQLClient(connection)
@@ -469,66 +436,6 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
         raise
 
     return log.name
-
-
-def _wipe_all_items(ack_multi_store=False):
-    """
-    Full destructive wipe of every previously-imported Shopify Item (any
-    Item with sh_shopify_product_id set) before a fresh import -- but
-    NOT genuinely local/manual items, which are left untouched. Per
-    explicit decision: re-importing should always start Shopify-linked
-    data from zero, without disturbing anything created directly in
-    Alaiy OS.
-
-    Deliberately scoped to Items and their direct child tables only:
-    Sales Orders, Delivery Notes, Stock Entries, Stock Ledger Entries, and
-    GL Entries are never touched here -- those are real transactional/
-    financial records, and this function has no business deciding they
-    should disappear. A Stock Entry referencing a since-deleted item_code
-    is left as a harmless dangling reference rather than destroyed; the
-    fresh import recreates the Item under the same item_code (SKU) and
-    its own new opening-stock Stock Entry.
-
-    Raw SQL throughout: going through frappe.delete_doc one Item at a time
-    fires Item doc_events per row (and cascades) -- confirmed live to flood
-    the job queue past its cap on a large catalog. Raw DELETE bypasses that.
-    """
-    destructive.assert_safe("Import Products with the wipe phase", ack_multi_store)
-
-    shopify_item = "(SELECT name FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != '')"
-
-    # Opening-stock Stock Entries are ones _set_opening_stock itself
-    # creates (Material Receipt, exactly one Shopify item per entry) --
-    # only those get cleared, matched by that exact shape (single line
-    # item), never a manually-created multi-item Material Receipt that
-    # just happens to include one of these items among others.
-    own_stock_entries = """
-        SELECT sed.parent FROM `tabStock Entry Detail` sed
-        JOIN `tabStock Entry` se ON se.name = sed.parent
-        WHERE se.stock_entry_type = 'Material Receipt'
-          AND sed.item_code IN {shopify_item}
-        GROUP BY sed.parent
-        HAVING COUNT(*) = 1
-    """.format(shopify_item=shopify_item)
-
-    frappe.db.sql(f"DELETE FROM `tabGL Entry` WHERE voucher_type = 'Stock Entry' AND voucher_no IN ({own_stock_entries})")
-    frappe.db.sql(f"DELETE FROM `tabStock Ledger Entry` WHERE voucher_type = 'Stock Entry' AND voucher_no IN ({own_stock_entries})")
-    frappe.db.sql(f"DELETE FROM `tabStock Entry Detail` WHERE parent IN ({own_stock_entries})")
-    frappe.db.sql(f"DELETE FROM `tabStock Entry` WHERE name IN ({own_stock_entries})")
-    frappe.db.sql(f"UPDATE `tabBin` SET actual_qty = 0, projected_qty = 0, reserved_qty = 0 WHERE item_code IN {shopify_item}")
-
-    frappe.db.sql(f"DELETE FROM `tabItem Price` WHERE item_code IN {shopify_item}")
-    frappe.db.sql("DELETE FROM `tabShopify Synced Entity` WHERE entity_type = 'product'")
-    frappe.db.sql(f"DELETE FROM `tabItem Default` WHERE parent IN {shopify_item}")
-    frappe.db.sql(f"DELETE FROM `tabItem Variant Attribute` WHERE parent IN {shopify_item}")
-    frappe.db.sql(f"DELETE FROM `tabItem Barcode` WHERE parent IN {shopify_item}")
-    # Listing now owns the id too -- wipe its rows along with the Item,
-    # else a stale Listing carrying the old product/variant id survives the
-    # wipe and confuses the next import's "does this already exist" checks.
-    frappe.db.sql(f"DELETE FROM `tabShopify Listing Variant` WHERE parent IN {shopify_item}")
-    frappe.db.sql(f"DELETE FROM `tabShopify Product Listing` WHERE name IN {shopify_item}")
-    frappe.db.sql("DELETE FROM `tabItem` WHERE sh_shopify_product_id IS NOT NULL AND sh_shopify_product_id != ''")
-    frappe.db.commit()
 
 
 def _shopify_node_fingerprint(node: dict) -> str:

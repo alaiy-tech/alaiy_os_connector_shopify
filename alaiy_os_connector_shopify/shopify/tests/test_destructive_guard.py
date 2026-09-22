@@ -1,10 +1,9 @@
 """
-The bulk deletes refuse to cross a store boundary.
+The bulk delete refuses to cross a store boundary.
 
-`_wipe_all_items` and `clear_orders` both select by "the Shopify id is set",
-which on a bench with two sellers means both sellers' rows. Neither can be
-narrowed yet -- the rows carry nothing saying which store they came from --
-so the guard refuses instead.
+`clear_orders` selects by "the Shopify id is set", which on a bench with two
+sellers means both sellers' rows. It cannot be narrowed yet -- the rows carry
+nothing saying which store they came from -- so the guard refuses instead.
 
 These pin the refusal itself: one store runs, several stores refuse, and the
 explicit acknowledgement gets through. A frappe stub stands in for the DB so

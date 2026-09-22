@@ -1,15 +1,14 @@
 # Copyright (c) 2026, Alaiy and contributors
 # For license information, please see license.txt
 """
-The guard in front of the connector's two bulk deletes.
+The guard in front of the connector's bulk deletes.
 
-`_wipe_all_items` and `api.clear_orders` both select their victims by "the
-Shopify id is set" and nothing else. On a single-store bench that reads as
-"everything this connector imported", which is what they were written for. On
-a bench holding two sellers it reads as "everything BOTH sellers imported" --
-one seller re-importing their catalogue deletes the other's Items, zeroes the
-other's stock, and drops the other's Sales Orders with the invoices and
-delivery notes hanging off them.
+`api.clear_orders` selects its victims by "the Shopify id is set" and nothing
+else. On a single-store bench that reads as "everything this connector
+imported", which is what it was written for. On a bench holding two sellers
+it reads as "everything BOTH sellers imported" -- one seller clearing their
+own orders drops the other's Sales Orders too, with the invoices and delivery
+notes hanging off them.
 
 The rows carry nothing that says which store they came from yet, so there is
 no filter to add here: the column does not exist. Until it does, the only
