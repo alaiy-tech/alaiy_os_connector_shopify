@@ -94,11 +94,26 @@ class TestCancelledFulfillmentContract(unittest.TestCase):
 
         ERPNext throws InvalidStatusError from update_reserved_qty when the
         order is cancelled, so attempting it is guaranteed to fail.
+
+        The guard itself lives in _cancel_delivery_note_for_unfulfilment now
+        -- shared with the manual unfulfil_delivery_note path, which needs
+        the identical guard for the identical reason -- and
+        _cancel_for_cancelled_fulfillment is a thin wrapper over it.
         """
         import inspect
         from alaiy_os_connector_shopify.shopify.order import delivery_status
 
-        src = inspect.getsource(delivery_status._cancel_for_cancelled_fulfillment)
+        src = inspect.getsource(delivery_status._cancel_delivery_note_for_unfulfilment)
         guard = src.index('"docstatus": 2')
         cancel = src.index("dn.cancel()")
         self.assertLess(guard, cancel, "the cancelled-order guard must come first")
+
+    def test_cancel_for_cancelled_fulfillment_delegates_to_shared_helper(self):
+        """The Shopify-reported path must route through the same safety
+        checks as the manual one, not duplicate or bypass them."""
+        import inspect
+        from alaiy_os_connector_shopify.shopify.order import delivery_status
+
+        src = inspect.getsource(delivery_status._cancel_for_cancelled_fulfillment)
+        self.assertIn("_cancel_delivery_note_for_unfulfilment", src)
+        self.assertIn("push_to_shopify=False", src)
