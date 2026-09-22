@@ -392,6 +392,15 @@ class ShopifyEnrichedListing(Document):
                     value = json.dumps(values) if secondary.get("multi") else values[0]
                     _upsert(secondary["metafield_key"], value, secondary["type"])
 
+        # Values read off the enriched TITLE rather than an `attributes` key
+        # (e.g. `gender`, which the client's prompt deliberately never
+        # writes to `attributes` -- see title_fields' own docstring).
+        for label, title_spec in filter_matrix.title_fields().items():
+            values = filter_matrix.title_value_for(label, self.title)
+            if values:
+                value = json.dumps(values) if title_spec.get("multi") else values[0]
+                _upsert(title_spec["metafield_key"], value, title_spec["type"])
+
     def _attributes(self):
         """(key, value) pairs to publish — the table, or the JSON for an older row."""
         if self.attributes:

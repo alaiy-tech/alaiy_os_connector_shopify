@@ -103,6 +103,24 @@ def secondary_value_for(attribute_key, detailed_value):
 	return frappe.get_attr(spec["fn"])(detailed_value)
 
 
+def title_fields():
+	"""{label: {"metafield_key", "type", "multi", "fn"}} for values read off
+	the enriched TITLE rather than an `attributes` key (e.g. `gender`, which
+	the client's prompt deliberately never writes to `attributes`). Optional
+	on the client's matrix -- {} for a matrix that predates this or has none."""
+	spec = load()
+	return dict((spec or {}).get("title_fields") or {})
+
+
+def title_value_for(label, title):
+	"""The bucket(s) this title field's own extraction function gets from
+	the enriched title, or [] (no matrix, no such field, or no match)."""
+	spec = title_fields().get(label)
+	if not spec:
+		return []
+	return frappe.get_attr(spec["fn"])(title)
+
+
 def bucket_for(attribute_key, detailed_value):
 	"""The filter buckets this value maps onto, or [] (no matrix, or no match --
 	the caller cannot tell those apart and must treat both as "leave it")."""
