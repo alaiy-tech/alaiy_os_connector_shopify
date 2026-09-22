@@ -326,25 +326,19 @@ class ShopifyEnrichedListing(Document):
         `uploadify_product` filter values, alongside the detailed `custom`
         ones `_sync_attributes_as_metafields` already wrote.
 
-        Gated to the client matrix's own `pilot_item_codes` while the bucket
-        mapping is validated against real listings -- that allowlist is the
-        client's data (its own item codes), not this app's, same as the
-        bucket vocabulary itself, so it arrives through the same
-        `listing_filter_matrix` hook rather than being hardcoded here. A
-        product not on that list, or a client with no matrix installed at
-        all, returns immediately and this function touches nothing of its.
+        Runs for every enriched listing now -- the pilot allowlist gate was
+        removed once 014212 and 02267 confirmed the mapping matches live
+        Uploadify data end to end (a real before/after diff on the actual
+        server, not just this module's own unit checks). A client with no
+        `listing_filter_matrix` matrix installed at all still gets a no-op
+        (see filter_matrix.py's own docstring).
 
         Safe by construction, the same way as `_sync_attributes_as_metafields`:
         merged into `listing_doc.metafields`, keyed by `(namespace, key)`,
         and only for keys this run actually computed a bucket for. A detailed
         value that matches no bucket leaves the existing `uploadify_product`
-        row (Uploadify's original value, on any product not in the pilot
-        list, or any key this mapping doesn't cover) completely alone --
-        never blanked, never guessed.
+        row completely alone -- never blanked, never guessed.
         """
-        if self.item_code not in filter_matrix.pilot_item_codes():
-            return
-
         published = {
             row.key: row
             for row in (listing_doc.get("metafields") or [])

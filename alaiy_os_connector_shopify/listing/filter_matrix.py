@@ -103,15 +103,6 @@ def secondary_value_for(attribute_key, detailed_value):
 	return frappe.get_attr(spec["fn"])(detailed_value)
 
 
-def pilot_item_codes():
-	"""Item codes `_sync_filter_attributes_as_metafields` is allowed to run
-	for, or frozenset() (no matrix, or a matrix with none listed -- both mean
-	the feature is a no-op). Optional on the client's matrix, same as
-	`secondary_fields`."""
-	spec = load()
-	return frozenset((spec or {}).get("pilot_item_codes") or ())
-
-
 def bucket_for(attribute_key, detailed_value):
 	"""The filter buckets this value maps onto, or [] (no matrix, or no match --
 	the caller cannot tell those apart and must treat both as "leave it")."""
