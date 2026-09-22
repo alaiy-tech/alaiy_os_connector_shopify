@@ -440,7 +440,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
             if item.is_locked:
                 item.unlock()
             item.save()
-    except frappe.TimestampMismatchError:
+    except (frappe.TimestampMismatchError, frappe.QueryDeadlockError):
         # Confirmed live: this Item got saved by something else (our own
         # outbound push, a sibling-variant cascade, another webhook for
         # the same product) in the same second this function loaded it --
@@ -450,6 +450,19 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
         # kept from the stale `item`), so it's safe to just reload a
         # current copy and replay the whole update once rather than lose
         # it entirely.
+        #
+        # QueryDeadlockError (MySQL 1213) is the same class of transient
+        # concurrent-write collision, just caught by InnoDB's own deadlock
+        # detector instead of Frappe's optimistic-lock check -- both mean
+        # "someone else touched overlapping rows in the same window," and
+        # MySQL's own error text says exactly what TimestampMismatchError's
+        # handling already does: "try restarting transaction." Confirmed
+        # live: a products/update webhook crashed here mid item.save()
+        # (inserting an Item child-table row) while item.lock() has
+        # already been released for the actual write (see the comment
+        # above item.save()) -- there is nothing left serializing that
+        # write against a concurrent one, so the retry is the real fix,
+        # not a suppressed symptom.
         if _retry_count >= 2:
             raise
         frappe.db.rollback()
