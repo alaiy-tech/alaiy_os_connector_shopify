@@ -72,6 +72,25 @@ def case_size_field():
 	return spec["case_size"] if spec else None
 
 
+def secondary_fields():
+	"""{attribute_key: {"metafield_key", "type", "multi", "fn"}} for an
+	attribute that feeds a SECOND metafield besides its `fields()` entry
+	(e.g. `gemstones` also feeds Stone Color, not just Stone Type). Optional
+	on the client's matrix -- {} for a matrix that predates this or has none."""
+	spec = load()
+	return dict((spec or {}).get("secondary_fields") or {})
+
+
+def secondary_value_for(attribute_key, detailed_value):
+	"""The bucket(s) this attribute's SECOND metafield gets from this value,
+	via that field's own extraction function, or [] (no matrix, no secondary
+	field for this key, or no match)."""
+	spec = secondary_fields().get(attribute_key)
+	if not spec:
+		return []
+	return frappe.get_attr(spec["fn"])(detailed_value)
+
+
 def bucket_for(attribute_key, detailed_value):
 	"""The filter buckets this value maps onto, or [] (no matrix, or no match --
 	the caller cannot tell those apart and must treat both as "leave it")."""
