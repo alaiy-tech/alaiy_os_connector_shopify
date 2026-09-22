@@ -1,3 +1,5 @@
+"use client";
+
 import { PageHeader } from "@alaiy-os/layout/page-header";
 
 import { Badge } from "@alaiy-os/ui/badge";
