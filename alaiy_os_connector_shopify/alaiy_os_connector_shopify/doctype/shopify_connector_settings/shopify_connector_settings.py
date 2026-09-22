@@ -47,7 +47,7 @@ class ShopifyConnectorSettings(Document):
                 self.set(fieldname, connection.get(fieldname))
 
 
-def sync_legacy_settings_mirror():
+def sync_legacy_settings_mirror(doc=None, method=None):
     """
     Keep tabSingles for the retired doctype in step with the enabled
     connection, for the one read path `load_from_db` cannot reach:
@@ -55,9 +55,10 @@ def sync_legacy_settings_mirror():
     queries tabSingles directly, bypassing the Document class entirely.
 
     Called once right after the Single-to-Connection migration, and again
-    on every `Shopify Connection` change (see hooks.py's doc_events) so a
-    later edit -- switching which store is enabled, changing a mirrored
-    field -- stays visible to this path too.
+    on every `Shopify Connection` change (see hooks.py's doc_events, which
+    calls every on_update handler as fn(doc, method) -- doc/method are
+    accepted and ignored here, since the source of truth is always
+    connections.enabled_connection(), never the specific doc that changed).
 
     Leaves the previous values in place when nothing is enabled, rather
     than blanking them: a caller mid-read during a brief "switching stores"
