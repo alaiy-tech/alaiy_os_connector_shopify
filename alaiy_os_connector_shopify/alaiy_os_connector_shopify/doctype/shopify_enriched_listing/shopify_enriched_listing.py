@@ -365,16 +365,18 @@ class ShopifyEnrichedListing(Document):
 
         field_specs = filter_matrix.fields()
         secondary_specs = filter_matrix.secondary_fields()
-        case_size_spec = filter_matrix.case_size_field()
+        parsed_specs = filter_matrix.parsed_fields()
 
         for key, detailed_value in self._attributes():
             if not key or not detailed_value:
                 continue
 
-            if case_size_spec and key == case_size_spec["attribute_key"]:
-                mm = filter_matrix.parse_case_size_mm(detailed_value)
-                if mm is not None:
-                    _upsert(case_size_spec["metafield_key"], str(mm), case_size_spec["type"])
+            parsed_spec = parsed_specs.get(key)
+            if parsed_spec:
+                parsed = filter_matrix.parsed_value_for(key, detailed_value)
+                if parsed is not None:
+                    value = json.dumps(parsed) if parsed_spec.get("multi") else str(parsed)
+                    _upsert(parsed_spec["metafield_key"], value, parsed_spec["type"])
                 continue
 
             spec = field_specs.get(key)

@@ -20,7 +20,7 @@ import frappe
 
 HOOK = "listing_filter_matrix"
 
-REQUIRED_KEYS = ("fields", "buckets", "case_size", "bucket_for", "parse_case_size_mm")
+REQUIRED_KEYS = ("fields", "buckets", "parsed_fields", "bucket_for")
 
 _UNSET = object()
 
@@ -66,10 +66,22 @@ def fields():
 	return dict(spec["fields"]) if spec else {}
 
 
-def case_size_field():
-	"""{"attribute_key", "metafield_key", "type"}, or None when no matrix."""
+def parsed_fields():
+	"""{attribute_key: {"metafield_key", "type", "multi", "parse_fn"}} for
+	attributes that are a NUMBER, not a bucket vocabulary (case_size, ring
+	size), fed through their own parse function instead of `bucket_for`.
+	{} when no matrix."""
 	spec = load()
-	return spec["case_size"] if spec else None
+	return dict((spec or {}).get("parsed_fields") or {})
+
+
+def parsed_value_for(attribute_key, detailed_value):
+	"""The parsed value for this attribute's own parse function, or None (no
+	matrix, no parsed field for this key, or it didn't parse)."""
+	spec = parsed_fields().get(attribute_key)
+	if not spec:
+		return None
+	return frappe.get_attr(spec["parse_fn"])(detailed_value)
 
 
 def secondary_fields():
@@ -109,9 +121,3 @@ def bucket_for(attribute_key, detailed_value):
 	return frappe.get_attr(spec["bucket_for"])(attribute_key, detailed_value)
 
 
-def parse_case_size_mm(detailed_value):
-	"""The bare integer mm `custom.case_size` reduces to, or None."""
-	spec = load()
-	if not spec:
-		return None
-	return frappe.get_attr(spec["parse_case_size_mm"])(detailed_value)
