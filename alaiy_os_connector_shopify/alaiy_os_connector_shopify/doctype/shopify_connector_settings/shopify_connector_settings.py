@@ -94,4 +94,7 @@ def sync_legacy_settings_mirror():
             connection.get(fieldname),
             update_modified=False,
         )
-    frappe.db.commit()
+    # No explicit commit: this runs either inside the migration patch (which
+    # commits on its own) or inside a request via the Shopify Connection
+    # on_update hook, where Frappe's own request lifecycle owns the commit --
+    # committing here would end the request's transaction early.
