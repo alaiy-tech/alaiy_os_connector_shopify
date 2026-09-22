@@ -372,6 +372,7 @@ class ShopifyEnrichedListing(Document):
             })
 
         field_specs = filter_matrix.fields()
+        secondary_specs = filter_matrix.secondary_fields()
         case_size_spec = filter_matrix.case_size_field()
 
         for key, detailed_value in self._attributes():
@@ -385,17 +386,23 @@ class ShopifyEnrichedListing(Document):
                 continue
 
             spec = field_specs.get(key)
-            if not spec:
-                continue
-
-            buckets = filter_matrix.bucket_for(key, detailed_value)
-            if not buckets:
+            if spec:
+                buckets = filter_matrix.bucket_for(key, detailed_value)
+                if buckets:
+                    value = json.dumps(buckets) if spec.get("multi") else buckets[0]
+                    _upsert(spec["metafield_key"], value, spec["type"])
                 # No confident match: leave whatever filter value already
                 # exists alone rather than writing a guess or clearing it.
-                continue
 
-            value = json.dumps(buckets) if spec.get("multi") else buckets[0]
-            _upsert(spec["metafield_key"], value, spec["type"])
+            # A key can feed a SECOND metafield besides its `spec` above (e.g.
+            # `gemstones` also feeds Stone Color, not just Stone Type) --
+            # independent of whether the primary match above found anything.
+            secondary = secondary_specs.get(key)
+            if secondary:
+                values = filter_matrix.secondary_value_for(key, detailed_value)
+                if values:
+                    value = json.dumps(values) if secondary.get("multi") else values[0]
+                    _upsert(secondary["metafield_key"], value, secondary["type"])
 
     def _attributes(self):
         """(key, value) pairs to publish — the table, or the JSON for an older row."""
