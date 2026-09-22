@@ -83,7 +83,19 @@ def _open_fulfillment_order_line_items(client, order_gid):
         data = client.execute(_FULFILLMENT_ORDERS_QUERY, {"id": order_gid, "after": after})
         connection = ((data.get("order") or {}).get("fulfillmentOrders")) or {}
         for node in connection.get("nodes") or []:
-            if node.get("status") != "OPEN":
+            # OPEN, not IN_PROGRESS alone: Shopify moves a fulfillment order
+            # to IN_PROGRESS the moment ANY of its line items gets a partial
+            # fulfillment, but the order still accepts further fulfillments
+            # against whatever remains open on it. Confirmed live: one
+            # Delivery Note fulfilled the first of two lines sharing a
+            # fulfillment order, which flipped it to IN_PROGRESS, and
+            # excluding non-OPEN here dropped the second line's real
+            # remainingQuantity of 1 along with it -- "no open fulfillment
+            # orders" for a line Shopify was still willing to fulfill.
+            # CLOSED/CANCELLED are genuinely terminal; SCHEDULED/ON_HOLD are
+            # not yet fulfillable. remainingQuantity > 0 below is what
+            # actually decides whether a line can be pushed.
+            if node.get("status") not in ("OPEN", "IN_PROGRESS"):
                 continue
             open_lines = [
                 li for li in (node.get("lineItems") or {}).get("nodes", [])
