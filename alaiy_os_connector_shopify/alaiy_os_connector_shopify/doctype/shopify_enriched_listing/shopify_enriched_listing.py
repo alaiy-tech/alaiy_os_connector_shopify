@@ -6,7 +6,22 @@ import json
 import frappe
 from frappe.model.document import Document
 
+from alaiy_os_connector_shopify.listing import filter_matrix
 from alaiy_os_connector_shopify.listing.handlers import ATTRIBUTE_NAMESPACE
+
+FILTER_NAMESPACE = "uploadify_product"
+
+# Pilot allowlist for `_sync_filter_attributes_as_metafields`: item codes this
+# runs for while the mapping is being validated against real listings. Empty
+# means the step is a no-op everywhere. Existing `uploadify_product` values on
+# any item code NOT in this set are never read, written or cleared by this
+# code path -- see the function's docstring for why that is safe by
+# construction, not just by this list being small.
+#
+# Expand this once a pilot batch's `uploadify_product` values have been
+# spot-checked against a pre-run snapshot; remove the check entirely once the
+# mapping has run clean across a representative sample of the catalog.
+FILTER_SYNC_PILOT_ITEM_CODES = frozenset()
 
 
 class ShopifyEnrichedListing(Document):
@@ -188,6 +203,7 @@ class ShopifyEnrichedListing(Document):
             listing_doc.listing_tags = ", ".join(tag_names)
 
         self._sync_attributes_as_metafields(listing_doc)
+        self._sync_filter_attributes_as_metafields(listing_doc)
 
     def apply_images(self, listing_doc):
         """Put this record's imagery onto the listing — both halves, together.
@@ -316,6 +332,70 @@ class ShopifyEnrichedListing(Document):
                 "type": "single_line_text_field",
                 "value": str(value),
             })
+
+    def _sync_filter_attributes_as_metafields(self, listing_doc):
+        """Convert a subset of the enriched attributes into simplified
+        `uploadify_product` filter values, alongside the detailed `custom`
+        ones `_sync_attributes_as_metafields` already wrote.
+
+        Gated to `FILTER_SYNC_PILOT_ITEM_CODES` while the bucket mapping is
+        validated against real listings; a product not on that list returns
+        immediately and this function touches nothing of its.
+
+        Safe by construction, the same way as `_sync_attributes_as_metafields`:
+        merged into `listing_doc.metafields`, keyed by `(namespace, key)`,
+        and only for keys this run actually computed a bucket for. A detailed
+        value that matches no bucket, or a client with no `listing_filter_matrix`
+        installed at all, leaves the existing `uploadify_product` row (Uploadify's
+        original value, on any product not in the pilot list, or any key this
+        mapping doesn't cover) completely alone -- never blanked, never guessed.
+        """
+        if self.item_code not in FILTER_SYNC_PILOT_ITEM_CODES:
+            return
+
+        published = {
+            row.key: row
+            for row in (listing_doc.get("metafields") or [])
+            if row.namespace == FILTER_NAMESPACE and row.key
+        }
+
+        def _upsert(key, value, metafield_type):
+            row = published.get(key)
+            if row:
+                row.value = value
+                return
+            listing_doc.append("metafields", {
+                "namespace": FILTER_NAMESPACE,
+                "key": key,
+                "type": metafield_type,
+                "value": value,
+            })
+
+        field_specs = filter_matrix.fields()
+        case_size_spec = filter_matrix.case_size_field()
+
+        for key, detailed_value in self._attributes():
+            if not key or not detailed_value:
+                continue
+
+            if case_size_spec and key == case_size_spec["attribute_key"]:
+                mm = filter_matrix.parse_case_size_mm(detailed_value)
+                if mm is not None:
+                    _upsert(case_size_spec["metafield_key"], str(mm), case_size_spec["type"])
+                continue
+
+            spec = field_specs.get(key)
+            if not spec:
+                continue
+
+            buckets = filter_matrix.bucket_for(key, detailed_value)
+            if not buckets:
+                # No confident match: leave whatever filter value already
+                # exists alone rather than writing a guess or clearing it.
+                continue
+
+            value = json.dumps(buckets) if spec.get("multi") else buckets[0]
+            _upsert(spec["metafield_key"], value, spec["type"])
 
     def _attributes(self):
         """(key, value) pairs to publish — the table, or the JSON for an older row."""
