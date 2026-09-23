@@ -22,6 +22,22 @@ def after_install():
     _provision()
 
 
+def before_migrate():
+    """NAYAGLOBAL BRANCH. Take the Item id fields off before the schema sync sees them.
+
+    `_remove_item_id_fields` ran from `after_migrate` with the rest of
+    `setup_custom_fields`, and that is too late. Frappe's order is `before_migrate` ->
+    schema sync -> patches -> fixtures -> `after_migrate` (frappe/migrate.py), and the
+    schema sync calls `frappe.db.updatedb("Item")`, which builds indexes from the STORED
+    Custom Field rows. Rows still flagged `search_index` at that moment mean the ALTER is
+    already running before the deletion is reached -- observed three times on 2026-09-23,
+    each killed by hand.
+
+    Deleting them here, first thing, is what makes a migrate walk past `tabItem`.
+    """
+    _remove_item_id_fields()
+
+
 def after_migrate():
     """The same, because every step is idempotent by construction.
 
@@ -706,7 +722,15 @@ def setup_custom_fields():
     _remove_deprecated_item_fields()
     _remove_item_id_fields()
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
-    create_custom_fields(custom_fields, update=True)
+
+    # ignore_validate=True skips `validate_fields_for_doctype`, which Custom Field's
+    # on_update otherwise runs per saved field: it re-checks every UNIQUE column on the
+    # parent for duplicates with `select <field>, count(*) ... having count(*) > 1` -- a
+    # full scan per unique column, per field written. On this bench's Item that is ~100s
+    # each, and it was ~35 minutes of one cancelled migrate, spent asking whether columns
+    # that already carry a unique index contain duplicates. Nothing here alters a unique
+    # field. This is what made "custom field creation on Item" slow, not the columns.
+    create_custom_fields(custom_fields, update=True, ignore_validate=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 

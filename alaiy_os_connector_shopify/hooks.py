@@ -13,6 +13,10 @@ required_apps = ["alaiy_os", "erpnext"]
 # Link to it. See setup/install.after_migrate.
 after_install = "alaiy_os_connector_shopify.setup.install.after_install"
 
+# NAYAGLOBAL BRANCH: the Item id fields come off before the schema sync, not after.
+# See setup.install.before_migrate -- after_migrate is too late to stop the ALTER.
+before_migrate = "alaiy_os_connector_shopify.setup.install.before_migrate"
+
 after_migrate = "alaiy_os_connector_shopify.setup.install.after_migrate"
 
 # Drops the agent pack's OS Agent Registry row and the listing agent's custom
