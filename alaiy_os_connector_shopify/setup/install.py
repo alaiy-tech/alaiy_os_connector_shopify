@@ -244,8 +244,50 @@ def _ensure_list_view_column(doctype, fieldname, label):
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
+#: Any one of the ERPNext-side fields would do; this is the oldest, so a bench
+#: provisioned by any version of this app has it.
+_PROVISIONED_MARKER = "Item-sh_shopify_product_id"
+
+
+def _wants_erpnext_fields():
+    """True if this bench's ERPNext doctypes should carry the Shopify fields.
+
+    They should once the bench has a `Shopify Connection` -- whether or not it is
+    enabled, because `is_enabled` gets set by hand and by script as well as through
+    the form -- and they should for ever after, so a bench that has been provisioned
+    keeps receiving new fields even if its last connection is deleted.
+
+    What this excludes is the bench that has never had a connection at all, where
+    every one of these columns would be empty on every row. That is not a
+    hypothetical: installing this app beside a large catalogue (NayaGlobal, ~14M
+    Items) put 19 unused columns on `tabItem` and then spent the better part of an
+    hour building four indexes over them, inside `bench migrate`, because
+    `create_custom_fields` ends in `frappe.db.updatedb("Item")` and `updatedb` makes
+    an index for every `search_index` field it finds missing. The fields are not
+    wrong -- `inventory_sync` and `shopify/scoping.py` both filter Items on them --
+    they are simply not this bench's, and nothing here can know how big someone
+    else's Item table is.
+
+    `_on_first_enable` (shopify_connection.py) calls `setup_custom_fields` when a
+    connection is switched on, and `on_update` runs after the row is written, so the
+    fields still land exactly when the first connection appears.
+    """
+    if frappe.db.exists("Custom Field", _PROVISIONED_MARKER):
+        return True
+    if not frappe.db.exists("DocType", "Shopify Connection"):
+        return False
+    return bool(frappe.db.a_row_exists("Shopify Connection"))
+
+
 def setup_custom_fields():
-    """Add Shopify custom fields to Alaiy OS doctypes. Idempotent -- safe to call on every migrate."""
+    """Add Shopify custom fields to Alaiy OS doctypes. Idempotent -- safe to call on every migrate.
+
+    A no-op on a bench that has never had a `Shopify Connection`: see
+    `_wants_erpnext_fields` for why that is worth checking before writing columns
+    onto someone else's Item table.
+    """
+    if not _wants_erpnext_fields():
+        return
     # variant_of is itself a Link to Item -- fetch_from lets a variant
     # auto-pull these values from its template the moment variant_of is
     # set, and read_only_depends_on locks them from manual edit on a
@@ -716,7 +758,15 @@ def setup_custom_fields():
     # -- e.g. sh_shopify_category started read-only and later became editable.
     _remove_deprecated_item_fields()
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
-    create_custom_fields(custom_fields, update=True)
+
+    # ignore_validate=True skips `validate_fields_for_doctype`, which Custom Field's
+    # on_update otherwise runs per saved field. It re-checks every UNIQUE field on the
+    # parent for duplicates -- `select <field>, count(*) ... group by <field> having
+    # count(*) > 1` -- which is a full scan per unique column, per field written. On a
+    # 14M-row Item table that is ~100s each, and it is asking whether columns that
+    # already carry a unique index contain duplicates. Nothing here alters a unique
+    # field, so there is no answer it could return that we would act on.
+    create_custom_fields(custom_fields, update=True, ignore_validate=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
