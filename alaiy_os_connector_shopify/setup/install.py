@@ -249,7 +249,14 @@ def setup_custom_fields():
 
     NAYAGLOBAL BRANCH. The four Item fields that `main` marks `search_index` --
     sh_shopify_product_id, sh_shopify_variant_id, sh_shopify_inventory_item_id,
-    sh_shopify_connection -- do not carry it here. Do not give it back.
+    sh_shopify_connection -- carry `"search_index": 0` here. Do not give it back.
+
+    The explicit 0 is the whole point and deleting the key is NOT the same thing.
+    `create_custom_fields` updates an existing field with `custom_field.update(df)`,
+    which only copies the keys `df` HAS: drop the key and a row already stored with
+    search_index=1 keeps it. `frappe.db.updatedb` then builds the index from the stored
+    Custom Field row, not from this file, and the ALTER runs anyway. That is exactly what
+    happened on 2026-09-23 -- the bench was on this branch and still started the build.
 
     `create_custom_fields` ends in `frappe.db.updatedb("Item")`, which builds an index
     for every `search_index` field it finds missing. On this bench `tabItem` is not a
@@ -276,6 +283,7 @@ def setup_custom_fields():
     item_fields = [
         {
             "fieldname": "sh_shopify_product_id",
+            "search_index": 0,
             "label": "Shopify Product ID",
             "fieldtype": "Data",
             "read_only": 1,
@@ -285,6 +293,7 @@ def setup_custom_fields():
         },
         {
             "fieldname": "sh_shopify_variant_id",
+            "search_index": 0,
             "label": "Shopify Variant ID",
             "fieldtype": "Data",
             "read_only": 1,
@@ -293,6 +302,7 @@ def setup_custom_fields():
         },
         {
             "fieldname": "sh_shopify_inventory_item_id",
+            "search_index": 0,
             "label": "Shopify Inventory Item ID",
             "fieldtype": "Data",
             "read_only": 1,
@@ -447,6 +457,7 @@ def setup_custom_fields():
         },
         {
             "fieldname": "sh_shopify_connection",
+            "search_index": 0,
             "label": "Shopify Connection",
             "fieldtype": "Link",
             "options": "Shopify Connection",
