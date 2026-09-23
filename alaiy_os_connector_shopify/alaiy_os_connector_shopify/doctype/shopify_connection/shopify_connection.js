@@ -110,6 +110,36 @@ frappe.ui.form.on("Shopify Connection", {
       ),
       __("Actions"),
     );
+
+    // Manual counterpart to a client app's own config-save hook calling
+    // reprice_connection -- for the seller who wants this store's live
+    // prices refreshed right now rather than waiting on the next config
+    // change. Bespoke callback (not the generic `queue` helper above)
+    // because reprice_connection can answer "already running" instead of
+    // queuing a second job, and that answer is worth its own message
+    // rather than a blind "queued".
+    frm.add_custom_button(
+      __("Reprice Now"),
+      () => {
+        frappe.call({
+          method: "alaiy_os_connector_shopify.shopify.product.export.reprice_connection",
+          args: { connection: frm.doc.name },
+          callback(r) {
+            const res = r.message || {};
+            frappe.show_alert(
+              {
+                message: res.queued
+                  ? __("Repricing queued")
+                  : (res.reason || __("Nothing to do")),
+                indicator: res.queued ? "blue" : "orange",
+              },
+              5,
+            );
+          },
+        });
+      },
+      __("Actions"),
+    );
   },
 });
 
