@@ -371,8 +371,12 @@ def reprice_connection(connection, reason=None):
     log = sync_guard.load_or_create_log("repricing", "manual", connection=settings)
     if reason:
         _append_export_log(log, f"Reason: {reason}")
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
+        # Write access to this store's own Sync Log row, not a general
+        # bypass -- the write permission this call actually gates is the
+        # frappe.has_permission check above, same as every other sync_type
+        # in this file (run_bulk_export_to_shopify, run_bulk_enable_listings).
+        log.save(ignore_permissions=True)  # nosemgrep -- permission already checked above
+        frappe.db.commit()  # nosemgrep -- this run's own Sync Log row must record its reason even if enqueuing raises next
 
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.product.export.run_reprice_connection",
@@ -436,17 +440,25 @@ def run_reprice_connection(trigger="manual", log_name=None, connection=None, rea
     connection = connections.resolve(connection) if connection else connections.require_enabled()
     log = sync_guard.load_or_create_log("repricing", trigger, log_name, connection=connection)
 
+    # This function runs only as a background job (frappe.enqueue), so every
+    # log.save(ignore_permissions=True) below writes this run's own Sync Log
+    # row under system permissions, same as every other sync_type in this
+    # file (run_bulk_export_to_shopify, run_bulk_enable_listings) -- write
+    # access to trigger a run was already checked at the whitelisted
+    # reprice_connection() entry point, not here. Each commit persists that
+    # row's progress so a crash mid-run leaves a readable "how far did it
+    # get" rather than losing the whole run's history with it.
     if sync_guard.has_active_sync("repricing", exclude_name=log.name, connection=connection):
         log.status = "skipped"
         log.finished_at = frappe.utils.now_datetime()
         log.error_message = "Skipped: another repricing run is already in progress for this store."
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
+        log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+        frappe.db.commit()  # nosemgrep -- see comment above
         return log.name
 
     log.status = "running"
-    log.save(ignore_permissions=True)
-    frappe.db.commit()
+    log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+    frappe.db.commit()  # nosemgrep -- see comment above
 
     try:
         candidates = _reprice_candidates(connection)
@@ -455,8 +467,8 @@ def run_reprice_connection(trigger="manual", log_name=None, connection=None, rea
             for i in range(0, len(candidates), REPRICE_CHUNK_SIZE)
         ]
         log.pages_total = len(chunks)
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
+        log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+        frappe.db.commit()  # nosemgrep -- see comment above
 
         processed = failed = pushed = 0
         cancelled = False
@@ -526,8 +538,8 @@ def run_reprice_connection(trigger="manual", log_name=None, connection=None, rea
             log.items_failed = failed
             _append_export_log(
                 log, f"...{processed}/{len(candidates)} processed so far ({failed} failed)")
-            log.save(ignore_permissions=True)
-            frappe.db.commit()
+            log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+            frappe.db.commit()  # nosemgrep -- see comment above
 
         log.status = "cancelled" if cancelled else "success"
         log.items_processed = processed
@@ -539,15 +551,15 @@ def run_reprice_connection(trigger="manual", log_name=None, connection=None, rea
         if cancelled:
             summary += " (stopped early by user)"
         _append_export_log(log, summary)
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
+        log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+        frappe.db.commit()  # nosemgrep -- see comment above
 
     except Exception:
         log.status = "failed"
         log.error_message = frappe.get_traceback()[:500]
         log.finished_at = frappe.utils.now_datetime()
-        log.save(ignore_permissions=True)
-        frappe.db.commit()
+        log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+        frappe.db.commit()  # nosemgrep -- a failed run must record its own failure even though it's about to re-raise
         raise
 
     return log.name
