@@ -432,5 +432,223 @@ class TestFingerprintRefreshAfterAPricePush(unittest.TestCase):
         self.assertEqual(refreshed, ["TEMPLATE-1"])
 
 
+class TestWriteBackTargetsTheAuthoritativePriceField(unittest.TestCase):
+    """variant_price()'s own fallback order (row override, else a simple
+    product's listing_price, else Item Price) decides which stored field is
+    actually authoritative for a given item -- the write-back has to update
+    THAT field, or the field an admin keeps editing goes stale while an
+    until-now-empty row silently takes over."""
+
+    def test_a_simple_products_listing_price_override_is_updated_not_the_row(self):
+        export = _load_export()
+        connection = _FakeDoc(name="store-a")
+        export.connections = types.SimpleNamespace(resolve=lambda c=None: connection)
+        export.update_variant_prices = mock.Mock(
+            return_value={"updated": ["TEMPLATE-1"], "failed": {}})
+
+        # Simple product: its self-referencing row (see
+        # patches/backfill_simple_item_variant_rows.py) has no variant_price
+        # override, so listing.listing_price is variant_price()'s
+        # authoritative fallback for it today.
+        listing = _listing("TEMPLATE-1", "store-a", "111", [("TEMPLATE-1", None)])
+        listing.listing_price = 25.00
+        export.frappe.db.get_value = mock.Mock(
+            return_value=_FakeDoc(variant_of=None, name="TEMPLATE-1"))
+        export.listing_resolver = types.SimpleNamespace(get_listing=lambda name: listing)
+        export._refresh_fingerprint_after_price_push = lambda *a, **kw: None
+
+        export._apply_price_updates({"TEMPLATE-1": 30.00}, "store-a")
+
+        export.frappe.db.set_value.assert_called_once_with(
+            "Shopify Product Listing", "TEMPLATE-1", "listing_price", 30.00)
+
+    def test_a_row_level_override_already_in_effect_keeps_being_updated_there(self):
+        export = _load_export()
+        connection = _FakeDoc(name="store-a")
+        export.connections = types.SimpleNamespace(resolve=lambda c=None: connection)
+        export.update_variant_prices = mock.Mock(
+            return_value={"updated": ["ITEM-1"], "failed": {}})
+
+        listing = _listing("TEMPLATE-1", "store-a", "111", [("ITEM-1", 20.00)])
+        listing.listing_price = 999.00  # already overridden at the row -- must be ignored
+        export.frappe.db.get_value = mock.Mock(
+            return_value=_FakeDoc(variant_of=None, name="TEMPLATE-1"))
+        export.listing_resolver = types.SimpleNamespace(get_listing=lambda name: listing)
+        export._refresh_fingerprint_after_price_push = lambda *a, **kw: None
+
+        export._apply_price_updates({"ITEM-1": 30.00}, "store-a")
+
+        export.frappe.db.set_value.assert_called_once_with(
+            "Shopify Listing Variant", listing.variants[0].name, "variant_price", 30.00)
+
+    def test_a_real_variant_with_no_override_gets_one_recorded_on_its_row(self):
+        """Neither override was set (the price came from the Item Price
+        list) -- for a real variant (item_code != listing.item) that has to
+        land on the row; there is no template-level field it could mean."""
+        export = _load_export()
+        connection = _FakeDoc(name="store-a")
+        export.connections = types.SimpleNamespace(resolve=lambda c=None: connection)
+        export.update_variant_prices = mock.Mock(
+            return_value={"updated": ["ITEM-1"], "failed": {}})
+
+        listing = _listing("TEMPLATE-1", "store-a", "111", [("ITEM-1", None)])
+        export.frappe.db.get_value = mock.Mock(
+            return_value=_FakeDoc(variant_of="TEMPLATE-1", name="ITEM-1"))
+        export.listing_resolver = types.SimpleNamespace(get_listing=lambda name: listing)
+        export._refresh_fingerprint_after_price_push = lambda *a, **kw: None
+
+        export._apply_price_updates({"ITEM-1": 30.00}, "store-a")
+
+        export.frappe.db.set_value.assert_called_once_with(
+            "Shopify Listing Variant", listing.variants[0].name, "variant_price", 30.00)
+
+
+class TestNonPositiveResolvedPriceIsNeverPushed(unittest.TestCase):
+    """The hook contract's "missing means declined" only covers an absent
+    item_code -- a present-but-zero-or-negative one is a resolver bug, not a
+    decline, and must never reach Shopify."""
+
+    def _run(self, resolved_price):
+        export = _load_export()
+        connection = _FakeDoc(name="store-a")
+        export.connections = types.SimpleNamespace(
+            resolve=lambda c=None: connection, require_enabled=lambda: connection)
+        export.sync_guard = types.SimpleNamespace(
+            has_active_sync=lambda *a, **kw: False,
+            load_or_create_log=lambda *a, **kw: _FakeDoc(name="SYNC-LOG-1"),
+            is_cancel_requested=lambda *a, **kw: False,
+        )
+        listing = _listing("TEMPLATE-1", "store-a", "111", [("ITEM-1", 25.00)])
+        export._reprice_candidates = lambda conn: [("TEMPLATE-1", "ITEM-1")]
+        export.listing_resolver = types.SimpleNamespace(
+            get_listing=lambda name: listing,
+            variant_price=lambda listing, code, settings: 25.00,
+        )
+        export.pricing_resolver = types.SimpleNamespace(
+            resolve=lambda conn, codes: {"ITEM-1": resolved_price})
+        export._apply_price_updates = mock.Mock()
+
+        export.run_reprice_connection(connection="store-a")
+        return export._apply_price_updates
+
+    def test_a_zero_price_is_skipped_not_pushed(self):
+        self._run(0.0).assert_not_called()
+
+    def test_a_negative_price_is_skipped_not_pushed(self):
+        self._run(-5.0).assert_not_called()
+
+
+class TestPermanentPriceFailuresAreNotRetried(unittest.TestCase):
+    """update_variant_prices' own pre-flight failures (item not found, no
+    Listing yet, never pushed yet) are computed before any Shopify call --
+    retrying one recomputes the exact same failure, so queuing it burns a
+    retry-queue slot (and the whole backoff-to-dead-letter cycle) that a
+    genuinely transient failure due at the same tick has to wait behind."""
+
+    def _run(self, failure_reason):
+        export = _load_export()
+        connection = _FakeDoc(name="store-a")
+        export.connections = types.SimpleNamespace(
+            resolve=lambda c=None: connection, require_enabled=lambda: connection)
+        export.sync_guard = types.SimpleNamespace(
+            has_active_sync=lambda *a, **kw: False,
+            load_or_create_log=lambda *a, **kw: _FakeDoc(name="SYNC-LOG-1"),
+            is_cancel_requested=lambda *a, **kw: False,
+        )
+        listing = _listing("TEMPLATE-1", "store-a", "111", [("ITEM-1", 25.00)])
+        export._reprice_candidates = lambda conn: [("TEMPLATE-1", "ITEM-1")]
+        export.listing_resolver = types.SimpleNamespace(
+            get_listing=lambda name: listing,
+            variant_price=lambda listing, code, settings: 25.00,
+        )
+        export.pricing_resolver = types.SimpleNamespace(
+            resolve=lambda conn, codes: {"ITEM-1": 30.00})
+        export._apply_price_updates = mock.Mock(
+            return_value={"updated": [], "failed": {"ITEM-1": failure_reason}})
+        export.retry_queue = mock.Mock()
+
+        export.run_reprice_connection(connection="store-a")
+        return export.retry_queue
+
+    def test_item_not_found_is_not_enqueued(self):
+        self._run(_load_export().ITEM_NOT_FOUND).enqueue.assert_not_called()
+
+    def test_no_listing_yet_is_not_enqueued(self):
+        self._run(_load_export().NO_LISTING_YET).enqueue.assert_not_called()
+
+    def test_never_pushed_yet_is_not_enqueued(self):
+        self._run(_load_export().NEVER_PUSHED_YET).enqueue.assert_not_called()
+
+    def test_a_transient_failure_is_still_enqueued(self):
+        retry_queue = self._run("Request to Shopify failed -- see Error Log.")
+        retry_queue.enqueue.assert_called_once()
+
+
+class TestCacheInvalidatedAfterAnyPushAttempt(unittest.TestCase):
+    """listings_by_name must not let a later chunk compare against a
+    snapshot an earlier chunk already acted on -- whether or not that
+    earlier chunk's push succeeded."""
+
+    def test_a_failed_push_still_invalidates_the_template_cache(self):
+        export = _load_export()
+        connection = _FakeDoc(name="store-a")
+        export.connections = types.SimpleNamespace(
+            resolve=lambda c=None: connection, require_enabled=lambda: connection)
+        export.sync_guard = types.SimpleNamespace(
+            has_active_sync=lambda *a, **kw: False,
+            load_or_create_log=lambda *a, **kw: _FakeDoc(name="SYNC-LOG-1"),
+            is_cancel_requested=lambda *a, **kw: False,
+        )
+
+        # 199 filler candidates (distinct templates, unchanged prices --
+        # never reach _apply_price_updates) fill out chunk 1 to
+        # REPRICE_CHUNK_SIZE (200) alongside TEMPLATE-1/ITEM-1, the chunk's
+        # only *changing* item; TEMPLATE-1/ITEM-2 lands alone in chunk 2.
+        fillers = [(f"FILLER-{i}", f"FILLER-ITEM-{i}") for i in range(199)]
+        candidates = fillers + [("TEMPLATE-1", "ITEM-1"), ("TEMPLATE-1", "ITEM-2")]
+        export._reprice_candidates = lambda conn: candidates
+
+        listing = _listing("TEMPLATE-1", "store-a", "111",
+                            [("ITEM-1", 25.00), ("ITEM-2", 25.00)])
+        filler_listing = _listing("FILLER", "store-a", "999", [])
+
+        get_listing_calls = []
+
+        def fake_get_listing(name):
+            get_listing_calls.append(name)
+            return listing if name == "TEMPLATE-1" else filler_listing
+
+        export.listing_resolver = types.SimpleNamespace(
+            get_listing=fake_get_listing,
+            variant_price=lambda listing, code, settings: 25.00,
+        )
+
+        def fake_resolve(conn, codes):
+            out = {c: 25.00 for c in codes}  # every filler: unchanged
+            out.update({"ITEM-1": 30.00, "ITEM-2": 31.00})
+            return out
+
+        export.pricing_resolver = types.SimpleNamespace(resolve=fake_resolve)
+
+        def fake_apply(changed, conn):
+            # Only ITEM-1 (chunk 1) ever fails; whatever chunk 2 pushes
+            # (ITEM-2) succeeds -- each call's result only ever names items
+            # that were actually IN that call's own `changed` dict.
+            failed = {code: "Request to Shopify failed -- see Error Log."
+                      for code in changed if code == "ITEM-1"}
+            return {"updated": [c for c in changed if c not in failed], "failed": failed}
+
+        export._apply_price_updates = mock.Mock(side_effect=fake_apply)
+        export.retry_queue = mock.Mock()
+
+        export.run_reprice_connection(connection="store-a")
+
+        # TEMPLATE-1 has to be looked up again for chunk 2's ITEM-1 --
+        # reusing chunk 1's pre-push snapshot would compare ITEM-2 against
+        # a listing object that never saw chunk 1's (failed) attempt.
+        template_1_lookups = [c for c in get_listing_calls if c == "TEMPLATE-1"]
+        self.assertEqual(len(template_1_lookups), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
