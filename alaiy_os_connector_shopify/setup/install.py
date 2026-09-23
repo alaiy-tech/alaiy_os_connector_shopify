@@ -247,32 +247,31 @@ def _ensure_list_view_column(doctype, fieldname, label):
 def setup_custom_fields():
     """Add Shopify custom fields to Alaiy OS doctypes. Idempotent -- safe to call on every migrate.
 
-    NAYAGLOBAL BRANCH. The four Item fields that `main` marks `search_index` --
-    sh_shopify_product_id, sh_shopify_variant_id, sh_shopify_inventory_item_id,
-    sh_shopify_connection -- carry `"search_index": 0` here. Do not give it back.
+    NAYAGLOBAL BRANCH. Four Item fields that `main` declares are absent here:
+    sh_shopify_product_id, sh_shopify_variant_id, sh_shopify_inventory_item_id and
+    sh_shopify_connection. Do not add them back.
 
-    The explicit 0 is the whole point and deleting the key is NOT the same thing.
-    `create_custom_fields` updates an existing field with `custom_field.update(df)`,
-    which only copies the keys `df` HAS: drop the key and a row already stored with
-    search_index=1 keeps it. `frappe.db.updatedb` then builds the index from the stored
-    Custom Field row, not from this file, and the ALTER runs anyway. That is exactly what
-    happened on 2026-09-23 -- the bench was on this branch and still started the build.
+    They are the Shopify-id and store-scoping columns, and since the listing doctypes
+    arrived (cf4a194, issue #61) `Shopify Product Listing` and `Shopify Listing Variant`
+    hold the same ids beside the Item they belong to. NayaGlobal reads them there. On this
+    bench `tabItem` is not a seller's product list but the NayaSource supplier catalogue --
+    13.9M rows, 26 GB data, 43 GB index -- so those four columns are `search_index` fields
+    whose index build is an ALTER of tens of minutes, fired from wherever the fields get
+    written: `bench migrate`, or the request that enables a store. Two deploys were killed
+    over it on 2026-09-23.
 
-    `create_custom_fields` ends in `frappe.db.updatedb("Item")`, which builds an index
-    for every `search_index` field it finds missing. On this bench `tabItem` is not a
-    seller's product list, it is the NayaSource supplier catalogue: 13.9M rows, 26 GB of
-    data, 43 GB of index. Those four indexes are one ALTER of tens of minutes, and it
-    runs wherever the fields are written -- inside `bench migrate`, or inside the request
-    that enables a store. One such deploy was cancelled after 40 minutes of it.
+    Removing the declaration is not enough by itself, which is the trap this branch already
+    fell into once. `create_custom_fields` updates an existing field with
+    `custom_field.update(df)` -- only the keys `df` HAS -- so a row already stored with
+    search_index=1 keeps it, and `frappe.db.updatedb` builds the index from that stored row
+    rather than from this file. `_remove_item_id_fields` below deletes the rows outright,
+    which is what actually takes the fields off Item.
 
-    Nothing here reads those columns. Naya's Shopify products will be a few thousand rows
-    against 13.9M, and the id lookups the indexes exist for belong on
-    `Shopify Product Listing` / `Shopify Listing Variant`, which carry both the Shopify id
-    and the Item and are per-store small. Moving the three remaining readers
-    (shopify/scoping.py, inventory_sync.py) onto them is what makes this branch
-    unnecessary -- see issue #61 and PR #205.
-
-    The columns stay, so the connector's own writes still land.
+    CONSEQUENCE, deliberately accepted: the Item-side readers of these columns cannot run
+    on this bench. `shopify/scoping.py` (owned_by on Item) and `shopify/inventory_sync.py`
+    filter Items on sh_shopify_variant_id / sh_shopify_inventory_item_id / and scope on
+    sh_shopify_connection; with the fields gone those queries have no column to name.
+    Retiring this branch means pointing them at the listing tables -- see #61 and PR #205.
     """
     # variant_of is itself a Link to Item -- fetch_from lets a variant
     # auto-pull these values from its template the moment variant_of is
@@ -281,34 +280,6 @@ def setup_custom_fields():
     # variant_of is blank). Both together satisfy "shows on variant rows,
     # not independently editable there."
     item_fields = [
-        {
-            "fieldname": "sh_shopify_product_id",
-            "search_index": 0,
-            "label": "Shopify Product ID",
-            "fieldtype": "Data",
-            "read_only": 1,
-            "fetch_from": "variant_of.sh_shopify_product_id",
-            "insert_after": "item_code",
-            "description": "Set by the connector when this product is created on or imported from Shopify. Never hand-edited.",
-        },
-        {
-            "fieldname": "sh_shopify_variant_id",
-            "search_index": 0,
-            "label": "Shopify Variant ID",
-            "fieldtype": "Data",
-            "read_only": 1,
-            "insert_after": "sh_shopify_product_id",
-            "description": "Set by the connector when this variant is created on or imported from Shopify. Never hand-edited.",
-        },
-        {
-            "fieldname": "sh_shopify_inventory_item_id",
-            "search_index": 0,
-            "label": "Shopify Inventory Item ID",
-            "fieldtype": "Data",
-            "read_only": 1,
-            "insert_after": "sh_shopify_variant_id",
-            "description": "Shopify's own inventory_item_id for this variant -- the real key the inventory_levels/update webhook reports changes against (not the variant id). Lets the inbound inventory sync resolve a webhook straight to this Item without an extra API call.",
-        },
         {
             "fieldname": "sh_shopify_status",
             "label": "Shopify Status",
@@ -454,16 +425,6 @@ def setup_custom_fields():
             "fieldtype": "Check",
             "read_only": 1,
             "insert_after": "sh_requires_shipping",
-        },
-        {
-            "fieldname": "sh_shopify_connection",
-            "search_index": 0,
-            "label": "Shopify Connection",
-            "fieldtype": "Link",
-            "options": "Shopify Connection",
-            "read_only": 1,
-            "insert_after": "sh_shopify_inventory_item_id",
-            "description": "Which Shopify store this item belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
         },
     ]
     sales_order_fields = [
@@ -743,8 +704,39 @@ def setup_custom_fields():
     # already-existing fields, which is what the old hand-rolled upsert did
     # -- e.g. sh_shopify_category started read-only and later became editable.
     _remove_deprecated_item_fields()
+    _remove_item_id_fields()
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
     create_custom_fields(custom_fields, update=True)
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+
+
+#: Declared by `main`, not here. See setup_custom_fields for why.
+_DROPPED_ITEM_FIELDS = (
+    "sh_shopify_product_id",
+    "sh_shopify_variant_id",
+    "sh_shopify_inventory_item_id",
+    "sh_shopify_connection",
+)
+
+
+def _remove_item_id_fields():
+    """Delete the Item id/scoping Custom Fields this branch no longer declares.
+
+    Dropping them from `item_fields` only stops them being CREATED; a bench that already
+    has the rows keeps them, indexes and all. Deleting the Custom Field is what takes the
+    field off Item, and it is cheap -- `on_trash` clears property setters, layouts and the
+    doctype cache, and touches no schema.
+
+    The COLUMN is left in place on purpose. Frappe does not drop it (that is why
+    patches/drop_legacy_item_shopify_ids.py has to issue its own DROP COLUMN, and why it
+    is a manual, per-site patch), and dropping a column from a 26 GB table rebuilds it --
+    the very cost this branch exists to avoid. An orphan column that nothing reads and
+    nothing writes is free. Run that patch in a window if the space is ever worth it.
+    """
+    for fieldname in _DROPPED_ITEM_FIELDS:
+        name = f"Item-{fieldname}"
+        if frappe.db.exists("Custom Field", name):
+            frappe.delete_doc("Custom Field", name, ignore_permissions=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
