@@ -245,7 +245,28 @@ def _ensure_list_view_column(doctype, fieldname, label):
 
 
 def setup_custom_fields():
-    """Add Shopify custom fields to Alaiy OS doctypes. Idempotent -- safe to call on every migrate."""
+    """Add Shopify custom fields to Alaiy OS doctypes. Idempotent -- safe to call on every migrate.
+
+    NAYAGLOBAL BRANCH. The four Item fields that `main` marks `search_index` --
+    sh_shopify_product_id, sh_shopify_variant_id, sh_shopify_inventory_item_id,
+    sh_shopify_connection -- do not carry it here. Do not give it back.
+
+    `create_custom_fields` ends in `frappe.db.updatedb("Item")`, which builds an index
+    for every `search_index` field it finds missing. On this bench `tabItem` is not a
+    seller's product list, it is the NayaSource supplier catalogue: 13.9M rows, 26 GB of
+    data, 43 GB of index. Those four indexes are one ALTER of tens of minutes, and it
+    runs wherever the fields are written -- inside `bench migrate`, or inside the request
+    that enables a store. One such deploy was cancelled after 40 minutes of it.
+
+    Nothing here reads those columns. Naya's Shopify products will be a few thousand rows
+    against 13.9M, and the id lookups the indexes exist for belong on
+    `Shopify Product Listing` / `Shopify Listing Variant`, which carry both the Shopify id
+    and the Item and are per-store small. Moving the three remaining readers
+    (shopify/scoping.py, inventory_sync.py) onto them is what makes this branch
+    unnecessary -- see issue #61 and PR #205.
+
+    The columns stay, so the connector's own writes still land.
+    """
     # variant_of is itself a Link to Item -- fetch_from lets a variant
     # auto-pull these values from its template the moment variant_of is
     # set, and read_only_depends_on locks them from manual edit on a
@@ -257,7 +278,6 @@ def setup_custom_fields():
             "fieldname": "sh_shopify_product_id",
             "label": "Shopify Product ID",
             "fieldtype": "Data",
-            "search_index": 1,
             "read_only": 1,
             "fetch_from": "variant_of.sh_shopify_product_id",
             "insert_after": "item_code",
@@ -267,7 +287,6 @@ def setup_custom_fields():
             "fieldname": "sh_shopify_variant_id",
             "label": "Shopify Variant ID",
             "fieldtype": "Data",
-            "search_index": 1,
             "read_only": 1,
             "insert_after": "sh_shopify_product_id",
             "description": "Set by the connector when this variant is created on or imported from Shopify. Never hand-edited.",
@@ -276,7 +295,6 @@ def setup_custom_fields():
             "fieldname": "sh_shopify_inventory_item_id",
             "label": "Shopify Inventory Item ID",
             "fieldtype": "Data",
-            "search_index": 1,
             "read_only": 1,
             "insert_after": "sh_shopify_variant_id",
             "description": "Shopify's own inventory_item_id for this variant -- the real key the inventory_levels/update webhook reports changes against (not the variant id). Lets the inbound inventory sync resolve a webhook straight to this Item without an extra API call.",
@@ -432,7 +450,6 @@ def setup_custom_fields():
             "label": "Shopify Connection",
             "fieldtype": "Link",
             "options": "Shopify Connection",
-            "search_index": 1,
             "read_only": 1,
             "insert_after": "sh_shopify_inventory_item_id",
             "description": "Which Shopify store this item belongs to. Set by the connector on import; it is what keeps one seller's records out of another seller's reads. Never hand-edited.",
