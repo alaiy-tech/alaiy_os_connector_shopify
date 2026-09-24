@@ -614,10 +614,31 @@ def _import_product(node: dict, connection=None) -> tuple:
             entity = entities.get_by_external_id("product", product_id, connection)
             if entity and entity.erpnext_name:
                 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+                is_new_listing = listing_resolver.get_listing(entity.erpnext_name) is None
                 listing_resolver.ensure_listing(entity.erpnext_name)
                 # Re-imports can add variants to an existing product -- make
                 # sure any new variant gets a Listing Variant row too.
                 listing_resolver.sync_listing_variants(entity.erpnext_name)
+                if is_new_listing:
+                    # A brand-new import's images went to Item.image/slideshow
+                    # via _import_product_inner (no Listing existed yet at
+                    # that point -- has_listing was False), but ensure_listing
+                    # just created an empty Listing with no image rows.
+                    # _listing_images_for (the admin product page) and
+                    # push_item's own effective_images() both read Listing
+                    # images as the source of truth once a Listing exists, so
+                    # the admin page showed zero photos and a later Enable
+                    # Sync push, sending Shopify a "files" list built from
+                    # whatever effective_images() DID fall back to, silently
+                    # replaced Shopify's real photos -- productSet has no
+                    # partial-update mode. Seed the Listing directly from
+                    # Shopify's own real URLs here (source="Original", same
+                    # as a re-import already does via
+                    # apply_inbound_from_shopify) rather than depending on
+                    # the Item/slideshow download path at all.
+                    listing_resolver.apply_inbound_from_shopify(
+                        entity.erpnext_name, images=product_image_urls(node),
+                    )
         except Exception:
             frappe.log_error(
                 title=f"Shopify import: ensure_listing failed for product {product_id}",
