@@ -54,7 +54,15 @@ class ShopifyGraphQLClient:
         self.token = refresh_and_store_access_token(self.connection)
         self.session.headers.update({"X-Shopify-Access-Token": self.token})
 
-    def execute(self, query: str, variables: dict = None, _retried_throttle: bool = False) -> dict:
+    # 50 -> 25 -> 13 -> 7 -> 4 -> 2 -> 1: six halvings from the largest
+    # realistic default page size (50) reaches the floor of 1, so this
+    # caps the number of extra requests one page can cost without ever
+    # needing to reach the floor in practice for anything short of a
+    # single pathologically heavy product.
+    _MAX_COST_RETRIES = 6
+
+    def execute(self, query: str, variables: dict = None, _retried_throttle: bool = False,
+                _cost_retries: int = 0) -> dict:
         """
         Run a GraphQL query/mutation. Returns the `data` object.
 
@@ -64,10 +72,31 @@ class ShopifyGraphQLClient:
         callers must still check themselves. Raise on the top-level array
         here so a malformed query never silently reads back as `{}`.
 
-        A THROTTLED error (query-cost bucket exhausted) is retried once
-        after waiting long enough for the bucket to refill, using the
-        `throttleStatus` Shopify includes on the error itself -- rather
-        than failing the whole sync item for a transient rate limit.
+        A THROTTLED error (query-cost bucket exhausted, a transient rate
+        limit) is retried once after waiting long enough for the bucket to
+        refill, using the `throttleStatus` Shopify includes on the error
+        itself.
+
+        MAX_COST_EXCEEDED is a different, non-transient failure -- the
+        query's OWN shape costs more than Shopify's single-query ceiling
+        (1000 points), independent of any bucket state, so retrying the
+        exact same call would fail identically forever. Confirmed live: a
+        store with unusually heavy products (many variants/metafields/
+        media) pushed a paginated pull's default page size past the
+        ceiling, permanently failing run_full_product_import with no way
+        to recover short of a code change -- and that store's catalog is
+        uniformly heavy, so a single halved retry on just the first page
+        would only push the same failure to whichever later page crossed
+        the ceiling next.
+
+        When the query has an integer `first` variable, halve it and
+        retry, repeating (bounded by _MAX_COST_RETRIES) until it fits or
+        the floor of 1 is reached. The mutated dict is returned to the
+        caller via `variables.clear()`+update in place (execute_paginated
+        reuses the same dict object across every page), so a shrink here
+        also lowers every subsequent page's request -- the whole point,
+        since the catalog that triggered this is heavy throughout, not
+        just on the page that happened to hit the ceiling first.
         """
         payload = {"query": query, "variables": variables or {}}
         resp = self.session.post(self.endpoint, json=payload, timeout=REQUEST_TIMEOUT)
@@ -80,7 +109,15 @@ class ShopifyGraphQLClient:
         if body.get("errors"):
             if not _retried_throttle and self._is_throttled(body["errors"]):
                 time.sleep(self._throttle_wait_seconds(body["errors"]))
-                return self.execute(query, variables, _retried_throttle=True)
+                return self.execute(query, variables, _retried_throttle=True, _cost_retries=_cost_retries)
+            if (_cost_retries < self._MAX_COST_RETRIES and self._is_cost_exceeded(body["errors"])
+                    and variables and isinstance(variables.get("first"), int) and variables["first"] > 1):
+                variables["first"] = max(1, variables["first"] // 2)
+                frappe.logger().info(
+                    f"Shopify: query cost exceeded, retrying with first={variables['first']}"
+                )
+                return self.execute(query, variables, _retried_throttle=_retried_throttle,
+                                     _cost_retries=_cost_retries + 1)
             raise RuntimeError(f"Shopify GraphQL error: {body['errors']}")
         return body.get("data") or {}
 
@@ -88,6 +125,13 @@ class ShopifyGraphQLClient:
     def _is_throttled(errors: list) -> bool:
         return any(
             (err.get("extensions") or {}).get("code") == "THROTTLED"
+            for err in errors
+        )
+
+    @staticmethod
+    def _is_cost_exceeded(errors: list) -> bool:
+        return any(
+            (err.get("extensions") or {}).get("code") == "MAX_COST_EXCEEDED"
             for err in errors
         )
 
