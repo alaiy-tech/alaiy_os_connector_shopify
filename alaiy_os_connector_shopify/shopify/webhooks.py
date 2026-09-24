@@ -86,6 +86,13 @@ def _topic_to_graphql_enum(topic: str) -> str:
     return topic.upper().replace("/", "_")
 
 
+_RETRY_COOLDOWN_SECONDS = 60 * 60
+
+
+def _cooldown_cache_key(connection_name: str, topic: str) -> str:
+    return f"shopify_webhook_register_failed::{connection_name}::{topic}"
+
+
 def get_webhook_address():
     site_url = frappe.utils.get_url().rstrip("/")
     return f"{site_url}/api/method/alaiy_os_connector_shopify.api.webhooks.handle_webhook"
@@ -128,8 +135,18 @@ def ensure_webhooks_registered(connection=None):
     if not missing:
         return []
 
+    connection_name = client.connection.name
     registered = []
     for topic in missing:
+        # A topic that just failed (bad scope, http-only site, etc) is
+        # failing for a structural reason a minute's wait won't fix -- retry
+        # every minute forever, called from a per-minute scheduler, floods
+        # Error Log with the same traceback thousands of times a day and
+        # tells nobody anything new. Skip silently until the cooldown lapses;
+        # a topic that starts succeeding again clears its own cooldown key.
+        cache_key = _cooldown_cache_key(connection_name, topic)
+        if frappe.cache().get_value(cache_key):
+            continue
         try:
             data = client.execute(_CREATE_MUTATION, {
                 "topic": _topic_to_graphql_enum(topic),
@@ -142,7 +159,9 @@ def ensure_webhooks_registered(connection=None):
             wh = result.get("webhookSubscription") or {}
             if wh.get("id"):
                 registered.append({"topic": topic, "webhook_id": wh["id"]})
+                frappe.cache().delete_value(cache_key)
         except Exception:
+            frappe.cache().set_value(cache_key, "1", expires_in_sec=_RETRY_COOLDOWN_SECONDS)
             frappe.log_error(
                 title=f"Shopify: failed to re-register missing webhook {topic}",
                 message=frappe.get_traceback(),
