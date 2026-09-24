@@ -9,9 +9,13 @@ Listing, never on the Item.
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access
+
 from alaiy_os_connector_shopify.shopify.product.queries import (
     _PRODUCT_METAFIELDS_PAGE_QUERY, _METAFIELDS_SET_MUTATION,
 )
+
+from alaiy_os_connector_shopify import connections
 
 
 def fetch_all_metafields_for_product(product_gid: str, client) -> list:
@@ -89,29 +93,39 @@ def build_metafields_input(listing, product_gid: str) -> list:
     ]
 
 
+_METAFIELDS_SET_BATCH_LIMIT = 25  # Shopify's own cap on metafieldsSet's input array
+
+
 def push_listing_metafields(listing, product_gid: str, client):
     """Best-effort: logs and returns rather than failing the whole product
-    push over a metafield issue."""
+    push over a metafield issue. Batched at Shopify's own 25-metafield-per-call
+    limit -- a product with more than 25 metafields (common once tags, SEO
+    apps, and flash-sale fields all land on the same Listing) would otherwise
+    have its ENTIRE push rejected with "Exceeded the maximum metafields input
+    limit of 25", including metafields that had nothing to do with whatever
+    change triggered this call."""
     rows = build_metafields_input(listing, product_gid)
     if not rows:
         return
-    try:
-        data = client.execute(_METAFIELDS_SET_MUTATION, {"metafields": rows})
-        errors = (data.get("metafieldsSet") or {}).get("userErrors") or []
-        if errors:
+    for i in range(0, len(rows), _METAFIELDS_SET_BATCH_LIMIT):
+        batch = rows[i:i + _METAFIELDS_SET_BATCH_LIMIT]
+        try:
+            data = client.execute(_METAFIELDS_SET_MUTATION, {"metafields": batch})
+            errors = (data.get("metafieldsSet") or {}).get("userErrors") or []
+            if errors:
+                frappe.log_error(
+                    title=f"Shopify: metafieldsSet userErrors for {listing.item}",
+                    message=str(errors),
+                )
+        except Exception:
             frappe.log_error(
-                title=f"Shopify: metafieldsSet userErrors for {listing.item}",
-                message=str(errors),
+                title=f"Shopify: failed to push metafields for {listing.item}",
+                message=frappe.get_traceback(),
             )
-    except Exception:
-        frappe.log_error(
-            title=f"Shopify: failed to push metafields for {listing.item}",
-            message=frappe.get_traceback(),
-        )
 
 
 @frappe.whitelist()
-def backfill_all_product_metafields():
+def backfill_all_product_metafields(connection=None):
     """
     One-time-run tool: fetch metafields for every product already linked to
     a Shopify Product Listing, without re-running the full product import
@@ -120,18 +134,27 @@ def backfill_all_product_metafields():
     wired into patches.txt -- unlike a pure-DB patch, this makes one live
     Shopify API call per product, which could run long and would otherwise
     block a routine bench migrate. Run manually via bench execute instead.
+
+    `connection` scopes the run to one store's Listings; unset falls back to
+    the single enabled store, matching this tool's original single-store
+    behaviour.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+    from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
+    require_access(settings.name, "write")
 
     listings = frappe.get_all(
         "Shopify Product Listing",
-        filters={"sh_shopify_product_id": ["is", "set"]},
+        filters=owned_by("Shopify Product Listing", settings.name,
+                         {"sh_shopify_product_id": ["is", "set"]}),
         fields=["name", "sh_shopify_product_id"],
     )
     if not listings:
         return {"done": 0, "failed": 0}
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(settings)
     done = failed = 0
     for row in listings:
         try:

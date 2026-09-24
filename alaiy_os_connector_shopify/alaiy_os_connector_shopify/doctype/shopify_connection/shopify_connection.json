@@ -1,0 +1,472 @@
+{
+ "actions": [],
+ "autoname": "field:connection_id",
+ "creation": "2026-09-04 00:00:00.000000",
+ "description": "One Shopify store connection. A single-store bench has exactly one, named 'default'; a multi-tenant bench has one per seller. Holds the store's credentials, its Alaiy OS defaults, and its sync settings.",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "is_enabled",
+  "identity_section",
+  "connection_id",
+  "label",
+  "is_default",
+  "column_break_identity",
+  "owner_app",
+  "status_section",
+  "last_status",
+  "last_status_message",
+  "column_break_status",
+  "connected_at",
+  "sb_connection",
+  "sh_shop_url",
+  "sh_auth_method",
+  "column_break_connection",
+  "sh_client_id",
+  "sh_client_secret",
+  "sh_shop_gid",
+  "sh_granted_scopes",
+  "sh_access_token",
+  "sh_token_refreshed_at",
+  "sh_token_expires_at",
+  "sh_webhook_secret",
+  "sb_defaults",
+  "sh_company",
+  "sh_default_warehouse",
+  "sh_return_warehouse",
+  "sh_customer_group",
+  "sh_default_territory",
+  "sh_selling_price_list",
+  "sh_cost_center",
+  "sh_tax_account",
+  "sh_rounding_write_off_account",
+  "sh_auto_sales_invoice",
+  "sh_invoice_trigger",
+  "sb_locations",
+  "sh_location_map",
+  "sb_sync",
+  "sh_order_status_filter",
+  "sh_fulfillment_sync_direction",
+  "sh_inventory_sync_direction",
+  "sh_inventory_sync_interval",
+  "sh_token_refresh_interval",
+  "sb_product_status",
+  "sh_import_status_active",
+  "sh_import_status_draft",
+  "sh_import_status_archived",
+  "cb_product_status",
+  "sh_export_status_active",
+  "sh_export_status_draft",
+  "sh_export_status_archived"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "is_enabled",
+   "fieldtype": "Check",
+   "label": "Enable Shopify"
+  },
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
+  {
+   "fieldname": "connection_id",
+   "fieldtype": "Data",
+   "label": "Connection ID",
+   "set_only_once": 1,
+   "unique": 1,
+   "description": "Stable id used by callers and by the app that manages this store. A bench upgraded from the single-connection version keeps its one connection as 'default'.",
+   "reqd": 1
+  },
+  {
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "label": "Label",
+   "description": "Human-readable name, e.g. the store or brand."
+  },
+  {
+   "default": "0",
+   "fieldname": "is_default",
+   "fieldtype": "Check",
+   "label": "Default Connection",
+   "description": "Used when a caller names no connection. A bench with exactly one connection does not need this set."
+  },
+  {
+   "fieldname": "column_break_identity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "owner_app",
+   "fieldtype": "Data",
+   "label": "Created By App",
+   "read_only": 1,
+   "description": "Set by whichever app created this connection, so a multi-tenant bench can tell its own rows from ones made by hand."
+  },
+  {
+   "fieldname": "status_section",
+   "fieldtype": "Section Break",
+   "label": "Connection Status"
+  },
+  {
+   "default": "not_configured",
+   "fieldname": "last_status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "not_configured\nconnected\nerror",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_status_message",
+   "fieldtype": "Small Text",
+   "label": "Status Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "connected_at",
+   "fieldtype": "Datetime",
+   "label": "Connected At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_connection",
+   "fieldtype": "Section Break",
+   "label": "API Connection"
+  },
+  {
+   "description": "Your Shopify store domain, e.g. myshop.myshopify.com",
+   "fieldname": "sh_shop_url",
+   "fieldtype": "Data",
+   "label": "Shop URL",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "default": "Custom App",
+   "description": "How this connection authenticates. 'Custom App' -- a seller creates their own Shopify custom app and pastes its Client ID/Secret below. 'OAuth' -- connected through the Connect to Shopify button; the seller never sees or enters an app secret, and Client ID/Secret below stay blank for this row.",
+   "fieldname": "sh_auth_method",
+   "fieldtype": "Select",
+   "label": "Auth Method",
+   "options": "Custom App\nOAuth",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_connection",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Client ID from your Shopify custom app (Developer Dashboard). Blank for a connection made through Connect to Shopify.",
+   "fieldname": "sh_client_id",
+   "fieldtype": "Data",
+   "label": "Client ID",
+   "mandatory_depends_on": "eval:doc.is_enabled && doc.sh_auth_method == \"Custom App\""
+  },
+  {
+   "description": "Client Secret from your Shopify custom app. Blank for a connection made through Connect to Shopify.",
+   "fieldname": "sh_client_secret",
+   "fieldtype": "Password",
+   "label": "Client Secret",
+   "mandatory_depends_on": "eval:doc.is_enabled && doc.sh_auth_method == \"Custom App\"",
+   "permlevel": 1
+  },
+  {
+   "description": "This store's stable Shopify id, read back at OAuth install time. Blank for a Custom App connection.",
+   "fieldname": "sh_shop_gid",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Shop GID",
+   "read_only": 1
+  },
+  {
+   "description": "What Shopify actually granted at OAuth install time -- may be narrower than requested if the seller edited the approval screen.",
+   "fieldname": "sh_granted_scopes",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Granted Scopes",
+   "read_only": 1
+  },
+  {
+   "description": "Access token (auto-managed by Test Connection)",
+   "fieldname": "sh_access_token",
+   "fieldtype": "Password",
+   "hidden": 1,
+   "label": "Access Token",
+   "permlevel": 1
+  },
+  {
+   "description": "When the current access token was last minted.",
+   "fieldname": "sh_token_refreshed_at",
+   "fieldtype": "Datetime",
+   "label": "Token Refreshed At",
+   "read_only": 1
+  },
+  {
+   "description": "When the current access token expires, per Shopify's own expires_in. Client credentials tokens are short-lived (observed ~24h) — the scheduled refresh below keeps this from ever being hit.",
+   "fieldname": "sh_token_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Token Expires At",
+   "read_only": 1
+  },
+  {
+   "description": "Shared secret used to validate the X-Shopify-Hmac-Sha256 header on incoming webhooks. Must match the secret configured on the Shopify webhook subscriptions. Required: webhooks are rejected outright if this isn't set, rather than silently accepted unverified.",
+   "fieldname": "sh_webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret",
+   "mandatory_depends_on": "eval:doc.is_enabled",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "sb_defaults",
+   "fieldtype": "Section Break",
+   "label": "Alaiy OS Defaults"
+  },
+  {
+   "fieldname": "sh_company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "description": "Warehouse for fulfilling Shopify orders",
+   "fieldname": "sh_default_warehouse",
+   "fieldtype": "Link",
+   "label": "Default Warehouse",
+   "options": "Warehouse",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "description": "Where a Shopify refund's Sales Return lands. Leave blank to use Default Warehouse instead -- someone downstream (e.g. a supplier portal's own returns routing) decides where it really ends up from there.",
+   "fieldname": "sh_return_warehouse",
+   "fieldtype": "Link",
+   "label": "Return Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "sh_customer_group",
+   "fieldtype": "Link",
+   "label": "Default Customer Group",
+   "options": "Customer Group",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "description": "Territory assigned to Customers auto-created from Shopify orders. Falls back to any existing Territory if left blank -- there's no guarantee a site has one named 'All Territories'.",
+   "fieldname": "sh_default_territory",
+   "fieldtype": "Link",
+   "label": "Default Territory",
+   "options": "Territory"
+  },
+  {
+   "fieldname": "sh_selling_price_list",
+   "fieldtype": "Link",
+   "label": "Selling Price List",
+   "options": "Price List",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "fieldname": "sh_cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "description": "Account that tax lines pulled from Shopify orders (e.g. CGST, SGST, VAT) are booked against. Leave blank to auto-resolve/create a 'Shopify Tax' account under the company.",
+   "fieldname": "sh_tax_account",
+   "fieldtype": "Link",
+   "label": "Tax Account",
+   "options": "Account"
+  },
+  {
+   "description": "Account a small rounding gap between Shopify's own total and Alaiy OS's recalculated total is booked against. Shopify's total is what the customer actually paid, so a mismatch (floating point, a rate that doesn't divide evenly) is corrected here rather than left as a silent discrepancy. Leave blank to use the Company's own Write Off Account; if neither is set, the order is left with the gap and a note in its Error Log.",
+   "fieldname": "sh_rounding_write_off_account",
+   "fieldtype": "Link",
+   "label": "Rounding Write Off Account",
+   "options": "Account"
+  },
+  {
+   "default": "1",
+   "description": "Auto-create + submit a Sales Invoice for Shopify orders. Submitting that invoice in Alaiy OS also marks the order Paid on Shopify.",
+   "fieldname": "sh_auto_sales_invoice",
+   "fieldtype": "Check",
+   "label": "Auto-create Sales Invoice"
+  },
+  {
+   "default": "Paid and Fulfilled",
+   "depends_on": "sh_auto_sales_invoice",
+   "description": "When to generate the invoice. 'Paid and Fulfilled' (recommended) waits for both payment and shipment -- correct for Cash on Delivery, where payment lands only on delivery. 'Paid' invoices as soon as the order is paid.",
+   "fieldname": "sh_invoice_trigger",
+   "fieldtype": "Select",
+   "label": "Generate Invoice When",
+   "options": "Paid and Fulfilled\nPaid"
+  },
+  {
+   "fieldname": "sb_locations",
+   "fieldtype": "Section Break",
+   "label": "Inventory Locations"
+  },
+  {
+   "description": "Map Alaiy OS warehouses to Shopify locations for multi-location inventory sync. Run 'Sync Locations' first to load Shopify locations. Leave empty to push only the Default Warehouse to Shopify's primary location (single-location mode).",
+   "fieldname": "sh_location_map",
+   "fieldtype": "Table",
+   "label": "Warehouse to Location Map",
+   "options": "Shopify Location Map"
+  },
+  {
+   "fieldname": "sb_sync",
+   "fieldtype": "Section Break",
+   "label": "Sync Settings"
+  },
+  {
+   "default": "Any",
+   "description": "Filter for which orders to pull from Shopify",
+   "fieldname": "sh_order_status_filter",
+   "fieldtype": "Select",
+   "label": "Sync Orders With Status",
+   "options": "Open\nAny\nClosed\nCancelled",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "default": "Shopify → Alaiy OS (default)",
+   "description": "Direction fulfillment sync runs in. 'Shopify → Alaiy OS' (default): a Shopify fulfillment auto-creates a submitted Delivery Note here -- today's only behavior, unchanged when left at default. 'Alaiy OS → Shopify (two-way)': in addition, submitting a Delivery Note here (e.g. a warehouse scanning items out against a Sales Order) creates a real Shopify fulfillment with tracking info. Safe to switch either way at any time -- no reinstall needed.",
+   "fieldname": "sh_fulfillment_sync_direction",
+   "fieldtype": "Select",
+   "label": "Fulfillment Sync Direction",
+   "options": "Shopify → Alaiy OS (default)\nAlaiy OS → Shopify (two-way)",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "default": "Shopify → Alaiy OS only",
+   "description": "Direction inventory sync runs in. 'Shopify → Alaiy OS only': a Shopify stock change updates the local Bin here; nothing is ever pushed from Alaiy OS to Shopify. 'Alaiy OS → Shopify (two-way)': in addition, the scheduled push below sends local Bin changes to Shopify. Safe to switch either way at any time.",
+   "fieldname": "sh_inventory_sync_direction",
+   "fieldtype": "Select",
+   "label": "Inventory Sync Direction",
+   "options": "Shopify → Alaiy OS only\nAlaiy OS → Shopify (two-way)",
+   "reqd": 1
+  },
+  {
+   "default": "30 min",
+   "description": "How often to push Alaiy OS stock levels to Shopify (only used when Inventory Sync Direction is two-way)",
+   "fieldname": "sh_inventory_sync_interval",
+   "fieldtype": "Select",
+   "label": "Inventory Sync Interval",
+   "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "default": "12 hours",
+   "description": "How often to proactively mint a fresh access token, so a sync never has to hit an expired-token error first. Shopify's client_credentials tokens for this app were observed to last ~24h.",
+   "fieldname": "sh_token_refresh_interval",
+   "fieldtype": "Select",
+   "label": "Token Refresh Interval",
+   "options": "Disabled\n6 hours\n12 hours\n24 hours",
+   "mandatory_depends_on": "eval:doc.is_enabled"
+  },
+  {
+   "fieldname": "sb_product_status",
+   "fieldtype": "Section Break",
+   "label": "Product Status Filter"
+  },
+  {
+   "default": "1",
+   "description": "Unticking a status excludes it from Import Products entirely -- those products are counted as skipped, not created.",
+   "fieldname": "sh_import_status_active",
+   "fieldtype": "Check",
+   "label": "Import Active products"
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_import_status_draft",
+   "fieldtype": "Check",
+   "label": "Import Draft products"
+  },
+  {
+   "default": "1",
+   "description": "Archived products are hidden from Shopify's sales channels but keep their order history.",
+   "fieldname": "sh_import_status_archived",
+   "fieldtype": "Check",
+   "label": "Import Archived products"
+  },
+  {
+   "fieldname": "cb_product_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_export_status_active",
+   "fieldtype": "Check",
+   "label": "Export Active products"
+  },
+  {
+   "default": "1",
+   "fieldname": "sh_export_status_draft",
+   "fieldtype": "Check",
+   "label": "Export Draft products"
+  },
+  {
+   "default": "1",
+   "description": "Pushing an archived product unarchives it to Draft for the update, then archives it again.",
+   "fieldname": "sh_export_status_archived",
+   "fieldtype": "Check",
+   "label": "Export Archived products"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 0,
+ "links": [],
+ "modified": "2026-09-04 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Alaiy OS Connector Shopify",
+ "name": "Shopify Connection",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Shopify Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Shopify Viewer"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "show_title_field_in_link": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "label",
+ "track_changes": 0
+}

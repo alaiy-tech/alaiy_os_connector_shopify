@@ -29,16 +29,22 @@ import time
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 from alaiy_os_connector_shopify.shopify.sync_guard import append_log as _append_export_log
 
 from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
-from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_SET_MUTATION, _PRODUCT_UPDATE_MUTATION
+from alaiy_os_connector_shopify.shopify.product.queries import (
+    _PRODUCT_SET_MUTATION, _PRODUCT_UPDATE_MUTATION, _PRODUCT_VARIANTS_BULK_UPDATE_MUTATION,
+)
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical, _product_set_input
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 from alaiy_os_connector_shopify.shopify.product import status as status_map
+
+from alaiy_os_connector_shopify import connections
 
 LOCK_TIMEOUT_SECONDS = 30
 
@@ -75,7 +81,7 @@ def publish_now(item_code: str, status: str = None):
     endpoint directly and push a product live, skipping that app's own
     review entirely.
     """
-    frappe.has_permission("Shopify Connector Settings", "write", throw=True)
+    frappe.has_permission("Shopify Connection", "write", throw=True)
 
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
     from alaiy_os_connector_shopify.shopify.product.status import LOCAL_VALUES
@@ -94,6 +100,13 @@ def publish_now(item_code: str, status: str = None):
         if status not in LOCAL_VALUES:
             frappe.throw(frappe._("Invalid status {0}. Must be one of {1}.").format(status, ", ".join(LOCAL_VALUES)))
         frappe.db.set_value("Shopify Product Listing", listing.name, "sh_shopify_status", status)
+        # Dual-write onto Item synchronously too -- every admin read (Catalogue,
+        # dashboard, low-stock, reports) queries Item.sh_shopify_status, not the
+        # Listing's. The real push below only reaches that field asynchronously
+        # (see _push_product_unlocked's own dual-write) once the queued job
+        # actually runs; until then Item would keep showing the old status even
+        # though this call already committed the real, intended one.
+        frappe.db.set_value("Item", item_code, "sh_shopify_status", status)
 
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.product_sync.push_item",
@@ -118,8 +131,14 @@ def push_item(item_code: str, allowed_statuses=None, force=False):
 
     # allowed_statuses is the dashboard's per-run choice; None means fall back to
     # the settings checkboxes, which is what a doc_event-driven push does.
+    # The store is read off the Listing rather than asked of the bench: on a
+    # bench with several enabled stores there is no single answer to ask for,
+    # and getting None back would read as "not selected" and stop the push
+    # without saying anything.
     listing = listing_resolver.get_listing(item.variant_of or item.name)
-    if listing and not status_map.export_allows(listing.sh_shopify_status, allowed_statuses):
+    if listing and not status_map.export_allows(
+        listing.sh_shopify_status, allowed_statuses, listing.get("connection")
+    ):
         return
 
     if item.variant_of:
@@ -128,7 +147,114 @@ def push_item(item_code: str, allowed_statuses=None, force=False):
         _push_product(item)
 
 
-def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
+@frappe.whitelist(methods=["POST"])
+def update_variant_prices_api(item_code_to_price, domain=None):
+    """Whitelisted HTTP entry point for update_variant_prices below -- a
+    caller over the API sends item_code_to_price as a JSON object string,
+    same convention as every other dict-shaped whitelisted param in this
+    app. A same-process Python caller (e.g. alaiy_os_thesolist) should call
+    update_variant_prices directly instead, passing a real dict."""
+    frappe.has_permission("Shopify Connection", "write", throw=True)
+    import json
+
+    payload = json.loads(item_code_to_price) if isinstance(item_code_to_price, str) else item_code_to_price
+    return update_variant_prices(payload, domain=domain)
+
+
+def update_variant_prices(item_code_to_price: dict, domain=None, connection=None):
+    """Price-ONLY push via productVariantsBulkUpdate -- deliberately NOT
+    push_item/productSet.
+
+    productSet always resends the product's entire desired state (title,
+    description, images, tags, category, every variant's price) from
+    Alaiy OS's local copy. If a merchant edited the product directly on
+    Shopify since Alaiy OS last synced, any productSet call -- including a
+    price-only INTENT -- silently reverts that live edit back to our stale
+    copy. For an automated push firing unattended (e.g. a flash sale's
+    scheduled activate/restore, with no human reviewing the diff first),
+    that's a real, unacceptable risk, not a hypothetical -- confirmed by
+    reading canonical.py's _product_set_input, which rebuilds every field
+    from Solist's DB with no diff against live Shopify state.
+
+    productVariantsBulkUpdate takes only {id, price, ...} per variant --
+    title/images/tags/description are never part of the payload, so they
+    are physically impossible for this call to touch. Confirmed current
+    and stable against Shopify's live API docs for the API version this
+    connector already targets.
+
+    Only ever updates variants that already exist on Shopify (this
+    mutation cannot create a product or variant) -- an Item Code with no
+    resolvable Shopify variant is reported back as a failure, never
+    silently routed through push_item/productSet as a fallback, since that
+    would reintroduce the exact risk this function exists to avoid.
+
+    item_code_to_price: {item_code: float}. Returns
+    {"updated": [item_code, ...], "failed": {item_code: reason, ...}}.
+    """
+    updated, failed = [], {}
+
+    # productVariantsBulkUpdate takes one productId + an array of variants,
+    # so multiple sale variants of the same parent product batch into a
+    # single call rather than one call per variant.
+    by_product = {}
+    for item_code, price in item_code_to_price.items():
+        item = frappe.db.get_value("Item", item_code, ["variant_of", "name"], as_dict=True)
+        if not item:
+            failed[item_code] = "Item not found."
+            continue
+        template_name = item.variant_of or item.name
+        listing = listing_resolver.get_listing(template_name)
+        if not listing:
+            failed[item_code] = "No Shopify Product Listing exists for this item yet."
+            continue
+
+        variant_id = listing_resolver.variant_shopify_id(listing, item_code)
+        product_id = listing.sh_shopify_product_id or frappe.db.get_value(
+            "Item", template_name, "sh_shopify_product_id"
+        )
+        if not variant_id or not product_id:
+            failed[item_code] = "This item has never been pushed to Shopify -- no variant/product id yet."
+            continue
+
+        by_product.setdefault(product_id, []).append((item_code, variant_id, price))
+
+    if not by_product:
+        return {"updated": updated, "failed": failed}
+
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
+    for product_id, rows in by_product.items():
+        variables = {
+            "productId": f"gid://shopify/Product/{product_id}",
+            "variants": [
+                # Shopify's price field is a String, same formatting
+                # convention as _variant_set_payload's own productSet push.
+                {"id": f"gid://shopify/ProductVariant/{variant_id}", "price": f"{price:.2f}"}
+                for _item_code, variant_id, price in rows
+            ],
+        }
+        try:
+            data = client.execute(_PRODUCT_VARIANTS_BULK_UPDATE_MUTATION, variables)
+            result = data.get("productVariantsBulkUpdate") or {}
+            errors = result.get("userErrors") or []
+            if errors:
+                message = "; ".join(e.get("message", "") for e in errors)
+                for item_code, _variant_id, _price in rows:
+                    failed[item_code] = message
+                continue
+            for item_code, _variant_id, _price in rows:
+                updated.append(item_code)
+        except Exception:
+            frappe.log_error(
+                title="Shopify connector: update_variant_prices failed",
+                message=frappe.get_traceback(),
+            )
+            for item_code, _variant_id, _price in rows:
+                failed[item_code] = "Request to Shopify failed -- see Error Log."
+
+    return {"updated": updated, "failed": failed}
+
+
+def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None, connection=None):
     """
     One-off bulk push of every local (not-yet-linked) product to Shopify --
     for manually-created Alaiy OS Items that predate any Shopify connection,
@@ -141,9 +267,10 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
     """
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync, is_cancel_requested
 
-    log = load_or_create_log("product_export", trigger, log_name)
+    log = load_or_create_log("product_export", trigger, log_name, connection=connection)
 
-    if has_active_sync("product_export", exclude_name=log.name):
+    if has_active_sync("product_export", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = frappe.utils.now_datetime()
         log.error_message = "Skipped: another product export is already running."
@@ -196,7 +323,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None):
             # nothing sent, which reads as a failed push rather than a skip.
             if allowed_statuses is not None:
                 current = frappe.db.get_value("Item", item_code, "sh_shopify_status")
-                if not status_map.export_allows(current, allowed_statuses):
+                if not status_map.export_allows(current, allowed_statuses, connection):
                     skipped_status += 1
                     continue
             try:
@@ -279,7 +406,7 @@ def _save_throttled(listing, log, listing_name, max_wait=180):
             listing.reload()
 
 
-def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
+def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None, connection=None):
     """
     Bulk-enable every disabled Shopify Product Listing whose own status
     matches one of the caller's chosen statuses -- for switching on a batch
@@ -293,9 +420,10 @@ def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
     """
     from alaiy_os_connector_shopify.shopify.sync_guard import load_or_create_log, has_active_sync, is_cancel_requested
 
-    log = load_or_create_log("listing_bulk_enable", trigger, log_name)
+    log = load_or_create_log("listing_bulk_enable", trigger, log_name, connection=connection)
 
-    if has_active_sync("listing_bulk_enable", exclude_name=log.name):
+    if has_active_sync("listing_bulk_enable", exclude_name=log.name,
+                       connection=connection):
         log.status = "skipped"
         log.finished_at = frappe.utils.now_datetime()
         log.error_message = "Skipped: another bulk-enable run is already in progress."
@@ -314,7 +442,8 @@ def run_bulk_enable_listings(trigger="manual", log_name=None, statuses=None):
             filters={"is_enabled": 0},
             fields=["name", "sh_shopify_status"],
         )
-        matched = [r.name for r in disabled if status_map.export_allows(r.sh_shopify_status, allowed_statuses)]
+        matched = [r.name for r in disabled
+                   if status_map.export_allows(r.sh_shopify_status, allowed_statuses, connection)]
         log.pages_total = len(matched)
         log.save(ignore_permissions=True)
         frappe.db.commit()
@@ -419,7 +548,8 @@ def _push_product_unlocked(item):
     # were waiting for the lock, and we must build the payload from that,
     # not from what `item` looked like before we acquired it.
     item = frappe.get_doc("Item", item.name)
-    settings = frappe.get_single("Shopify Connector Settings")
+    conn = item.get("sh_shopify_connection")
+    settings = connections.resolve(conn) if conn else connections.require_enabled()
     listing = listing_resolver.get_listing(item.name)
     if not listing:
         return  # gate already checked is_enabled, but stay defensive
@@ -443,12 +573,14 @@ def _push_product_unlocked(item):
     canonical = _product_canonical(item, variants, settings, listing)
     fp = fingerprint.fingerprint(canonical)
 
-    entity = entities.get_by_erpnext("product", "Item", item.name)
+    entity = entities.get_by_erpnext("product", "Item", item.name, connection=settings)
     if entity and entity.erpnext_fingerprint == fp:
         return  # unchanged since our own last push -- avoid spamming the API
 
-    client = ShopifyGraphQLClient()
-    product_input = _product_set_input(item, variants, settings, listing, client)
+    client = ShopifyGraphQLClient(settings)
+    # Listing's copy first (dual-written on every push below), Item as fallback.
+    product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
+    product_input = _product_set_input(item, variants, settings, listing, client, is_new_product=not product_id)
 
     identifier = None
     # Only ever set True inside the product_id branch below (re-archiving only
@@ -457,8 +589,6 @@ def _push_product_unlocked(item):
     # first-time push) skipped that branch entirely and crashed on the
     # unconditional `if re_archive` further down with UnboundLocalError.
     re_archive = False
-    # Listing's copy first (dual-written on every push below), Item as fallback.
-    product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
     if product_id:
         identifier = {
             "id": f"gid://shopify/Product/{product_id}"}
@@ -528,7 +658,7 @@ def _push_product_unlocked(item):
         # Re-fetch item, rebuild variants list and payload, then retry the sync
         item = frappe.get_doc("Item", item.name)
         variants = _variants_of(item)
-        product_input = _product_set_input(item, variants, settings, listing, client)
+        product_input = _product_set_input(item, variants, settings, listing, client, is_new_product=not product_id)
 
         data = client.execute(_PRODUCT_SET_MUTATION, {
             "input": product_input,
@@ -580,7 +710,7 @@ def _push_product_unlocked(item):
             item = frappe.get_doc("Item", item.name)
             listing = listing_resolver.get_listing(item.name)
             variants = _variants_of(item)
-            product_input = _product_set_input(item, variants, settings, listing, client)
+            product_input = _product_set_input(item, variants, settings, listing, client, is_new_product=True)
 
             data = client.execute(_PRODUCT_SET_MUTATION, {
                 "input": product_input,
@@ -661,7 +791,7 @@ def _push_product_unlocked(item):
 
     entities.save(
         entity or entities.get_or_new(
-            "product", "Item", item.name, product_id),
+            "product", "Item", item.name, product_id, connection=settings),
         external_id=product_id,
         erpnext_doctype="Item",
         erpnext_name=item.name,
@@ -700,7 +830,7 @@ def _clear_stale_locks(max_age_seconds=300):
         frappe.logger().info(f"Cleared {removed} stale document lock(s)")
 
 
-def push_changed_items_only():
+def push_changed_items_only(connection=None):
     """
     Hourly reconciliation: push every template with an enabled Listing.
 
@@ -715,14 +845,21 @@ def push_changed_items_only():
     """
     import time
 
-    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+    # Once per enabled store. Called from the scheduler with no argument, so
+    # without the fan-out this pushed every store's listings under whichever
+    # store happened to be enabled -- and the 240s budget below was shared
+    # across all of them, so the last store in the list never got a turn.
+    if connection is None:
+        connections.for_each("hourly product push", push_changed_items_only)
         return
+
+    connection = connections.resolve(connection)
 
     _clear_stale_locks()
 
     sync_items = frappe.get_all(
         "Shopify Product Listing",
-        filters={"is_enabled": 1},
+        filters=owned_by("Shopify Product Listing", connection.name, {"is_enabled": 1}),
         pluck="item",
     )
     # Time-box under the RQ 300s job timeout: each push commits its own
@@ -738,6 +875,9 @@ def push_changed_items_only():
             stopped_early = True
             break
         try:
+            # push_item's second parameter is a status filter, not a store.
+            # The Listings were already narrowed to this connection above, so
+            # the items in this loop are this store's by construction.
             push_item(code)
             pushed += 1
         except Exception:

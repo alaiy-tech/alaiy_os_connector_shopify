@@ -12,6 +12,8 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
     load_or_create_log, close_log, is_cancel_requested, append_log as _append_log,
 )
 
+from alaiy_os_connector_shopify import connections
+
 _NODES_PER_CALL = 250  # Shopify's node-by-id bulk lookup cap, same as any other connection page size here.
 
 
@@ -159,7 +161,7 @@ def _save_taxonomy_node(node):
     return False
 
 
-def scheduled_fetch_shopify_taxonomy():
+def scheduled_fetch_shopify_taxonomy(connection=None):
     """
     hooks.py's daily scheduler entry point. Frappe's own scheduled-job
     runner enqueues the method it's given with ITS default timeout (300s
@@ -168,17 +170,27 @@ def scheduled_fetch_shopify_taxonomy():
     Re-enqueue the real work under our own explicit long timeout instead of
     ever running it under the scheduler's own job wrapper.
 
+    `connection` is forwarded rather than accepted and dropped. The scheduler
+    itself never names one -- Shopify's taxonomy is the same catalogue for
+    every seller, so this is one of the few jobs deliberately not fanned out
+    per store (see tests/test_scheduler_fanout.py) -- but a caller that does
+    name one is naming which store's credentials to fetch it with, and
+    swallowing that left the enqueued job to re-resolve on its own, which on a
+    bench with several enabled stores has no answer at all.
+
     Confirmed live on a site with this app installed but never configured
-    (no Shop URL/token): this ran anyway on the daily cron, every day,
-    crashing with "Shopify Shop URL is not configured." -- guard on
-    is_enabled the same way every other scheduled entry point does.
+    (no store connected): this ran anyway on the daily cron, every day,
+    crashing with "Shopify Shop URL is not configured." -- guard on there
+    being an enabled connection the same way every other scheduled entry
+    point does.
     """
-    if not frappe.db.get_single_value("Shopify Connector Settings", "is_enabled"):
+    if connections.enabled_connection() is None:
         return
-    frappe.enqueue(fetch_shopify_taxonomy, queue="long", timeout=3600, trigger="scheduled")
+    frappe.enqueue(fetch_shopify_taxonomy, queue="long", timeout=3600,
+                   trigger="scheduled", connection=connection)
 
 
-def fetch_shopify_taxonomy(trigger="manual", log_name=None):
+def fetch_shopify_taxonomy(trigger="manual", log_name=None, connection=None):
     """
     Fetch the full Shopify Standard Product Taxonomy tree and populate
     the Shopify Category doctype. Called on demand (see
@@ -202,14 +214,14 @@ def fetch_shopify_taxonomy(trigger="manual", log_name=None):
     tree (one UPDATE per node, hours not minutes) -- once that phase
     starts, it can't be interrupted, only the walk before it can.
     """
-    log = load_or_create_log("taxonomy", trigger, log_name)
+    log = load_or_create_log("taxonomy", trigger, log_name, connection=connection)
     log.status = "running"
     log.save(ignore_permissions=True)
     frappe.db.commit()
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    client = ShopifyGraphQLClient()
+    client = ShopifyGraphQLClient(connection)
     saved = 0
     total = 0
     seen_ids = set()

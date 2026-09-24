@@ -22,6 +22,8 @@ from alaiy_os_connector_shopify.shopify.product.media import _absolute_file_url
 _WEIGHT_UNIT_TO_UOM = {
     "GRAMS": "Gram", "KILOGRAMS": "Kg", "OUNCES": "Ounce", "POUNDS": "Pound",
 }
+
+
 _UOM_TO_WEIGHT_UNIT = {v: k for k, v in _WEIGHT_UNIT_TO_UOM.items()}
 
 # Shopify's REST webhook payload uses a different, lowercase-abbreviation
@@ -88,6 +90,26 @@ _UOM_IN_GRAMS = {"Gram": 1.0, "Kg": 1000.0, "Ounce": 28.3495, "Pound": 453.592}
 # rounded to a whole pound. Anything beyond this is two different weights,
 # not a restatement, and is refused.
 _DUAL_UNIT_TOLERANCE = 0.20
+
+
+def level_quantity(level: dict, name: str = "available") -> float:
+    """
+    One named quantity off an inventoryLevel.
+
+    The queries ask for several states now (available, on_hand, committed,
+    incoming), and Shopify returns them as a list in no guaranteed order --
+    so quantities[0] is not reliably "available", and reading it by index
+    would silently write the wrong stock. Match on name, falling back to the
+    first entry only when nothing is named (a query asking for a single
+    state omits the name field).
+    """
+    quantities = level.get("quantities") or []
+    for q in quantities:
+        if q.get("name") == name:
+            return flt(q.get("quantity"))
+    if quantities and not any(q.get("name") for q in quantities):
+        return flt(quantities[0].get("quantity"))
+    return 0.0
 
 
 def _metafield_map(product_node):
@@ -242,13 +264,11 @@ def _variant_available_qty(variant: dict) -> float:
     levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
     total = 0
     for level in levels:
-        quantities = level.get("quantities") or []
-        if quantities:
-            total += flt(quantities[0].get("quantity"))
+        total += level_quantity(level)
     return total
 
 
-def _variant_location_levels(variant: dict) -> list:
+def _variant_location_levels(variant: dict, connection=None) -> list:
     """
     [(shopify_location_id, qty), ...] for this variant, one pair per real
     Shopify location it's stocked at -- lets opening stock be split into
@@ -264,9 +284,7 @@ def _variant_location_levels(variant: dict) -> list:
         location_id = ((level.get("location") or {}).get("legacyResourceId"))
         if not location_id:
             continue
-        quantities = level.get("quantities") or []
-        qty = flt(quantities[0].get("quantity")) if quantities else 0
-        pairs.append((str(location_id), qty))
+        pairs.append((str(location_id), level_quantity(level)))
 
     # inventoryLevels is capped hard inside the bulk products query -- nested
     # under products x variants, its page size multiplies toward Shopify's
@@ -285,7 +303,7 @@ def _variant_location_levels(variant: dict) -> list:
     from alaiy_os_connector_shopify.shopify.product.queries import INVENTORY_LEVELS_PAGE_SIZE
 
     if len(pairs) >= INVENTORY_LEVELS_PAGE_SIZE:
-        full = _fetch_variant_location_levels(variant.get("legacyResourceId"))
+        full = _fetch_variant_location_levels(variant.get("legacyResourceId"), connection)
         if full:
             return full
     return pairs or []
@@ -307,7 +325,7 @@ query VariantLevels($id: ID!) {
 """
 
 
-def _fetch_variant_location_levels(variant_id):
+def _fetch_variant_location_levels(variant_id, connection=None):
     """Every location one variant is stocked at, fetched on its own.
 
     Affords first: 50 because it queries a single variant -- there is no
@@ -321,7 +339,7 @@ def _fetch_variant_location_levels(variant_id):
     try:
         from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-        data = ShopifyGraphQLClient().execute(
+        data = ShopifyGraphQLClient(connection).execute(
             _VARIANT_LEVELS_QUERY, {"id": f"gid://shopify/ProductVariant/{variant_id}"})
         variant = (data.get("productVariant") or {})
         levels = ((variant.get("inventoryItem") or {}).get("inventoryLevels") or {}).get("nodes") or []
@@ -330,9 +348,7 @@ def _fetch_variant_location_levels(variant_id):
             location_id = ((level.get("location") or {}).get("legacyResourceId"))
             if not location_id:
                 continue
-            quantities = level.get("quantities") or []
-            qty = flt(quantities[0].get("quantity")) if quantities else 0
-            pairs.append((str(location_id), qty))
+            pairs.append((str(location_id), level_quantity(level)))
         return pairs
     except Exception:
         frappe.log_error(
@@ -405,7 +421,52 @@ def _variant_canonical(variant, settings, listing) -> dict:
     }
 
 
-def _variant_set_payload(variant, settings, option_names: list, listing) -> dict:
+def _variant_initial_inventory_quantities(variant, settings) -> list:
+    """ProductSetInventoryInput rows for a brand-new product's first push --
+    Shopify only accepts inventoryQuantities on productSet for locations the
+    variant isn't already stocked at when the product doesn't exist yet, so
+    this is never called for a product that already has a product_id (see
+    _push_product_unlocked). Without this, a freshly published product has
+    NO stock recorded at ANY location, so Shopify's own fulfillment routing
+    falls back to whatever it considers the "first active" location instead
+    of the supplier's real one -- confirmed live (thesolist item 10314779918634
+    landed on "HQ New York" despite Item.shopify_location correctly pointing
+    at the supplier's own Shopify Location).
+
+    Resolves the supplier's own Warehouse from Item.shopify_location via the
+    same Shopify Connector Settings.sh_location_map table
+    inventory_sync._resolve_location_pairs already uses (just inverted:
+    location -> warehouse instead of warehouse -> location), so this stays
+    the one source of truth for that mapping rather than inventing a second.
+    A location with no mapped Warehouse, or a Warehouse with no Bin row for
+    this item, means "no known quantity" -- skipped, never pushed as an
+    assumed zero (same rule inventory_sync's own bulk push follows).
+    """
+    location_name = variant.get("shopify_location")
+    if not location_name:
+        return []
+    warehouse = None
+    for row in (settings.get("sh_location_map") or []):
+        if row.shopify_location == location_name and row.warehouse:
+            warehouse = row.warehouse
+            break
+    if not warehouse:
+        return []
+    location_gid = frappe.db.get_value("Shopify Location", location_name, "sh_location_gid")
+    if not location_gid:
+        return []
+    bin_qty = frappe.db.get_value(
+        "Bin", {"item_code": variant.item_code, "warehouse": warehouse}, "actual_qty")
+    if bin_qty is None:
+        return []
+    return [{
+        "locationId": location_gid,
+        "name": "available",
+        "quantity": int(flt(bin_qty)),
+    }]
+
+
+def _variant_set_payload(variant, settings, option_names: list, listing, is_new_product: bool = False) -> dict:
     attrs = {a.attribute: a.attribute_value for a in (variant.attributes or [])}
     payload = {
         "sku": variant.item_code,
@@ -414,6 +475,13 @@ def _variant_set_payload(variant, settings, option_names: list, listing) -> dict
             for name in option_names
         ],
     }
+    if is_new_product:
+        # Only for a product's first-ever push -- see
+        # _variant_initial_inventory_quantities' own docstring for why this
+        # can't also run on an update.
+        inventory_quantities = _variant_initial_inventory_quantities(variant, settings)
+        if inventory_quantities:
+            payload["inventoryQuantities"] = inventory_quantities
     price = listing_resolver.variant_price(listing, variant.item_code, settings)
     if price is not None:
         payload["price"] = f"{price:.2f}"

@@ -39,6 +39,10 @@ decision, so that is reported and nothing is unwound.
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
+from alaiy_os_connector_shopify import connections
+
 # The only state that will not change again.
 #
 # DELIVERED is deliberately NOT terminal, which is not obvious: a merchant can
@@ -72,7 +76,7 @@ query($ids: [ID!]!) {
 """
 
 
-def _pending_delivery_notes(limit=None):
+def _pending_delivery_notes(limit=None, connection=None):
     """Delivery Notes whose Shopify fulfillment could still change state.
 
     A delivered parcel stays in this set: Shopify lets a merchant mark a
@@ -84,43 +88,53 @@ def _pending_delivery_notes(limit=None):
     """
     return frappe.get_all(
         "Delivery Note",
-        filters={
+        filters=owned_by("Delivery Note", connection, {
             "docstatus": 1,
             "sh_shopify_fulfillment_id": ["is", "set"],
             "sh_delivery_status": ["not in", list(_TERMINAL)],
-        },
+        }),
         fields=["name", "sh_shopify_fulfillment_id", "sh_delivery_status"],
         order_by="modified asc",
         limit=limit,
     )
 
 
-def _cancel_for_cancelled_fulfillment(dn_name, status):
-    """Cancel the Delivery Note behind a fulfillment Shopify has cancelled.
+def _cancel_delivery_note_for_unfulfilment(dn_name, reason, *, push_to_shopify):
+    """Cancel a submitted Delivery Note, with the same safety checks
+    regardless of who's asking.
 
-    Shopify is the source of truth for whether a fulfillment exists. Once it
-    says CANCELED, keeping the Delivery Note submitted here means the order
-    reads as shipped in a portal, its stock movement stands, and its supplier
-    still has a shipment to invoice against -- for goods Shopify says never
-    went out. There is no unfulfil action anywhere in the UI, so nothing could
-    correct that by hand either; the order was stuck shipped forever.
+    Shared by two callers with opposite intent on `push_to_shopify`:
 
-    Cancelling returns the order to pending, which is the state it is actually
-    in: nobody has shipped it and it needs fulfilling again.
+    - The Shopify-reported path (`_cancel_for_cancelled_fulfillment` below):
+      Shopify already says the fulfillment is cancelled, so
+      `from_shopify_sync` suppresses `on_delivery_note_cancel`'s push-back --
+      telling Shopify about its own cancellation a second time is both wrong
+      and noisy.
+    - The manual admin path (`unfulfil_delivery_note`): an admin is
+      cancelling a Delivery Note Shopify still thinks is fulfilled, so
+      `from_shopify_sync` is left unset on purpose, letting
+      `on_delivery_note_cancel`'s existing hook push the cancellation to
+      Shopify (`push_fulfillment_cancel_job`) so both sides end up agreeing.
 
     A submitted Sales Invoice against the Delivery Note blocks its cancel, so
     that is cancelled first -- but only when nothing has been paid against it.
-    A paid invoice is a real books situation (money arrived for an order
-    Shopify now says never shipped) and is reported for a human rather than
-    unwound automatically.
+    A paid invoice is a real books situation (money arrived for an order that
+    is about to read as never shipped) and is reported for a human rather
+    than unwound automatically.
 
-    from_shopify_sync suppresses on_delivery_note_cancel's push-back: Shopify
-    cancelled this fulfillment, so sending it a second cancellation for the
-    same one is both wrong and noisy.
+    Idempotent: a Delivery Note already cancelled (docstatus 2) is a safe
+    no-op, returning True as if this call had just done it -- the webhook
+    path and the poll can both reach this for the same fulfillment (a
+    redelivered webhook, or the poll catching up moments after the webhook
+    already cancelled it), and ERPNext's own dn.cancel() raises on an
+    already-cancelled document rather than tolerating it.
 
     Returns None -- neither done nor needing a human -- when the whole order
     was cancelled rather than just its fulfillment. See below.
     """
+    if frappe.db.get_value("Delivery Note", dn_name, "docstatus") == 2:
+        return True
+
     # A cancelled Sales Order is a different situation entirely, and ERPNext
     # will not allow this cancel at all: DeliveryNote.on_cancel runs
     # update_reserved_qty, which throws InvalidStatusError ("Sales Order ... is
@@ -149,7 +163,7 @@ def _cancel_for_cancelled_fulfillment(dn_name, status):
     ) if so_names else []
     if cancelled_orders:
         frappe.logger().info(
-            f"Shopify reported fulfillment {status} for {dn_name}, but its order "
+            f"{reason} for {dn_name}, but its order "
             f"{', '.join(cancelled_orders)} is already cancelled -- leaving the "
             f"Delivery Note as the record that the goods shipped."
         )
@@ -170,32 +184,101 @@ def _cancel_for_cancelled_fulfillment(dn_name, status):
         )
         if paid:
             frappe.log_error(
-                title=f"Shopify cancelled a fulfillment that is already paid -- {dn_name}",
+                title=f"Cannot unfulfil {dn_name} -- its invoice is already paid",
                 message=(
-                    f"Shopify now reports this fulfillment as {status}, but "
+                    f"{reason}, but "
                     f"{si_name} has a payment against it, so neither it nor the "
                     f"Delivery Note can be reversed automatically.\n\n"
-                    f"Money has arrived for an order Shopify says never shipped. "
-                    f"Decide what should happen to the payment and the invoice, "
-                    f"then cancel them by hand -- the Delivery Note is still "
-                    f"submitted until that is done."
+                    f"Money has arrived for an order about to read as never "
+                    f"shipped. Decide what should happen to the payment and the "
+                    f"invoice, then cancel them by hand -- the Delivery Note is "
+                    f"still submitted until that is done."
                 ),
             )
             return False
         si = frappe.get_doc("Sales Invoice", si_name)
-        si.flags.from_shopify_sync = True
+        si.flags.from_shopify_sync = push_to_shopify is False
         si.flags.ignore_permissions = True
         si.cancel()
 
     dn = frappe.get_doc("Delivery Note", dn_name)
-    dn.flags.from_shopify_sync = True
+    dn.flags.from_shopify_sync = push_to_shopify is False
     dn.flags.ignore_permissions = True
     dn.cancel()
     frappe.logger().info(
-        f"Shopify reported fulfillment {status} for {dn_name}: cancelled it "
+        f"{reason} for {dn_name}: cancelled it "
         f"(and {len(set(invoices))} invoice(s)), order returns to pending."
     )
     return True
+
+
+def _cancel_for_cancelled_fulfillment(dn_name, status):
+    """Cancel the Delivery Note behind a fulfillment Shopify has cancelled.
+
+    Shopify is the source of truth for whether a fulfillment exists. Once it
+    says CANCELED, keeping the Delivery Note submitted here means the order
+    reads as shipped in a portal, its stock movement stands, and its supplier
+    still has a shipment to invoice against -- for goods Shopify says never
+    went out. Cancelling returns the order to pending, which is the state it
+    is actually in: nobody has shipped it and it needs fulfilling again.
+
+    Thin wrapper over _cancel_delivery_note_for_unfulfilment with
+    push_to_shopify=False -- Shopify already told us, so nothing is pushed
+    back to it. See that function for the shared safety checks.
+    """
+    return _cancel_delivery_note_for_unfulfilment(
+        dn_name, f"Shopify reported fulfillment {status}", push_to_shopify=False,
+    )
+
+
+@frappe.whitelist()
+def unfulfil_delivery_note(delivery_note: str):
+    """Manually cancel a fulfilled Delivery Note and push that cancellation
+    to Shopify -- the "unfulfil" action the module docstring above notes has
+    never existed anywhere in the UI.
+
+    For when a human needs to correct a fulfillment locally before Shopify
+    itself reports it cancelled: a mis-shipped order, a wrong Delivery Note
+    submitted by mistake, or simply getting ahead of a cancellation the
+    supplier hasn't clicked through in Shopify yet. Unlike
+    _cancel_for_cancelled_fulfillment (which Shopify already told us about,
+    so nothing is pushed back), this pushes the cancel OUT to Shopify via the
+    existing on_delivery_note_cancel hook -- see fulfillment_push.py -- so
+    both sides end up agreeing instead of only this one.
+
+    Same safety checks as the Shopify-reported path: refuses (reports for a
+    human) against a paid Sales Invoice, and leaves the Delivery Note alone
+    as historical record if its Sales Order is already cancelled.
+    """
+    from alaiy_os_connector_shopify.api import require_access_to_record
+
+    if not frappe.db.exists("Delivery Note", delivery_note):
+        frappe.throw(frappe._("No Delivery Note {0}.").format(delivery_note),
+                     frappe.DoesNotExistError)
+
+    require_access_to_record("Delivery Note", delivery_note, "write")
+
+    docstatus = frappe.db.get_value("Delivery Note", delivery_note, "docstatus")
+    if docstatus == 2:
+        return {"ok": True, "already_cancelled": True}
+    if docstatus != 1:
+        frappe.throw(frappe._(
+            "{0} is not a submitted Delivery Note -- nothing to unfulfil."
+        ).format(delivery_note))
+
+    outcome = _cancel_delivery_note_for_unfulfilment(
+        delivery_note, "Manually unfulfilled", push_to_shopify=True,
+    )
+    if outcome is None:
+        return {"ok": True, "order_cancelled": True,
+                "message": "The order itself is already cancelled; the Delivery "
+                           "Note is left as the record that goods shipped."}
+    if outcome is False:
+        return {"ok": False, "needs_human": True,
+                "message": "A linked Sales Invoice is already paid -- see the "
+                           "Error Log for what to resolve by hand before this "
+                           "can be unfulfilled."}
+    return {"ok": True, "cancelled": True}
 
 
 def sync_delivery_status(limit=None):
@@ -205,11 +288,15 @@ def sync_delivery_status(limit=None):
     Shopify-side failure must not take down whatever else the scheduler is
     doing in the same tick.
     """
-    settings = frappe.get_cached_doc("Shopify Connector Settings")
-    if not settings.is_enabled:
-        return {"ok": False, "reason": "connector disabled"}
+    return connections_summary("delivery status",
+                               lambda name: _sync_delivery_status_for(name, limit))
 
-    pending = _pending_delivery_notes(limit)
+
+def _sync_delivery_status_for(connection_name, limit=None):
+    """One store's pass. See sync_delivery_status."""
+    settings = frappe.get_cached_doc(connections.DOCTYPE, connection_name)
+
+    pending = _pending_delivery_notes(limit, connection_name)
     summary = {"ok": True, "checked": len(pending), "updated": 0, "delivered": 0,
                "cancelled": 0, "reverted": 0, "order_cancelled": 0,
                "needs_human": 0, "failed": 0}
@@ -217,7 +304,9 @@ def sync_delivery_status(limit=None):
         return summary
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
-    client = ShopifyGraphQLClient()
+    # This store's own credentials. Built bare, every store's pass would
+    # call the default store's shop.
+    client = ShopifyGraphQLClient(settings)
 
     by_legacy_id = {str(dn.sh_shopify_fulfillment_id): dn for dn in pending}
     ids = list(by_legacy_id)
@@ -361,7 +450,7 @@ query($ids: [ID!]!) {
 """
 
 
-def _open_shopify_orders(limit=None):
+def _open_shopify_orders(limit=None, connection=None):
     """Submitted Sales Orders from Shopify whose state could still change here.
 
     docstatus 1 only: a draft was never submitted and a 2 is already cancelled,
@@ -378,11 +467,11 @@ def _open_shopify_orders(limit=None):
     """
     return frappe.get_all(
         "Sales Order",
-        filters={
+        filters=owned_by("Sales Order", connection, {
             "docstatus": 1,
             "sh_shopify_order_id": ["is", "set"],
             "status": ["not in", ("Completed", "Closed")],
-        },
+        }),
         fields=["name", "sh_shopify_order_id"],
         order_by="modified asc",
         limit=limit,
@@ -494,11 +583,15 @@ def sync_order_status(limit=None):
     Returns a summary rather than raising: runs unattended, and a Shopify-side
     failure must not take down the rest of the scheduler tick.
     """
-    settings = frappe.get_cached_doc("Shopify Connector Settings")
-    if not settings.is_enabled:
-        return {"ok": False, "reason": "connector disabled"}
+    return connections_summary("order status",
+                               lambda name: _sync_order_status_for(name, limit))
 
-    open_orders = _open_shopify_orders(limit)
+
+def _sync_order_status_for(connection_name, limit=None):
+    """One store's pass. See sync_order_status."""
+    settings = frappe.get_cached_doc(connections.DOCTYPE, connection_name)
+
+    open_orders = _open_shopify_orders(limit, connection_name)
     summary = {"ok": True, "checked": len(open_orders), "cancelled": 0, "failed": 0,
                "financial_status_updated": 0, "refunds_found": 0}
     if not open_orders:
@@ -507,7 +600,9 @@ def sync_order_status(limit=None):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
     from alaiy_os_connector_shopify.shopify.order.webhook import _cancel_sales_order
 
-    client = ShopifyGraphQLClient()
+    # This store's own credentials. Built bare, every store's pass would
+    # call the default store's shop.
+    client = ShopifyGraphQLClient(settings)
     by_legacy_id = {str(o.sh_shopify_order_id): o.name for o in open_orders}
     ids = list(by_legacy_id)
 
@@ -568,6 +663,30 @@ def sync_order_status(limit=None):
     return summary
 
 
+def connections_summary(label, run):
+    """
+    Run a scheduled sweep once per enabled store, keeping each store's result.
+
+    connections.for_each does the isolation -- one store's failure is logged
+    against that store and the rest still run -- but returns nothing, and both
+    of these sweeps report a summary that the desk and the tests read. This
+    keeps that shape: a dict per store, plus the bench-wide "ok" the single-
+    store callers already expect.
+    """
+    results = {}
+
+    def one(name):
+        results[name] = run(name)
+
+    connections.for_each(label, one)
+    if not results:
+        return {"ok": False, "reason": "connector disabled"}
+    if len(results) == 1:
+        # A single-store bench gets exactly the summary it always got.
+        return next(iter(results.values()))
+    return {"ok": True, "by_connection": results}
+
+
 def sync_refund_status(limit=500):
     """Ask Shopify which orders it considers refunded, and record it.
 
@@ -589,20 +708,24 @@ def sync_refund_status(limit=500):
     Least-recently-checked first, so a large history is covered across
     several runs rather than one unbounded pass.
     """
-    settings = frappe.get_cached_doc("Shopify Connector Settings")
-    if not settings.is_enabled:
-        return {"ok": False, "reason": "connector disabled"}
+    return connections_summary("refund status",
+                               lambda name: _sync_refund_status_for(name, limit))
+
+
+def _sync_refund_status_for(connection_name, limit=500):
+    """One store's pass. See sync_refund_status."""
+    settings = frappe.get_cached_doc(connections.DOCTYPE, connection_name)
 
     # Everything Shopify might have refunded that we do not already know is
     # refunded. docstatus 1 only -- a cancelled order's money is settled by
     # the cancel path, and a draft was never paid.
     rows = frappe.get_all(
         "Sales Order",
-        filters={
+        filters=owned_by("Sales Order", connection_name, {
             "docstatus": 1,
             "sh_shopify_order_id": ["is", "set"],
             "sh_financial_status": ["not in", ["refunded", "partially_refunded", "voided"]],
-        },
+        }),
         fields=["name", "sh_shopify_order_id"],
         order_by="modified asc",
         limit=limit,
@@ -614,7 +737,9 @@ def sync_refund_status(limit=500):
 
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
-    client = ShopifyGraphQLClient()
+    # This store's own credentials. Built bare, every store's pass would
+    # call the default store's shop.
+    client = ShopifyGraphQLClient(settings)
     by_legacy_id = {str(r.sh_shopify_order_id): r.name for r in rows}
     ids = list(by_legacy_id)
 

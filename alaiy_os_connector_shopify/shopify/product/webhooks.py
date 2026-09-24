@@ -3,6 +3,8 @@ Inbound Sync: Handle Shopify product changes via webhooks -- moved
 verbatim from product_sync.py, unchanged.
 """
 
+import time
+
 import frappe
 from frappe.utils import flt
 
@@ -14,8 +16,10 @@ from alaiy_os_connector_shopify.shopify.product.canonical import _product_canoni
 from alaiy_os_connector_shopify.shopify.product.export import _variants_of
 from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
 
+from alaiy_os_connector_shopify import connections
 
-def handle_product_webhook(topic: str, payload: dict):
+
+def handle_product_webhook(topic: str, payload: dict, connection=None):
     """
     Handle product events from Shopify webhooks.
     Topics: products/create, products/update, products/delete
@@ -38,11 +42,11 @@ def handle_product_webhook(topic: str, payload: dict):
 
     try:
         if topic == "products/delete":
-            _handle_product_delete(product_id, product)
+            _handle_product_delete(product_id, product, connection)
         elif topic == "products/create":
-            _handle_product_create(product_id, product)
+            _handle_product_create(product_id, product, connection)
         elif topic == "products/update":
-            _handle_product_update(product_id, product)
+            _handle_product_update(product_id, product, connection)
     except frappe.DocumentLockedError:
         # The Item is locked by an in-flight outbound push (or a stale lock
         # left by a killed worker). Not a real failure -- Shopify retries the
@@ -143,25 +147,25 @@ def _webhook_product_to_graphql_node(product: dict) -> dict:
     }
 
 
-def _handle_product_create(product_id: str, product: dict):
+def _handle_product_create(product_id: str, product: dict, connection=None):
     """New product on Shopify - create Alaiy OS Item."""
-    entity = entities.get_by_external_id("product", product_id)
+    entity = entities.get_by_external_id("product", product_id, connection)
 
     if entity:
         # Already linked - treat as update
-        return _handle_product_update(product_id, product)
+        return _handle_product_update(product_id, product, connection)
 
     # New product - import it (reuses the one-time-import logic, translated
     # from the webhook's REST shape into the GraphQL node shape it expects).
     from alaiy_os_connector_shopify.shopify.product.importer import _import_product
     node = _webhook_product_to_graphql_node(product)
-    _import_product(node)
+    _import_product(node, connection)
     frappe.logger().info(f"Created Item from Shopify product {product_id}")
 
 
-def _handle_product_update(product_id: str, product: dict):
+def _handle_product_update(product_id: str, product: dict, connection=None):
     """Product updated on Shopify - update Alaiy OS Item if Shopify is newer."""
-    entity = entities.get_by_external_id("product", product_id)
+    entity = entities.get_by_external_id("product", product_id, connection)
 
     if not entity:
         return  # Product not linked to Alaiy OS
@@ -224,15 +228,24 @@ def _handle_product_update(product_id: str, product: dict):
         )
         return
 
+    locked_item = item
     try:
-        _update_item_from_shopify(item, product)
+        _update_item_from_shopify(item, product, connection=connection)
 
         # Recompute and store the fingerprint for the post-update state so the
         # hourly outbound reconciliation (push_changed_items_only) doesn't see
         # this inbound-driven change as "different from last push" and push it
         # straight back to Shopify.
+        #
+        # Reassigning `item` here (rather than a differently-named var) used
+        # to leave the unlock below calling .unlock() on THIS fresh instance,
+        # which never held the lock -- the original locked_item's file lock
+        # was orphaned every time this ran, confirmed live as the real cause
+        # of later saves on the same Item hitting DocumentLockedError against
+        # a lock that no in-memory reference could ever clear (only the
+        # 3-hour hard expiry eventually did).
         item = frappe.get_doc("Item", item.name)
-        settings = frappe.get_single("Shopify Connector Settings")
+        settings = connections.resolve(connection) if connection else connections.require_enabled()
         from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
         listing = listing_resolver.get_listing(item.name)
         # Only re-fingerprint when a Listing exists (i.e. this product is
@@ -249,7 +262,7 @@ def _handle_product_update(product_id: str, product: dict):
 
         frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
     finally:
-        item.unlock()
+        locked_item.unlock()
  
 
 def _save_listing_with_retry(listing, _attempt=0):
@@ -272,7 +285,7 @@ def _save_listing_with_retry(listing, _attempt=0):
         _save_listing_with_retry(fresh, _attempt=1)
 
 
-def _update_item_from_shopify(item, product: dict, _retry_count=0):
+def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=None):
     """
     Update Alaiy OS Item from Shopify product (inbound sync).
 
@@ -289,7 +302,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
     _retry_count is internal only -- see the TimestampMismatchError handling
     at the bottom of this function.
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
 
     from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
     listing = listing_resolver.get_listing(item.name)
@@ -335,7 +348,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
         "tags": [tags] if tags else [],
         "category": {"name": category.get("name") or category.get("full_name")} if category.get("name") or category.get("full_name") else None,
         "status": product.get("status") or "",
-    })
+    }, connection=connection)
 
     # Status: active/draft/archived is meant to be a PER-MARKETPLACE concern --
     # the comment here used to claim it "never affects the shared Item", but
@@ -409,8 +422,25 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
     item.flags.dont_update_variants = True
     try:
         with _as_administrator():
+            # Confirmed live (instrumented is_locked directly at the failure
+            # site): item.save() here ALWAYS threw DocumentLockedError, with
+            # no lock file ever observably present a moment before or after --
+            # because _handle_product_update's own item.lock() call, one level
+            # up, is still held for the ENTIRE duration of this function, and
+            # Document.save()'s own check_if_locked() does not special-case
+            # "the current call chain is the one holding this lock." lock()
+            # and save() on the same instance are fundamentally incompatible
+            # in this Frappe version -- file_lock.create_lock's own docstring
+            # even says the mechanism is "primarily for locking documents for
+            # background submission," not this save-through-the-ORM pattern.
+            # Unlocking immediately before the actual write is what makes the
+            # write possible at all; the outer function's finally still
+            # re-covers unlock for the redelivery-skip path that returns
+            # before ever reaching here.
+            if item.is_locked:
+                item.unlock()
             item.save()
-    except frappe.TimestampMismatchError:
+    except (frappe.TimestampMismatchError, frappe.QueryDeadlockError):
         # Confirmed live: this Item got saved by something else (our own
         # outbound push, a sibling-variant cascade, another webhook for
         # the same product) in the same second this function loaded it --
@@ -420,11 +450,24 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
         # kept from the stale `item`), so it's safe to just reload a
         # current copy and replay the whole update once rather than lose
         # it entirely.
+        #
+        # QueryDeadlockError (MySQL 1213) is the same class of transient
+        # concurrent-write collision, just caught by InnoDB's own deadlock
+        # detector instead of Frappe's optimistic-lock check -- both mean
+        # "someone else touched overlapping rows in the same window," and
+        # MySQL's own error text says exactly what TimestampMismatchError's
+        # handling already does: "try restarting transaction." Confirmed
+        # live: a products/update webhook crashed here mid item.save()
+        # (inserting an Item child-table row) while item.lock() has
+        # already been released for the actual write (see the comment
+        # above item.save()) -- there is nothing left serializing that
+        # write against a concurrent one, so the retry is the real fix,
+        # not a suppressed symptom.
         if _retry_count >= 2:
             raise
         frappe.db.rollback()
         fresh_item = frappe.get_doc("Item", item.name)
-        return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1)
+        return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1, connection=connection)
     frappe.db.commit()
 
     # Images are LISTING-scoped too. With a Listing, route Shopify's images
@@ -532,6 +575,18 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
                 if flt(row.variant_price) != price:
                     row.variant_price = price
                     listing_dirty = True
+                # For a simple (single-variant) product, listing_price is a
+                # separate field admin UIs display as "the" price -- confirmed
+                # live, an inbound price change correctly updated the row
+                # (the real push source, per variant_price()'s own resolver
+                # priority) but left listing_price showing a stale number,
+                # misleading anyone reading the Listing form directly rather
+                # than through the resolver. Keep both in step for a simple
+                # product, same symmetry the outbound price-edit endpoint
+                # already keeps.
+                if listing and sku == listing.item and flt(listing.listing_price) != price:
+                    listing.listing_price = price
+                    listing_dirty = True
             else:
                 _set_item_price(sku, price, settings)
         compare_at_price = flt(variant.get("compare_at_price") or variant.get("compareAtPrice") or 0)
@@ -577,9 +632,9 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0):
         )
 
 
-def _handle_product_delete(product_id: str, product: dict):
+def _handle_product_delete(product_id: str, product: dict, connection=None):
     """Product deleted on Shopify - unlink Alaiy OS Item (preserve local data)."""
-    entity = entities.get_by_external_id("product", product_id)
+    entity = entities.get_by_external_id("product", product_id, connection)
 
     if not entity:
         return

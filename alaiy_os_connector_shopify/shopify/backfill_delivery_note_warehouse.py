@@ -39,6 +39,8 @@ Apply for real:
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 
 def _resolve_expected_warehouse_via_fulfillment(client, fulfillment_id, location_map):
     data = client.execute("""
@@ -80,7 +82,7 @@ def run(dry_run=True):
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 
     client = ShopifyGraphQLClient()
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     location_map = {row.shopify_location: row.warehouse for row in (settings.get("sh_location_map") or [])}
 
     dns = frappe.db.sql("""

@@ -38,6 +38,13 @@ def _install_frappe_stub(template, variant_items, price=None):
         has_field=lambda f: False)
     frappe.get_doc = lambda *a, **k: None
     frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+    # listing.py imports the connections module, which does `from frappe
+    # import _` and `frappe.ValidationError` at module scope. Without these
+    # the import fails before any of the merge logic below is reached.
+    frappe._ = lambda s: s
+    frappe.throw = lambda msg, exc=None, **k: (_ for _ in ()).throw(
+        (exc or Exception)(msg))
+    frappe.ValidationError = type("ValidationError", (Exception,), {})
     frappe.validate_and_sanitize_search_inputs = lambda fn: fn
     sys.modules["frappe"] = frappe
 
@@ -72,6 +79,9 @@ class _Listing:
         getattr(self, table).append(_Row(**row))
         return row
 
+    def get(self, fieldname, default=None):
+        return getattr(self, fieldname, default)
+
 
 def _fill(listing, template=None, variants=None, monkey_price=None):
     template = template or types.SimpleNamespace(
@@ -88,6 +98,14 @@ def _fill(listing, template=None, variants=None, monkey_price=None):
     from alaiy_os_connector_shopify.shopify.product import listing as mod
     mod._variant_price = lambda *a, **k: monkey_price
     mod._template_image_urls = lambda t: getattr(t, "_urls", [])
+    # Stand in for the connection lookup. These tests are about the merge
+    # semantics -- what gets added, what is left alone -- and resolving a
+    # real Shopify Connection is a separate concern with its own tests.
+    # Without this, require_enabled raises NoConnection before the merge
+    # logic under test is reached.
+    mod.connections = types.SimpleNamespace(
+        require_enabled=lambda *a, **k: types.SimpleNamespace(
+            sh_selling_price_list="Standard Selling"))
     mod.fill_children_from_item(listing)
     return listing
 

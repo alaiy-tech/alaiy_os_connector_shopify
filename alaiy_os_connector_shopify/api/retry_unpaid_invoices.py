@@ -18,6 +18,8 @@ Run via bench execute:
 """
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 
 def run(dry_run=True):
     from alaiy_os_connector_shopify.shopify.order.invoice import _mark_invoice_paid
@@ -42,7 +44,7 @@ def run(dry_run=True):
         print("[retry_unpaid_invoices] DRY RUN -- nothing changed. Re-run with dry_run=False to apply.")
         return
 
-    settings = frappe.get_single("Shopify Connector Settings")
+    settings = connections.require_enabled()
     fixed = failed = 0
     for i, row in enumerate(rows):
         si = frappe.get_doc("Sales Invoice", row.name)

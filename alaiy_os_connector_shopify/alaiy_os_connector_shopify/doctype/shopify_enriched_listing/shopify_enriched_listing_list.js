@@ -10,6 +10,57 @@ frappe.listview_settings["Shopify Enriched Listing"] = {
 	},
 };
 
+// This list view has no store in scope the way a Listing form does, and
+// predates multi-store, so approve_listings took no connection at all. Same
+// convention as public/js/shopify_product_listing_list.js's
+// with_shopify_connection: ask list_connections, skip the prompt on a
+// single-store bench, and cache the answer for the life of the page. Kept
+// local rather than shared -- that file's helper isn't loaded on this list
+// view's page bundle.
+let shopify_enriched_listing_connection = null;
+
+function with_shopify_connection(callback) {
+	if (shopify_enriched_listing_connection) {
+		callback(shopify_enriched_listing_connection);
+		return;
+	}
+	frappe.call({
+		method: "alaiy_os_connector_shopify.api.sync.list_connections",
+		callback: function (r) {
+			const message = r.message || {};
+			const rows = message.connections || [];
+			if (message.selected) {
+				shopify_enriched_listing_connection = message.selected;
+				callback(shopify_enriched_listing_connection);
+				return;
+			}
+			if (!rows.length) {
+				frappe.msgprint(__("No Shopify store is switched on for you on this site."));
+				return;
+			}
+			frappe.prompt(
+				[{
+					fieldtype: "Select",
+					fieldname: "connection",
+					label: __("Shopify Store"),
+					reqd: 1,
+					options: rows.map((c) => ({
+						label: c.label + (c.shop_url ? " (" + c.shop_url + ")" : ""),
+						value: c.name,
+					})),
+					default: rows[0].name,
+				}],
+				(values) => {
+					shopify_enriched_listing_connection = values.connection;
+					callback(shopify_enriched_listing_connection);
+				},
+				__("Which store?"),
+				__("Continue")
+			);
+		},
+	});
+}
+
 function approve_selected(listview) {
 	const names = listview.get_checked_items(true);
 	if (!names.length) {
@@ -27,9 +78,9 @@ function approve_selected(listview) {
 			[names.length]
 		),
 		() => {
-			frappe.call({
+			with_shopify_connection((connection) => frappe.call({
 				method: "alaiy_os_connector_shopify.listing.review.approve_listings",
-				args: { names: names },
+				args: { names: names, connection: connection },
 				freeze: true,
 				freeze_message: __("Approving…"),
 				callback: (r) => {
@@ -57,7 +108,7 @@ function approve_selected(listview) {
 					}
 					listview.refresh();
 				},
-			});
+			}));
 		}
 	);
 }

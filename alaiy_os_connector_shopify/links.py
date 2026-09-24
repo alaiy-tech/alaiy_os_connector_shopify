@@ -41,6 +41,8 @@ says so, rather than the caller having to know.
 
 import frappe
 
+from alaiy_os_connector_shopify import connections
+
 _ADMIN_PATH = "admin/products"
 _STOREFRONT_PATH = "products"
 
@@ -51,7 +53,7 @@ _STOREFRONT_NOTE = (
 )
 
 
-def shop_host():
+def shop_host(connection=None):
     """The store's host, scheme included, with no trailing slash.
 
     `sh_shop_url` is stored however whoever configured the site typed it, with
@@ -59,8 +61,14 @@ def shop_host():
     building its endpoint. Returns None rather than throwing, because a link is
     a convenience and an unconfigured site should get an absence here, not an
     exception in the middle of an otherwise fine answer.
+
+    `connection` names a specific store for a multi-store caller; unnamed,
+    this keeps the single-enabled-store fallback unchanged.
     """
-    shop_url = (frappe.db.get_single_value("Shopify Connector Settings", "sh_shop_url") or "").strip()
+    if connection:
+        shop_url = (connections.resolve(connection).get("sh_shop_url") or "").strip()
+    else:
+        shop_url = (connections.enabled_value("sh_shop_url") or "").strip()
     shop_url = shop_url.rstrip("/")
     if not shop_url:
         return None
@@ -69,29 +77,34 @@ def shop_host():
     return shop_url
 
 
-def admin_link(product_id):
+def admin_link(product_id, connection=None):
     """The merchant's product editor, or None if this listing was never pushed."""
-    host = shop_host()
+    host = shop_host(connection)
     if not host or not product_id:
         return None
     return f"{host}/{_ADMIN_PATH}/{product_id}"
 
 
-def storefront_link(handle):
+def storefront_link(handle, connection=None):
     """The buyer's product page, or None if Shopify never gave us a handle."""
-    host = shop_host()
+    host = shop_host(connection)
     if not host or not handle:
         return None
     return f"{host}/{_STOREFRONT_PATH}/{handle}"
 
 
-def listing_link(item_code=None, product_id=None):
+def listing_link(item_code=None, product_id=None, connection=None):
     """Both links for one product, and a note for whichever could not be built.
 
     Takes an `item_code` and reads the ids off the register, or a `product_id`
     directly for a caller that already holds one -- the second form cannot build
     a storefront link, because the handle lives on the Item and nothing here
     maps an id back to it without the look-up the first form already does.
+
+    `connection` names which store to build the link against, for a caller on a
+    multi-store bench; unnamed, falls back to the one enabled store as before.
+    Nothing on `Item` or `Shopify Product Listing` identifies which store a
+    listing belongs to, so it is not derived from `item_code` -- only forwarded.
     """
     if not item_code and not product_id:
         frappe.throw("Pass an item_code or a product_id.")
@@ -108,7 +121,7 @@ def listing_link(item_code=None, product_id=None):
         product_id = product_id or row.sh_shopify_product_id
         handle = row.sh_shopify_handle
 
-    if not shop_host():
+    if not shop_host(connection):
         notes.append("No Shopify shop URL is configured, so neither link can be built.")
     else:
         if not product_id:
@@ -128,8 +141,8 @@ def listing_link(item_code=None, product_id=None):
         "item_code": item_code,
         "product_id": product_id,
         "handle": handle,
-        "admin_url": admin_link(product_id),
-        "storefront_url": storefront_link(handle),
-        "storefront_note": _STOREFRONT_NOTE if handle and shop_host() else None,
+        "admin_url": admin_link(product_id, connection),
+        "storefront_url": storefront_link(handle, connection),
+        "storefront_note": _STOREFRONT_NOTE if handle and shop_host(connection) else None,
         "note": " ".join(notes) or None,
     }

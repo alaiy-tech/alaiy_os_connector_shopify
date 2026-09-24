@@ -1,16 +1,24 @@
 """
-Customer/Territory resolution -- moved verbatim from order_sync.py,
-unchanged.
+Customer/Territory resolution.
+
+`settings` is the Shopify Connection the order came from, which is what scopes
+the lookups here: a Shopify customer id is only unique inside one shop, so two
+sellers both have a customer 12345.
 """
 
 import frappe
 
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
+
 
 def _get_or_create_customer(customer_data, settings):
+    connection = getattr(settings, "name", None)
     shopify_id = str(customer_data.get("id", ""))
     if shopify_id:
         existing = frappe.db.get_value(
-            "Customer", {"sh_shopify_customer_id": shopify_id}, "name"
+            "Customer",
+            owned_by("Customer", connection, {"sh_shopify_customer_id": shopify_id}),
+            "name",
         )
         if existing:
             return existing
@@ -28,7 +36,20 @@ def _get_or_create_customer(customer_data, settings):
     else:
         full_name = first or customer_data.get("email", "") or f"Shopify {shopify_id}"
 
-    if frappe.db.exists("Customer", full_name):
+    # Matching an existing Customer by display name, deliberately only when
+    # this store is the only one on the bench.
+    #
+    # Two sellers each with a "John Smith" are two different people, and
+    # returning the first seller's Customer for the second seller's order
+    # attaches one merchant's buyer -- with their address, contact and order
+    # history -- to another merchant's books. There is no way to tell the two
+    # apart from a name, so on a bench with several stores this does not try:
+    # it creates a Customer for this store instead.
+    #
+    # The single-store path is left exactly as it was. It is how a bench that
+    # has been running for months keeps matching the customers it already has,
+    # including the ones created before the connector recorded Shopify ids.
+    if _is_only_store(connection) and frappe.db.exists("Customer", full_name):
         return full_name
 
     c = frappe.new_doc("Customer")
@@ -38,6 +59,8 @@ def _get_or_create_customer(customer_data, settings):
     c.territory = _resolve_default_territory(settings)
     if shopify_id:
         c.sh_shopify_customer_id = shopify_id
+    if connection:
+        c.sh_shopify_connection = connection
     c.flags.ignore_permissions = True
     c.insert()
     frappe.db.commit()
@@ -72,3 +95,16 @@ def _create_root_territory():
     territory.insert()
     frappe.db.commit()
     return territory.name
+
+
+def _is_only_store(connection) -> bool:
+    """
+    True when this bench holds at most one Shopify store.
+
+    Guards the name match above. Kept as its own function because the reason
+    is not obvious from the call: it is not asking "is this connection valid",
+    it is asking "could a name collision here be two different people".
+    """
+    from alaiy_os_connector_shopify import connections
+
+    return len(connections.names()) <= 1

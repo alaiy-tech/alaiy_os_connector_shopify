@@ -6,7 +6,10 @@ import json
 import frappe
 from frappe.model.document import Document
 
+from alaiy_os_connector_shopify.listing import filter_matrix
 from alaiy_os_connector_shopify.listing.handlers import ATTRIBUTE_NAMESPACE
+
+FILTER_NAMESPACE = "uploadify_product"
 
 
 class ShopifyEnrichedListing(Document):
@@ -81,15 +84,18 @@ class ShopifyEnrichedListing(Document):
     def _sync_tags(self):
         """Push the enriched tag list onto the Item's Shopify tag list.
 
-        Tags are Item-level (`Item.sh_shopify_tags`, a Table MultiSelect of Item
-        Shopify Tag rows -> Shopify Tag), not a Shopify Product Listing field, so this
-        writes to a different doctype than `_push_to_listing`'s other syncs. Guarded
-        because Shopify Tag/Item Shopify Tag belong to the Shopify connector app and
-        may not be installed. Self-heals any Shopify Tag master that doesn't exist
-        locally yet, mirroring the connector's own import-side behaviour — a tag an
-        admin just approved should not silently fail to publish because nothing has
-        cached it before. A tag containing '<' or '>' is skipped (Frappe's own name
-        validation rejects those characters on a Shopify Tag insert).
+        `_apply_content` already put the same tags on the listing's own
+        `listing_tags` (what the listing itself, and the admin product page,
+        read) as part of the listing save. This writes the same list to
+        `Item.sh_shopify_tags` (a Table MultiSelect of Item Shopify Tag rows
+        -> Shopify Tag) as well, since that is still what the actual Shopify
+        push (canonical.py) reads. Guarded because Shopify Tag/Item Shopify
+        Tag belong to the Shopify connector app and may not be installed.
+        Self-heals any Shopify Tag master that doesn't exist locally yet,
+        mirroring the connector's own import-side behaviour — a tag an admin
+        just approved should not silently fail to publish because nothing has
+        cached it before. A tag containing '<' or '>' is skipped (Frappe's own
+        name validation rejects those characters on a Shopify Tag insert).
         """
         if not self.shopify_tags:
             return
@@ -177,7 +183,15 @@ class ShopifyEnrichedListing(Document):
             if (value or "").strip():
                 listing_doc.set(listing_field, value)
 
+        # shopify_tags is newline-separated (see _sync_tags); listing_tags is
+        # the comma-separated form the listing itself, and the admin product
+        # page, use.
+        tag_names = [t.strip() for t in (self.shopify_tags or "").splitlines() if t.strip()]
+        if tag_names:
+            listing_doc.listing_tags = ", ".join(tag_names)
+
         self._sync_attributes_as_metafields(listing_doc)
+        self._sync_filter_attributes_as_metafields(listing_doc)
 
     def apply_images(self, listing_doc):
         """Put this record's imagery onto the listing — both halves, together.
@@ -306,6 +320,86 @@ class ShopifyEnrichedListing(Document):
                 "type": "single_line_text_field",
                 "value": str(value),
             })
+
+    def _sync_filter_attributes_as_metafields(self, listing_doc):
+        """Convert a subset of the enriched attributes into simplified
+        `uploadify_product` filter values, alongside the detailed `custom`
+        ones `_sync_attributes_as_metafields` already wrote.
+
+        Runs for every enriched listing now -- the pilot allowlist gate was
+        removed once 014212 and 02267 confirmed the mapping matches live
+        Uploadify data end to end (a real before/after diff on the actual
+        server, not just this module's own unit checks). A client with no
+        `listing_filter_matrix` matrix installed at all still gets a no-op
+        (see filter_matrix.py's own docstring).
+
+        Safe by construction, the same way as `_sync_attributes_as_metafields`:
+        merged into `listing_doc.metafields`, keyed by `(namespace, key)`,
+        and only for keys this run actually computed a bucket for. A detailed
+        value that matches no bucket leaves the existing `uploadify_product`
+        row completely alone -- never blanked, never guessed.
+        """
+        published = {
+            row.key: row
+            for row in (listing_doc.get("metafields") or [])
+            if row.namespace == FILTER_NAMESPACE and row.key
+        }
+
+        def _upsert(key, value, metafield_type):
+            row = published.get(key)
+            if row:
+                row.value = value
+                return
+            listing_doc.append("metafields", {
+                "namespace": FILTER_NAMESPACE,
+                "key": key,
+                "type": metafield_type,
+                "value": value,
+            })
+
+        field_specs = filter_matrix.fields()
+        secondary_specs = filter_matrix.secondary_fields()
+        parsed_specs = filter_matrix.parsed_fields()
+
+        for key, detailed_value in self._attributes():
+            if not key or not detailed_value:
+                continue
+
+            parsed_spec = parsed_specs.get(key)
+            if parsed_spec:
+                parsed = filter_matrix.parsed_value_for(key, detailed_value)
+                if parsed is not None:
+                    value = json.dumps(parsed) if parsed_spec.get("multi") else str(parsed)
+                    _upsert(parsed_spec["metafield_key"], value, parsed_spec["type"])
+                continue
+
+            spec = field_specs.get(key)
+            if spec:
+                buckets = filter_matrix.bucket_for(key, detailed_value)
+                if buckets:
+                    value = json.dumps(buckets) if spec.get("multi") else buckets[0]
+                    _upsert(spec["metafield_key"], value, spec["type"])
+                # No confident match: leave whatever filter value already
+                # exists alone rather than writing a guess or clearing it.
+
+            # A key can feed a SECOND metafield besides its `spec` above (e.g.
+            # `gemstones` also feeds Stone Color, not just Stone Type) --
+            # independent of whether the primary match above found anything.
+            secondary = secondary_specs.get(key)
+            if secondary:
+                values = filter_matrix.secondary_value_for(key, detailed_value)
+                if values:
+                    value = json.dumps(values) if secondary.get("multi") else values[0]
+                    _upsert(secondary["metafield_key"], value, secondary["type"])
+
+        # Values read off the enriched TITLE rather than an `attributes` key
+        # (e.g. `gender`, which the client's prompt deliberately never
+        # writes to `attributes` -- see title_fields' own docstring).
+        for label, title_spec in filter_matrix.title_fields().items():
+            values = filter_matrix.title_value_for(label, self.title)
+            if values:
+                value = json.dumps(values) if title_spec.get("multi") else values[0]
+                _upsert(title_spec["metafield_key"], value, title_spec["type"])
 
     def _attributes(self):
         """(key, value) pairs to publish — the table, or the JSON for an older row."""

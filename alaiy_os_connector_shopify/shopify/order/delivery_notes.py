@@ -4,6 +4,8 @@ order_sync.py, unchanged.
 """
 
 import frappe
+
+from alaiy_os_connector_shopify.shopify.scoping import owned_by
 from frappe.utils import flt, get_datetime, now_datetime, time_diff_in_hours
 
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator, _resolve_item_code
@@ -100,6 +102,12 @@ def _create_delivery_note_if_needed(so_name):
     against_sales_order check _sync_fulfillments's per-fulfillment-id
     check doesn't cover here.
     """
+    # Same reasoning as the matching commit in _sync_fulfillments: MariaDB's
+    # REPEATABLE-READ isolation means a long-running worker's transaction
+    # can still read a pre-cancel snapshot of this order's Delivery Notes
+    # even seconds after another worker committed the cancel, unless this
+    # forces a fresh one first.
+    frappe.db.commit()
     if frappe.db.exists("Delivery Note Item", {"against_sales_order": so_name}):
         return
 
@@ -111,6 +119,7 @@ def _create_delivery_note_if_needed(so_name):
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
         with _as_administrator():
             dn = make_delivery_note(so_name)
+            dn.sh_shopify_connection = so.sh_shopify_connection
             _force_valid_warehouse(dn)
             # Self-heal, same shape as the invoice's income-account/cost-center
             # fixes: a Shopify item with no incoming stock/valuation rate ever
@@ -166,14 +175,36 @@ def _sync_fulfillments(so_name, fulfillments):
         fulfillment_id = str(fulfillment.get("id") or "")
         if not fulfillment_id:
             continue
-        if frappe.db.exists("Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}):
+        # A committed transaction boundary, not a no-op flush: MariaDB's
+        # default REPEATABLE-READ isolation takes a consistent snapshot at
+        # a transaction's first read, so a long-running worker whose
+        # transaction opened before a DIFFERENT worker cancelled this same
+        # fulfillment's Delivery Note (via _sync_tracking, in the
+        # fulfillments/update webhook) can still read the pre-cancel state
+        # here even seconds later -- the write is genuinely committed, this
+        # transaction just hasn't started a fresh snapshot to see it.
+        # Confirmed live on a real order: fulfillment cancelled and
+        # committed 3 full seconds before this exact check ran, and it
+        # still created a duplicate Delivery Note for the same (now
+        # cancelled) fulfillment id. frappe.db.commit() ends the current
+        # transaction and starts a new one on the next statement, which is
+        # what actually makes this existence check current rather than
+        # merely making its own writes visible sooner.
+        frappe.db.commit()
+        # Scoped to the order's own store: a Shopify fulfillment id is only
+        # unique inside one shop, so unscoped this reads another seller's
+        # Delivery Note as proof that this fulfillment is already handled and
+        # silently never creates it.
+        if frappe.db.exists("Delivery Note", owned_by(
+                "Delivery Note", so.get("sh_shopify_connection"),
+                {"sh_shopify_fulfillment_id": fulfillment_id})):
             continue
         _create_delivery_note_for_fulfillment(
             so, fulfillment_id, fulfillment.get("line_items") or [], fulfillment.get("location_id"))
 
 
 
-def _record_fulfilled_from_location(item_code, location_id):
+def _record_fulfilled_from_location(item_code, location_id, connection=None):
     """Set Item.shopify_location from the location that actually shipped it.
 
     The import resolves ownership from where an item HOLDS stock, and leaves
@@ -208,7 +239,9 @@ def _record_fulfilled_from_location(item_code, location_id):
         if frappe.db.get_value("Item", item_code, "shopify_location"):
             return
         location = frappe.db.get_value(
-            "Shopify Location", {"sh_location_id": str(location_id)}, "name")
+            "Shopify Location",
+            owned_by("Shopify Location", connection, {"sh_location_id": str(location_id)}),
+            "name")
         if not location:
             return
         frappe.db.set_value("Item", item_code, "shopify_location", location,
@@ -259,13 +292,13 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
             "sku": li.get("sku"),
             "variant_id": li.get("variant_id"),
             "title": li.get("title") or li.get("name"),
-        })
+        }, so.get("sh_shopify_connection"))
         if not item_code:
             item_code = _item_on_order_by_title(so, li.get("title") or li.get("name"))
         if not item_code:
             continue
         qty_by_item[item_code] = qty_by_item.get(item_code, 0) + flt(li.get("quantity", 0))
-        _record_fulfilled_from_location(item_code, location_id)
+        _record_fulfilled_from_location(item_code, location_id, so.get("sh_shopify_connection"))
 
     if not qty_by_item:
         frappe.log_error(
@@ -278,6 +311,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
         with _as_administrator():
             dn = make_delivery_note(so.name)
+            dn.sh_shopify_connection = so.sh_shopify_connection
             _force_valid_warehouse(dn, location_id)
 
             # make_delivery_note maps the full remaining quantity per item
@@ -328,7 +362,7 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         )
 
 
-def _sync_tracking(fulfillment):
+def _sync_tracking(fulfillment, connection=None):
     """
     fulfillments/create and fulfillments/update webhooks deliver the
     Fulfillment object directly (not wrapped in an order), carrying
@@ -352,19 +386,37 @@ def _sync_tracking(fulfillment):
     create can arrive before the order webhook finishes creating one;
     tracking is rarely set on the very first delivery anyway, and a later
     fulfillments/update webhook (or a manual backfill) catches it.
+
+    A cancellation is handled here, not just by the 5-minute poll in
+    delivery_status.py. fulfillments/update fires on a real Shopify
+    fulfillment cancellation the same way it fires for any other change to
+    the Fulfillment object, and the REST payload's own "status" field (see
+    below, distinct from display_status/shipment_status) carries the new
+    lifecycle state -- SUCCESS, CANCELLED, ERROR, FAILURE per Shopify's
+    FulfillmentStatus enum. Confirmed live: this function used to read only
+    display_status/shipment_status (shipping progress -- in transit,
+    delivered), never the fulfillment's own lifecycle status, so a real
+    cancellation webhook landed here and silently updated nothing -- the
+    Delivery Note stayed submitted until the poll got to it, up to 5
+    minutes later, and the poll was the ONLY path that ever reacted to a
+    cancellation at all. Checking status here makes the webhook the fast
+    path Shopify's own event already promises; the poll in
+    delivery_status.py stays as the reconciliation backstop for a webhook
+    that never arrives, not the primary mechanism.
     """
     fulfillment_id = str(fulfillment.get("id") or "")
     if not fulfillment_id:
         return
     dn_name = frappe.db.get_value(
-        "Delivery Note", {"sh_shopify_fulfillment_id": fulfillment_id}, "name")
+        "Delivery Note", owned_by("Delivery Note", connection,
+                                  {"sh_shopify_fulfillment_id": fulfillment_id}), "name")
 
     if not dn_name:
         order_id = str(fulfillment.get("order_id") or "")
         if not order_id:
             return
         from alaiy_os_connector_shopify.shopify.order.upsert import get_active_sales_order
-        so_name = get_active_sales_order(order_id)
+        so_name = get_active_sales_order(order_id, connection)
         if not so_name:
             return
         dn_name = frappe.db.get_value(
@@ -372,6 +424,56 @@ def _sync_tracking(fulfillment):
         if not dn_name:
             return
         frappe.db.set_value("Delivery Note", dn_name, "sh_shopify_fulfillment_id", fulfillment_id)
+
+    # Cancellation is checked before touching tracking, and returns
+    # immediately either way: a cancelled fulfillment's tracking number is
+    # not "current" tracking any more (see delivery_status.py's own
+    # _CANCELLED handling for the same reasoning), and there is nothing
+    # left to write once the Delivery Note this fulfillment belongs to is
+    # itself cancelled.
+    status = str(fulfillment.get("status") or "").upper()
+    if status in ("CANCELLED", "CANCELED"):
+        from alaiy_os_connector_shopify.shopify.order.delivery_status import (
+            _cancel_for_cancelled_fulfillment,
+        )
+        from alaiy_os_connector_shopify.shopify.order.locking import (
+            _acquire_order_lock, _release_order_lock,
+        )
+
+        # Same shared per-order lock _update_order already takes for the
+        # order-level webhook path. Confirmed live: fulfillments/update
+        # (cancelling this DN) and a near-simultaneous orders/updated can
+        # both be in flight within a couple of seconds of each other --
+        # _update_order's own fallback (_create_delivery_note_if_needed,
+        # fired when Shopify's order-level fulfillment_status payload
+        # hadn't yet caught up with the fulfillment's own already-cancelled
+        # status) read "no Delivery Note exists yet" in the gap between
+        # this function's read and its cancel, and created a SECOND one for
+        # the same order -- leaving the order reading shipped/Completed
+        # forever even though the real Delivery Note was correctly
+        # cancelled. Confirmed live on a real order (TS27771): two Delivery
+        # Notes for one Sales Order, one correctly cancelled, one orphaned
+        # and still submitted. Taking the same lock here closes that
+        # window -- whichever webhook gets there first finishes its whole
+        # write before the other can even read.
+        order_id = str(fulfillment.get("order_id") or "")
+        locked = _acquire_order_lock(order_id, connection=connection) if order_id else True
+        try:
+            _cancel_for_cancelled_fulfillment(dn_name, status)
+        except Exception:
+            # Must not stop the webhook from returning 200 -- Shopify would
+            # otherwise keep redelivering the same event. The 5-minute poll
+            # picks up any Delivery Note this failed to cancel on its next
+            # tick (sh_delivery_status is only written by that poll on
+            # success, so an unwritten status keeps this row eligible).
+            frappe.log_error(
+                title=f"Shopify: could not cancel {dn_name} from the fulfillment webhook",
+                message=frappe.get_traceback(),
+            )
+        finally:
+            if locked and order_id:
+                _release_order_lock(order_id, connection=connection)
+        return
 
     tracking_number = fulfillment.get("tracking_number") or ",".join(fulfillment.get("tracking_numbers") or [])
     tracking_url = fulfillment.get("tracking_url") or ",".join(fulfillment.get("tracking_urls") or [])

@@ -9,6 +9,8 @@ from frappe.utils import flt
 from alaiy_os_connector_shopify.shopify.order.utils import _line_item_qty, _resolve_item_code
 from alaiy_os_connector_shopify.shopify.order.warehouse import _resolve_warehouse_for_item
 
+from alaiy_os_connector_shopify import connections
+
 
 def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
     """
@@ -19,14 +21,15 @@ def _apply_line_item_diff(doc, order: dict, warehouse: str) -> bool:
     `warehouse` is the order-level default, used only as the per-line
     fallback -- each line resolves its own real warehouse below.
     """
-    settings = frappe.get_single("Shopify Connector Settings")
+    connection = doc.get("sh_shopify_connection")
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     current_items_by_variant = {item.get("sh_shopify_variant_id"): item for item in doc.items if item.get("sh_shopify_variant_id")}
     current_items_by_code = {item.item_code: item for item in doc.items if not item.get("sh_shopify_variant_id")}
     new_items_from_shopify = {}
 
     # Parse Shopify's line items
     for li in order.get("line_items", []):
-        item_code = _resolve_item_code(li)
+        item_code = _resolve_item_code(li, connection)
         if not item_code:
             continue
         variant_id = str(li.get("variant_id", ""))
@@ -128,7 +131,8 @@ def _sync_order_line_items(so_name: str, order: dict):
     if so.docstatus not in (0, 1):
         return
 
-    settings = frappe.get_single("Shopify Connector Settings")
+    connection = so.sh_shopify_connection
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     warehouse = _resolve_default_warehouse(settings)
 
     if so.docstatus == 0:
