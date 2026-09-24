@@ -21,11 +21,17 @@ REQUIRED_SCOPES = ",".join([
     # every registration attempt ("cannot create a webhook subscription
     # with the specified topic"), not just once.
     "read_fulfillments",
+    # fulfillmentCreate/fulfillmentCancel/fulfillmentTrackingInfoUpdate
+    # (order/queries.py) -- read alone doesn't cover mutating a fulfillment.
+    "write_fulfillments",
     "read_customers", "write_customers",
     # productSet's `files` field (product images) overlaps with fileCreate's
     # scope gating -- Shopify's own product-media guide pairs write_products
     # with this for the same mutation.
     "write_files",
+    # publishablePublish/publishableUnpublish (collections.py) -- publishing
+    # a collection to a sales channel is a separate scope from write_products.
+    "write_publications",
 ])
 
 
