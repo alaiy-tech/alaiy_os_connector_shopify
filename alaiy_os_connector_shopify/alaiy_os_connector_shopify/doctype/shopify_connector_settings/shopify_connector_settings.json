@@ -2,7 +2,7 @@
  "actions": [],
  "autoname": "",
  "creation": "2026-09-22 00:00:00.000000",
- "description": "Retired. Kept only as a read-only mirror of the enabled Shopify Connection, so client code written against the old single-store shape keeps working unmodified. Configure stores under Shopify Connection instead -- nothing here is saved anywhere.",
+ "description": "Retired. Kept only as a read-only mirror of the enabled Shopify Connection, so client code written against the old single-store shape keeps working unmodified. Configure stores under Shopify Connection instead -- nothing here is saved anywhere. Write permission is granted to System Manager/Shopify Manager for client code that uses has_permission(..., 'write') on this doctype as an admin role gate; every field stays read_only so no write can actually persist through it.",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
@@ -300,10 +300,12 @@
  "permissions": [
   {
    "read": 1,
+   "write": 1,
    "role": "System Manager"
   },
   {
    "read": 1,
+   "write": 1,
    "role": "Shopify Manager"
   },
   {
