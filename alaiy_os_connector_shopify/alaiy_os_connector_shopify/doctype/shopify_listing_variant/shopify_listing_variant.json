@@ -9,7 +9,8 @@
     "disabled",
     "variant_price",
     "variant_image",
-    "sh_shopify_variant_id"
+    "sh_shopify_variant_id",
+    "metafields"
   ],
   "fields": [
     {
@@ -55,6 +56,13 @@
       "label": "Shopify Variant ID",
       "read_only": 1,
       "search_index": 1
+    },
+    {
+      "description": "Shopify ProductVariant-level metafields (e.g. custom.asin), pushed via metafieldsSet keyed to this variant's own ownerId.",
+      "fieldname": "metafields",
+      "fieldtype": "Table",
+      "label": "Metafields",
+      "options": "Shopify Variant Metafield"
     }
   ],
   "istable": 1,
