@@ -35,7 +35,19 @@ REQUIRED_SCOPES = ",".join([
 ])
 
 
-def get_client_credentials_token(shop_url: str, client_id: str, client_secret: str) -> dict:
+def scopes_for(connection=None) -> str:
+    """REQUIRED_SCOPES plus whatever a connection's own sh_extra_scopes asks
+    for on top -- a one-off script or an unreleased feature that needs a
+    scope the connector's code doesn't call yet shouldn't have to wait on a
+    code change and redeploy to get it requested."""
+    extra = (getattr(connection, "sh_extra_scopes", None) or "").strip()
+    if not extra:
+        return REQUIRED_SCOPES
+    extra_list = [s.strip() for s in extra.replace("\n", ",").split(",") if s.strip()]
+    return ",".join(dict.fromkeys(REQUIRED_SCOPES.split(",") + extra_list))
+
+
+def get_client_credentials_token(shop_url: str, client_id: str, client_secret: str, connection=None) -> dict:
     """
     Exchange the connector's Client ID/Secret for a fresh Shopify access
     token via the client_credentials grant. Shopify custom-app tokens minted
@@ -51,7 +63,7 @@ def get_client_credentials_token(shop_url: str, client_id: str, client_secret: s
             "grant_type": "client_credentials",
             "client_id": client_id,
             "client_secret": client_secret,
-            "scope": REQUIRED_SCOPES,
+            "scope": scopes_for(connection),
         },
         timeout=15,
     )
@@ -132,6 +144,6 @@ def refresh_and_store_access_token(connection=None) -> str:
             f"'{settings.name}' before authenticating."
         )
 
-    result = get_client_credentials_token(shop_url, client_id, client_secret)
+    result = get_client_credentials_token(shop_url, client_id, client_secret, connection=settings)
     store_access_token(settings, result["access_token"], result.get("expires_in"))
     return result["access_token"]
