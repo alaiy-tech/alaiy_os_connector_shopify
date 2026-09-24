@@ -18,18 +18,18 @@ import unittest
 
 import frappe
 
-from alaiy_os_connector_shopify import pack_meta, roles
+from alaiy_os_connector_shopify import agent_export, roles
 
 
 class TestHandlersResolve(unittest.TestCase):
     def test_every_handler_resolves_and_is_callable(self):
-        for tool in pack_meta.TOOLS:
+        for tool in agent_export.TOOLS:
             handler = frappe.get_attr(tool["handler"])
             self.assertTrue(callable(handler), f"{tool['tool_id']} is not callable")
 
     def test_every_handler_is_whitelisted(self):
         """The executor calls these as the run's user, not as Administrator."""
-        for tool in pack_meta.TOOLS:
+        for tool in agent_export.TOOLS:
             handler = frappe.get_attr(tool["handler"])
             self.assertTrue(
                 getattr(handler, "__wrapped__", None) is not None
@@ -44,7 +44,7 @@ class TestHandlersResolve(unittest.TestCase):
         A schema key the endpoint does not accept is a TypeError at run time,
         not a hint the model can recover from.
         """
-        for tool in pack_meta.TOOLS:
+        for tool in agent_export.TOOLS:
             handler = frappe.get_attr(tool["handler"])
             accepted = set(inspect.signature(handler).parameters)
             declared = set(tool["parameters_schema"].get("properties", {}))
@@ -56,7 +56,7 @@ class TestHandlersResolve(unittest.TestCase):
 
     def test_every_required_handler_argument_is_declared_required(self):
         """A parameter with no default is one the model must be told to pass."""
-        for tool in pack_meta.TOOLS:
+        for tool in agent_export.TOOLS:
             handler = frappe.get_attr(tool["handler"])
             without_default = {
                 name
@@ -105,7 +105,7 @@ class TestRolesAndPermissions(unittest.TestCase):
                 self.assertIn(role, granted, f"{doctype} does not grant read to {role}")
 
     def test_a_declared_permission_names_a_real_doctype(self):
-        for tool in pack_meta.TOOLS:
+        for tool in agent_export.TOOLS:
             for entry in tool["required_permissions"]:
                 self.assertTrue(
                     frappe.db.exists("DocType", entry["doctype"]),
@@ -114,20 +114,28 @@ class TestRolesAndPermissions(unittest.TestCase):
 
 
 class TestRegistryRow(unittest.TestCase):
-    def test_the_pack_is_registered_after_migrate(self):
+    def test_the_agent_is_registered_after_migrate(self):
+        """Written by alaiy_os_agents now, from this app's export.
+
+        Skipped rather than failed when that app is absent: a bench can run this
+        connector with no agent app installed, which is the whole point of the
+        hook pointing one way, and there is then no row to find.
+        """
         if not frappe.db.exists("DocType", "OS Agent Registry"):
             self.skipTest("alaiy_os predates the agent engine on this site")
+        if "alaiy_os_agents" not in frappe.get_installed_apps():
+            self.skipTest("alaiy_os_agents is not installed, so nothing builds the agent")
         self.assertTrue(
-            frappe.db.exists("OS Agent Registry", pack_meta.PACK_ID),
-            "sync_agent_registry did not run, or the row was deleted",
+            frappe.db.exists("OS Agent Registry", agent_export.AGENT_ID),
+            "alaiy_os_agents' registry.sync did not run, or the row was deleted",
         )
-        doc = frappe.get_doc("OS Agent Registry", pack_meta.PACK_ID)
-        self.assertEqual(len(doc.tools), len(pack_meta.TOOLS))
+        doc = frappe.get_doc("OS Agent Registry", agent_export.AGENT_ID)
+        self.assertEqual(len(doc.tools), len(agent_export.TOOLS))
         for row in doc.tools:
-            self.assertEqual(row.connector, pack_meta.CONNECTOR_ID)
+            self.assertEqual(row.connector, agent_export.CONNECTOR_ID)
 
     def test_the_connector_row_the_tools_link_to_exists(self):
         """engine/factory.py throws when a tool's connector is missing or disabled."""
         if not frappe.db.exists("DocType", "OS Connector Registry"):
             self.skipTest("alaiy_os predates the connector registry on this site")
-        self.assertTrue(frappe.db.exists("OS Connector Registry", pack_meta.CONNECTOR_ID))
+        self.assertTrue(frappe.db.exists("OS Connector Registry", agent_export.CONNECTOR_ID))

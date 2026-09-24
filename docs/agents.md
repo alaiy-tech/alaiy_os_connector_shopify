@@ -1,28 +1,37 @@
 # Agents
 
-This connector registers **one** agent of its own — the read-only question-answering
-pack — and contributes Shopify's half of a second one it does not own.
+This connector owns **no** agent. It supplies Shopify's half of two agents that
+`alaiy_os_agents` builds: the read-only question-answering agent, and the listing
+channel.
 
-| | `shopify` (the pack) | the listing channel |
+| | `shopify` (the question-answering agent) | the listing channel |
 |---|---|---|
-| Owned by | this app | `alaiy_os_agents` (`agent_id: listing`) |
-| Declared in | `pack_meta.py` → `OS Agent Registry` | `hooks.py: listing_channels` → `listing/channel.py` |
-| Prompt | `prompts/pack.md` | `prompts/listing.md`, handed over as `spec.rules` |
+| Owned by | `alaiy_os_agents` (`agent_id: shopify`) | `alaiy_os_agents` (`agent_id: listing`) |
+| Declared in | `hooks.py: connector_agents` → `agent_export.py` | `hooks.py: listing_channels` → `listing/channel.py` |
+| Prompt | the shared connector prompt in `alaiy_os_agents`, with `prompts/rules.md` handed over as `rules` | `prompts/listing.md`, handed over as `spec.rules` |
 | Purpose | Answers questions about listings and sales | Writes an enriched listing for review |
 | Tools | 17, all read-only bar a CSV export | 6 handlers, called by the host agent |
 
-The pack is upserted by `setup/install.py` on every `bench migrate`, so editing a
-tool description or `prompts/pack.md` and migrating is the whole reconcile loop.
+`alaiy_os_agents` reads the `connector_agents` hook and upserts the `OS Agent
+Registry` row on every `bench migrate` (`registry.sync`), so editing a tool
+description or `prompts/rules.md` and migrating is still the whole reconcile loop.
+The model, the turn budget, the prompt structure and the reply contract are that
+app's, decided once for every connector agent on the bench.
 
 ---
 
-## The pack
+## The question-answering agent
 
 One registry row whose `tools` child rows name `api/agent.py` functions as
-dotted-path handlers. `alaiy_os/engine/factory.py` resolves them and
-`engine/executor.py` calls `handler(**input)`. `alaiy_os/chat/tools.py` also
-flattens every enabled pack into Ask Alaiy, so the tools appear there as
-`shopify__list_listings` and so on.
+dotted-path handlers. `agent_export.export()` declares them; `alaiy_os_agents`
+writes the row. `alaiy_os/engine/factory.py` resolves the handlers and
+`engine/executor.py` calls `handler(**input)`. Ask Alaiy reaches the agent by
+delegating a question to it through `run_agent`; the tools themselves are not on
+the chat surface.
+
+This app still owns one piece of the row's lifecycle: `setup/install.py:
+unregister_agent` drops it on uninstall. `alaiy_os_agents` cannot, because its
+`registry.sync` does not prune rows a hook has stopped declaring.
 
 ### It changes nothing
 
@@ -35,7 +44,7 @@ nothing can take away.
 The sync entry points are excluded for a different reason: they page whole
 catalogues, already run on the scheduler, and enqueue rather than answer
 (`trigger_product_import` has a four-hour timeout). They are jobs, not tool
-calls. `get_orders_sync_status` and `get_catalog_health` are how the pack answers
+calls. `get_orders_sync_status` and `get_catalog_health` are how the agent answers
 questions about them.
 
 `export_csv` is the single exception, and what it writes is a private File out of
@@ -44,7 +53,7 @@ it by withholding that permission.
 
 ### Shopify has no listing issues
 
-Worth stating plainly, because the sibling Amazon pack has `get_listing_issues`
+Worth stating plainly, because the sibling Amazon agent has `get_listing_issues`
 and it is real there: Amazon adjudicates listings, suppresses them, and publishes
 an issues feed per SKU.
 
@@ -149,12 +158,15 @@ callers and `api/webhooks.py:handle_webhook` authenticates by HMAC and must stay
 
 ## Turning it on
 
-`bench migrate` registers the pack. It does not run until **two** rows are enabled:
+`bench migrate` registers the agent, provided `alaiy_os_agents` is installed —
+without it the `connector_agents` hook is never read and there is no agent. It
+does not run until **two** rows are enabled:
 
 1. `OS Connector Registry` → `shopify` → `is_enabled = 1`. `factory.build_runnable`
    throws when a tool's connector is disabled.
-2. `OS Agent Registry` → `shopify` → `is_enabled = 1`. Install never sets this; it
-   is admin-owned and survives migrates by design.
+2. `OS Agent Registry` → `shopify` → `is_enabled = 1`. `alaiy_os_agents` inserts
+   the row disabled and never sets this again; it is admin-owned (the Agents
+   settings screen) and survives migrates by design.
 
 The listing channel needs neither: it is reached through the host agent, so what
 has to be enabled is `alaiy_os_agents`'s own `listing` row.

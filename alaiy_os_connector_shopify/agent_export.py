@@ -1,13 +1,37 @@
 # Copyright (c) 2026, Alaiy and contributors
 # For license information, please see license.txt
-"""Registration metadata for alaiy_os's OS Agent Registry -- this connector's pack.
+"""What an agent may ask this connector, and the tools that answer.
 
 `connector_meta.py` registers the connector: what it is, how to test it, which
-sync slots it fills. This registers what an agent may *ask* it, in the same
-shape and on the same schedule -- one `OS Agent Registry` row whose `tools` child
-rows name this app's whitelisted entry points as dotted-path handlers. The
-upsert lives beside the connector one, in setup/install.py, and runs on every
-`bench migrate`.
+sync slots it fills. This declares what an agent may *ask* it -- a description, a
+set of tools naming this app's whitelisted entry points as dotted-path handlers,
+and the Shopify facts that govern how the answers are read.
+
+It is an export, not an agent. `alaiy_os_agents` reads it through the
+`connector_agents` hook and builds the agent around it: the model, the turn
+budget, the prompt structure and the reply contract are decided there, once, for
+every connector on the bench. This file no longer names a model or a turn budget,
+and `setup/install.py` no longer writes an `OS Agent Registry` row.
+
+Same direction `listing_channels` already points, and for the same reason. There
+is ONE agent per connector and the app that owns agents builds it; this app
+supplies the channel knowledge and nothing else. A bench without
+`alaiy_os_agents` never reads the hook, and this connector works exactly as it
+does today minus the ability to be asked questions.
+
+## What `rules` is for
+
+`prompts/rules.md` is the part of the old pack prompt that survived, and the test
+of what belongs there is whether a single tool description could hold it. Most
+could not. "There is no Shopify issues feed" is a fact about four tools at once
+and about a fifth that does not exist. "Only paid orders are synced" governs
+every sales read. Revenue here is gross and refunds are counted but not
+subtracted, which is true of six tools. Those go in one place rather than being
+copied into six descriptions that then drift apart.
+
+What did *not* survive is everything the shared prompt now says -- that the agent
+answers from its tools rather than memory, that an empty result is an answer,
+that it covers this channel alone. Two sources for one rule is how they drift.
 
 ## The handlers are api/agent.py, deliberately
 
@@ -40,7 +64,7 @@ are, and neither is called `get_listing_issues`:
 
 Naming either of them `issues` would be the single most likely way for a model
 that has seen the Amazon pack to report Alaiy OS's opinion as Shopify's verdict,
-which is a lie with a merchant's afternoon attached to it. `prompts/pack.md`
+which is a lie with a merchant's afternoon attached to it. `prompts/rules.md`
 spends a section on the same point.
 
 ## There is no catalog search either
@@ -59,13 +83,14 @@ belongs to the listing agent, which writes listings; this pack reads them.
 ## Reads only, except one, and it writes a file
 
 None of the writes in this app is registered. The reasoning is sequencing rather
-than taste, and it is the same as the Amazon pack's: `OS Agent Tool` has no
-`effect` field, so nothing in the row can tell an orchestrator that a tool
-pushes to Shopify; there is no per-tool toggle, so a site cannot switch one off;
-and while `productSet` does take an idempotency key, the push path that wraps it
-takes an Item lock and a retry queue entry, so a retried tool call is not the
-same thing as a retried push. Registering them now would hand an agent a publish
-button that no one chose to grant and nothing can take away.
+than taste, and it is the same as the Amazon export's: `OS Agent Tool` has since
+gained an `effect` field, so a row *can* now say that a tool pushes to Shopify,
+and `chat/tools.py` acts on it -- but there is still no per-tool toggle, so a
+site cannot switch one off, and while `productSet` does take an idempotency key,
+the push path that wraps it takes an Item lock and a retry queue entry, so a
+retried tool call is not the same thing as a retried push. Registering them now
+would still hand an agent a publish button that no one chose to grant and nothing
+can take away.
 
 What that costs is small, because `compare_listing` is the whole of the useful
 half: it reports exactly what a push would change, and submits nothing.
@@ -99,17 +124,17 @@ connector serves two stores the answer is two registry rows and two packs, not a
 parameter, for the same reason it is there.
 """
 
-import json
 from pathlib import Path
 
 _APP = "alaiy_os_connector_shopify"
 _APP_DIR = Path(__file__).resolve().parent
 
-# The OS Agent Registry primary key, and what OS Agent Run records per run.
-# Distinct from `listing`, the channel-agnostic listing agent's own id.
-PACK_ID = "shopify"
-PACK_NAME = "Shopify"
-PACK_ICON = "shopping-bag"
+# The OS Agent Registry primary key, and what OS Agent Run records per run. Also
+# the slug `/shopify` and the name `run_agent` is handed in Ask Alaiy. Distinct
+# from `listing`, the channel-agnostic listing agent's own id.
+AGENT_ID = "shopify"
+AGENT_NAME = "Shopify"
+AGENT_ICON = "shopping-bag"
 
 # The OS Connector Registry id, stamped on every tool row. `engine/factory.py`
 # refuses to build a runnable when this connector's row is disabled, which is
@@ -124,8 +149,13 @@ DESCRIPTION = (
     "cannot push, publish, archive or start a sync."
 )
 
-MODEL = "claude-sonnet-5"
-MAX_TURNS = 16
+# The model and the turn budget are no longer set here -- `alaiy_os_agents`'
+# `agents/connector/meta.py` decides both, once, for every connector agent on the
+# bench. What this app used to assert, kept as the reason the shared numbers have
+# to clear: the longest real chain is a sales one -- list_listings ->
+# get_product_sales -> compare_sales_periods -> get_listing_link, plus
+# get_orders_sync_status before any small figure is trusted -- so six calls and a
+# reply, and the budget needs room above that for one wrong turn.
 
 # Handlers are api/agent.py and nothing else -- see the module docstring.
 _API = f"{_APP}.api.agent"
@@ -733,32 +763,41 @@ def read_text(relpath):
     return (_APP_DIR / relpath).read_text(encoding="utf-8")
 
 
-def build_pack_meta():
-    """The OS Agent Registry row this connector registers."""
+def export():
+    """What this connector hands `alaiy_os_agents` through the `connector_agents` hook.
+
+    Everything here is Shopify knowledge. What is deliberately absent is
+    everything that is not: no model, no turn budget, no prompt structure, no
+    reply contract, no `OS Agent Registry` write. Those were this file's until the
+    agent moved, and a connector setting any of them again is the drift this
+    export exists to stop.
+
+    No `input_schema`. The agent takes a task and nothing else. `Shopify Connector
+    Settings` is a Single -- one store, one set of credentials -- so unlike the
+    Amazon export there is not even a marketplace to leave out: there is nothing
+    to select, and a parameter offering a choice would be offering a false one.
+    The day this connector serves two stores the answer is two exports and two
+    agents, for the same reason it is there.
+    """
     return {
-        "agent_id": PACK_ID,
-        "agent_name": PACK_NAME,
+        "agent_id": AGENT_ID,
+        "label": AGENT_NAME,
+        "icon": AGENT_ICON,
         "description": DESCRIPTION,
-        "icon": PACK_ICON,
-        "model": MODEL,
-        "max_turns": MAX_TURNS,
-        "system_prompt": read_text("prompts/pack.md"),
-        "output_format": "Text",
-        "tools": TOOLS,
+        "rules": read_text("prompts/rules.md"),
+        "tools": [_export_tool(tool) for tool in TOOLS],
     }
 
 
-def as_registry_tool(tool):
-    """One manifest tool as its OS Agent Tool child row, with the JSON as text."""
-    return {
-        "tool_id": tool["tool_id"],
-        "description": tool["description"],
-        "handler": tool["handler"],
-        "connector": CONNECTOR_ID,
-        "parameters_schema": json.dumps(tool["parameters_schema"], indent=1),
-        "required_permissions": (
-            json.dumps(tool["required_permissions"], indent=1)
-            if tool["required_permissions"]
-            else None
-        ),
-    }
+def _export_tool(tool):
+    """One tool, with the connector stamped on it.
+
+    `connector` is added here rather than written out on all seventeen rows, and
+    it is what makes `engine/factory.py` refuse to build the agent while this
+    connector is disabled.
+
+    The schemas stay dicts. `alaiy_os_agents`' registry serialises them on the way
+    to the child row, so dumping them here would hand it a string to re-encode and
+    give two files an opinion on the JSON.
+    """
+    return {**tool, "connector": CONNECTOR_ID}

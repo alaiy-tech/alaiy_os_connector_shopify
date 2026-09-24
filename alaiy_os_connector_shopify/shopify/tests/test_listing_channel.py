@@ -173,11 +173,11 @@ class TestChannelAdapter(unittest.TestCase):
         provides the adapter and nothing else. The Amazon connector is the
         reference, and it registers none either.
         """
-        from alaiy_os_connector_shopify import pack_meta
+        from alaiy_os_connector_shopify import agent_export
         from alaiy_os_connector_shopify.setup import install
 
         # The only agent row this app writes is the read-only pack.
-        self.assertEqual(pack_meta.PACK_ID, "shopify")
+        self.assertEqual(agent_export.AGENT_ID, "shopify")
         for name in ("sync_listing_agent", "unregister_listing_agent", "sync_agent_sidebar"):
             self.assertFalse(
                 hasattr(install, name),

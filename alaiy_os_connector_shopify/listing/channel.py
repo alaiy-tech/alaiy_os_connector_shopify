@@ -68,7 +68,7 @@ contract, which is where an interface gap will show up first.
 Amazon declares one because Amazon adjudicates listings and publishes an issues
 feed per SKU. Shopify reports no equivalent -- it does not review listings and
 does not suppress them -- which is why `health` is an optional capability in the
-contract rather than part of it. `pack_meta.py`'s `get_listing_gaps` is the
+contract rather than part of it. `agent_export.py`'s `get_listing_gaps` is the
 nearest thing and it is deliberately our own judgement, not the channel's.
 
 ## The seller's attribute rules are not ours either
