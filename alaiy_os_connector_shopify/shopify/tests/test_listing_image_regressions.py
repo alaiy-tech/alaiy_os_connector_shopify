@@ -269,6 +269,72 @@ class ApiMatchesTheControllerItCalls(unittest.TestCase):
 		)
 
 
+class FirstImportSeedsListingImagesDirectly(unittest.TestCase):
+	"""A brand-new import must seed the Listing's own images, not rely on the
+	Item/slideshow download path.
+
+	_import_product_inner writes a first-time import's images to Item.image
+	and a Website Slideshow, because no Listing exists yet at that point
+	(has_listing=False). ensure_listing then creates an empty Listing right
+	after -- with no image rows -- and both the admin product page
+	(_listing_images_for) and push_item's own effective_images() read ONLY
+	the Listing's image rows once a Listing exists; neither falls back to
+	Item.image/slideshow past that point. Confirmed live: a first-time
+	import showed zero photos in the admin UI, and a later Enable Sync push
+	replaced Shopify's own real photos with whatever the fallback DID
+	resolve (often just one), since productSet has no partial-update mode
+	-- _set_item_slideshow's silent multi-image failure modes (no
+	`slideshow` field on this site, every image download failing) made
+	things worse but weren't the root cause: even a fully successful
+	slideshow write is still invisible to a Listing that already exists.
+
+	Fixed by having _import_product call apply_inbound_from_shopify on the
+	freshly-created Listing, seeding it with Shopify's own real URLs
+	directly (no download/re-upload) -- pinned here so a future refactor
+	can't drop that call silently.
+	"""
+
+	def test_new_listing_branch_calls_apply_inbound_from_shopify(self):
+		src = _read("alaiy_os_connector_shopify/shopify/product/importer.py")
+		tree = ast.parse(src)
+		func = next(
+			n for n in ast.walk(tree)
+			if isinstance(n, ast.FunctionDef) and n.name == "_import_product"
+		)
+
+		# The call must sit inside an `if is_new_listing:` block, not
+		# unconditionally -- an existing Listing's images are handled by the
+		# update path (_update_existing_product) and must not be
+		# reset/overwritten here.
+		if_new_listing = next(
+			(n for n in ast.walk(func)
+			 if isinstance(n, ast.If)
+			 and isinstance(n.test, ast.Name)
+			 and n.test.id == "is_new_listing"),
+			None,
+		)
+		self.assertIsNotNone(
+			if_new_listing,
+			"_import_product must branch on is_new_listing before seeding "
+			"Listing images -- an existing Listing's images belong to the "
+			"update path, not here",
+		)
+
+		calls = {
+			n.func.attr
+			for n in ast.walk(if_new_listing)
+			if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+		}
+		self.assertIn(
+			"apply_inbound_from_shopify",
+			calls,
+			"_import_product's new-listing branch no longer seeds the "
+			"Listing's images from Shopify's own URLs -- a first-time "
+			"import will again show zero photos in the admin UI and risk "
+			"a later Enable Sync push wiping Shopify's real photos",
+		)
+
+
 def _read(relpath):
 	root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 	with open(os.path.join(root, relpath), encoding="utf-8") as fh:
