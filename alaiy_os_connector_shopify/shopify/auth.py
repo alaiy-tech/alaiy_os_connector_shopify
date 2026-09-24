@@ -16,6 +16,11 @@ REQUIRED_SCOPES = ",".join([
     "read_orders", "write_orders",
     "read_inventory", "write_inventory",
     "read_locations",
+    # WEBHOOK_TOPICS registers fulfillments/create and fulfillments/update
+    # unconditionally -- without this scope Shopify refuses both topics on
+    # every registration attempt ("cannot create a webhook subscription
+    # with the specified topic"), not just once.
+    "read_fulfillments",
     "read_customers", "write_customers",
     # productSet's `files` field (product images) overlaps with fileCreate's
     # scope gating -- Shopify's own product-media guide pairs write_products
