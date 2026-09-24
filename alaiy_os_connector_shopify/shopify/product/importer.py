@@ -109,7 +109,15 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None,
         # Let Shopify filter by status rather than fetching every product
         # and discarding most locally. None when no explicit choice was
         # made, which leaves the query unfiltered exactly as before.
-        variables = {"after": None, "query": status_map.search_filter(allowed_statuses)}
+        #
+        # "first" explicit here, not left to _PRODUCTS_QUERY's own
+        # first: Int = 50 schema default -- confirmed live: a store with
+        # unusually heavy products hit MAX_COST_EXCEEDED at cost 1066 on
+        # every run, and execute()'s own cost-retry (shrink first, retry)
+        # never fired, because there was no "first" key in this dict at
+        # all for it to find and halve. The default only ever applied on
+        # Shopify's side, invisible to the Python retry logic.
+        variables = {"after": None, "query": status_map.search_filter(allowed_statuses), "first": 50}
 
         processed = created = updated = skipped = failed = pages = 0
         skip_reason_counts = Counter()
@@ -371,7 +379,10 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
             query = f"collection_id:{collection_id}" + (f" AND ({status_query})" if status_query else "")
         else:
             query = status_query
-        variables = {"after": None, "query": query}
+        # "first" explicit -- see run_full_product_import's own comment on
+        # the same pattern; without it here, this pull hits the identical
+        # MAX_COST_EXCEEDED-with-no-retry gap on a heavy catalog.
+        variables = {"after": None, "query": query, "first": 50}
 
         processed = created = skipped = failed = pages = 0
         cancelled = False
