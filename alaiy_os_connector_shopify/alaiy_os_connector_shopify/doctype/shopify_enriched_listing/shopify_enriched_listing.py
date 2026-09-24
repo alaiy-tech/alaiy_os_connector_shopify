@@ -6,7 +6,7 @@ import json
 import frappe
 from frappe.model.document import Document
 
-from alaiy_os_connector_shopify.listing import filter_matrix
+from alaiy_os_connector_shopify.listing import filter_matrix, matrix
 from alaiy_os_connector_shopify.listing.handlers import ATTRIBUTE_NAMESPACE
 
 FILTER_NAMESPACE = "uploadify_product"
@@ -321,6 +321,15 @@ class ShopifyEnrichedListing(Document):
                 "value": str(value),
             })
 
+    def _in_scope(self, categories):
+        """True unless `categories` names specific categories and this
+        listing's own (read via `matrix.category_field()`, the client's own
+        field name for it -- never assumed here) isn't one of them."""
+        if not categories:
+            return True
+        category_field = matrix.category_field()
+        return bool(category_field) and self.get(category_field) in categories
+
     def _sync_filter_attributes_as_metafields(self, listing_doc):
         """Convert a subset of the enriched attributes into simplified
         `uploadify_product` filter values, alongside the detailed `custom`
@@ -338,6 +347,12 @@ class ShopifyEnrichedListing(Document):
         and only for keys this run actually computed a bucket for. A detailed
         value that matches no bucket leaves the existing `uploadify_product`
         row completely alone -- never blanked, never guessed.
+
+        A `secondary_fields` spec may also carry an optional `categories`
+        tuple, restricting it to listings whose category (`matrix.category_field()`,
+        the client's own field name for it) is in that set -- for an
+        attribute that is mandatory across every category (like `material`)
+        but whose derived filter only makes sense for one of them.
         """
         published = {
             row.key: row
@@ -386,7 +401,13 @@ class ShopifyEnrichedListing(Document):
             # `gemstones` also feeds Stone Color, not just Stone Type) --
             # independent of whether the primary match above found anything.
             secondary = secondary_specs.get(key)
-            if secondary:
+            # An optional `categories` restriction on the spec (e.g. `material`
+            # feeding Case Color only makes sense for a Watch -- `material` is
+            # mandatory for every category, so without this gate a ring's own
+            # metal would translate into a nonsense Case Color on a listing
+            # that has no case). Absent for a spec that applies everywhere,
+            # same as `gemstones` -> Stone Color always has.
+            if secondary and self._in_scope(secondary.get("categories")):
                 values = filter_matrix.secondary_value_for(key, detailed_value)
                 if values:
                     value = json.dumps(values) if secondary.get("multi") else values[0]
