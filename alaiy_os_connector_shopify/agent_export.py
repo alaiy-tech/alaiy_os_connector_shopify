@@ -64,7 +64,7 @@ are, and neither is called `get_listing_issues`:
 
 Naming either of them `issues` would be the single most likely way for a model
 that has seen the Amazon pack to report Alaiy OS's opinion as Shopify's verdict,
-which is a lie with a merchant's afternoon attached to it. `prompts/pack.md`
+which is a lie with a merchant's afternoon attached to it. `prompts/rules.md`
 spends a section on the same point.
 
 ## There is no catalog search either
