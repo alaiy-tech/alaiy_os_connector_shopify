@@ -28,17 +28,19 @@ How the product is separated from its background is the one real choice in here,
 and there are three ways:
 
   * `photoroom` — Photoroom's Image Editing API (v2/edit) does the matting, the
-    flat background fill AND the AI shadow, in one call. The DEFAULT: it costs a
-    network round trip and a per-photo fee that `segment` did not, but it is a
-    production matting service rather than a local mask, and it draws the shadow
-    itself instead of this module faking one in Pillow. See `_finish_photoroom`.
+    flat background fill AND the AI shadow, in one call. Opt-in, not the default:
+    it costs a network round trip and a per-photo fee that `segment` did not, but
+    it is a production matting service rather than a local mask, and it draws the
+    shadow itself instead of this module faking one in Pillow. See
+    `_finish_photoroom`.
   * `segment` — a local segmentation model (rembg / ISNet) computes an alpha
     mask. It reads the photo and outputs an opacity per pixel; it does not draw
     anything. The product's own pixels are carried through untouched — no
     network call, no per-photo fee, but the shadow and background fill are still
     hand-rolled Pillow (see `_compose` / `_cast_shadow`), and this catalog's own
     photos are the evidence ISNet needs over rembg's u2net default (see
-    `segment_model` below). Kept for a site with no Photoroom key.
+    `segment_model` below). THE DEFAULT: no site gets Photoroom's network cost
+    or per-photo fee without asking for it.
   * `flood` — fill inward from the frame edge over near-white pixels. No model, no
     network call, no dependency, and no cost, but it only works on a photo that is
     ALREADY on a clean, even, pale ground. Kept for exactly that case.
@@ -80,12 +82,12 @@ CONF_KEY = "listing_image_style"
 DEFAULTS = {
     # The ground every product is composited onto.
     "background": None,
-    # How the product is separated from its background: "photoroom" (a hosted
-    # matting service that also draws the background fill and shadow), "segment"
-    # (a local model computes an alpha mask and the product's pixels are
-    # untouched, background/shadow composited here in Pillow) or "flood" (fill in
+    # How the product is separated from its background: "segment" (a local model
+    # computes an alpha mask and the product's pixels are untouched,
+    # background/shadow composited here in Pillow), "photoroom" (a hosted matting
+    # service that also draws the background fill and shadow) or "flood" (fill in
     # from the frame edge; needs an already-clean pale background).
-    "matte": "photoroom",
+    "matte": "segment",
     # Which segmentation model, when matte is "segment". ISNet over rembg's u2net
     # default on the strength of the catalog it will actually see: u2net erases a
     # bag's chain strap and a watch bracelet almost entirely, which for a jewelry
