@@ -28,6 +28,7 @@
   "sh_extra_scopes",
   "sh_shop_gid",
   "sh_granted_scopes",
+  "sh_missing_scopes",
   "sh_access_token",
   "sh_token_refreshed_at",
   "sh_token_expires_at",
@@ -190,11 +191,17 @@
    "read_only": 1
   },
   {
-   "description": "What Shopify actually granted at OAuth install time -- may be narrower than requested if the seller edited the approval screen.",
+   "description": "What Shopify actually granted this app on this store, refreshed on every token refresh -- may be narrower than what this connector requests if the app's own Admin API access scopes don't include everything, or the merchant edited the approval screen.",
    "fieldname": "sh_granted_scopes",
    "fieldtype": "Small Text",
-   "hidden": 1,
    "label": "Granted Scopes",
+   "read_only": 1
+  },
+  {
+   "description": "REQUIRED_SCOPES (shopify/auth.py) not present in Granted Scopes -- any feature depending on one of these will fail for this store until the scope is added to the app's Admin API access configuration and this connection re-authenticates. Blank means every required scope is granted.",
+   "fieldname": "sh_missing_scopes",
+   "fieldtype": "Small Text",
+   "label": "Missing Required Scopes",
    "read_only": 1
   },
   {

@@ -146,4 +146,47 @@ def refresh_and_store_access_token(connection=None) -> str:
 
     result = get_client_credentials_token(shop_url, client_id, client_secret, connection=settings)
     store_access_token(settings, result["access_token"], result.get("expires_in"))
+    store_granted_scopes(settings)
     return result["access_token"]
+
+
+_GRANTED_SCOPES_QUERY = "{ currentAppInstallation { accessScopes { handle } } }"
+
+
+def store_granted_scopes(connection) -> None:
+    """
+    Record what Shopify actually granted this app on this store, straight
+    from Shopify's own currentAppInstallation -- not what REQUIRED_SCOPES
+    asked for. A custom app's checked-scopes list is edited independently
+    on Shopify's side (Admin API access configuration), so the two can
+    genuinely diverge; sh_granted_scopes existed on the doctype but was
+    only ever written by the separate OAuth install flow, leaving it
+    permanently blank for every client_credentials connection -- the only
+    kind this connector actually uses. Failure here must never break a
+    token refresh (e.g. a store with no fulfillments scope at all still
+    needs a working token for the features it does have), so any error
+    just leaves the field at its previous value.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    try:
+        client = ShopifyGraphQLClient(connection=connection.name)
+        data = client.execute(_GRANTED_SCOPES_QUERY)
+        handles = [s["handle"] for s in data["currentAppInstallation"]["accessScopes"]]
+    except Exception:
+        frappe.log_error(
+            title="Shopify: failed to read granted scopes",
+            message=frappe.get_traceback(),
+        )
+        return
+
+    granted = set(handles)
+    missing = sorted(set(REQUIRED_SCOPES.split(",")) - granted)
+    connection.db_set(
+        {
+            "sh_granted_scopes": ",".join(sorted(granted)),
+            "sh_missing_scopes": ",".join(missing),
+        },
+        update_modified=False,
+    )
+    frappe.db.commit()

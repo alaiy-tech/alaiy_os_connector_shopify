@@ -88,6 +88,18 @@ def _topic_to_graphql_enum(topic: str) -> str:
 
 _RETRY_COOLDOWN_SECONDS = 60 * 60
 
+# Which scope a topic needs, for topics whose scope isn't implied by the
+# resource name alone (orders/products/collections webhooks all need the
+# matching read_<resource> scope, checked generically below).
+_TOPIC_SCOPE_OVERRIDES = {
+    "inventory_levels/update": "read_inventory",
+}
+
+
+def _required_scope_for_topic(topic: str) -> str:
+    resource = topic.split("/", 1)[0]
+    return _TOPIC_SCOPE_OVERRIDES.get(topic, f"read_{resource}")
+
 
 def _cooldown_cache_key(connection_name: str, topic: str) -> str:
     return f"shopify_webhook_register_failed::{connection_name}::{topic}"
@@ -136,14 +148,30 @@ def ensure_webhooks_registered(connection=None):
         return []
 
     connection_name = client.connection.name
+    missing_scopes = set(
+        (getattr(client.connection, "sh_missing_scopes", None) or "").split(",")
+    ) - {""}
     registered = []
     for topic in missing:
-        # A topic that just failed (bad scope, http-only site, etc) is
-        # failing for a structural reason a minute's wait won't fix -- retry
-        # every minute forever, called from a per-minute scheduler, floods
-        # Error Log with the same traceback thousands of times a day and
-        # tells nobody anything new. Skip silently until the cooldown lapses;
-        # a topic that starts succeeding again clears its own cooldown key.
+        # A topic whose scope is confirmed absent on Shopify's own
+        # currentAppInstallation (sh_missing_scopes, refreshed every token
+        # refresh -- see auth.store_granted_scopes) will fail identically
+        # forever until someone edits the app's Admin API access config;
+        # skip it outright rather than attempting, logging, and cooling
+        # down a call that can't succeed. A store simply not granting
+        # every REQUIRED_SCOPES entry is expected, not an error condition
+        # -- every OTHER topic this store does have scope for still
+        # registers normally.
+        if _required_scope_for_topic(topic) in missing_scopes:
+            continue
+
+        # A topic that just failed for some other reason (transient API
+        # issue, http-only site, etc) is failing for a structural reason a
+        # minute's wait won't fix -- retry every minute forever, called
+        # from a per-minute scheduler, floods Error Log with the same
+        # traceback thousands of times a day and tells nobody anything
+        # new. Skip silently until the cooldown lapses; a topic that
+        # starts succeeding again clears its own cooldown key.
         cache_key = _cooldown_cache_key(connection_name, topic)
         if frappe.cache().get_value(cache_key):
             continue
