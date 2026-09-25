@@ -499,8 +499,11 @@ def render_generated(item_code, work):
         source = pair[1]
         if retouch:
             return _try_generate(client, images.data_uri(source), style)
-        # No generative step at all: the photograph's own pixels are what get
-        # composited, so nothing can alter the product.
+        # No RETOUCH step: the enhance_prompt() rewrite of the photo never runs.
+        # `_try_finish` still may call out — the style's matte can be `gemini_full`
+        # (see image_style.py), the one matte where the product's pixels are not
+        # guaranteed to survive untouched — but every other matte here keeps the
+        # photograph's own pixels exactly as shot.
         return _try_finish(base64.b64decode(source["data"]), source["media_type"], style, client)
 
     results = []
@@ -598,8 +601,8 @@ def _try_finish(content, media_type, style, client=None):
 
     The counterpart to _try_generate for a site whose style has retouching off.
     Same (payload, error) contract, so the caller does not care which ran. `client`
-    is only used (and only needed) when the style's matte is `photoroom` or
-    `gemini` — the `segment`/`flood` mattes never call out, so nothing is
+    is only used (and only needed) when the style's matte is `photoroom`, `gemini`
+    or `gemini_full` — the `segment`/`flood` mattes never call out, so nothing is
     charged for those.
     """
     try:
