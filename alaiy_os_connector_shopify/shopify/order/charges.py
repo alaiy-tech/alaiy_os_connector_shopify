@@ -37,12 +37,27 @@ def apply_order_discount(so, order):
     Apply Shopify's order-level total discount as an Alaiy OS Additional Discount
     on the net total. Per-line discounts already come through in each line's
     price, so this is only the order-level remainder Shopify reports separately.
+
+    total_discounts is Shopify's own figure for the order AS ORIGINALLY
+    PLACED -- it does not shrink when a line is later refunded/cancelled
+    and dropped from what gets imported (current_quantity 0 lines are
+    filtered out upstream). Confirmed live: a partially-refunded order
+    imported with its full original discount against a now-smaller net
+    total, throwing ERPNext's own "Additional Discount Amount cannot
+    exceed the total before such discount" and failing the whole order.
+
+    Capped at the sum of the item rows actually on `so` -- so.net_total
+    isn't computed yet at this point in the insert flow (that only
+    happens inside calculate_taxes_and_totals, triggered later by
+    so.insert() itself), so it can't be read here; the line items just
+    appended to so.items are the real, known subtotal to cap against.
     """
     disc = flt(order.get("total_discounts") or 0)
     if disc <= 0:
         return
+    subtotal = sum(flt(item.qty) * flt(item.rate) for item in so.items)
     so.apply_discount_on = "Net Total"
-    so.discount_amount = disc
+    so.discount_amount = min(disc, subtotal)
 
 
 def build_custom_line_item(li, warehouse, delivery_date=None, connection=None):
