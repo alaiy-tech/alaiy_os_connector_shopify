@@ -41,6 +41,15 @@ def authenticate(connection=None):
     except Exception as e:
         return _failed(settings, f"Authentication error: {str(e)[:200]}")
 
+    settings.reload()
+    missing = (settings.sh_missing_scopes or "").strip()
+    if missing:
+        return {
+            "success": True,
+            "message": f"Access token obtained. This store hasn't granted: {missing} "
+                        f"-- features needing those scopes won't work until the app's "
+                        f"Admin API access configuration includes them.",
+        }
     return {"success": True, "message": "Access token obtained."}
 
 

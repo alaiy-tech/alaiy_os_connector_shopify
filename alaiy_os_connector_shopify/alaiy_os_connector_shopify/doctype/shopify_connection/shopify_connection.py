@@ -8,6 +8,7 @@ from frappe.utils import now_datetime
 
 class ShopifyConnection(Document):
     def validate(self):
+        self._default_requested_scopes()
         self._normalize_shop_url()
         self._assert_shop_not_taken()
 
@@ -23,6 +24,21 @@ class ShopifyConnection(Document):
 
         self._sync_registry_is_enabled()
         self._validate_default_warehouse()
+
+    def _default_requested_scopes(self):
+        """
+        Pre-fill sh_extra_scopes with this connector's default scope list
+        on a brand new connection -- shopify.auth.scopes_for reads this
+        field as the actual request, not as an addition on top of a fixed
+        floor, so a new row needs a real starting value to edit rather
+        than defaulting to an empty request. Only on creation, and only if
+        still blank: never overwrite a value someone already trimmed or
+        customised on a later save.
+        """
+        if not self.is_new() or (self.sh_extra_scopes or "").strip():
+            return
+        from alaiy_os_connector_shopify.shopify.auth import REQUIRED_SCOPES
+        self.sh_extra_scopes = REQUIRED_SCOPES
 
     def _normalize_shop_url(self):
         """
