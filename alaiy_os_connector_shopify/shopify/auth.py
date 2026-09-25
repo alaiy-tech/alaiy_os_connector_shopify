@@ -5,12 +5,18 @@ from frappe.utils.password import set_encrypted_password
 
 from alaiy_os_connector_shopify import connections
 
-# Everything the connector calls today (orders, inventory, locations) plus
-# what the approved product/order-push roadmap needs next. Shopify's
-# client_credentials grant only returns a token scoped to what's requested
-# here -- it does NOT automatically inherit every scope enabled on the
-# custom app, so omitting one here means every call using it 403s even
-# though the app itself is configured with full access.
+# The default scope list a new Shopify Connection's sh_extra_scopes field
+# is pre-filled with (see the doctype's own default) -- everything the
+# connector calls today (orders, inventory, locations) plus what the
+# approved product/order-push roadmap needs next. Not an enforced floor:
+# sh_extra_scopes is the actual source of what gets requested (scopes_for
+# below), and a store that only wants a subset of this connector's
+# features is free to trim this list down on the connection form before
+# first authenticating. Shopify's client_credentials grant only returns a
+# token scoped to what's requested there -- it does NOT automatically
+# inherit every scope enabled on the custom app, so a feature whose scope
+# isn't in that field 403s even though the app itself may be configured
+# with full access.
 REQUIRED_SCOPES = ",".join([
     "read_products", "write_products",
     "read_orders", "write_orders",
@@ -36,15 +42,19 @@ REQUIRED_SCOPES = ",".join([
 
 
 def scopes_for(connection=None) -> str:
-    """REQUIRED_SCOPES plus whatever a connection's own sh_extra_scopes asks
-    for on top -- a one-off script or an unreleased feature that needs a
-    scope the connector's code doesn't call yet shouldn't have to wait on a
-    code change and redeploy to get it requested."""
-    extra = (getattr(connection, "sh_extra_scopes", None) or "").strip()
-    if not extra:
+    """Whatever's in this connection's own sh_extra_scopes field -- the
+    doctype pre-fills it with REQUIRED_SCOPES as a starting default on a
+    new connection, but it is not re-applied as a floor here: a store
+    that trimmed scopes it doesn't want, or added one this connector's
+    code doesn't call yet, gets exactly what's in the field, nothing
+    more. Falls back to REQUIRED_SCOPES only if the field is somehow
+    blank (e.g. an old connection from before this field held the full
+    list)."""
+    scopes = (getattr(connection, "sh_extra_scopes", None) or "").strip()
+    if not scopes:
         return REQUIRED_SCOPES
-    extra_list = [s.strip() for s in extra.replace("\n", ",").split(",") if s.strip()]
-    return ",".join(dict.fromkeys(REQUIRED_SCOPES.split(",") + extra_list))
+    scope_list = [s.strip() for s in scopes.replace("\n", ",").split(",") if s.strip()]
+    return ",".join(dict.fromkeys(scope_list))
 
 
 def get_client_credentials_token(shop_url: str, client_id: str, client_secret: str, connection=None) -> dict:
@@ -156,15 +166,18 @@ _GRANTED_SCOPES_QUERY = "{ currentAppInstallation { accessScopes { handle } } }"
 def store_granted_scopes(connection) -> None:
     """
     Record what Shopify actually granted this app on this store, straight
-    from Shopify's own currentAppInstallation -- not what REQUIRED_SCOPES
-    asked for. A custom app's checked-scopes list is edited independently
-    on Shopify's side (Admin API access configuration), so the two can
-    genuinely diverge; sh_granted_scopes existed on the doctype but was
-    only ever written by the separate OAuth install flow, leaving it
-    permanently blank for every client_credentials connection -- the only
-    kind this connector actually uses. Failure here must never break a
-    token refresh (e.g. a store with no fulfillments scope at all still
-    needs a working token for the features it does have), so any error
+    from Shopify's own currentAppInstallation, against what this
+    connection itself requested (scopes_for) -- not the fixed
+    REQUIRED_SCOPES default, since a connection may have trimmed or added
+    to that list on its own form. A custom app's checked-scopes list is
+    edited independently on Shopify's side (Admin API access
+    configuration), so requested and granted can still diverge even after
+    that; sh_granted_scopes existed on the doctype but was only ever
+    written by the separate OAuth install flow, leaving it permanently
+    blank for every client_credentials connection -- the only kind this
+    connector actually uses. Failure here must never break a token
+    refresh (e.g. a store that trimmed away fulfillments scope entirely
+    still needs a working token for the features it kept), so any error
     just leaves the field at its previous value.
     """
     from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
@@ -181,7 +194,8 @@ def store_granted_scopes(connection) -> None:
         return
 
     granted = set(handles)
-    missing = sorted(set(REQUIRED_SCOPES.split(",")) - granted)
+    requested = set(scopes_for(connection).split(","))
+    missing = sorted(requested - granted)
     connection.db_set(
         {
             "sh_granted_scopes": ",".join(sorted(granted)),
