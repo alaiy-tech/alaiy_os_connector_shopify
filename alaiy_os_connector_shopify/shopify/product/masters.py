@@ -79,6 +79,25 @@ def _ensure_brand(name: str) -> str:
         return None
 
 
+def _ensure_root_item_group() -> str:
+    """
+    ERPNext normally auto-creates the root "All Item Groups" on install,
+    but a site with a broken/partial setup can be missing it -- confirmed
+    live on one client site, breaking every category-bearing product
+    import (_ensure_item_group's own parent link, and its own fallback,
+    both silently assumed this root always exists). Self-heals instead of
+    every caller needing to know about this edge case.
+    """
+    if not frappe.db.exists("Item Group", "All Item Groups"):
+        root = frappe.new_doc("Item Group")
+        root.item_group_name = "All Item Groups"
+        root.is_group = 1
+        root.flags.ignore_permissions = True
+        root.insert()
+        frappe.db.commit()
+    return "All Item Groups"
+
+
 def _ensure_item_group(name: str) -> str:
     """
     Item.item_group is a mandatory Link field, not free text -- inserting
@@ -87,15 +106,16 @@ def _ensure_item_group(name: str) -> str:
     under the root "All Item Groups" if needed, and falls back to that
     root itself if the name is blank or the create fails for any reason.
     """
+    root = _ensure_root_item_group()
     name = (name or "").strip()
     if not name:
-        return "All Item Groups"
+        return root
     if frappe.db.exists("Item Group", name):
         return name
     try:
         doc = frappe.new_doc("Item Group")
         doc.item_group_name = name
-        doc.parent_item_group = "All Item Groups"
+        doc.parent_item_group = root
         doc.is_group = 0
         doc.flags.ignore_permissions = True
         doc.insert()
@@ -106,7 +126,7 @@ def _ensure_item_group(name: str) -> str:
             title=f"Shopify import: failed to create Item Group {name}",
             message=frappe.get_traceback(),
         )
-        return "All Item Groups"
+        return root
 
 
 def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str:
@@ -142,7 +162,7 @@ def _ensure_item_group_path(full_name: str, ancestors_only: bool = False) -> str
     parts = [p.strip() for p in (full_name or "").split(">") if p.strip()]
     if not parts:
         return None
-    parent = "All Item Groups"
+    parent = _ensure_root_item_group()
     leaf = None
     dirty = False
     for i, name in enumerate(parts):
