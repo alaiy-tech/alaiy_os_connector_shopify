@@ -258,12 +258,11 @@ def get_dashboard_stats(connection=None):  # nosemgrep: frapsec-no-permission-ch
     connection = connections.resolve(connection)
     require_access(connection.name)
     store = connection.name
-    items_total = frappe.db.count("Item")
-    templates_total = frappe.db.count("Item", {"variant_of": ["in", ["", None]]})
-    templates_pushed = frappe.db.count("Item", owned_by("Item", store, {
-        "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["is", "set"]}))
-    templates_pending = frappe.db.count("Item", {
-        "variant_of": ["in", ["", None]], "sh_shopify_product_id": ["in", ["", None]], "disabled": 0})
+
+    (
+        items_total, templates_total, templates_pushed, templates_pending,
+        templates_active, templates_draft, templates_archived,
+    ) = _item_counts(store)
 
     # Variants aren't always separate Item docs -- some sites never use
     # ERPNext's real Item.variant_of at all and track every variant purely
@@ -279,20 +278,7 @@ def get_dashboard_stats(connection=None):  # nosemgrep: frapsec-no-permission-ch
     # on their first import -- would build `parent IN ()`.
     variants_total, variants_pushed = _variant_counts(store)
 
-    listings_total = frappe.db.count(
-        "Shopify Product Listing", owned_by("Shopify Product Listing", store))
-    listings_enabled = frappe.db.count(
-        "Shopify Product Listing",
-        owned_by("Shopify Product Listing", store, {"is_enabled": 1}))
-
-    # Blank reads as Active -- same rule status.to_shopify/export_allows use for
-    # an unset field, so these three always add up to templates_total.
-    templates_active = frappe.db.count("Item", {
-        "variant_of": ["in", ["", None]], "sh_shopify_status": ["in", ["", None, status_map.DEFAULT_LOCAL]]})
-    templates_draft = frappe.db.count("Item", {
-        "variant_of": ["in", ["", None]], "sh_shopify_status": "Draft"})
-    templates_archived = frappe.db.count("Item", {
-        "variant_of": ["in", ["", None]], "sh_shopify_status": "Archived"})
+    listings_total, listings_enabled = _listing_counts(store)
 
     # Push and pull both stamp the same sh_shopify_order_id field -- nothing
     # in the schema distinguishes which direction created the link, so this
@@ -458,3 +444,59 @@ def _variant_counts(store: str):
     )
     total, pushed = (row[0] if row else (0, 0))
     return int(total or 0), int(pushed or 0)
+
+
+def _item_counts(store: str):
+    """
+    (items_total, templates_total, templates_pushed, templates_pending,
+    templates_active, templates_draft, templates_archived) in one pass over
+    tabItem -- these were 7 separate frappe.db.count() calls, each its own
+    round trip and its own scan/index read of the same table. Confirmed live:
+    get_dashboard_stats timed out (504) on a single-core box once the
+    catalog reached 20k+ items, entirely from this stacking of sequential
+    counts rather than any one of them being slow alone. One conditional-
+    aggregation query replaces all seven.
+
+    items_total and templates_pending intentionally stay unscoped to any one
+    store -- see this function's caller's own docstring for why.
+    """
+    row = frappe.db.sql(
+        """
+        SELECT
+            COUNT(*),
+            SUM(CASE WHEN (variant_of IS NULL OR variant_of = '') THEN 1 ELSE 0 END),
+            SUM(CASE WHEN (variant_of IS NULL OR variant_of = '')
+                      AND sh_shopify_connection = %(store)s
+                      AND sh_shopify_product_id IS NOT NULL
+                      AND sh_shopify_product_id != '' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN (variant_of IS NULL OR variant_of = '')
+                      AND (sh_shopify_product_id IS NULL OR sh_shopify_product_id = '')
+                      AND disabled = 0 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN (variant_of IS NULL OR variant_of = '')
+                      AND (sh_shopify_status IS NULL OR sh_shopify_status IN ('', %(active)s))
+                      THEN 1 ELSE 0 END),
+            SUM(CASE WHEN (variant_of IS NULL OR variant_of = '')
+                      AND sh_shopify_status = 'Draft' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN (variant_of IS NULL OR variant_of = '')
+                      AND sh_shopify_status = 'Archived' THEN 1 ELSE 0 END)
+        FROM `tabItem`
+        """,
+        {"store": store, "active": status_map.DEFAULT_LOCAL},
+    )
+    values = row[0] if row else (0,) * 7
+    return tuple(int(v or 0) for v in values)
+
+
+def _listing_counts(store: str):
+    """(total, enabled) Shopify Product Listing rows for one store, in one
+    query instead of two separate frappe.db.count() calls."""
+    row = frappe.db.sql(
+        """
+        SELECT COUNT(*), SUM(CASE WHEN is_enabled = 1 THEN 1 ELSE 0 END)
+        FROM `tabShopify Product Listing`
+        WHERE connection = %s
+        """,
+        store,
+    )
+    total, enabled = (row[0] if row else (0, 0))
+    return int(total or 0), int(enabled or 0)
