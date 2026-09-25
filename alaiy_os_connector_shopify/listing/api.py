@@ -399,6 +399,37 @@ def publish_listing_images(item_code):
     }
 
 
+
+# remove_background (the "lifestyle" capability) preserves the SOURCE photo's
+# own resolution unless told otherwise - unlike stage_product/editWithAI (the
+# "worn" capability), which Photoroom documents as always outputting at a
+# fixed 1024x1024 regardless of input size. A hero shot uploaded at an
+# unusually high resolution round-trips through Photoroom and back out
+# still that large, and `save_public_image` writes it straight to a Frappe
+# public File - whose 10MB cap then throws MaxFileSizeReachedError (HTTP
+# 417) on save, the same failure a caller saw in production. Bounding the
+# longer side here keeps every "lifestyle" output comfortably inside that
+# cap without touching photos that were already a sane size.
+_LIFESTYLE_MAX_DIMENSION = 2048
+
+
+def _bounded_output_size(source, max_dimension=_LIFESTYLE_MAX_DIMENSION):
+    """A Photoroom `outputSize` string ("WxH") capping the source photo's
+    longer side at `max_dimension`, or None if it's already within it.
+    """
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(base64.b64decode(source["data"]))) as img:
+        width, height = img.size
+    longest = max(width, height)
+    if longest <= max_dimension:
+        return None
+    scale = max_dimension / longest
+    return f"{max(1, round(width * scale))}x{max(1, round(height * scale))}"
+
+
 def _generate_additional_image_bytes(client, kind, source_url, query):
     """Call the right Photoroom capability for `kind`. Returns (bytes, media_type).
 
@@ -409,12 +440,20 @@ def _generate_additional_image_bytes(client, kind, source_url, query):
 
     source = images.reference_source(source_url)
     if kind == "lifestyle":
-        result = client.remove_background(images.data_uri(source), background_prompt=query, shadow="soft")
+        result = client.remove_background(
+            images.data_uri(source),
+            background_prompt=query,
+            shadow="soft",
+            output_size=_bounded_output_size(source),
+        )
     else:
         # stage_product ("Product Staging"), not virtual_model: Photoroom
         # scopes virtual_model to clothing and stage_product to "hard goods,
         # accessories, bags, jewelry, shoes" - the better fit for a
         # watch/jewelry catalogue. Same no-pixel-fidelity caveat either way.
+        # No output-size cap here: Photoroom documents editWithAI as always
+        # outputting at a fixed 1024x1024 regardless of input size, so this
+        # capability isn't exposed to the same oversized-file failure.
         result = client.stage_product(images.data_uri(source), prompt=query)
     return base64.b64decode(result["b64"]), result.get("media_type") or "image/png"
 
