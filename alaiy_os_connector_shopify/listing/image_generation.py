@@ -305,13 +305,15 @@ def generate_product_images(
     # will not use is unavailable would take enhancement down on exactly the sites
     # that need nothing from it.
     style = image_style.load()
-    if retouch_wanted(style) and not llm.image_client().image_support().get("generate"):
+    finish_capability = image_style.finish_capability(style)
+    needs_generate = retouch_wanted(style) or finish_capability == "generate"
+    if needs_generate and not llm.image_client().image_support().get("generate"):
         frappe.throw(
             "Image enhancement is not available on this site (the active AI client "
             "cannot generate images). Do NOT retry; return each image with url=null "
             "so the team can retouch it manually."
         )
-    if image_style.finish_needs_client(style) and not llm.image_client().image_support().get(
+    if finish_capability == "remove_background" and not llm.image_client().image_support().get(
         "remove_background"
     ):
         frappe.throw(
@@ -470,14 +472,14 @@ def render_generated(item_code, work):
     retouch = retouch_wanted(style)
 
     # Only a job that is actually going to call out needs the client — one that
-    # neither retouches nor finishes through Photoroom (a `segment`/`flood` site
-    # with retouch off) does not, and neither does one queued purely to write an
-    # earlier run's results back onto the listing.
-    needs_finish_client = image_style.finish_needs_client(style)
-    client = llm.image_client() if (urls and (retouch or needs_finish_client)) else None
+    # neither retouches nor finishes through Photoroom/Gemini (a `segment`/`flood`
+    # site with retouch off) does not, and neither does one queued purely to
+    # write an earlier run's results back onto the listing.
+    finish_capability = image_style.finish_capability(style)
+    client = llm.image_client() if (urls and (retouch or finish_capability)) else None
     if client and retouch and not client.image_support().get("generate"):
         frappe.throw("Image enhancement is not available on this site.")
-    if client and needs_finish_client and not client.image_support().get("remove_background"):
+    if client and finish_capability and not client.image_support().get(finish_capability):
         frappe.throw("Image finishing is not available on this site.")
 
     # Resolved on THIS thread, before the pool starts: reading a stored Frappe File
@@ -497,8 +499,11 @@ def render_generated(item_code, work):
         source = pair[1]
         if retouch:
             return _try_generate(client, images.data_uri(source), style)
-        # No generative step at all: the photograph's own pixels are what get
-        # composited, so nothing can alter the product.
+        # No RETOUCH step: the enhance_prompt() rewrite of the photo never runs.
+        # `_try_finish` still may call out — the style's matte can be `gemini_full`
+        # (see image_style.py), the one matte where the product's pixels are not
+        # guaranteed to survive untouched — but every other matte here keeps the
+        # photograph's own pixels exactly as shot.
         return _try_finish(base64.b64decode(source["data"]), source["media_type"], style, client)
 
     results = []
@@ -596,8 +601,9 @@ def _try_finish(content, media_type, style, client=None):
 
     The counterpart to _try_generate for a site whose style has retouching off.
     Same (payload, error) contract, so the caller does not care which ran. `client`
-    is only used (and only needed) when the style's matte is `photoroom` — the
-    `segment`/`flood` mattes never call out, so nothing is charged for those.
+    is only used (and only needed) when the style's matte is `photoroom`, `gemini`
+    or `gemini_full` — the `segment`/`flood` mattes never call out, so nothing is
+    charged for those.
     """
     try:
         finished = image_style.apply_finish(content, style, client)

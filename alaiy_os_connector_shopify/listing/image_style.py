@@ -25,7 +25,8 @@ Two things live in this module:
     thread; pure Pillow apart from the matte.
 
 How the product is separated from its background is the one real choice in here,
-and there are three ways:
+and there are five ways — four that never let a model touch the product's own
+pixels, and one that does:
 
   * `photoroom` — Photoroom's Image Editing API (v2/edit) does the matting, the
     flat background fill AND the AI shadow, in one call. Opt-in, not the default:
@@ -41,9 +42,39 @@ and there are three ways:
     photos are the evidence ISNet needs over rembg's u2net default (see
     `segment_model` below). THE DEFAULT: no site gets Photoroom's network cost
     or per-photo fee without asking for it.
+  * `gemini` — Gemini is asked to place the SAME photo on the house's exact
+    background colour, and that render is used only to find the product's
+    outline: a flood-fill run over it, exactly `flood`'s algorithm, because
+    Gemini (unlike a real photo shoot) can be told to make the ground clean
+    enough for one. Whatever Gemini draws for the product itself is discarded —
+    the cutout that reaches the canvas is always cropped from the ORIGINAL
+    photo's own pixels, never from Gemini's render. See `_gemini_isolated`. A
+    site reaches for this over `segment` when the local model's mask is visibly
+    wrong on its catalog (a metal watch bracelet or bag chain punched full of
+    holes) and reaches for it over `photoroom` to keep every generative call on
+    the one provider — at the cost of a network round trip and a generation fee
+    per photo that `segment` does not pay. When Gemini itself cannot make the
+    ground clean enough to flood-fill (a strongly patterned or richly coloured
+    original backdrop), this falls back to `segment` for that one photo rather
+    than skip it — Gemini is here to fix what a real segmentation model gets
+    wrong, not to give up the cases it already gets right.
   * `flood` — fill inward from the frame edge over near-white pixels. No model, no
     network call, no dependency, and no cost, but it only works on a photo that is
     ALREADY on a clean, even, pale ground. Kept for exactly that case.
+  * `gemini_full` — the odd one out, and the only matte where this module's own
+    "the model is asked for the product on an empty ground and nothing else"
+    promise (see the top of this docstring) does NOT hold. One `generate_image`
+    call does the whole job — background, shadow, everything — and whatever
+    Gemini returns ships as the finished photo, unexamined. No mask, no crop
+    from the original, no local compositor. Simpler, and it is what a plain
+    manual test of the same prompt against the same photo produced cleanly when
+    `gemini`'s mask-only path could not separate a busy backdrop — but it means
+    the product's own pixels are no longer guaranteed to be the photographer's:
+    a resale catalog that turned generative retouching off for exactly that
+    reason (see `retouch` below) should treat this as a considered trade, not a
+    default. Kept as a sibling of the other four, not a replacement for any of
+    them, precisely so a site can move to it and back by changing one config
+    value. See `_finish_gemini_full`.
 
 Either way the compositor refuses rather than guesses: if what comes back is not a
 believable separation, the original image is returned with a note a reviewer can
@@ -85,8 +116,14 @@ DEFAULTS = {
     # How the product is separated from its background: "segment" (a local model
     # computes an alpha mask and the product's pixels are untouched,
     # background/shadow composited here in Pillow), "photoroom" (a hosted matting
-    # service that also draws the background fill and shadow) or "flood" (fill in
-    # from the frame edge; needs an already-clean pale background).
+    # service that also draws the background fill and shadow), "gemini" (Gemini
+    # isolates the product onto the house ground; only used to find the outline
+    # via a flood-fill, never for the product's own pixels — see the module
+    # docstring), "flood" (fill in from the frame edge; needs an already-clean
+    # pale background) or "gemini_full" (Gemini does the whole finish — background,
+    # shadow, everything — and its own render ships as the finished photo; the
+    # only one of the five where the product's pixels are not guaranteed to be
+    # the photographer's own — see the module docstring).
     "matte": "segment",
     # Which segmentation model, when matte is "segment". ISNet over rembg's u2net
     # default on the strength of the catalog it will actually see: u2net erases a
@@ -285,11 +322,11 @@ def apply_finish(content, spec, client=None):
 
     `content` is what the image service returned; `spec` is `load()`'s. `client`
     is the active `ai_client` (see `alaiy_os.engine.llm.image_client`), needed
-    only when `spec["matte"] == "photoroom"` — the default — and otherwise
-    unused. Touches no Frappe at all — it runs on a worker thread beside the
-    render (see image_generation._try_generate), where there is no site context
-    to read; `client` is resolved on the main thread and handed in for exactly
-    that reason (see engine/ai_client.py's threading contract).
+    only when `spec["matte"]` is `photoroom` or `gemini` — never for `segment` or
+    `flood`, which are both local. Touches no Frappe at all — it runs on a worker
+    thread beside the render (see image_generation._try_generate), where there is
+    no site context to read; `client` is resolved on the main thread and handed
+    in for exactly that reason (see engine/ai_client.py's threading contract).
 
     Never raises and never approximates. If the render did not come back on a clean
     empty ground, `image` is `content` unchanged and `note` says the finish was
@@ -303,15 +340,25 @@ def apply_finish(content, spec, client=None):
         return _skipped(content, f"could not be processed ({exc})")
 
 
-def finish_needs_client(spec):
-    """Whether `apply_finish` on this style needs an `ai_client` at all.
+def finish_capability(spec):
+    """Which `ai_client.image_support()` capability `apply_finish` needs for
+    this style's matte, or None when the matte is local (`segment`/`flood`)
+    and never calls out. Read by image_generation.py both to decide whether to
+    resolve a client at all, and to gate-check it for the right capability.
 
-    True only for the default `photoroom` matte — `segment` and `flood` are
-    local and never touch the network. Read by image_generation.py before it
-    pays to resolve (and gate-check) a client that a `segment`/`flood` site has
-    no use for.
+    `photoroom` matting is Photoroom's `remove_background` endpoint; `gemini`
+    and `gemini_full` matting are both an ordinary `generate_image` call (the
+    same one a generative retouch makes) — `gemini` asks it to isolate rather
+    than retouch, `gemini_full` asks it to finish the photo outright.
     """
-    return bool(spec) and (spec.get("matte") or DEFAULTS["matte"]) == "photoroom"
+    if not spec:
+        return None
+    matte = spec.get("matte") or DEFAULTS["matte"]
+    if matte == "photoroom":
+        return "remove_background"
+    if matte in ("gemini", "gemini_full"):
+        return "generate"
+    return None
 
 
 def _finish(content, spec, client):
@@ -319,6 +366,8 @@ def _finish(content, spec, client):
 
     if matte == "photoroom":
         return _finish_photoroom(content, spec, client)
+    if matte == "gemini_full":
+        return _finish_gemini_full(content, spec, client)
 
     image = Image.open(io.BytesIO(content))
     image.load()
@@ -327,6 +376,33 @@ def _finish(content, spec, client):
     if matte == "segment":
         alpha = _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
         alpha = _repair(image, alpha)
+    elif matte == "gemini":
+        if not client:
+            return _skipped(content, "no background/matting provider is configured")
+        mask_source = _gemini_isolated(client, image, spec["background"])
+        # The same believability check `flood` makes on a real photo, made here
+        # on Gemini's render instead — Gemini can be told to make its ground
+        # clean, but is not always able to: a strongly patterned or richly
+        # coloured original backdrop can come back from Gemini still uneven
+        # enough to fail this. That is exactly the case `segment` never cared
+        # about — a real segmentation model reads the product regardless of
+        # what is behind it — so rather than skip a photo Gemini could not
+        # clean up, fall back to the local model for THIS photo only. Gemini
+        # still gets to fix what it is here for (the holes ISNet punches
+        # through a metal bracelet or chain on an ordinary clean photo).
+        if _ground_complaint(mask_source):
+            alpha = _repair(
+                image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
+            )
+        else:
+            alpha = _subject_alpha(mask_source)
+            if alpha.size != image.size:
+                # Gemini is not contracted to return the exact pixel dimensions
+                # it was handed, only the same framing — resize the MASK to
+                # match the original, never the other way around, since the
+                # cutout below is cropped from `image`, not from Gemini's
+                # render.
+                alpha = alpha.resize(image.size, Image.LANCZOS)
     else:
         # The flood needs the ground to already be clean; the model does not.
         uneven = _ground_complaint(image)
@@ -519,6 +595,113 @@ def _segment_alpha(image, model):
     from rembg import remove
 
     return remove(image, session=_session(model), only_mask=True, post_process_mask=True)
+
+
+# The cheaper of the two Gemini image tiers this codebase has used, not the
+# "studio-quality" one `alaiy_os_thesolist`'s WORN_PHOTO_MODEL pins — and
+# deliberately so. That constant's own comment records why worn-photo
+# generation needed the pro tier: the cheap tier "kept producing illegible
+# watch numerals" on a rendered dial. That failure mode cannot happen here —
+# `_gemini_isolated`'s render is discarded below except for a flood-fill over
+# it, never shown to a customer — so there is no reason to pay the pro tier's
+# cost for a mask nobody looks at. "google/" routes the billing service
+# straight to Google rather than through OpenRouter.
+_GEMINI_MASK_MODEL = "google/gemini-3.1-flash-image"
+
+# Told the house's own hex rather than "white" or "a neutral colour": asking for
+# the exact background the finished photo will use means the ground Gemini
+# returns already passes `_ground_complaint`'s paleness/evenness check on the
+# colour a real house style actually wants, not a colour this module has to
+# convert on the way in.
+#
+# Deliberately short. An earlier version of this prompt spelled out every
+# constraint at length (an exhaustive "no gradient, no vignette, no surface,
+# no horizon line..." list, plus "every pixel of the product itself must read
+# as identical to the original") and Gemini would come back with a visibly
+# patchy ground on a busy original backdrop. A one-line ask — background
+# colour, keep the product as-is, no shadow — is what a plain manual test
+# against the same photo separated cleanly; the elaborate phrasing was making
+# the model's job harder, not easier. No shadow is still asked for, unlike
+# that manual test: this module draws its own house shadow afterward (see
+# `_cast_shadow`), and a shadow in Gemini's render would get read as part of
+# the product by the flood-fill below, pasting a chunk of the real backdrop
+# into the finished photo where the fake shadow was.
+_GEMINI_ISOLATE_PROMPT = (
+    "Put this exact product photo on a plain, even {hex} background. Keep the "
+    "product exactly as it is - do not retouch, restyle, or redraw it. Do not "
+    "add any shadow, reflection, or texture to the background."
+)
+
+
+def _gemini_isolated(client, image, background_hex):
+    """Gemini's placement of this photo's product onto the house ground.
+
+    Used for exactly one thing below: a flood-fill run over it to find where
+    the product is. Whatever Gemini actually drew for the product itself never
+    reaches the finished photo — `_finish` crops the cutout from the CALLER's
+    own `image` (the untouched original), using this render only for its alpha.
+    That is the same guarantee `_segment_alpha`'s `only_mask=True` gives, kept a
+    different way for a provider that has no "give me a mask" mode.
+    """
+    reference = f"data:image/png;base64,{base64.b64encode(_encode(image)).decode('ascii')}"
+    result = client.generate_image(
+        _GEMINI_ISOLATE_PROMPT.format(hex=background_hex),
+        reference_data_uri=reference,
+        model=_GEMINI_MASK_MODEL,
+    )
+    mask_source = Image.open(io.BytesIO(base64.b64decode(result["b64"])))
+    mask_source.load()
+    return mask_source.convert("RGB")
+
+
+# The pro tier, unlike `_GEMINI_MASK_MODEL` — and for the mirror-image reason.
+# `_finish_gemini_full`'s render is NOT discarded; it ships to the customer
+# as-is, dial numerals included, which is exactly the case
+# `alaiy_os_thesolist`'s WORN_PHOTO_MODEL comment says the cheap tier fails on.
+_GEMINI_FULL_FINISH_MODEL = "google/gemini-3-pro-image"
+
+_GEMINI_FULL_FINISH_PROMPT = (
+    "Put this exact product photo on a plain, even {hex} background, with "
+    "soft, natural shadows. Keep the product exactly as it is - do not "
+    "retouch, restyle, or redraw it."
+)
+
+
+def _finish_gemini_full(content, spec, client):
+    """The whole finish — background AND shadow — done by Gemini in one call.
+
+    The simplest of the five matte paths, and the only one where Gemini's own
+    pixels reach the customer: nothing here re-crops from the original or
+    composites a house-exact shadow, so there is no guarantee the product
+    itself survived untouched the way `segment`/`gemini`/`flood`/`photoroom`
+    all give. See the module docstring's `gemini_full` entry for why that is a
+    considered trade rather than an oversight.
+
+    No mask means no cutout to keep: `spec["keep_cutout"]` has no effect on
+    this path, `cutout` is always None.
+    """
+    if not client:
+        return _skipped(content, "no background/matting provider is configured")
+
+    image = Image.open(io.BytesIO(content))
+    image.load()
+    image = image.convert("RGB")
+    reference = f"data:image/png;base64,{base64.b64encode(_encode(image)).decode('ascii')}"
+
+    result = client.generate_image(
+        _GEMINI_FULL_FINISH_PROMPT.format(hex=spec["background"]),
+        reference_data_uri=reference,
+        model=_GEMINI_FULL_FINISH_MODEL,
+    )
+    finished = Image.open(io.BytesIO(base64.b64decode(result["b64"])))
+    finished.load()
+
+    return {
+        "image": _encode(finished.convert("RGB")),
+        "mime": "image/png",
+        "cutout": None,
+        "note": None,
+    }
 
 
 def _session(model):
