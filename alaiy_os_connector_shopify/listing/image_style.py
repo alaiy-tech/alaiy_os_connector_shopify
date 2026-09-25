@@ -52,7 +52,11 @@ and there are four ways:
     wrong on its catalog (a metal watch bracelet or bag chain punched full of
     holes) and reaches for it over `photoroom` to keep every generative call on
     the one provider — at the cost of a network round trip and a generation fee
-    per photo that `segment` does not pay.
+    per photo that `segment` does not pay. When Gemini itself cannot make the
+    ground clean enough to flood-fill (a strongly patterned or richly coloured
+    original backdrop), this falls back to `segment` for that one photo rather
+    than skip it — Gemini is here to fix what a real segmentation model gets
+    wrong, not to give up the cases it already gets right.
   * `flood` — fill inward from the frame edge over near-white pixels. No model, no
     network call, no dependency, and no cost, but it only works on a photo that is
     ALREADY on a clean, even, pale ground. Kept for exactly that case.
@@ -357,17 +361,27 @@ def _finish(content, spec, client):
         mask_source = _gemini_isolated(client, image, spec["background"])
         # The same believability check `flood` makes on a real photo, made here
         # on Gemini's render instead — Gemini can be told to make its ground
-        # clean; a real backdrop cannot always be.
-        uneven = _ground_complaint(mask_source)
-        if uneven:
-            return _skipped(content, uneven)
-        alpha = _subject_alpha(mask_source)
-        if alpha.size != image.size:
-            # Gemini is not contracted to return the exact pixel dimensions it
-            # was handed, only the same framing — resize the MASK to match the
-            # original, never the other way around, since the cutout below is
-            # cropped from `image`, not from Gemini's render.
-            alpha = alpha.resize(image.size, Image.LANCZOS)
+        # clean, but is not always able to: a strongly patterned or richly
+        # coloured original backdrop can come back from Gemini still uneven
+        # enough to fail this. That is exactly the case `segment` never cared
+        # about — a real segmentation model reads the product regardless of
+        # what is behind it — so rather than skip a photo Gemini could not
+        # clean up, fall back to the local model for THIS photo only. Gemini
+        # still gets to fix what it is here for (the holes ISNet punches
+        # through a metal bracelet or chain on an ordinary clean photo).
+        if _ground_complaint(mask_source):
+            alpha = _repair(
+                image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
+            )
+        else:
+            alpha = _subject_alpha(mask_source)
+            if alpha.size != image.size:
+                # Gemini is not contracted to return the exact pixel dimensions
+                # it was handed, only the same framing — resize the MASK to
+                # match the original, never the other way around, since the
+                # cutout below is cropped from `image`, not from Gemini's
+                # render.
+                alpha = alpha.resize(image.size, Image.LANCZOS)
     else:
         # The flood needs the ground to already be clean; the model does not.
         uneven = _ground_complaint(image)
