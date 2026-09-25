@@ -326,6 +326,13 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		// history instead -- so confirm rather than silently ignoring what is
 		// on screen.
 		if (order_import_mode !== 'Date range' && (date_from || date_to)) {
+			// Confirmed live: the dismiss/Cancel path here used to fall through
+			// to run_order_import(null, null) -- the FULL unscoped history
+			// import, exactly the action this whole dialog exists to guard
+			// against. A visible date range plus someone closing this dialog
+			// (Escape, backdrop click, the Cancel button) must mean "stop, let
+			// me fix something", never "proceed with the more dangerous
+			// option I didn't pick". Dismissing now does nothing at all.
 			frappe.confirm(
 				'The date range is filled in but <b>All orders</b> is selected, so every '
 				+ 'order in the store will be imported and the dates ignored.<br><br>'
@@ -338,9 +345,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 					toggle_order_date_fields();
 					import_orders();
 				},
-				function() {
-					run_order_import(null, null);
-				}
+				function() {}
 			);
 			return;
 		}
