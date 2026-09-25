@@ -32,10 +32,13 @@ import frappe
 from alaiy_os_connector_shopify.shopify.scoping import owned_by
 
 from alaiy_os_connector_shopify.shopify.sync_guard import append_log as _append_export_log
+from alaiy_os_connector_shopify.shopify import sync_guard
 
 from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
+from alaiy_os_connector_shopify.shopify.sync_engine import retry_queue
+from alaiy_os_connector_shopify.shopify.product import pricing_resolver
 
 from alaiy_os_connector_shopify.shopify.product.queries import (
     _PRODUCT_SET_MUTATION, _PRODUCT_UPDATE_MUTATION, _PRODUCT_VARIANTS_BULK_UPDATE_MUTATION,
@@ -153,12 +156,33 @@ def update_variant_prices_api(item_code_to_price, domain=None):
     caller over the API sends item_code_to_price as a JSON object string,
     same convention as every other dict-shaped whitelisted param in this
     app. A same-process Python caller (e.g. alaiy_os_thesolist) should call
-    update_variant_prices directly instead, passing a real dict."""
+    update_variant_prices directly instead, passing a real dict.
+
+    Routed through _apply_price_updates rather than calling
+    update_variant_prices directly, so a manual price fix through this
+    endpoint gets the same local write-back and fingerprint refresh a
+    repricing run's push does -- otherwise this stays the one price-push
+    path update_variant_prices' own "Known gap" docstring note describes:
+    a stale fingerprint that makes the next push_item re-push a product
+    only this endpoint touched.
+    """
     frappe.has_permission("Shopify Connection", "write", throw=True)
     import json
 
     payload = json.loads(item_code_to_price) if isinstance(item_code_to_price, str) else item_code_to_price
-    return update_variant_prices(payload, domain=domain)
+    return _apply_price_updates(payload, connection=None)
+
+
+#: update_variant_prices' own pre-flight failure reasons -- computed before
+#: any Shopify call is made, so retrying one changes nothing about the local
+#: state that produced it. A caller that queues failures for retry (the
+#: retry queue's own drain, or run_reprice_connection deciding whether to
+#: enqueue one) checks a reason against this set rather than retrying
+#: something no amount of backoff can fix.
+ITEM_NOT_FOUND = "Item not found."
+NO_LISTING_YET = "No Shopify Product Listing exists for this item yet."
+NEVER_PUSHED_YET = "This item has never been pushed to Shopify -- no variant/product id yet."
+PERMANENT_PRICE_PUSH_FAILURES = frozenset({ITEM_NOT_FOUND, NO_LISTING_YET, NEVER_PUSHED_YET})
 
 
 def update_variant_prices(item_code_to_price: dict, domain=None, connection=None):
@@ -200,12 +224,12 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
     for item_code, price in item_code_to_price.items():
         item = frappe.db.get_value("Item", item_code, ["variant_of", "name"], as_dict=True)
         if not item:
-            failed[item_code] = "Item not found."
+            failed[item_code] = ITEM_NOT_FOUND
             continue
         template_name = item.variant_of or item.name
         listing = listing_resolver.get_listing(template_name)
         if not listing:
-            failed[item_code] = "No Shopify Product Listing exists for this item yet."
+            failed[item_code] = NO_LISTING_YET
             continue
 
         variant_id = listing_resolver.variant_shopify_id(listing, item_code)
@@ -213,7 +237,7 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
             "Item", template_name, "sh_shopify_product_id"
         )
         if not variant_id or not product_id:
-            failed[item_code] = "This item has never been pushed to Shopify -- no variant/product id yet."
+            failed[item_code] = NEVER_PUSHED_YET
             continue
 
         by_product.setdefault(product_id, []).append((item_code, variant_id, price))
@@ -252,6 +276,360 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
                 failed[item_code] = "Request to Shopify failed -- see Error Log."
 
     return {"updated": updated, "failed": failed}
+
+
+def _apply_price_updates(item_code_to_price: dict, connection) -> dict:
+    """update_variant_prices, then the two things it deliberately does not
+    do itself: write the new price back onto the Listing/Listing Variant
+    row of every item that pushed, and refresh the pushed products'
+    Shopify Synced Entity fingerprint.
+
+    Shared by run_reprice_connection and the retry queue's price handler
+    (sync_engine.retry_worker), so a price that succeeds on a retry gets
+    exactly the same local write-back and fingerprint refresh a
+    first-attempt success would have -- not a second, divergent path that
+    only push_item/_push_product_unlocked and the happy path here know
+    about.
+
+    Returns update_variant_prices' own {"updated": [...], "failed": {...}}.
+    """
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
+    result = update_variant_prices(item_code_to_price, connection=settings)
+
+    touched_templates = set()
+    for item_code in result.get("updated") or []:
+        item = frappe.db.get_value("Item", item_code, ["variant_of", "name"], as_dict=True)
+        if not item:
+            continue
+        template_name = item.variant_of or item.name
+        listing = listing_resolver.get_listing(template_name)
+        if not listing:
+            continue
+        row = next((r for r in listing.variants if r.item_variant == item_code), None)
+        price = float(item_code_to_price[item_code])
+        if row and row.variant_price:
+            # The row override was already this item's authoritative price
+            # (variant_price()'s first fallback level) -- keep writing it
+            # there.
+            if float(row.variant_price) != price:
+                frappe.db.set_value("Shopify Listing Variant", row.name, "variant_price", price)
+        elif item_code == listing.item and listing.listing_price:
+            # Simple product priced via the template-level override
+            # (variant_price()'s second fallback level, for item_code ==
+            # listing.item only). Writing this to row.variant_price instead
+            # would leave listing_price stale while silently promoting an
+            # until-now-unused row override to authoritative -- an admin
+            # who keeps editing "Listing Price" on the template would see
+            # it stop doing anything, with no error to explain why.
+            if float(listing.listing_price) != price:
+                frappe.db.set_value("Shopify Product Listing", listing.name, "listing_price", price)
+        elif row:
+            # Neither override was set -- the price came from the Item
+            # Price list (variant_price()'s third fallback level). Record it
+            # as a row override so the next run's skip-unchanged comparison
+            # (variant_price(), same fallback order) sees it directly
+            # rather than re-deriving the Item Price.
+            frappe.db.set_value("Shopify Listing Variant", row.name, "variant_price", price)
+        touched_templates.add(template_name)
+
+    for template_name in touched_templates:
+        _refresh_fingerprint_after_price_push(template_name, settings)
+
+    return result
+
+
+def _refresh_fingerprint_after_price_push(template_name: str, settings):
+    """Recompute and store a product's fingerprint right after a
+    price-only push -- update_variant_prices' counterpart to what
+    _push_product_unlocked does immediately after its own entities.save().
+
+    update_variant_prices imports neither fingerprint nor entities (see its
+    own docstring's "Known gap" note) precisely because it is not supposed
+    to guard itself against re-pushing -- a manual one-off price fix is rare
+    enough that a stale fingerprint costs nothing. At repricing volume that
+    gap means every repriced product echoes back off its own
+    products/update webhook as an unrecognised remote change, and the next
+    full push_item sees a fingerprint mismatch and re-pushes a product
+    nothing else changed on. This closes it for the one caller that
+    generates that volume, without changing update_variant_prices itself.
+    """
+    if not frappe.db.exists("Item", template_name):
+        return
+    item = frappe.get_doc("Item", template_name)
+    listing = listing_resolver.get_listing(template_name)
+    if not listing:
+        return
+
+    variants = _variants_of(item)
+    canonical = _product_canonical(item, variants, settings, listing)
+    fp = fingerprint.fingerprint(canonical)
+
+    product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
+    entity = entities.get_by_erpnext("product", "Item", item.name, connection=settings)
+    entities.save(
+        entity or entities.get_or_new(
+            "product", "Item", item.name, product_id, connection=settings),
+        external_id=product_id,
+        erpnext_doctype="Item",
+        erpnext_name=item.name,
+        erpnext_fingerprint=fp,
+    )
+
+
+#: How many item codes go into one shopify_price_resolver call and one
+#: chunk of a repricing run's own progress tracking. Small enough that a
+#: cancel_requested check every chunk stops the run promptly, large enough
+#: that a big catalogue doesn't spend most of its time on bookkeeping.
+REPRICE_CHUNK_SIZE = 200
+
+
+@frappe.whitelist(methods=["POST"])
+def reprice_connection(connection, reason=None):
+    """Push this store's live products' prices to whatever its pricing
+    configuration says they should be right now -- the entry point a client
+    app's own config-save hook calls (see pricing_resolver.py's docstring
+    for the hook this resolves through), and what the Shopify Connection
+    form's own "Reprice now" button calls for the manual case.
+
+    Connection-scoped on purpose -- see run_reprice_connection's own
+    docstring for why filtering candidates to this store is the whole
+    point of this feature existing.
+
+    Coalesces rather than stacking: a manager saving a config three times
+    in a minute gets one repricing run, not three. Checked the same way
+    run_bulk_export_to_shopify/run_bulk_enable_listings already coalesce a
+    second click of their own buttons -- has_active_sync against this
+    store's own queued/running Sync Log rows of this sync_type, mirroring
+    sync_jobs._maybe_enqueue_inventory's "is one already running?" check
+    but caught here, before a second job and a second Sync Log row are
+    even created, rather than inside the job after the fact.
+    """
+    settings = connections.resolve(connection)
+    frappe.has_permission("Shopify Connection", "write", throw=True)
+
+    if sync_guard.has_active_sync("repricing", connection=settings):
+        return {"queued": False, "reason": "A repricing run is already in progress for this store."}
+
+    log = sync_guard.load_or_create_log("repricing", "manual", connection=settings)
+    if reason:
+        _append_export_log(log, f"Reason: {reason}")
+        # Write access to this store's own Sync Log row, not a general
+        # bypass -- the write permission this call actually gates is the
+        # frappe.has_permission check above, same as every other sync_type
+        # in this file (run_bulk_export_to_shopify, run_bulk_enable_listings).
+        log.save(ignore_permissions=True)  # nosemgrep -- permission already checked above
+        frappe.db.commit()  # nosemgrep -- this run's own Sync Log row must record its reason even if enqueuing raises next
+
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.product.export.run_reprice_connection",
+        queue="long", timeout=3600,
+        trigger="manual", log_name=log.name, connection=settings.name,
+        enqueue_after_commit=True,
+    )
+    return {"queued": True, "log_name": log.name}
+
+
+def _reprice_candidates(connection) -> list:
+    """Enabled Shopify Product Listing rows for this store with a real
+    Shopify product id, paired with their own enabled Shopify Listing
+    Variant rows that carry a real Shopify variant id -- productSet cannot
+    create either one, so anything short of both is not live yet and has
+    nothing on Shopify to reprice. Returns [(template_name, item_code), ...].
+    """
+    listings = frappe.get_all(
+        "Shopify Product Listing",
+        filters=owned_by("Shopify Product Listing", connection.name, {
+            "is_enabled": 1, "sh_shopify_product_id": ["is", "set"],
+        }),
+        pluck="name",
+    )
+    if not listings:
+        return []
+    rows = frappe.get_all(
+        "Shopify Listing Variant",
+        filters={
+            "parent": ["in", listings], "parenttype": "Shopify Product Listing",
+            "is_enabled": 1, "sh_shopify_variant_id": ["is", "set"],
+        },
+        fields=["parent", "item_variant"],
+    )
+    return [(r.parent, r.item_variant) for r in rows]
+
+
+def run_reprice_connection(trigger="manual", log_name=None, connection=None, reason=None):
+    """
+    The background job reprice_connection enqueues: push every live,
+    already-pushed product's price on this store to whatever
+    shopify_price_resolver now says it should be.
+
+    Connection-scoped throughout -- a Naya Pets config change must not
+    touch Naya Beauty's listings, which is the entire reason this exists as
+    a per-store run rather than a bench-wide one.
+
+    Never falls back to push_item/productSet. Every price change reaches
+    Shopify exclusively through update_variant_prices (via
+    _apply_price_updates), for the reason that function's own docstring
+    gives: productSet resends the product's whole local copy, and an
+    unattended repricing run is exactly the unattended, no-human-reviewing-
+    the-diff case that docstring calls unacceptable.
+
+    Chunked (REPRICE_CHUNK_SIZE item codes at a time) so a large catalogue
+    makes permanent progress -- pages_total/pages_done and
+    items_processed/items_failed are updated after every chunk -- and a
+    Stop click (cancel_requested) is honoured within one chunk rather than
+    only at the very end.
+    """
+    connection = connections.resolve(connection) if connection else connections.require_enabled()
+    log = sync_guard.load_or_create_log("repricing", trigger, log_name, connection=connection)
+
+    # This function runs only as a background job (frappe.enqueue), so every
+    # log.save(ignore_permissions=True) below writes this run's own Sync Log
+    # row under system permissions, same as every other sync_type in this
+    # file (run_bulk_export_to_shopify, run_bulk_enable_listings) -- write
+    # access to trigger a run was already checked at the whitelisted
+    # reprice_connection() entry point, not here. Each commit persists that
+    # row's progress so a crash mid-run leaves a readable "how far did it
+    # get" rather than losing the whole run's history with it.
+    if sync_guard.has_active_sync("repricing", exclude_name=log.name, connection=connection):
+        log.status = "skipped"
+        log.finished_at = frappe.utils.now_datetime()
+        log.error_message = "Skipped: another repricing run is already in progress for this store."
+        log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+        frappe.db.commit()  # nosemgrep -- see comment above
+        return log.name
+
+    log.status = "running"
+    log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+    frappe.db.commit()  # nosemgrep -- see comment above
+
+    try:
+        candidates = _reprice_candidates(connection)
+        chunks = [
+            candidates[i:i + REPRICE_CHUNK_SIZE]
+            for i in range(0, len(candidates), REPRICE_CHUNK_SIZE)
+        ]
+        log.pages_total = len(chunks)
+        log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+        frappe.db.commit()  # nosemgrep -- see comment above
+
+        processed = failed = pushed = 0
+        cancelled = False
+
+        # Currently stored price per candidate, read once up front rather
+        # than per chunk -- variant_price() falls all the way back to the
+        # Item Price row, and re-reading that per chunk buys nothing since
+        # nothing in this run changes it ahead of the resolver's answer.
+        listings_by_name = {}
+
+        for page_index, chunk in enumerate(chunks):
+            if sync_guard.is_cancel_requested(log.name):
+                cancelled = True
+                _append_export_log(log, f"Stopped by user after {processed}/{len(candidates)} items.")
+                break
+
+            item_codes = [item_code for _template, item_code in chunk]
+            resolved = pricing_resolver.resolve(connection, item_codes)
+
+            changed = {}
+            changed_templates = set()
+            for template_name, item_code in chunk:
+                processed += 1
+                if item_code not in resolved:
+                    # The resolver declined to price this one -- leave it
+                    # alone, not a failure and no Shopify call for it.
+                    continue
+
+                listing = listings_by_name.get(template_name)
+                if listing is None:
+                    listing = listing_resolver.get_listing(template_name)
+                    listings_by_name[template_name] = listing
+                if not listing:
+                    continue
+
+                new_price = float(resolved[item_code])
+                if new_price <= 0:
+                    # The hook contract says "missing from the answer" is
+                    # how a resolver declines to price something -- a
+                    # present-but-non-positive price is not that, it's a
+                    # resolver bug (a landed-cost calculation dividing by a
+                    # missing/zero field, say). Surface it loudly rather
+                    # than pushing a live product to $0.
+                    failed += 1
+                    _append_export_log(
+                        log,
+                        f"ERROR item={item_code}: resolver returned a non-positive "
+                        f"price ({new_price}) -- skipped, not pushed.",
+                    )
+                    continue
+
+                current_price = listing_resolver.variant_price(listing, item_code, connection)
+                if current_price is not None and abs(float(current_price) - new_price) < 1e-6:
+                    continue  # unchanged -- no Shopify call for it
+                changed[item_code] = new_price
+                changed_templates.add(template_name)
+
+            if changed:
+                result = _apply_price_updates(changed, connection)
+                for item_code in result.get("updated") or []:
+                    pushed += 1
+
+                for item_code, why in (result.get("failed") or {}).items():
+                    failed += 1
+                    _append_export_log(log, f"ERROR item={item_code}: {why}")
+                    if why in PERMANENT_PRICE_PUSH_FAILURES:
+                        # Nothing about this item's local state changes
+                        # between now and a retry -- update_variant_prices
+                        # would recompute the exact same pre-flight failure
+                        # every time. Queuing it anyway would occupy a
+                        # retry-queue slot for the full backoff-to-dead-
+                        # letter cycle (five attempts, ~31 minutes) ahead of
+                        # genuinely transient failures due at the same tick.
+                        continue
+                    retry_queue.enqueue(
+                        "outbound", "price",
+                        {"item_code_to_price": {item_code: changed[item_code]},
+                         "connection": connection.name},
+                        connection=connection,
+                    )
+
+                # Invalidate every template this chunk attempted to push,
+                # whether or not the push itself succeeded -- a later chunk
+                # revisiting the same template (two variants of one product
+                # split across chunks) must never compare against a
+                # snapshot this chunk already acted on.
+                for template_name in changed_templates:
+                    listings_by_name.pop(template_name, None)
+
+            log.pages_done = page_index + 1
+            log.items_processed = processed
+            log.items_failed = failed
+            _append_export_log(
+                log, f"...{processed}/{len(candidates)} processed so far ({failed} failed)")
+            log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+            frappe.db.commit()  # nosemgrep -- see comment above
+
+        log.status = "cancelled" if cancelled else "success"
+        log.items_processed = processed
+        log.items_failed = failed
+        log.finished_at = frappe.utils.now_datetime()
+        summary = f"Repriced {pushed} item(s)"
+        if failed:
+            summary += f"; {failed} failed and queued for retry"
+        if cancelled:
+            summary += " (stopped early by user)"
+        _append_export_log(log, summary)
+        log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+        frappe.db.commit()  # nosemgrep -- see comment above
+
+    except Exception:
+        log.status = "failed"
+        log.error_message = frappe.get_traceback()[:500]
+        log.finished_at = frappe.utils.now_datetime()
+        log.save(ignore_permissions=True)  # nosemgrep -- background job; see comment above
+        frappe.db.commit()  # nosemgrep -- a failed run must record its own failure even though it's about to re-raise
+        raise
+
+    return log.name
 
 
 def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None, connection=None):
