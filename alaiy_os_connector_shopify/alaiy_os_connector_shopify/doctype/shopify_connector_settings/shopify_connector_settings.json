@@ -221,7 +221,7 @@
    "read_only": 1
   },
   {
-   "default": "30 min",
+   "default": "5 min",
    "fieldname": "sh_inventory_sync_interval",
    "fieldtype": "Select",
    "label": "Inventory Sync Interval",

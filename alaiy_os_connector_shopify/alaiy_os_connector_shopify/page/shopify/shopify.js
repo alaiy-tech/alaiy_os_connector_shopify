@@ -96,11 +96,11 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						<span class="shopify-icon-badge"><i class="fa fa-archive"></i></span>
 						<div class="shopify-card-header-text">
 							<h5>Inventory</h5>
-							<p>Push stock levels from Alaiy OS to Shopify.</p>
+							<p>Sync stock levels between Alaiy OS and Shopify.</p>
 						</div>
 					</div>
 					<div class="shopify-card-body">
-						<p class="shopify-text-muted">Send the latest stock updates from Alaiy OS to Shopify.</p>
+						<p class="shopify-text-muted">Send the latest stock updates from Alaiy OS to Shopify, or pull Shopify's current quantities in.</p>
 						<div class="shopify-info-strip">
 							<span class="shopify-info-pill"><i class="fa fa-bolt"></i> Live stock sync</span>
 							<span class="shopify-info-pill"><i class="fa fa-map-marker"></i> Multi-location</span>
@@ -112,7 +112,14 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 						<button id="sync-inventory-stop-btn" class="shopify-btn shopify-btn-danger" style="display:none;">
 							<i class="fa fa-stop"></i> Stop
 						</button>
+						<button id="pull-inventory-btn" class="shopify-btn">
+							<i class="fa fa-download"></i> Pull Inventory
+						</button>
+						<button id="pull-inventory-stop-btn" class="shopify-btn shopify-btn-danger" style="display:none;">
+							<i class="fa fa-stop"></i> Stop
+						</button>
 						<div id="inventory-log" class="shopify-sync-log"></div>
+						<div id="inventory-pull-log" class="shopify-sync-log"></div>
 					</div>
 				</div>
 
@@ -410,6 +417,32 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 			error: function() {
 				btn.disabled = false;
 				log_container.innerHTML = '<div class="shopify-log-entry shopify-alert-warning">Failed to start inventory sync</div>';
+			}
+		});
+	}
+
+	function pull_inventory() {
+		var btn = document.getElementById('pull-inventory-btn');
+		var stop_btn = document.getElementById('pull-inventory-stop-btn');
+		var log_container = document.getElementById('inventory-pull-log');
+		btn.disabled = true;
+		log_container.classList.add('shopify-active');
+		log_container.innerHTML = '<div class="shopify-log-status-running">Starting inventory pull...<span class="shopify-spinner"></span></div>';
+
+		scoped_call({
+			method: 'alaiy_os_connector_shopify.api.sync.trigger_inventory_pull',
+			callback: function(r) {
+				if (r.message && r.message.log_name) {
+					stop_btn.onclick = function() { stop_sync(r.message.log_name, stop_btn); };
+					poll_import_progress(r.message.log_name, log_container, btn, stop_btn);
+					setTimeout(refresh_logs, 1000);
+				} else {
+					btn.disabled = false;
+				}
+			},
+			error: function() {
+				btn.disabled = false;
+				log_container.innerHTML = '<div class="shopify-log-entry shopify-alert-warning">Failed to start inventory pull</div>';
 			}
 		});
 	}
@@ -779,6 +812,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 
 	document.getElementById('import-orders-btn').addEventListener('click', import_orders);
 	document.getElementById('sync-inventory-btn').addEventListener('click', sync_inventory);
+	document.getElementById('pull-inventory-btn').addEventListener('click', pull_inventory);
 	document.getElementById('import-products-btn').addEventListener('click', import_products);
 	document.getElementById('export-products-btn').addEventListener('click', export_products);
 	document.getElementById('sync-taxonomy-btn').addEventListener('click', sync_taxonomy);

@@ -97,6 +97,21 @@ def trigger_inventory_push(connection=None):
 
 
 @frappe.whitelist()
+def trigger_inventory_pull(connection=None):
+    """Manual trigger for the PULL leg (Shopify -> Alaiy OS), full sweep --
+    reconcile_inventory_from_shopify. The webhook and the daily scheduled
+    sweep (enqueue_reconcile_inventory) already cover this ongoing, but
+    neither gives a seller an on-demand way to force a fresh pull the way
+    trigger_inventory_push already does for the other direction -- the
+    dashboard only ever exposed push, confirmed live: the backend pull
+    machinery existed with no button reaching it at all.
+    """
+    return _enqueue_sync(
+        "inventory", "alaiy_os_connector_shopify.shopify.inventory_sync.reconcile_inventory_from_shopify",
+        timeout=3600, connection=connection)
+
+
+@frappe.whitelist()
 def trigger_missing_product_import(statuses=None, collection_id=None, location_id=None, connection=None):
     """
     Catch-up import: only products never linked locally at all. Existing
