@@ -65,8 +65,10 @@ pixels, and one that does:
     "the model is asked for the product on an empty ground and nothing else"
     promise (see the top of this docstring) does NOT hold. One `generate_image`
     call does the whole job — background, shadow, everything — and whatever
-    Gemini returns ships as the finished photo, unexamined. No mask, no crop
-    from the original, no local compositor. Simpler, and it is what a plain
+    Gemini returns ships as the finished photo, with only its ground pulled
+    onto the exact house hex in place (see `_snap_background`) — Gemini lands
+    near a requested colour, not on it. No mask, no crop from the original, no
+    local compositor, so its framing and shadow stay as drawn. Simpler, and it is what a plain
     manual test of the same prompt against the same photo produced cleanly when
     `gemini`'s mask-only path could not separate a busy backdrop — but it means
     the product's own pixels are no longer guaranteed to be the photographer's:
@@ -677,6 +679,10 @@ def _finish_gemini_full(content, spec, client):
     all give. See the module docstring's `gemini_full` entry for why that is a
     considered trade rather than an oversight.
 
+    The one thing corrected afterward is the ground colour, in place — see
+    `_snap_background`. If the render has no plain ground to correct, the
+    finish is skipped rather than shipped on the wrong background.
+
     No mask means no cutout to keep: `spec["keep_cutout"]` has no effect on
     this path, `cutout` is always None.
     """
@@ -696,12 +702,101 @@ def _finish_gemini_full(content, spec, client):
     finished = Image.open(io.BytesIO(base64.b64decode(result["b64"])))
     finished.load()
 
+    snapped = _snap_background(finished.convert("RGB"), spec["background"])
+    if snapped is None:
+        return _skipped(content, "the rendered photo did not come back on a plain background to recolour")
+
     return {
-        "image": _encode(finished.convert("RGB")),
+        "image": _encode(snapped),
         "mime": "image/png",
         "cutout": None,
         "note": None,
     }
+
+
+# How the ground of a gemini_full render is pulled onto the exact house hex.
+#
+# Within _SNAP_EXACT (plain RGB distance from the ground colour Gemini used) a
+# pixel becomes the hex exactly, blending out to _SNAP_CORE. Kept to a couple of
+# levels on purpose: the faint outer edge of a soft shadow is also close to the
+# ground, and a wider snap flattened it — at 8/16 a light shadow lost a fifth
+# of its area and gained a hard edge. Past this the hue correction below still
+# takes the ground onto the hex on average; each pixel just keeps its own grain.
+# A ramp, not a cut-off, so the snap's own edge draws no ring either.
+#
+# Beyond that, background is recognised by HUE, not by brightness: a shadow is
+# the ground made darker, so scaled back up to the ground's brightness it is the
+# ground again. _SNAP_HUE_IN/_OUT are that scaled distance — full correction
+# inside the first, fading to none at the second, so there is no line where it
+# stops. Keying on brightness instead left the middle of the shadow in
+# Gemini's own tint.
+_SNAP_EXACT = 3
+_SNAP_CORE = 6
+_SNAP_HUE_IN = 20
+_SNAP_HUE_OUT = 36
+
+# Past this, Gemini did not put the photo on anything like the requested colour
+# (it returned the original backdrop, say), and there is no plain ground to
+# recolour — shifting a marble table toward grey would be worse than skipping.
+_SNAP_MAX_DRIFT = 60
+
+
+def _snap_background(image, hex_color):
+    """`image` with its background pulled onto exactly `hex_color`, or None.
+
+    Gemini lands near the requested colour, not on it. Rather than rebuild the
+    photo — which would re-frame it and hand the product's edges to a mask —
+    only the ground and its shadow are touched: the region connected to the
+    frame edge whose hue matches the ground Gemini used. They get the
+    per-channel correction that takes that ground onto the hex, so the shadow
+    keeps its shape and depth but sits on the new colour. The product and its
+    framing are left as drawn.
+
+    Neutral steel has the ground's hue too, so a bracelet running off the frame
+    gets the same small correction. That is the same colour-cast fix the ground
+    gets, not a change to the piece: the correction is only ever as big as the
+    gap between Gemini's ground and the hex.
+
+    The ground colour is the median of the border ring, which stays right when
+    the product runs off one or two edges — they are a minority of the ring.
+    """
+    import numpy as np
+    from scipy import ndimage
+
+    pixels = np.asarray(image, dtype=np.float32)
+    height, width = pixels.shape[:2]
+    ring = max(1, int(min(width, height) * _BORDER_FRACTION))
+    if width <= ring * 2 or height <= ring * 2:
+        return None
+
+    border = np.ones((height, width), dtype=bool)
+    border[ring:-ring, ring:-ring] = False
+    ground = np.median(pixels[border], axis=0)
+    target = np.array(_rgb(hex_color), dtype=np.float32)
+    if float(np.linalg.norm(ground - target)) > _SNAP_MAX_DRIFT:
+        return None
+
+    distance = np.linalg.norm(pixels - ground, axis=2)
+    brightness = pixels.sum(axis=2, keepdims=True)
+    at_ground_brightness = pixels * (ground.sum() / np.maximum(brightness, 1.0))
+    hue_distance = np.linalg.norm(at_ground_brightness - ground, axis=2)
+
+    # Only ground reachable from the frame edge: a pale highlight or a white
+    # stone enclosed by the product is not background, whatever its colour.
+    near, _ = ndimage.label(hue_distance <= _SNAP_HUE_OUT)
+    edge_labels = np.unique(np.concatenate([near[0], near[-1], near[:, 0], near[:, -1]]))
+    region = np.isin(near, edge_labels[edge_labels > 0])
+
+    ratio = target / np.maximum(ground, 1.0)
+    corrected = np.clip(pixels * ratio, 0, 255)
+    weight = np.clip((_SNAP_HUE_OUT - hue_distance) / (_SNAP_HUE_OUT - _SNAP_HUE_IN), 0, 1)
+    weight = np.where(region, weight, 0.0)[..., None]
+
+    out = pixels + weight * (corrected - pixels)
+    exact = np.clip((_SNAP_CORE - distance) / (_SNAP_CORE - _SNAP_EXACT), 0, 1)
+    exact = np.where(region, exact, 0.0)[..., None]
+    out = out + exact * (target - out)
+    return Image.fromarray(np.round(out).astype(np.uint8), "RGB")
 
 
 def _session(model):
