@@ -294,6 +294,19 @@ def _ensure_enriched_listing(item_code, listing, image_status="Queued"):
 
     Draft rather than Needs Review: retouching a photo is not a listing anyone asked
     a human to read, and it must not join the review queue pretending otherwise.
+
+    Safe against concurrent callers seeding the SAME product at once: selecting
+    several photos and enriching them together fires one enrich_listing_image
+    request per photo, in parallel, and every one of them reaches here for a
+    product with no enriched listing yet. The exists-check above is only a
+    fast path, not a guarantee -- more than one request can see "not there"
+    before any of them commits their insert, and ENRICHED_DOCTYPE is autonamed
+    `field:item_code`, so every loser collides on the same primary key.
+    Confirmed live, 2026-09-29: selecting every photo on a never-enriched
+    product and enriching them together 409'd on all but one. Caught below
+    rather than left to surface as a 409 the caller has no way to recover
+    from -- the document this call wanted now exists either way, seeded by
+    whichever request won, so losing the race is success, not failure.
     """
     from alaiy_os_connector_shopify.listing import handlers as base
 
@@ -342,7 +355,14 @@ def _ensure_enriched_listing(item_code, listing, image_status="Queued"):
     # ignore_permissions=True: both callers (enrich_listing_image,
     # ensure_enriched_listing above) already check permission on the source
     # listing before reaching this private helper.
-    doc.insert(ignore_permissions=True)
+    try:
+        doc.insert(ignore_permissions=True)
+    except frappe.DuplicateEntryError:
+        # Another concurrent call for this same item_code won the race and
+        # already inserted it -- see this function's own docstring. Whatever
+        # it seeded is what a caller a few milliseconds later would have
+        # seeded too (same source listing), so there is nothing left to do.
+        pass
 
 
 @frappe.whitelist(methods=["POST"])
