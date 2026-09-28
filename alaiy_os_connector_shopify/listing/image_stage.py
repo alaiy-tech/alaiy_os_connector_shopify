@@ -435,7 +435,7 @@ def _lock_row(item_code):
     """
     return bool(
         frappe.db.sql(
-            f"select name from `tab{ENRICHED_DOCTYPE}` where name = %s for update",
+            "select name from `tabShopify Enriched Listing` where name = %s for update",
             item_code,
         )
     )
