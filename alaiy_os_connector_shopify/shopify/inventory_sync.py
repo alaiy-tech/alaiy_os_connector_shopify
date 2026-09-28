@@ -268,7 +268,9 @@ def run_inventory_push(trigger="manual", log_name=None, connection=None):
     """
     connection = connection or connections.require_enabled()
     log = load_or_create_log("inventory", trigger, log_name, connection=connection)
-    if has_active_sync("inventory", exclude_name=log.name, connection=connection):
+    # Checked against both push's own "inventory" type and pull's
+    # "inventory_pull" -- they write the same Bins and must not overlap.
+    if has_active_sync(["inventory", "inventory_pull"], exclude_name=log.name, connection=connection):
         _close_log(log, "skipped",
                    error="Skipped: another inventory sync is already running.")
         return log.name
@@ -1118,14 +1120,17 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None,
     # connection, the call just never passed one -- so one seller's running
     # push answered "yes, something is running" for everybody and every other
     # store's sweep skipped itself.
-    if not dry_run and not query and has_active_sync("inventory", connection=connection):
+    if not dry_run and not query and has_active_sync(["inventory", "inventory_pull"], connection=connection):
         return {"skipped": "another inventory sync is already running"}
 
     # After the active-sync guard, so a run that was refused does not leave a
-    # log row claiming it started.
+    # log row claiming it started. Logged as its own "inventory_pull" type --
+    # a distinct history/list entry from push's "inventory" rows -- but the
+    # mutex above still checks the shared "inventory" key, since push and
+    # pull write the same Bins and must never run at the same time.
     log = None
     if not dry_run:
-        log = load_or_create_log("inventory", trigger, log_name, connection=connection)
+        log = load_or_create_log("inventory_pull", trigger, log_name, connection=connection)
         log.status = "running"
         log.save(ignore_permissions=True)
         frappe.db.commit()  # nosemgrep -- the running marker must be visible to the next tick before the sweep starts

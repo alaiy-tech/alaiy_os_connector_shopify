@@ -73,6 +73,19 @@ def _check_one_store(name):
                 title=f"Shopify: inventory enqueue check failed ({name})"[:140],
                 message=frappe.get_traceback())
 
+    # Pulling in is never gated on Inventory Sync Direction the way pushing
+    # out is -- a store left at the "Shopify -> Alaiy OS only" default (or
+    # any other direction) should still get this on its own interval, not
+    # just the once-daily scheduled sweep and the webhook.
+    try:
+        _maybe_enqueue_inventory_pull(
+            settings.sh_inventory_pull_interval or "Disabled", settings
+        )
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: inventory pull enqueue check failed ({name})"[:140],
+            message=frappe.get_traceback())
+
     _maybe_ensure_webhooks(settings)
 
 
@@ -170,6 +183,57 @@ def _maybe_enqueue_inventory(interval_setting, settings):
 
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.inventory_sync.run_inventory_push",
+        queue="long",
+        timeout=3600,
+        trigger="scheduled",
+        connection=settings.name,
+    )
+
+
+def _maybe_enqueue_inventory_pull(interval_setting, settings):
+    """Same shape as _maybe_enqueue_inventory, but for the pull leg. Runs
+    regardless of Inventory Sync Direction -- pulling in stays available even
+    on a store never configured to push out.
+
+    The "running" check reads BOTH "inventory" and "inventory_pull" log
+    types: push and pull write the same Bins and must never overlap, so a
+    push in progress must hold pull off too, same as reconcile_inventory_
+    from_shopify's own has_active_sync("inventory") guard. "last success",
+    though, reads only "inventory_pull" -- pull's own interval must not be
+    thrown off by a push finishing recently.
+    """
+    interval_minutes = _INTERVAL_MINUTES.get(interval_setting)
+    if not interval_minutes:
+        return
+
+    now = now_datetime()
+
+    running = frappe.db.get_value(
+        "Shopify Sync Log",
+        {"sync_type": ["in", ["inventory", "inventory_pull"]], "status": "running",
+         "connection": settings.name},
+        "started_at",
+        order_by="started_at desc",
+    )
+    if running:
+        elapsed = (now - running).total_seconds()
+        if elapsed < 1800:
+            return
+
+    last_success = frappe.db.get_value(
+        "Shopify Sync Log",
+        {"sync_type": "inventory_pull", "status": "success", "connection": settings.name},
+        "started_at",
+        order_by="started_at desc",
+    )
+    if last_success:
+        due_at = add_to_date(get_datetime(last_success), minutes=interval_minutes,
+                             as_datetime=True)
+        if now < due_at:
+            return
+
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.inventory_sync.reconcile_inventory_from_shopify",
         queue="long",
         timeout=3600,
         trigger="scheduled",
