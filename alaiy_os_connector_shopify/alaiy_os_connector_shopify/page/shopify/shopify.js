@@ -367,7 +367,9 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 
 		scoped_call({
 			method: 'alaiy_os_connector_shopify.api.sync.import_existing_orders',
-			args: date_from && date_to ? {date_from: date_from, date_to: date_to} : {},
+			args: date_from && date_to
+				? {date_from: date_from, date_to: date_to}
+				: {full_history: true},
 			callback: function(r) {
 				if (r.message && r.message.log_name) {
 					log_container.innerHTML = '<div class="shopify-log-status-running">' + (r.message.message || 'Importing...') + '<span class="shopify-spinner"></span></div>';
