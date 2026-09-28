@@ -116,11 +116,36 @@ def _retry_fulfillment_push(payload):
     )
 
 
+def _retry_price_push(payload):
+    """Retry a batch of variant prices that failed (including a THROTTLED
+    failure that outlasted the client's own one built-in retry) during a
+    repricing run.
+
+    Goes through export._apply_price_updates -- never push_item/productSet,
+    for the exact reason update_variant_prices' own docstring gives: a
+    price-only intent routed through a full productSet silently reverts any
+    edit a merchant made on Shopify since the last sync. Using the shared
+    helper (rather than calling update_variant_prices directly) means a
+    price that succeeds on this retry gets the same local write-back and
+    fingerprint refresh a first-attempt success would have, not a second
+    path that skips them. Re-raises on a partial failure so record_failure
+    sees this attempt as failed and reschedules the whole batch rather than
+    quietly dropping the still-unpriced items.
+    """
+    from alaiy_os_connector_shopify.shopify.product.export import _apply_price_updates
+
+    result = _apply_price_updates(
+        payload["item_code_to_price"], payload.get("connection"))
+    if result.get("failed"):
+        raise RuntimeError(f"Still failing: {result['failed']}")
+
+
 #: (direction, entity_type) -> what retrying it means. Keyed on both because
 #: an inbound order and an outbound one are different operations entirely.
 _HANDLERS = {
     ("outbound", "order"): _retry_order_cancel,
     ("outbound", "inventory"): _retry_fulfillment_push,
+    ("outbound", "price"): _retry_price_push,
 }
 
 

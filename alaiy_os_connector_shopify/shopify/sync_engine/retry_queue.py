@@ -14,13 +14,24 @@ DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_BASE_DELAY_SECONDS = 60
 
 
-def enqueue(direction: str, entity_type: str, payload: dict, synced_entity: str = None):
-    """Insert a `pending` entry, ready to be picked up immediately."""
+def enqueue(direction: str, entity_type: str, payload: dict, synced_entity: str = None,
+            connection=None):
+    """Insert a `pending` entry, ready to be picked up immediately.
+
+    `connection` stamps which store this failure belongs to -- optional
+    because the doctype predates multi-store scoping and its existing
+    callers (order push) don't carry one yet, but a caller that knows its
+    store (repricing does) should always pass it: a Shopify id is only
+    unique within one store, so an unscoped retry of a price/product/variant
+    payload risks acting against the wrong seller's shop once a bench holds
+    more than one connection.
+    """
     entry = frappe.new_doc("Shopify Retry Queue Entry")
     entry.direction = direction
     entry.entity_type = entity_type
     entry.payload = json.dumps(payload)
     entry.synced_entity = synced_entity
+    entry.connection = getattr(connection, "name", connection)
     entry.status = "pending"
     entry.insert(ignore_permissions=True)
     frappe.db.commit()
