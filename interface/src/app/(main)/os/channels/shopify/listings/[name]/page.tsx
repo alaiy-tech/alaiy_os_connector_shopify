@@ -150,7 +150,13 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
         prev
           ? {
               ...prev,
-              images: data.images.map((row) => ({ name: null, image: row.image, source: row.source, sort_order: row.sort_order })),
+              images: data.images.map((row) => ({
+                name: null,
+                image: row.image,
+                source: row.source,
+                sort_order: row.sort_order,
+                generated_by_agent: null,
+              })),
               variants: data.variants.map((row) => ({
                 name: null,
                 item_variant: row.item_variant,

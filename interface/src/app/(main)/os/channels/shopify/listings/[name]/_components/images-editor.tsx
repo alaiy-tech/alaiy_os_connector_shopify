@@ -55,7 +55,10 @@ export function ImagesEditor({
   async function addRow(file: File) {
     try {
       const url = await uploadPrivateFile(file);
-      withReindexedOrder([...sorted, { name: null, image: url, source: "Original", sort_order: sorted.length }]);
+      withReindexedOrder([
+        ...sorted,
+        { name: null, image: url, source: "Original", sort_order: sorted.length, generated_by_agent: null },
+      ]);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not upload the image.");
     }
