@@ -420,6 +420,12 @@ def already_enhanced(item_code):
     "Already done" means the listing holds an enhanced image for that exact source
     photo. A photo that failed has no url, so it is absent from this map and gets
     another attempt — which is the retry behaviour we want without a flag for it.
+
+    Neither is a row that holds the source photo itself. api._ensure_enriched_listing
+    seeds every photo that way (url == source_url) so an untouched photo publishes as
+    the original, and counting it as done told "select all, enrich" that photos never
+    retouched already were (live 2026-09-29, Z058-03286R: "3 photos were already
+    retouched — nothing spent", with the originals handed back as the retouch).
     """
     if not frappe.db.exists(base.ENRICHED_DOCTYPE, item_code):
         return {}
@@ -438,7 +444,11 @@ def already_enhanced(item_code):
         },
         fields=["source_url", "url"],
     )
-    return {row.source_url: row.url for row in rows if row.source_url and row.url}
+    return {
+        row.source_url: row.url
+        for row in rows
+        if row.source_url and row.url and row.url != row.source_url
+    }
 
 
 def render_generated(item_code, work):
