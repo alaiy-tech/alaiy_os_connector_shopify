@@ -364,7 +364,7 @@
    "reqd": 1
   },
   {
-   "default": "30 min",
+   "default": "5 min",
    "description": "How often to push Alaiy OS stock levels to Shopify (only used when Inventory Sync Direction is two-way)",
    "fieldname": "sh_inventory_sync_interval",
    "fieldtype": "Select",
