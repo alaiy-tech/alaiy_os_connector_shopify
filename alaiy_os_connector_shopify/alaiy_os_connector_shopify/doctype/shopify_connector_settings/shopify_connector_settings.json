@@ -34,6 +34,7 @@
   "sh_fulfillment_sync_direction",
   "sh_inventory_sync_direction",
   "sh_inventory_sync_interval",
+  "sh_inventory_pull_interval",
   "sh_token_refresh_interval",
   "sb_product_status",
   "sh_import_status_active",
@@ -225,6 +226,14 @@
    "fieldname": "sh_inventory_sync_interval",
    "fieldtype": "Select",
    "label": "Inventory Sync Interval",
+   "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
+   "read_only": 1
+  },
+  {
+   "default": "5 min",
+   "fieldname": "sh_inventory_pull_interval",
+   "fieldtype": "Select",
+   "label": "Inventory Pull Interval",
    "options": "Disabled\n5 min\n15 min\n30 min\n60 min",
    "read_only": 1
   },

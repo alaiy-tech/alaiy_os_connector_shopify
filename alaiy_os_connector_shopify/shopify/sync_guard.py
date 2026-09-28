@@ -7,7 +7,7 @@ from alaiy_os_connector_shopify import connections
 STALE_ACTIVE_THRESHOLD_MINUTES = 120
 
 
-def has_active_sync(sync_type: str, exclude_name: str = None, connection=None) -> bool:
+def has_active_sync(sync_type, exclude_name: str = None, connection=None) -> bool:
     """
     True if another sync of this type is genuinely still queued/running for
     THIS store. A
@@ -20,14 +20,22 @@ def has_active_sync(sync_type: str, exclude_name: str = None, connection=None) -
     click landing at the same moment) -- without it, two callers could both
     read "no active rows" before either flips a row to running, letting two
     pushes run at once.
+
+    sync_type also takes a list/tuple -- inventory push and pull ("inventory"
+    and "inventory_pull") write the same Bins and must share one guard, not
+    each hold their own lock and miss the other running. Passed as a list,
+    the lock is named on the combination so the two share the same
+    serialization point.
     """
+    types = [sync_type] if isinstance(sync_type, str) else list(sync_type)
+
     # The lock and the query are both per (connection, sync_type). Named on
     # sync_type alone, one store's inventory push would block every other
     # store's -- and, worse, the "is one already running?" answer would come
     # back yes because of somebody else's run, so a multi-store bench would
     # quietly sync whichever store happened to go first and no other.
     connection_name = connections.resolve_optional_name(connection)
-    lock_name = f"shopify_sync_guard_{connection_name or ''}_{sync_type}"
+    lock_name = f"shopify_sync_guard_{connection_name or ''}_{'_'.join(types)}"
     got_lock = frappe.db.sql("SELECT GET_LOCK(%s, 5)", (lock_name,))[0][0]
     if not got_lock:
         # Another caller is mid-check right now -- treat as active rather
@@ -38,7 +46,7 @@ def has_active_sync(sync_type: str, exclude_name: str = None, connection=None) -
         active_rows = frappe.get_all(
             "Shopify Sync Log",
             filters={
-                "sync_type": sync_type,
+                "sync_type": ["in", types],
                 "status": ["in", ["queued", "running"]],
                 **({"connection": connection_name} if connection_name else {}),
             },
