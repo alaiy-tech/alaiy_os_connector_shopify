@@ -79,17 +79,24 @@ def sync_listing_metafields(listing, metafield_nodes: list):
 
 def build_metafields_input(listing, product_gid: str) -> list:
     """metafieldsSet input rows for every row on the Listing's own table --
-    full push, same "whatever is there" completeness as the import side."""
+    full push, same "whatever is there" completeness as the import side.
+
+    Rows with a blank value are skipped: metafieldsSet rejects a blank
+    value with "Value can't be blank.", and since a single call carries a
+    whole batch of rows, one blank-value row would fail every other row in
+    its batch along with it (confirmed live -- 27 otherwise-valid
+    metafields on a product silently stopped updating because 2 rows in
+    the same batch had gone blank upstream)."""
     return [
         {
             "ownerId": product_gid,
             "namespace": row.namespace,
             "key": row.key,
             "type": row.type or "single_line_text_field",
-            "value": row.value or "",
+            "value": row.value,
         }
         for row in (listing.metafields or [])
-        if row.namespace and row.key
+        if row.namespace and row.key and row.value
     ]
 
 
