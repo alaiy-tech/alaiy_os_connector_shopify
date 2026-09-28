@@ -222,6 +222,22 @@ def import_existing_orders(date_from=None, date_to=None, connection=None):
     }
 
 
+def _build_full_import_query(date_from=None, date_to=None) -> str:
+    """
+    Shopify's search syntax takes range operators with a bare ISO date --
+    quoting the value ('2026-01-01') makes Shopify silently fail to parse
+    the clause and fall back to matching everything, not error. Confirmed
+    live: a date-scoped import returned orders from 2023 with the quoted
+    form.
+    """
+    query_string = "status:any"
+    if date_from:
+        query_string += f" AND created_at:>={date_from}"
+    if date_to:
+        query_string += f" AND created_at:<={date_to}"
+    return query_string
+
+
 def run_full_import(log_name=None, date_from=None, date_to=None, connection=None):
     """
     Pulls every order regardless of status/financial_status (unlike
@@ -235,9 +251,5 @@ def run_full_import(log_name=None, date_from=None, date_to=None, connection=None
     created in that window instead of the full history.
     """
     log = load_or_create_log("orders", "manual", log_name)
-    query_string = "status:any"
-    if date_from:
-        query_string += f" AND created_at:>='{date_from}'"
-    if date_to:
-        query_string += f" AND created_at:<='{date_to}'"
+    query_string = _build_full_import_query(date_from, date_to)
     return _run_orders_pull(log, query_string, skip_existing=True)

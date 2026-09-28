@@ -631,7 +631,7 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 			return;
 		}
 
-		var html = '<table class="shopify-logs-table"><thead><tr><th>Name</th><th>Type</th><th>Trigger</th><th>Status</th><th>Started</th><th>Progress</th></tr></thead><tbody>';
+		var html = '<table class="shopify-logs-table"><thead><tr><th>Name</th><th>Type</th><th>Trigger</th><th>Status</th><th>Started</th><th>Progress</th><th></th></tr></thead><tbody>';
 		logs.forEach(function(log) {
 			var sync_type = log.sync_type || '-';
 			var trigger = log.trigger || '-';
@@ -642,7 +642,11 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 			var trigger_color = trigger === 'manual' ? 'orange' : trigger === 'scheduled' ? 'purple' : trigger === 'webhook' ? 'cyan' : 'darkgrey';
 			var status_color = status === 'success' ? 'green' : status === 'failed' ? 'red' : status === 'running' ? 'blue' : status === 'queued' ? 'grey' : status === 'skipped' ? 'yellow' : 'darkgrey';
 			var name_html = '<a href="#" class="shopify-log-link" data-name="' + escape_html(log.name || '') + '">' + escape_html(log.name || '') + '</a>';
-			html += '<tr><td>' + name_html + '</td><td>' + badge_html(sync_type, sync_color) + '</td><td>' + badge_html(trigger, trigger_color) + '</td><td>' + badge_html(status, status_color) + '</td><td>' + escape_html(started) + '</td><td>' + escape_html(progress) + '</td></tr>';
+			var stoppable = status === 'running' || status === 'queued';
+			var action_html = stoppable
+				? '<button type="button" class="btn btn-xs btn-default shopify-log-stop-btn" data-name="' + escape_html(log.name || '') + '">Stop</button>'
+				: '';
+			html += '<tr><td>' + name_html + '</td><td>' + badge_html(sync_type, sync_color) + '</td><td>' + badge_html(trigger, trigger_color) + '</td><td>' + badge_html(status, status_color) + '</td><td>' + escape_html(started) + '</td><td>' + escape_html(progress) + '</td><td>' + action_html + '</td></tr>';
 		});
 		html += '</tbody></table>';
 		container.innerHTML = html;
@@ -650,6 +654,10 @@ frappe.pages["shopify"].on_page_load = function (wrapper) {
 		$(container).find('.shopify-log-link').on('click', function(e) {
 			e.preventDefault();
 			frappe.set_route('Form', 'Shopify Sync Log', $(this).data('name'));
+		});
+
+		$(container).find('.shopify-log-stop-btn').on('click', function() {
+			stop_sync($(this).data('name'), this);
 		});
 
 		var running = logs.some(function(l) { return l.status === 'running' || l.status === 'queued'; });
