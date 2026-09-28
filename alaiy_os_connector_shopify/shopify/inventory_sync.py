@@ -268,7 +268,9 @@ def run_inventory_push(trigger="manual", log_name=None, connection=None):
     """
     connection = connection or connections.require_enabled()
     log = load_or_create_log("inventory", trigger, log_name, connection=connection)
-    if has_active_sync("inventory", exclude_name=log.name, connection=connection):
+    # Checked against both push's own "inventory" type and pull's
+    # "inventory_pull" -- they write the same Bins and must not overlap.
+    if has_active_sync(["inventory", "inventory_pull"], exclude_name=log.name, connection=connection):
         _close_log(log, "skipped",
                    error="Skipped: another inventory sync is already running.")
         return log.name
@@ -1058,6 +1060,60 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
     return result
 
 
+def scheduled_pull_linked_items(connection=None, trigger="scheduled", log_name=None):
+    """PULL leg, local-first. Same outcome as reconcile_inventory_from_shopify
+    for a store's already-linked catalogue, but starting from our own Items
+    instead of walking Shopify's whole active catalogue page by page.
+
+    reconcile_inventory_from_shopify asks Shopify "what do you have, page by
+    page" and filters down to the ones we recognise -- correct for the daily
+    backstop (it also catches an Item whose link went stale), but wasteful to
+    run every few minutes when the vast majority of pages contain nothing we
+    can act on. This asks Shopify only about the items already linked here
+    (pull_stock_for_items, batched via nodes(ids:)), which is what an
+    interval this frequent should cost.
+
+    Shares the "inventory"/"inventory_pull" mutex and log shape with the
+    full sweep -- same reasoning, they write the same Bins.
+    """
+    connection = connections.resolve_optional(connection)
+    if not connection:
+        return {"skipped": "connector disabled"}
+
+    if has_active_sync(["inventory", "inventory_pull"], connection=connection):
+        return {"skipped": "another inventory sync is already running"}
+
+    item_codes = frappe.get_all(
+        "Item",
+        filters=owned_by("Item", connection.name,
+                         {"sh_shopify_inventory_item_id": ["is", "set"]}),
+        pluck="name",
+    )
+
+    log = load_or_create_log("inventory_pull", trigger, log_name, connection=connection)
+    log.status = "running"
+    log.save(ignore_permissions=True)
+    frappe.db.commit()  # nosemgrep -- the running marker must be visible to the next tick before the pull starts
+
+    try:
+        result = pull_stock_for_items(item_codes, connection=connection)
+        log.status = "success"
+        log.items_processed = result.get("checked") or 0
+        log.items_created = len((result.get("applied") or {}).get("reconciliations") or [])
+        log.items_failed = len(result.get("unmapped") or [])
+        log.finished_at = now_datetime()
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        return result
+    except Exception:
+        log.status = "failed"
+        log.finished_at = now_datetime()
+        log.error_message = frappe.get_traceback()[:2000]
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
+        raise
+
+
 def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None, trigger="scheduled", log_name=None):
     """PULL leg, full sweep. Ask Shopify for every linked product's current
     per-location quantity and apply the differences as audited Stock
@@ -1118,14 +1174,17 @@ def reconcile_inventory_from_shopify(dry_run=False, query=None, connection=None,
     # connection, the call just never passed one -- so one seller's running
     # push answered "yes, something is running" for everybody and every other
     # store's sweep skipped itself.
-    if not dry_run and not query and has_active_sync("inventory", connection=connection):
+    if not dry_run and not query and has_active_sync(["inventory", "inventory_pull"], connection=connection):
         return {"skipped": "another inventory sync is already running"}
 
     # After the active-sync guard, so a run that was refused does not leave a
-    # log row claiming it started.
+    # log row claiming it started. Logged as its own "inventory_pull" type --
+    # a distinct history/list entry from push's "inventory" rows -- but the
+    # mutex above still checks the shared "inventory" key, since push and
+    # pull write the same Bins and must never run at the same time.
     log = None
     if not dry_run:
-        log = load_or_create_log("inventory", trigger, log_name, connection=connection)
+        log = load_or_create_log("inventory_pull", trigger, log_name, connection=connection)
         log.status = "running"
         log.save(ignore_permissions=True)
         frappe.db.commit()  # nosemgrep -- the running marker must be visible to the next tick before the sweep starts
