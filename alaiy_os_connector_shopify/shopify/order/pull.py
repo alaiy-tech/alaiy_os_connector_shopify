@@ -169,7 +169,7 @@ def get_shopify_orders_count(connection=None) -> int:
     return int((data.get("ordersCount") or {}).get("count") or 0)
 
 
-def import_existing_orders(date_from=None, date_to=None, connection=None):
+def import_existing_orders(date_from=None, date_to=None, full_history=False, connection=None):
     """
     Entry point for the "Import Orders from Shopify" button. With no date
     range, it's the full-historical import: a fast pre-check against
@@ -180,9 +180,20 @@ def import_existing_orders(date_from=None, date_to=None, connection=None):
     Either way this queues in the background, since a first-time import of
     a real store's history can be thousands of orders and must never run
     inline on the request that clicked the button.
+
+    full_history must be explicitly true to run unscoped -- confirmed live
+    that date_from/date_to can arrive here as None from a click where the
+    UI showed a date range filled in and selected, so a missing range is no
+    longer trusted to mean "the person chose All orders."
     """
     if has_active_sync("orders", connection=connection):
         return {"status": "already_running", "message": "An orders sync is already in progress."}
+
+    if not date_from and not date_to and not full_history:
+        frappe.throw(
+            "No date range was received for this import. Refresh the page and "
+            "try again rather than risk pulling the full order history."
+        )
 
     if not date_from and not date_to:
         shopify_total = get_shopify_orders_count(connection)
@@ -224,17 +235,18 @@ def import_existing_orders(date_from=None, date_to=None, connection=None):
 
 def _build_full_import_query(date_from=None, date_to=None) -> str:
     """
-    Shopify's search syntax takes range operators with a bare ISO date --
-    quoting the value ('2026-01-01') makes Shopify silently fail to parse
-    the clause and fall back to matching everything, not error. Confirmed
-    live: a date-scoped import returned orders from 2023 with the quoted
-    form.
+    Shopify's search syntax requires date values to be quoted strings for
+    range operators (Shopify's own docs: "Date values must be a string
+    surrounded by quotes"). An unquoted date silently fails to parse and
+    Shopify falls back to matching the full unfiltered history instead of
+    erroring -- confirmed live: an unquoted date-scoped import still
+    returned orders from 2023.
     """
     query_string = "status:any"
     if date_from:
-        query_string += f" AND created_at:>={date_from}"
+        query_string += f" AND created_at:>='{date_from}'"
     if date_to:
-        query_string += f" AND created_at:<={date_to}"
+        query_string += f" AND created_at:<='{date_to}'"
     return query_string
 
 
