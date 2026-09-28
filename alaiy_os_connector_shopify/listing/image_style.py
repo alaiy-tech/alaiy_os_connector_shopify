@@ -718,9 +718,16 @@ def _finish_gemini_full(content, spec, client):
     finished.load()
     finished = finished.convert("RGB")
 
-    uneven = _ground_complaint(finished)
-    if uneven:
-        return _skipped(content, uneven)
+    # No `_ground_complaint` gate here, unlike `flood` and `gemini`'s fallback:
+    # that check's thresholds (mean > 225, stddev < 12) were calibrated for a
+    # background that was already clean before any model touched it — a real
+    # photo, or a cheap-tier isolate asked to change nothing else. A full
+    # generative redraw carries ordinary render grain even when it has done
+    # exactly what it was asked, and gemini_full exists specifically for the
+    # busy/dark backdrops that grain is worst on — gating it behind a check
+    # built for a cleaner input would skip the very case this matte is for.
+    # `_subject_alpha`'s own flood tolerance, plus the coverage/featureless
+    # checks below, are the safety net instead.
     alpha = _subject_alpha(finished)
 
     subject = _coverage(alpha)
