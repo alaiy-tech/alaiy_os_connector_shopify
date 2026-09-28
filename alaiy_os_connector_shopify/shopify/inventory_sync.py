@@ -1042,6 +1042,7 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
                     "item_code": item_code,
                     "warehouse": warehouse,
                     "qty": shopify_qty,
+                    "old_qty": current,
                 })
 
     result = {
@@ -1102,6 +1103,16 @@ def scheduled_pull_linked_items(connection=None, trigger="scheduled", log_name=N
         log.items_created = len((result.get("applied") or {}).get("reconciliations") or [])
         log.items_failed = len(result.get("unmapped") or [])
         log.finished_at = now_datetime()
+        # One line per real change -- old qty -> new qty, same as what the
+        # underlying Stock Reconciliation records, but visible here without
+        # opening it. Only actual differences ever reach "corrections" (see
+        # pull_stock_for_items' own unchanged-items skip), so every line here
+        # is a real change, not a no-op report.
+        for c in result.get("corrections") or []:
+            _append_log(
+                log,
+                f"{c['item_code']} @ {c['warehouse']}: {c.get('old_qty', '?')} -> {c['qty']}",
+            )
         log.save(ignore_permissions=True)
         frappe.db.commit()
         return result
