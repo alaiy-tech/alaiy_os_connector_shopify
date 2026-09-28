@@ -19,7 +19,7 @@ export default function Page() {
     <div className="flex flex-col gap-4">
       <PageHeader title="Shopify Categories" subtitle="Shopify's standard product taxonomy, synced read-only." />
       <RefreshableList refresh={refreshShopifyTaxonomy}>
-        {(reloadToken) => (
+        {(reloadToken, _selected) => (
           <SimpleResourceTable<ShopifyCategory>
             key={reloadToken}
             load={() =>

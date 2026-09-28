@@ -8,30 +8,35 @@ import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { shopifyErrorMessage } from "@/lib/frappe/shopify-sync";
+import { useShopifyStore } from "../_lib/use-shopify-store";
+import { StoreSwitcher } from "./store-switcher";
 
 /**
  * Wraps one of the simple Shopify master lists with a "Refresh from
- * Shopify" action. Bumping `reloadToken` and passing it as the child
- * table's `key` is what triggers a re-fetch — simpler than threading a
- * reload callback through `SimpleResourceTable`, and the same remount-on-key
- * trick NayaGlobal's own settings screen uses via `reloadToken`.
+ * Shopify" action and the store switcher. Bumping `reloadToken` and passing
+ * it as the child table's `key` is what triggers a re-fetch — simpler than
+ * threading a reload callback through `SimpleResourceTable`, and the same
+ * remount-on-key trick NayaGlobal's own settings screen uses via
+ * `reloadToken`. `reloadToken` also bumps on a store switch, so the child's
+ * `load` (scoped to `selected`) re-runs for the new store.
  */
 export function RefreshableList({
   refresh,
   refreshLabel = "Refresh from Shopify",
   children,
 }: {
-  refresh: () => Promise<unknown>;
+  refresh: (connection?: string) => Promise<unknown>;
   refreshLabel?: string;
-  children: (reloadToken: number) => React.ReactNode;
+  children: (reloadToken: number, selected: string | null) => React.ReactNode;
 }) {
+  const { selected } = useShopifyStore();
   const [reloadToken, setReloadToken] = useState(0);
   const [busy, setBusy] = useState(false);
 
   async function run() {
     setBusy(true);
     try {
-      await refresh();
+      await refresh(selected ?? undefined);
       toast.success("Refresh started — this can take a moment for a large catalogue.");
       // The refresh itself runs as a background job on the Frappe side, so
       // give it a moment before re-reading the list rather than racing it.
@@ -45,12 +50,13 @@ export function RefreshableList({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <StoreSwitcher />
         <Button size="sm" variant="outline" disabled={busy} onClick={() => void run()}>
           <RefreshCw className={cn(busy && "animate-spin")} /> {refreshLabel}
         </Button>
       </div>
-      {children(reloadToken)}
+      {children(reloadToken, selected)}
     </div>
   );
 }

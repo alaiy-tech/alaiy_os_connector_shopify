@@ -9,8 +9,9 @@ export interface ShopifyConnectionResult {
   message: string;
 }
 
-export async function testShopifyConnection(): Promise<ShopifyConnectionResult> {
-  const res = await fetch("/api/method/alaiy_os_connector_shopify.api.test_connection.test_connection", {
+export async function testShopifyConnection(connection?: string): Promise<ShopifyConnectionResult> {
+  const qs = connection ? `?connection=${encodeURIComponent(connection)}` : "";
+  const res = await fetch(`/api/method/alaiy_os_connector_shopify.api.test_connection.test_connection${qs}`, {
     method: "GET",
     cache: "no-store",
   });

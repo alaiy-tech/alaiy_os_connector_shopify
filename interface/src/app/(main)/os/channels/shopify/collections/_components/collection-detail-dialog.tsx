@@ -25,11 +25,15 @@ import {
 export function CollectionDetailDialog({
   collectionName,
   collectionTitle,
+  imageUrl,
+  description,
   open,
   onOpenChange,
 }: {
   collectionName: string;
   collectionTitle: string;
+  imageUrl?: string | null;
+  description?: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -83,6 +87,18 @@ export function CollectionDetailDialog({
         </DialogHeader>
 
         <div className="flex flex-col gap-6">
+          {(imageUrl || description) && (
+            <div className="flex items-start gap-3">
+              {imageUrl && (
+                <div className="size-16 shrink-0 overflow-hidden rounded-md bg-muted">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={imageUrl} alt="" className="h-full w-full object-cover" />
+                </div>
+              )}
+              {description && <p className="text-muted-foreground text-sm">{description}</p>}
+            </div>
+          )}
+
           <div>
             <h3 className="mb-2 text-sm font-medium">Products</h3>
             {products === null ? (

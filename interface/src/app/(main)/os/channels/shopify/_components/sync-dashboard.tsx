@@ -17,6 +17,7 @@ import {
   List as ListIcon,
   Package,
   RefreshCw,
+  Search,
   ShoppingCart,
   Store,
   Tag as TagIcon,
@@ -41,17 +42,23 @@ import {
   refreshShopifyTaxonomy,
   requestCancelSync,
   shopifyErrorMessage,
+  triggerInventoryPull,
   triggerInventoryPush,
+  triggerMissingProductImport,
   triggerProductExport,
   triggerProductImport,
 } from "@/lib/frappe/shopify-sync";
+import { useShopifyStore } from "../_lib/use-shopify-store";
+import { ProductSearchDialog } from "./product-search-dialog";
 import { ProductStatusDialog } from "./product-status-dialog";
+import { StoreSwitcher } from "./store-switcher";
 
 const CANCELLABLE_STATUSES = new Set(["queued", "running"]);
 const ACTIVE_LOG_STATUSES = new Set(["queued", "running"]);
 const POLL_MS = 2000;
 
 export function SyncDashboard() {
+  const { stores, selected, loading: storesLoading } = useShopifyStore();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [shopifyStats, setShopifyStats] = useState<ShopifySideStats | null>(null);
   const [log, setLog] = useState<SyncLogRow[]>([]);
@@ -65,12 +72,14 @@ export function SyncDashboard() {
   const [progress, setProgress] = useState<Record<string, SyncLogRow | undefined>>({});
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [productSearchOpen, setProductSearchOpen] = useState(false);
   const [orderImportMode, setOrderImportMode] = useState<"All orders" | "Date range">("All orders");
 
   const load = useCallback(async () => {
+    if (!selected) return;
     setLoading(true);
     try {
-      const [dashboard, syncLog] = await Promise.all([fetchDashboardStats(), fetchSyncStatus()]);
+      const [dashboard, syncLog] = await Promise.all([fetchDashboardStats(selected), fetchSyncStatus(undefined, selected)]);
       setStats(dashboard);
       setLog(syncLog);
     } catch (error) {
@@ -78,7 +87,7 @@ export function SyncDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selected]);
 
   useEffect(() => {
     void load();
@@ -87,9 +96,10 @@ export function SyncDashboard() {
   // Live Shopify counts are their own slower call — fetched separately so they
   // never hold up the fast local numbers above.
   useEffect(() => {
+    if (!selected) return;
     let cancelled = false;
     setShopifyLoading(true);
-    fetchShopifySideStats()
+    fetchShopifySideStats(selected)
       .then((result) => {
         if (!cancelled) setShopifyStats(result);
       })
@@ -102,19 +112,20 @@ export function SyncDashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [selected]);
 
   useEffect(() => {
-    testShopifyConnection()
+    if (!selected) return;
+    testShopifyConnection(selected)
       .then(setConnection)
       .catch(() => setConnection({ success: false, message: "Could not reach the connection test." }));
-  }, []);
+  }, [selected]);
 
   // Polls the sync log for one job every 2s while it's queued/running, same
   // cadence as the old Desk page's poll_import_progress, stopping once the
   // job leaves that state.
   function pollLog(key: string, logName: string) {
-    fetchSyncStatus()
+    fetchSyncStatus(undefined, selected ?? undefined)
       .then((rows) => {
         const row = rows.find((r) => r.name === logName);
         setProgress((prev) => ({ ...prev, [key]: row }));
@@ -168,12 +179,15 @@ export function SyncDashboard() {
     }
     await trigger(
       "import-orders",
-      () => (orderImportMode === "Date range" ? importExistingOrders(importFrom, importTo) : importExistingOrders()),
+      () =>
+        orderImportMode === "Date range"
+          ? importExistingOrders(importFrom, importTo, selected ?? undefined)
+          : importExistingOrders(undefined, undefined, selected ?? undefined),
       "Order import",
     );
   }
 
-  if (loading) {
+  if (storesLoading || loading) {
     return (
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
@@ -184,23 +198,30 @@ export function SyncDashboard() {
     );
   }
 
+  if (!storesLoading && stores.length > 0 && !selected) {
+    return <p className="text-muted-foreground text-sm">Choose a store above to see its dashboard.</p>;
+  }
+
   if (!stats) {
     return <p className="text-muted-foreground text-sm">Could not load the Shopify dashboard. Make sure you're signed in and try again.</p>;
   }
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2 rounded-lg border p-3 text-sm">
-        {connection === null ? (
-          <span className="text-muted-foreground">Checking connection…</span>
-        ) : (
-          <>
-            <Badge variant="outline" className={cn("border-0 font-medium", connection.success ? getSyncStatusBadgeClass("Success") : getSyncStatusBadgeClass("Failed"))}>
-              {connection.success ? "Connected" : "Not connected"}
-            </Badge>
-            <span className="text-muted-foreground">{connection.message}</span>
-          </>
-        )}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 rounded-lg border p-3 text-sm">
+          {connection === null ? (
+            <span className="text-muted-foreground">Checking connection…</span>
+          ) : (
+            <>
+              <Badge variant="outline" className={cn("border-0 font-medium", connection.success ? getSyncStatusBadgeClass("Success") : getSyncStatusBadgeClass("Failed"))}>
+                {connection.success ? "Connected" : "Not connected"}
+              </Badge>
+              <span className="text-muted-foreground">{connection.message}</span>
+            </>
+          )}
+        </div>
+        <StoreSwitcher />
       </div>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-4">
@@ -229,7 +250,7 @@ export function SyncDashboard() {
           ).map((s) => (
             <Link
               key={s.label}
-              href={`/os/channels/shopify/listings?status=${encodeURIComponent(s.label)}`}
+              href={`/os/channels/shopify/listings?status=${encodeURIComponent(s.label)}${selected ? `&connection=${encodeURIComponent(selected)}` : ""}`}
               className="rounded-lg border p-3 transition-colors hover:bg-accent"
             >
               <div className="text-2xl leading-none tracking-tight tabular-nums">{s.value.toLocaleString()}</div>
@@ -338,11 +359,31 @@ export function SyncDashboard() {
             </div>
           </CardHeader>
           <CardContent className="flex flex-1 flex-col items-start gap-3">
-            <p className="text-muted-foreground text-sm">Send the latest stock updates from Alaiy OS to Shopify.</p>
+            <p className="text-muted-foreground text-sm">Sync stock levels between Alaiy OS and Shopify, either direction.</p>
             {progress.inventory && <p className="text-muted-foreground text-xs">{formatProgress(progress.inventory)}</p>}
-            <Button size="sm" className="mt-auto" disabled={triggering !== null} onClick={() => void trigger("inventory", triggerInventoryPush, "Inventory sync")}>
-              <RefreshCw className={cn(triggering === "inventory" && "animate-spin")} /> Sync Inventory
-            </Button>
+            {progress["inventory-pull"] && (
+              <p className="text-muted-foreground text-xs">{formatProgress(progress["inventory-pull"])}</p>
+            )}
+            <div className="mt-auto flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                disabled={triggering !== null}
+                onClick={() => void trigger("inventory", () => triggerInventoryPush(selected ?? undefined), "Inventory sync")}
+              >
+                <RefreshCw className={cn(triggering === "inventory" && "animate-spin")} /> Push to Shopify
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={triggering !== null}
+                onClick={() => void trigger("inventory-pull", () => triggerInventoryPull(selected ?? undefined), "Inventory pull")}
+              >
+                <RefreshCw className={cn(triggering === "inventory-pull" && "animate-spin")} /> Pull from Shopify
+              </Button>
+              <Button size="sm" variant="ghost" asChild>
+                <Link href="/os/channels/shopify/inventory-updates">View updates</Link>
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -364,9 +405,31 @@ export function SyncDashboard() {
             <p className="font-medium text-sm">Import</p>
             <p className="text-muted-foreground text-xs">Import products from Shopify.</p>
             {progress.products && <p className="text-muted-foreground text-xs">{formatProgress(progress.products)}</p>}
-            <Button size="sm" disabled={triggering !== null} onClick={() => setImportDialogOpen(true)}>
-              {triggering === "products" ? <RefreshCw className="animate-spin" /> : <Download />} Import Products from Shopify
-            </Button>
+            {progress["products-missing"] && (
+              <p className="text-muted-foreground text-xs">{formatProgress(progress["products-missing"])}</p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" disabled={triggering !== null} onClick={() => setImportDialogOpen(true)}>
+                {triggering === "products" ? <RefreshCw className="animate-spin" /> : <Download />} Full Import
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={triggering !== null}
+                onClick={() =>
+                  void trigger(
+                    "products-missing",
+                    () => triggerMissingProductImport(undefined, selected ?? undefined),
+                    "Missing-product import",
+                  )
+                }
+              >
+                {triggering === "products-missing" ? <RefreshCw className="animate-spin" /> : <Download />} Missing Only
+              </Button>
+              <Button size="sm" variant="outline" disabled={triggering !== null} onClick={() => setProductSearchOpen(true)}>
+                <Search /> Search for a Product
+              </Button>
+            </div>
           </div>
           <div className="flex flex-col items-start gap-2 rounded-lg border p-3">
             <p className="font-medium text-sm">Export</p>
@@ -396,7 +459,9 @@ export function SyncDashboard() {
           </CardHeader>
           <CardContent>
             <Button size="sm" variant="outline" asChild>
-              <Link href="/os/channels/shopify/listings">Manage Listings</Link>
+              <Link href={selected ? `/os/channels/shopify/listings?connection=${encodeURIComponent(selected)}` : "/os/channels/shopify/listings"}>
+                Manage Listings
+              </Link>
             </Button>
           </CardContent>
         </Card>
@@ -419,7 +484,7 @@ export function SyncDashboard() {
               size="sm"
               variant="outline"
               disabled={triggering !== null}
-              onClick={() => void trigger("categories", refreshShopifyTaxonomy, "Category sync")}
+              onClick={() => void trigger("categories", () => refreshShopifyTaxonomy(selected ?? undefined), "Category sync")}
             >
               <RefreshCw className={cn(triggering === "categories" && "animate-spin")} /> Sync Categories
             </Button>
@@ -427,7 +492,7 @@ export function SyncDashboard() {
               size="sm"
               variant="outline"
               disabled={triggering !== null}
-              onClick={() => void trigger("tags", refreshShopifyTags, "Tags sync")}
+              onClick={() => void trigger("tags", () => refreshShopifyTags(selected ?? undefined), "Tags sync")}
             >
               <RefreshCw className={cn(triggering === "tags" && "animate-spin")} /> Sync Tags
             </Button>
@@ -435,7 +500,7 @@ export function SyncDashboard() {
               size="sm"
               variant="outline"
               disabled={triggering !== null}
-              onClick={() => void trigger("collections", refreshShopifyCollections, "Collections sync")}
+              onClick={() => void trigger("collections", () => refreshShopifyCollections(selected ?? undefined), "Collections sync")}
             >
               <RefreshCw className={cn(triggering === "collections" && "animate-spin")} /> Sync Collections
             </Button>
@@ -443,7 +508,7 @@ export function SyncDashboard() {
               size="sm"
               variant="outline"
               disabled={triggering !== null}
-              onClick={() => void trigger("locations", refreshShopifyLocations, "Locations sync")}
+              onClick={() => void trigger("locations", () => refreshShopifyLocations(selected ?? undefined), "Locations sync")}
             >
               <RefreshCw className={cn(triggering === "locations" && "animate-spin")} /> Sync Locations
             </Button>
@@ -461,8 +526,11 @@ export function SyncDashboard() {
       </div>
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Recent runs</CardTitle>
+          <Button size="sm" variant="outline" asChild>
+            <Link href="/os/channels/shopify/sync-logs">View all logs</Link>
+          </Button>
         </CardHeader>
         <CardContent className="px-0">
           <div className="overflow-x-auto">
@@ -537,7 +605,7 @@ export function SyncDashboard() {
         title="Import Products from Shopify"
         blurb="New products are created, changed products are updated, unchanged ones are left alone. On the very first run only, any stray unlinked product data is wiped first as a safety net."
         primaryLabel="Import"
-        onConfirm={(statuses) => void trigger("products", () => triggerProductImport(statuses), "Product import")}
+        onConfirm={(statuses) => void trigger("products", () => triggerProductImport(statuses, selected ?? undefined), "Product import")}
       />
       <ProductStatusDialog
         open={exportDialogOpen}
@@ -545,8 +613,9 @@ export function SyncDashboard() {
         title="Export Products to Shopify"
         blurb="Pushes every local product that is not yet linked to Shopify. Only listings whose status is ticked below are sent."
         primaryLabel="Export"
-        onConfirm={(statuses) => void trigger("export-products", () => triggerProductExport(statuses), "Product export")}
+        onConfirm={(statuses) => void trigger("export-products", () => triggerProductExport(statuses, selected ?? undefined), "Product export")}
       />
+      <ProductSearchDialog open={productSearchOpen} onOpenChange={setProductSearchOpen} connection={selected ?? undefined} />
     </div>
   );
 }

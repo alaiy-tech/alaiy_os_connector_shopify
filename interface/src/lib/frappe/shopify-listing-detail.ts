@@ -21,6 +21,7 @@ export interface ShopifyListingVariant {
   variant_price: number | null;
   variant_image: string | null;
   sh_shopify_variant_id: string | null;
+  metafields: ShopifyProductMetafield[];
 }
 
 export interface ShopifyProductMetafield {
@@ -41,6 +42,7 @@ export interface ShopifyListingDetail {
   listing_price: number | null;
   listing_category: string | null;
   listing_product_type: string | null;
+  listing_tags: string | null;
   listing_seo_title: string | null;
   listing_seo_description: string | null;
   sh_shopify_product_id: string | null;

@@ -20,6 +20,8 @@ import { toast } from "sonner";
 import { getListingStatusBadgeClass } from "@/constants/shopify";
 import { setListingEnabled } from "@/lib/frappe/shopify-listing-toggle";
 import { enableListingsByStatus, fetchResourceList, shopifyErrorMessage } from "@/lib/frappe/shopify-sync";
+import { useShopifyStore } from "../../_lib/use-shopify-store";
+import { StoreSwitcher } from "../../_components/store-switcher";
 
 interface ShopifyListing extends Record<string, unknown> {
   name: string;
@@ -47,6 +49,7 @@ function isStatusTab(value: string | null): value is StatusTab {
 }
 
 export function ListingsTable() {
+  const { selected } = useShopifyStore();
   const searchParams = useSearchParams();
   const initialTab = searchParams.get("status");
   const [tab, setTab] = useState<StatusTab>(isStatusTab(initialTab) ? initialTab : "All");
@@ -71,12 +74,13 @@ export function ListingsTable() {
   }
 
   useEffect(() => {
+    if (!selected) return;
     let cancelled = false;
     setRows(null);
     setError(null);
 
     const timeout = setTimeout(() => {
-      const filters: Array<[string, string, unknown]> = [];
+      const filters: Array<[string, string, unknown]> = [["connection", "=", selected]];
       if (tab !== "All") filters.push(["sh_shopify_status", "=", tab]);
       if (search.trim()) filters.push(["listing_title", "like", `%${search.trim()}%`]);
 
@@ -100,12 +104,12 @@ export function ListingsTable() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [tab, search, reloadToken]);
+  }, [tab, search, reloadToken, selected]);
 
   async function enableCurrentTab() {
     setEnabling(true);
     try {
-      await enableListingsByStatus(tab === "All" ? undefined : [tab]);
+      await enableListingsByStatus(tab === "All" ? undefined : [tab], selected ?? undefined);
       toast.success(
         tab === "All" ? "Enabling every disabled listing — this runs in the background." : `Enabling every disabled ${tab} listing.`,
       );
@@ -119,13 +123,14 @@ export function ListingsTable() {
 
   return (
     <Card className="gap-0">
-      <CardHeader className="border-b">
+      <CardHeader className="flex flex-wrap items-center justify-between gap-2 border-b">
         <InputGroup className="h-7 w-full md:w-64">
           <InputGroupAddon>
             <Search className="size-4" />
           </InputGroupAddon>
           <InputGroupInput placeholder="Search listings..." value={search} onChange={(e) => setSearch(e.target.value)} />
         </InputGroup>
+        <StoreSwitcher />
       </CardHeader>
       <CardContent className="gap-0 px-0">
         <div className="flex items-center justify-between gap-2 border-b px-4 py-2">

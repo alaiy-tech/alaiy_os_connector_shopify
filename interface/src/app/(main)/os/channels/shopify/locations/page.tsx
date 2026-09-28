@@ -13,6 +13,7 @@ interface ShopifyLocation extends Record<string, unknown> {
   name: string;
   location_name: string;
   is_active: 0 | 1;
+  sh_location_id: string | null;
   fulfillment_service_name: string | null;
   fulfillment_service_type: string | null;
   last_synced: string | null;
@@ -23,20 +24,24 @@ export default function Page() {
     <div className="flex flex-col gap-4">
       <PageHeader title="Shopify Locations" subtitle="Fulfillment locations Shopify reports, mapped to a warehouse per the connector settings." />
       <RefreshableList refresh={refreshShopifyLocations}>
-        {(reloadToken) => (
+        {(reloadToken, selected) => (
           <SimpleResourceTable<ShopifyLocation>
-            key={reloadToken}
+            key={`${reloadToken}-${selected}`}
             load={() =>
               fetchResourceList<ShopifyLocation>(
                 "Shopify Location",
-                ["name", "location_name", "is_active", "fulfillment_service_name", "fulfillment_service_type", "last_synced"],
-                { orderBy: "location_name asc" },
+                ["name", "location_name", "is_active", "sh_location_id", "fulfillment_service_name", "fulfillment_service_type", "last_synced"],
+                { orderBy: "location_name asc", filters: selected ? [["connection", "=", selected]] : [] },
               )
             }
             rowKey={(row) => row.name}
             emptyMessage="No locations synced yet."
             columns={[
               { header: "Location", render: (row) => row.location_name },
+              {
+                header: "Shopify Location ID",
+                render: (row) => <span className="font-mono text-muted-foreground text-xs">{row.sh_location_id || "—"}</span>,
+              },
               {
                 header: "Status",
                 render: (row) => (

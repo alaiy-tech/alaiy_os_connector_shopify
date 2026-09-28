@@ -14,8 +14,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@alaiy-os/ui/input";
 import { Label } from "@alaiy-os/ui/label";
 import { Skeleton } from "@alaiy-os/ui/skeleton";
+import { Switch } from "@alaiy-os/ui/switch";
 import { cn } from "@alaiy-os/utils";
-import { ArrowLeft, Loader2, Trash2, Wand2 } from "lucide-react";
+import { ArrowLeft, Loader2, Rocket, Trash2, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { getListingStatusBadgeClass } from "@/constants/shopify";
@@ -28,6 +29,7 @@ import {
   type ShopifyListingDetail,
   type ShopifyListingEffectiveValues,
 } from "@/lib/frappe/shopify-listing-detail";
+import { publishListingNow } from "@/lib/frappe/shopify-listing-publish";
 import { shopifyErrorMessage } from "@/lib/frappe/shopify-sync";
 
 import { LinkField } from "../../../../settings/connectors/shopify/_components/link-field";
@@ -45,6 +47,7 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [populating, setPopulating] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -84,11 +87,13 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
     setSaving(true);
     try {
       const patch = {
+        is_enabled: listing.is_enabled,
         listing_title: listing.listing_title || "",
         listing_description: listing.listing_description || "",
         listing_price: listing.listing_price,
         listing_category: listing.listing_category || "",
         listing_product_type: listing.listing_product_type || "",
+        listing_tags: listing.listing_tags || "",
         listing_seo_title: listing.listing_seo_title || "",
         listing_seo_description: listing.listing_seo_description || "",
         images: listing.images.map(({ name: rowName, image, source, sort_order, generated_by_agent }) => ({
@@ -99,13 +104,20 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
           generated_by_agent,
         })),
         variants: listing.variants.map(
-          ({ name: rowName, item_variant, is_enabled, variant_price, variant_image, sh_shopify_variant_id }) => ({
+          ({ name: rowName, item_variant, is_enabled, variant_price, variant_image, sh_shopify_variant_id, metafields }) => ({
             ...(rowName ? { name: rowName } : {}),
             item_variant,
             is_enabled,
             variant_price,
             variant_image,
             sh_shopify_variant_id,
+            metafields: (metafields ?? []).map(({ name: mfName, namespace, key, type, value }) => ({
+              ...(mfName ? { name: mfName } : {}),
+              namespace,
+              key,
+              type,
+              value,
+            })),
           }),
         ),
         metafields: listing.metafields.map(({ name: rowName, namespace, key, type, value }) => ({
@@ -146,6 +158,7 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
                 variant_price: row.variant_price,
                 variant_image: row.variant_image,
                 sh_shopify_variant_id: row.sh_shopify_variant_id,
+                metafields: [],
               })),
               listing_category: data.listing_category ?? prev.listing_category,
               listing_product_type: data.listing_product_type ?? prev.listing_product_type,
@@ -157,6 +170,19 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
       toast.error(shopifyErrorMessage(error, "Could not load the Item's current data."));
     } finally {
       setPopulating(false);
+    }
+  }
+
+  async function handlePublishNow() {
+    if (!listing) return;
+    setPublishing(true);
+    try {
+      await publishListingNow(listing.item);
+      toast.success("Publish queued — this pushes right now, regardless of Enable Sync.");
+    } catch (error) {
+      toast.error(shopifyErrorMessage(error, "Could not publish."));
+    } finally {
+      setPublishing(false);
     }
   }
 
@@ -180,9 +206,18 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
         title={listing?.listing_title || decodedName}
         subtitle={listing?.item ? `Item: ${listing.item}` : undefined}
         action={
-          <Link href="/os/channels/shopify/listings" className="flex items-center gap-1 text-muted-foreground text-sm hover:text-foreground">
-            <ArrowLeft className="size-4" /> Back to Listings
-          </Link>
+          <div className="flex items-center gap-3">
+            {listing?.item && (
+              <Button size="sm" variant="outline" asChild>
+                <Link href={`/os/channels/shopify/listings/enrichment/${encodeURIComponent(listing.item)}`}>
+                  <Wand2 className="size-3.5" /> Enrichment
+                </Link>
+              </Button>
+            )}
+            <Link href="/os/channels/shopify/listings" className="flex items-center gap-1 text-muted-foreground text-sm hover:text-foreground">
+              <ArrowLeft className="size-4" /> Back to Listings
+            </Link>
+          </div>
         }
       />
 
@@ -205,8 +240,15 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
                   {listing.sh_shopify_status || "Active"}
                 </Badge>
               </Field>
-              <Field label="Enabled">
-                <Badge variant={listing.is_enabled ? "outline" : "secondary"}>{listing.is_enabled ? "Enabled" : "Disabled"}</Badge>
+              <Field label="Enable Sync">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={Boolean(listing.is_enabled)}
+                    onCheckedChange={(v) => set("is_enabled", v ? 1 : 0)}
+                    disabled={saving}
+                  />
+                  <span className="text-muted-foreground text-xs">{listing.is_enabled ? "Every edit pushes to Shopify" : "Manual publish only"}</span>
+                </div>
               </Field>
               <Field label="Shopify Product ID">
                 <span className="font-mono text-xs">{listing.sh_shopify_product_id || "—"}</span>
@@ -244,6 +286,15 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
                   value={listing.listing_product_type ?? ""}
                   onChange={(e) => set("listing_product_type", e.target.value)}
                   disabled={saving}
+                />
+              </EditableField>
+
+              <EditableField label="Tags">
+                <Input
+                  value={listing.listing_tags ?? ""}
+                  onChange={(e) => set("listing_tags", e.target.value)}
+                  disabled={saving}
+                  placeholder="Comma-separated"
                 />
               </EditableField>
 
@@ -301,9 +352,14 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
             <Button variant="destructive" onClick={() => setConfirmDelete(true)} disabled={saving || deleting}>
               <Trash2 /> Delete listing
             </Button>
-            <Button onClick={() => void handleSave()} disabled={saving}>
-              {saving && <Loader2 className="animate-spin" />} Save
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => void handlePublishNow()} disabled={saving || publishing}>
+                {publishing ? <Loader2 className="animate-spin" /> : <Rocket />} Publish Now
+              </Button>
+              <Button onClick={() => void handleSave()} disabled={saving}>
+                {saving && <Loader2 className="animate-spin" />} Save
+              </Button>
+            </div>
           </div>
 
           <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>

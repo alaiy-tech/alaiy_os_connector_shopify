@@ -6,7 +6,9 @@ import { Badge } from "@alaiy-os/ui/badge";
 
 import { fetchResourceList } from "@/lib/frappe/shopify-sync";
 
+import { useShopifyStore } from "../_lib/use-shopify-store";
 import { SimpleResourceTable } from "../_components/simple-resource-table";
+import { StoreSwitcher } from "../_components/store-switcher";
 
 interface RetryQueueEntry extends Record<string, unknown> {
   name: string;
@@ -36,18 +38,24 @@ const STATUS_VARIANT: Record<RetryQueueEntry["status"], "default" | "secondary" 
 };
 
 export default function Page() {
+  const { selected } = useShopifyStore();
+
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        title="Shopify Retry Queue"
-        subtitle="Sync operations that failed and are waiting to retry, plus the local-to-Shopify ID mapping ledger."
-      />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <PageHeader
+          title="Shopify Retry Queue"
+          subtitle="Sync operations that failed and are waiting to retry, plus the local-to-Shopify ID mapping ledger."
+        />
+        <StoreSwitcher />
+      </div>
       <SimpleResourceTable<RetryQueueEntry>
+        key={`retry-${selected}`}
         load={() =>
           fetchResourceList<RetryQueueEntry>(
             "Shopify Retry Queue Entry",
             ["name", "direction", "entity_type", "synced_entity", "status", "attempt_count", "next_attempt_at", "last_error"],
-            { orderBy: "modified desc" },
+            { orderBy: "modified desc", filters: selected ? [["connection", "=", selected]] : [] },
           )
         }
         rowKey={(row) => row.name}
@@ -72,11 +80,12 @@ export default function Page() {
 
       <PageHeader title="Synced Entity Ledger" subtitle="ID mapping between local Alaiy OS documents and their Shopify counterparts." />
       <SimpleResourceTable<SyncedEntity>
+        key={`entities-${selected}`}
         load={() =>
           fetchResourceList<SyncedEntity>(
             "Shopify Synced Entity",
             ["name", "entity_type", "external_id", "erpnext_doctype", "erpnext_name", "last_synced_at"],
-            { orderBy: "modified desc" },
+            { orderBy: "modified desc", filters: selected ? [["connection", "=", selected]] : [] },
           )
         }
         rowKey={(row) => row.name}
