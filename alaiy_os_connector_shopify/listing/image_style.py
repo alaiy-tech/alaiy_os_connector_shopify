@@ -64,16 +64,19 @@ pixels, and one that does:
   * `gemini_full` — the odd one out, and the only matte where this module's own
     "the model is asked for the product on an empty ground and nothing else"
     promise (see the top of this docstring) does NOT hold for the product. One
-    `generate_image` call does the whole job — background, shadow, everything
-    — because that is the render that separates cleanly on a busy backdrop the
-    mask-only `gemini` path below could not. But the BACKGROUND is never taken
-    from that render: only Gemini's separation of product-from-everything-else
-    is used (a corner flood-fill over its render, same as `flood`), and the
-    cutout that comes out of it is composited onto this module's own exact
-    `spec["background"]` hex with its own deterministic shadow, exactly like
-    `segment`/`gemini`/`flood`. So the background colour is always correct
-    here too — nothing about it depends on what Gemini drew. What IS still
-    Gemini's, and does not have the photographer's-own-pixels guarantee the
+    `generate_image` call does a full redraw — a heavier ask than the
+    mask-only `gemini` path's isolate, and the render that separates cleanly
+    on a busy backdrop the isolate could not. But neither the BACKGROUND nor
+    the SHADOW is taken from that render: only Gemini's separation of
+    product-from-everything-else is used (a corner flood-fill over its render,
+    same as `flood`), and the cutout that comes out of it is composited onto
+    this module's own exact `spec["background"]` hex with its own
+    deterministic shadow, exactly like `segment`/`gemini`/`flood`. Gemini is
+    in fact asked NOT to draw a shadow of its own, the same as the `gemini`
+    isolate prompt — one would only double up with this module's and make the
+    render itself harder to separate cleanly. So the background colour is
+    always correct here too — nothing about it depends on what Gemini drew.
+    What IS still Gemini's, and does not have the photographer's-own-pixels guarantee the
     other four give, is the product itself: a resale catalog that turned
     generative retouching off for exactly that reason (see `retouch` below)
     should treat this as a considered trade, not a default. Kept as a sibling
@@ -669,28 +672,34 @@ def _gemini_isolated(client, image, background_hex):
 _GEMINI_FULL_FINISH_MODEL = "google/gemini-3-pro-image"
 
 _GEMINI_FULL_FINISH_PROMPT = (
-    "Put this exact product photo on a plain, even {hex} background, with "
-    "soft, natural shadows. Keep the product exactly as it is - do not "
-    "retouch, restyle, or redraw it."
+    "Put this exact product photo on a plain, even {hex} background. Keep the "
+    "product exactly as it is - do not retouch, restyle, or redraw it. Do not "
+    "add any shadow, reflection, or texture to the background."
 )
 
 
 def _finish_gemini_full(content, spec, client):
     """Gemini redraws the whole photo; this module still paints the ground.
 
-    Gemini is asked for the full finish because that is the render that
-    separates cleanly on a busy backdrop the mask-only `gemini` isolate could
-    not (see the module docstring's `gemini_full` entry) — but its background
-    and shadow are never trusted as pixels to ship. Its render is only used to
-    find the product, via the same corner flood-fill `flood` runs on a real
-    photo (`_subject_alpha`); the cutout that reaches the canvas is cropped
-    from THAT render (so a redrawn product, unlike `segment`/`gemini`/`flood`,
-    is the one guarantee this matte still gives up), and the ground and shadow
-    underneath it are `_compose`'s own — the exact `spec["background"]` hex and
-    the house drop-shadow, painted the same deterministic way every other
-    matte's are. That is what makes the background colour always correct here
-    too: no threshold, no "close enough" check, no model in the loop for it at
-    all — it's Python drawing a colour it was told, not a render being judged.
+    Gemini is asked for a full redraw — not just a mask — because that is the
+    render that separates cleanly on a busy backdrop the mask-only `gemini`
+    isolate could not (see the module docstring's `gemini_full` entry). But its
+    background is never trusted as pixels to ship, so unlike `gemini_full`'s
+    original design this no longer asks Gemini for a shadow either: this
+    module always draws its own afterward, and a shadow in Gemini's render
+    would both double up with that one and make the render itself harder to
+    separate cleanly (see `_GEMINI_FULL_FINISH_PROMPT`).
+
+    Gemini's render is used for exactly one thing: finding the product, via
+    the same corner flood-fill `flood` runs on a real photo (`_subject_alpha`).
+    The cutout that reaches the canvas is cropped from THAT render (so a
+    redrawn product, unlike `segment`/`gemini`/`flood`, is the one guarantee
+    this matte still gives up), and the ground and shadow underneath it are
+    `_compose`'s own — the exact `spec["background"]` hex and the house
+    drop-shadow, painted the same deterministic way every other matte's are.
+    That is what makes the background colour always correct here too: no
+    threshold, no "close enough" check, no model in the loop for it at all —
+    it's Python drawing a colour it was told, not a render being judged.
     """
     if not client:
         return _skipped(content, "no background/matting provider is configured")
