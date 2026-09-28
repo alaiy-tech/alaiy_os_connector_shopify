@@ -717,10 +717,12 @@ def _finish_gemini_full(content, spec, client):
 # How the ground of a gemini_full render is pulled onto the exact house hex.
 #
 # Within _SNAP_EXACT (plain RGB distance from the ground colour Gemini used) a
-# pixel IS the ground, give or take render grain, and becomes the hex exactly,
-# blending out to _SNAP_CORE. A ramp, not a cut-off: snapping everything within
-# one distance and leaving the next level alone draws a ring round the shadow,
-# where its first few levels of darkening were flattened to the hex.
+# pixel becomes the hex exactly, blending out to _SNAP_CORE. Kept to a couple of
+# levels on purpose: the faint outer edge of a soft shadow is also close to the
+# ground, and a wider snap flattened it — at 8/16 a light shadow lost a fifth
+# of its area and gained a hard edge. Past this the hue correction below still
+# takes the ground onto the hex on average; each pixel just keeps its own grain.
+# A ramp, not a cut-off, so the snap's own edge draws no ring either.
 #
 # Beyond that, background is recognised by HUE, not by brightness: a shadow is
 # the ground made darker, so scaled back up to the ground's brightness it is the
@@ -728,8 +730,8 @@ def _finish_gemini_full(content, spec, client):
 # inside the first, fading to none at the second, so there is no line where it
 # stops. Keying on brightness instead left the middle of the shadow in
 # Gemini's own tint.
-_SNAP_EXACT = 8
-_SNAP_CORE = 16
+_SNAP_EXACT = 3
+_SNAP_CORE = 6
 _SNAP_HUE_IN = 20
 _SNAP_HUE_OUT = 36
 
