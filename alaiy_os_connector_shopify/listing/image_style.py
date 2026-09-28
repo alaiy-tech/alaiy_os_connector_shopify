@@ -671,10 +671,21 @@ def _gemini_isolated(client, image, background_hex):
 # fails on.
 _GEMINI_FULL_FINISH_MODEL = "google/gemini-3-pro-image"
 
+# The "same scale, framing and position" clause exists because `_compose`
+# cannot fix its absence afterward: it only ever grows the canvas around
+# whatever cutout it is handed, on purpose (see its docstring on why a stud
+# must keep reading as smaller than a hoop) - it never scales a product UP to
+# fill more of the frame. Gemini's own default behaviour on this prompt
+# without that clause was to zoom out and recentre the product, leaving an
+# even mat of background all the way around it; nothing downstream can tell
+# that apart from a product that was genuinely shot with more headroom, so it
+# has to be prevented here, not corrected after the fact.
 _GEMINI_FULL_FINISH_PROMPT = (
-    "Put this exact product photo on a plain, even {hex} background. Keep the "
-    "product exactly as it is - do not retouch, restyle, or redraw it. Do not "
-    "add any shadow, reflection, or texture to the background."
+    "Put this exact product photo on a plain, even {hex} background, at "
+    "the exact same scale, framing and position it already has in this "
+    "photo. Keep the product exactly as it is - do not retouch, restyle, "
+    "resize, or redraw it, and do not zoom out or add extra margin around "
+    "it. Do not add any shadow, reflection, or texture to the background."
 )
 
 
