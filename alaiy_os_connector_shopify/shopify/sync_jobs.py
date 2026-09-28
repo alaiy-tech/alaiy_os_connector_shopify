@@ -232,10 +232,14 @@ def _maybe_enqueue_inventory_pull(interval_setting, settings):
         if now < due_at:
             return
 
+    # Local-first: asks Shopify only about items already linked here, not a
+    # full catalogue walk -- what an interval this frequent should cost. The
+    # once-daily full sweep (enqueue_reconcile_inventory) stays the backstop
+    # that also catches a stale/missing link this can't.
     frappe.enqueue(
-        "alaiy_os_connector_shopify.shopify.inventory_sync.reconcile_inventory_from_shopify",
+        "alaiy_os_connector_shopify.shopify.inventory_sync.scheduled_pull_linked_items",
         queue="long",
-        timeout=3600,
+        timeout=1800,
         trigger="scheduled",
         connection=settings.name,
     )
