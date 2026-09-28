@@ -79,63 +79,103 @@ function serverMessage(payload: { _server_messages?: string; exception?: string 
   return payload.exception ?? null;
 }
 
-export function fetchDashboardStats(): Promise<DashboardStats> {
-  return callMethod<DashboardStats>("alaiy_os_connector_shopify.api.sync.get_dashboard_stats");
+export function fetchDashboardStats(connection?: string): Promise<DashboardStats> {
+  return callMethod<DashboardStats>("alaiy_os_connector_shopify.api.sync.get_dashboard_stats", { connection });
 }
 
 /** Hits the live Shopify API — slower, called separately so it never blocks the fast local numbers. */
-export function fetchShopifySideStats(): Promise<ShopifySideStats> {
-  return callMethod<ShopifySideStats>("alaiy_os_connector_shopify.api.sync.get_shopify_side_stats");
+export function fetchShopifySideStats(connection?: string): Promise<ShopifySideStats> {
+  return callMethod<ShopifySideStats>("alaiy_os_connector_shopify.api.sync.get_shopify_side_stats", { connection });
 }
 
-export function fetchSyncStatus(syncType?: "categories" | "items" | "products"): Promise<SyncLogRow[]> {
-  const qs = syncType ? `?sync_type=${syncType}` : "";
-  return callMethod<SyncLogRow[]>(`alaiy_os_connector_shopify.api.sync.get_sync_status${qs}`);
+export function fetchSyncStatus(syncType?: "categories" | "items" | "products", connection?: string): Promise<SyncLogRow[]> {
+  const params = new URLSearchParams();
+  if (syncType) params.set("sync_type", syncType);
+  if (connection) params.set("connection", connection);
+  const qs = params.toString();
+  return callMethod<SyncLogRow[]>(`alaiy_os_connector_shopify.api.sync.get_sync_status${qs ? `?${qs}` : ""}`);
 }
 
-export function triggerOrdersSync(): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_orders_sync", {});
+export function triggerOrdersSync(connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_orders_sync", { connection });
 }
 
-export function triggerInventoryPush(): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_inventory_push", {});
+export function triggerInventoryPush(connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_inventory_push", { connection });
 }
 
-export function triggerProductImport(statuses?: string[]): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_product_import", { statuses });
+/** Manual on-demand pull -- full catalogue sweep, same backend job as the daily scheduled one. */
+export function triggerInventoryPull(connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_inventory_pull", { connection });
 }
 
-export function triggerProductExport(statuses?: string[]): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_product_export", { statuses });
+export function triggerProductImport(statuses?: string[], connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_product_import", { statuses, connection });
+}
+
+/** Catch-up import: only products never linked locally, never re-verifies existing ones. */
+export function triggerMissingProductImport(
+  opts?: { statuses?: string[]; collectionId?: string; locationId?: string },
+  connection?: string,
+): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_missing_product_import", {
+    statuses: opts?.statuses,
+    collection_id: opts?.collectionId,
+    location_id: opts?.locationId,
+    connection,
+  });
+}
+
+export interface ShopifyProductSearchResult {
+  product_id: string;
+  title: string;
+  handle: string;
+  status: string;
+  image: string | null;
+}
+
+/** Live Shopify title/SKU search -- synchronous, for the "Search for a product…" picker. */
+export function searchShopifyProducts(term: string, connection?: string, limit = 20): Promise<ShopifyProductSearchResult[]> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.search_shopify_products", { term, limit, connection });
+}
+
+/** Pull and import exactly one Shopify product by id -- the pull step after picking a search result. */
+export function importShopifyProduct(productId: string, connection?: string): Promise<{ created: boolean; reason: string }> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.import_shopify_product", { product_id: productId, connection });
+}
+
+export function triggerProductExport(statuses?: string[], connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.trigger_product_export", { statuses, connection });
 }
 
 /** A one-off backfill for a date range, distinct from the regular incremental orders sync. */
-export function importExistingOrders(dateFrom?: string, dateTo?: string): Promise<unknown> {
+export function importExistingOrders(dateFrom?: string, dateTo?: string, connection?: string): Promise<unknown> {
   return callMethod("alaiy_os_connector_shopify.api.sync.import_existing_orders", {
     date_from: dateFrom,
     date_to: dateTo,
+    connection,
   });
 }
 
 /** Bulk-enable every disabled listing whose own status matches one of `statuses`. */
-export function enableListingsByStatus(statuses?: string[]): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.sync.enable_listings_by_status", { statuses });
+export function enableListingsByStatus(statuses?: string[], connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.enable_listings_by_status", { statuses, connection });
 }
 
-export function refreshShopifyTaxonomy(): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.sync.refresh_shopify_taxonomy", {});
+export function refreshShopifyTaxonomy(connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.refresh_shopify_taxonomy", { connection });
 }
 
-export function refreshShopifyTags(): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.sync.refresh_shopify_tags", {});
+export function refreshShopifyTags(connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.refresh_shopify_tags", { connection });
 }
 
-export function refreshShopifyCollections(): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.sync.refresh_shopify_collections", {});
+export function refreshShopifyCollections(connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.refresh_shopify_collections", { connection });
 }
 
-export function refreshShopifyLocations(): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.sync.refresh_shopify_locations", {});
+export function refreshShopifyLocations(connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.sync.refresh_shopify_locations", { connection });
 }
 
 /** Stops a queued/running sync on its next poll. No effect on one that already finished. */
@@ -143,17 +183,26 @@ export function requestCancelSync(logName: string): Promise<{ cancelled: boolean
   return callMethod("alaiy_os_connector_shopify.shopify.sync_guard.request_cancel", { log_name: logName });
 }
 
-export function exportListingsCsv(opts?: { listingNames?: string[]; onlyEnabled?: boolean; onlyDisabled?: boolean }): Promise<unknown> {
+export function exportListingsCsv(opts?: {
+  listingNames?: string[];
+  onlyEnabled?: boolean;
+  onlyDisabled?: boolean;
+  connection?: string;
+}): Promise<unknown> {
   return callMethod("alaiy_os_connector_shopify.api.export.trigger_background_export", {
     listing_names: opts?.listingNames,
     only_enabled: opts?.onlyEnabled ? 1 : undefined,
     only_disabled: opts?.onlyDisabled ? 1 : undefined,
+    connection: opts?.connection,
   });
 }
 
 /** `fileUrl` is a Frappe File doc's `file_url`, from the normal upload dialog. */
-export function triggerUpdateListingsCsv(fileUrl: string): Promise<unknown> {
-  return callMethod("alaiy_os_connector_shopify.api.update_listings.trigger_update_listings", { file_url: fileUrl });
+export function triggerUpdateListingsCsv(fileUrl: string, connection?: string): Promise<unknown> {
+  return callMethod("alaiy_os_connector_shopify.api.update_listings.trigger_update_listings", {
+    file_url: fileUrl,
+    connection,
+  });
 }
 
 /**

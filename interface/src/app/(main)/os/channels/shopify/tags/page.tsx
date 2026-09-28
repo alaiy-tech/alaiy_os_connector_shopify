@@ -1,3 +1,5 @@
+"use client";
+
 import { PageHeader } from "@alaiy-os/layout/page-header";
 
 import { fetchResourceList, refreshShopifyTags } from "@/lib/frappe/shopify-sync";
@@ -15,10 +17,15 @@ export default function Page() {
     <div className="flex flex-col gap-4">
       <PageHeader title="Shopify Tags" subtitle="Every tag Shopify has reported across your products." />
       <RefreshableList refresh={refreshShopifyTags}>
-        {(reloadToken) => (
+        {(reloadToken, selected) => (
           <SimpleResourceTable<ShopifyTag>
-            key={reloadToken}
-            load={() => fetchResourceList<ShopifyTag>("Shopify Tag", ["name", "tag_name"], { orderBy: "tag_name asc" })}
+            key={`${reloadToken}-${selected}`}
+            load={() =>
+              fetchResourceList<ShopifyTag>("Shopify Tag", ["name", "tag_name"], {
+                orderBy: "tag_name asc",
+                filters: selected ? [["connection", "=", selected]] : [],
+              })
+            }
             rowKey={(row) => row.name}
             emptyMessage="No tags synced yet."
             columns={[{ header: "Tag", render: (row) => row.tag_name }]}

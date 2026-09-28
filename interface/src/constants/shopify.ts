@@ -1,7 +1,17 @@
 import { STATUS_TONE } from "@alaiy-os/constants/list";
 
 /** Shopify Sync Log.status. */
+// Keyed by both the doctype's real (lowercase) Select options and the
+// Capitalized strings a few call sites pass by hand (e.g. the connection
+// test's "Success"/"Failed") -- one map serves both without either caller
+// needing to normalize case first.
 export const SYNC_STATUS_BADGE_CLASS: Record<string, (typeof STATUS_TONE)[keyof typeof STATUS_TONE]> = {
+  queued: STATUS_TONE.neutral,
+  running: STATUS_TONE.info,
+  success: STATUS_TONE.success,
+  failed: STATUS_TONE.destructive,
+  skipped: STATUS_TONE.neutral,
+  cancelled: STATUS_TONE.neutral,
   Success: STATUS_TONE.success,
   Running: STATUS_TONE.info,
   Failed: STATUS_TONE.destructive,
