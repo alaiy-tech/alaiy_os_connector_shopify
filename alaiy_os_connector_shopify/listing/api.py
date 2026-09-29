@@ -341,8 +341,28 @@ def _ensure_enriched_listing(item_code, listing, image_status="Queued"):
 
     # ignore_permissions=True: both callers (enrich_listing_image,
     # ensure_enriched_listing above) already check permission on the source
-    # listing before reaching this private helper.
-    doc.insert(ignore_permissions=True)
+    # listing before reaching this private helper - OS Agent Run create plus
+    # listing read for a retouch, listing write for a hand edit. The row is a
+    # copy of what the product already says; publishing it checks write again.
+    frappe.db.savepoint("ensure_enriched_listing")
+    try:
+        doc.insert(ignore_permissions=True)  # nosemgrep: frapsec-ignore-permissions -- callers check permission first, see above
+    except frappe.DuplicateEntryError:
+        # Another request seeded it first. The Media tab sends one
+        # enrich_listing_image per ticked photo, all at once, and with no draft
+        # yet every one of them got past the exists() check above - all but one
+        # then failed here with a 409, shown as "N photos could not be enriched"
+        # (Z058-03286R, 2026-09-29). Their draft is as good as ours.
+        #
+        # Committed, not just rolled back to the savepoint: under REPEATABLE READ
+        # this request's snapshot predates the other request's commit, so the
+        # draft's rows would stay invisible to it - and clear_rendered, next,
+        # would find nothing to clear, leaving the retouch to land beside the
+        # original instead of in place of it. Nothing else is written before this
+        # on either path that can collide (the duplicate means the other insert
+        # committed, which a delete in the same transaction would have blocked).
+        frappe.db.rollback(save_point="ensure_enriched_listing")
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit
 
 
 @frappe.whitelist(methods=["POST"])

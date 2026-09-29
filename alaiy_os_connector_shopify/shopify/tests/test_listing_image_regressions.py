@@ -597,3 +597,46 @@ class SaveListingWaitsForPhotoJobs(unittest.TestCase):
 				handlers.save_listing({}, item_code="SH-1")
 
 		self.assertEqual(calls, ["commit", "lock", "get_doc"])
+
+
+class ConcurrentRetouchesShareOneDraft(unittest.TestCase):
+	"""Photos retouched together on a product with no draft must all go through.
+
+	The Media tab sends one enrich_listing_image per ticked photo, at once. Each
+	saw no draft and tried to seed one; all but the first failed with a 409
+	(Z058-03286R, 2026-09-29: "3 photos could not be enriched").
+	"""
+
+	def _ensure(self, insert_error=None):
+		from unittest.mock import MagicMock, patch
+
+		import frappe
+
+		from alaiy_os_connector_shopify.listing import api
+
+		calls = []
+		fake = MagicMock()
+		fake.DuplicateEntryError = frappe.DuplicateEntryError
+		fake.db.exists.return_value = False
+		fake.db.rollback.side_effect = lambda **kw: calls.append(("rollback", kw))
+		fake.db.commit.side_effect = lambda: calls.append("commit")
+		fake.new_doc.return_value.insert.side_effect = insert_error
+
+		listing = MagicMock()
+		with patch.object(api, "frappe", fake), \
+			patch("alaiy_os_connector_shopify.listing.handlers.published_attributes", return_value={}), \
+			patch("alaiy_os_connector_shopify.listing.handlers.listing_image_urls", return_value=[]), \
+			patch("alaiy_os_connector_shopify.listing.handlers.variant_image_map", return_value={}):
+			api._ensure_enriched_listing("SH-1", listing)
+		return calls
+
+	def test_losing_the_race_uses_the_winners_draft(self):
+		import frappe
+
+		calls = self._ensure(frappe.DuplicateEntryError("SH-1"))
+		# Rolled back to before the insert only, then committed so the rest of the
+		# request reads the draft the other request just made.
+		self.assertEqual(calls, [("rollback", {"save_point": "ensure_enriched_listing"}), "commit"])
+
+	def test_winning_the_race_commits_nothing_early(self):
+		self.assertEqual(self._ensure(), [])
