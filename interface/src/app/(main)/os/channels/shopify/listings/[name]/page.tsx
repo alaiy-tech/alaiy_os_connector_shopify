@@ -267,11 +267,15 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
               </EditableField>
 
               {simpleProduct && (
-                <EditableField label="Price" hint="the Item Price on the connector's selling price list">
+                <EditableField
+                  label="Price"
+                  hint={effective.price != null ? `${effective.price.toFixed(2)} (the Item Price)` : "the Item Price on the connector's selling price list"}
+                >
                   <Input
                     type="number"
                     step="0.01"
-                    value={listing.listing_price ?? ""}
+                    value={listing.listing_price || ""}
+                    placeholder={effective.price != null ? effective.price.toFixed(2) : ""}
                     disabled={saving}
                     onChange={(e) => set("listing_price", e.target.value === "" ? null : Number(e.target.value))}
                   />
@@ -343,7 +347,12 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
           <Card className="gap-0">
             <CardHeader className="border-b font-medium text-sm">Variants ({listing.variants.length})</CardHeader>
             <CardContent className="pt-4">
-              <VariantsEditor rows={listing.variants} onChange={(variants) => set("variants", variants)} disabled={saving} />
+              <VariantsEditor
+                rows={listing.variants}
+                inheritedPrices={effective.variant_prices}
+                onChange={(variants) => set("variants", variants)}
+                disabled={saving}
+              />
             </CardContent>
           </Card>
 

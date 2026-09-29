@@ -210,7 +210,7 @@ export function ListingsTable() {
                         />
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {row.listing_price != null ? row.listing_price.toFixed(2) : <span className="text-muted-foreground">—</span>}
+                        {row.listing_price ? row.listing_price.toFixed(2) : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="font-mono text-xs">
                         {row.sh_shopify_product_id || <span className="text-muted-foreground">—</span>}

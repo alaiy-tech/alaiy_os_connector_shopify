@@ -24,12 +24,20 @@ export function VariantsEditor({
   rows,
   onChange,
   disabled,
+  inheritedPrices,
 }: {
   rows: ShopifyListingVariant[];
   onChange: (rows: ShopifyListingVariant[]) => void;
   disabled?: boolean;
+  /** Each variant Item's own price, shown when its override is blank. */
+  inheritedPrices?: Record<string, number | null>;
 }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  function inheritedPlaceholder(itemVariant: string) {
+    const price = inheritedPrices?.[itemVariant];
+    return price != null ? price.toFixed(2) : "Inherits Item Price";
+  }
 
   function updateRow(index: number, patch: Partial<ShopifyListingVariant>) {
     onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
@@ -100,8 +108,8 @@ export function VariantsEditor({
                     <Input
                       type="number"
                       step="0.01"
-                      placeholder="Inherits Item Price"
-                      value={row.variant_price ?? ""}
+                      placeholder={inheritedPlaceholder(row.item_variant)}
+                      value={row.variant_price || ""}
                       disabled={disabled}
                       onChange={(e) => updateRow(index, { variant_price: e.target.value === "" ? null : Number(e.target.value) })}
                     />

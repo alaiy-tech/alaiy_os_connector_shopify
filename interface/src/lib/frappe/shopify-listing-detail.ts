@@ -62,6 +62,9 @@ export interface ShopifyListingEffectiveValues {
   seo_title?: string;
   seo_description?: string;
   image_count?: number;
+  /** The Item's own price on the selling list; null when it has none. */
+  price?: number | null;
+  variant_prices?: Record<string, number | null>;
 }
 
 /** listing.get_item_children(item) result -- see listing.py. Category/type
