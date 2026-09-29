@@ -516,3 +516,44 @@ class TextOnlyRunLeavesTheDraftsPhotosAlone(unittest.TestCase):
 		self.assertEqual([(r.kind, r.url) for r in doc.images], [(None, None), ("worn", "worn.jpeg")])
 		self.assertEqual(doc.image_status, "Queued")
 		self.assertIsNone(doc.image_error)
+
+
+class DraftFollowsShopifysRehostedUrls(unittest.TestCase):
+	"""After a push, the draft must name each photo the way the listing does.
+
+	Found on 13A419-5001 (2026-09-29): the listing's worn photos became
+	cdn.shopify.com urls, the draft kept /files/ ones, and the admin grid showed
+	each one twice and kept offering Save for photos already live.
+	"""
+
+	CDN = "https://cdn.shopify.com/s/files/1/0/files/"
+
+	def _follow(self, rows):
+		from unittest.mock import MagicMock, patch
+
+		import frappe
+
+		from alaiy_os_connector_shopify.listing import images
+
+		written = {}
+		with patch.object(images.frappe, "get_all", return_value=[frappe._dict(r) for r in rows]), \
+			patch.object(images.frappe, "db", new=MagicMock()) as db:
+			db.set_value.side_effect = lambda dt, name, values, **kw: written.__setitem__(name, values)
+			images.follow_rehosted_urls("SH-1", [self.CDN + "a.png?v=1", self.CDN + "worn-1.jpg?v=1"])
+		return written
+
+	def test_published_rows_move_to_the_cdn_urls(self):
+		written = self._follow([
+			{"name": "hero", "url": "/files/a.png", "source_url": "/files/a.png"},
+			{"name": "worn", "url": "/files/worn-1.jpeg", "source_url": "/files/a.png"},
+		])
+		self.assertEqual(written["hero"], {"url": self.CDN + "a.png?v=1", "source_url": self.CDN + "a.png?v=1"})
+		self.assertEqual(written["worn"], {"url": self.CDN + "worn-1.jpg?v=1", "source_url": self.CDN + "a.png?v=1"})
+
+	def test_a_row_waiting_on_a_render_keeps_its_source(self):
+		"""Its job delivers against that source_url; moving it would orphan the result."""
+		self.assertEqual(self._follow([{"name": "pending", "url": None, "source_url": "/files/a.png"}]), {})
+
+	def test_a_retouch_not_on_shopify_yet_keeps_its_url(self):
+		written = self._follow([{"name": "r", "url": "/files/a-enhanced.png", "source_url": "/files/a.png"}])
+		self.assertEqual(written["r"], {"source_url": self.CDN + "a.png?v=1"})

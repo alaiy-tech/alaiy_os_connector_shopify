@@ -613,7 +613,14 @@ def accept_additional_image(item_code, source_url, kind, url, query=None, replac
         if query is not None:
             row.brief = query
     else:
-        _ensure_enriched_listing(item_code, listing)
+        # Not the image step's default "Queued": accepting a preview queues no
+        # render, and a Draft left claiming one is in flight never settles - Save
+        # then never deletes it, and the review screen waits on photos nobody
+        # asked for. Same rule as ensure_enriched_listing.
+        _ensure_enriched_listing(
+            item_code, listing,
+            image_status="Ready" if base.listing_image_urls(listing) else "Not Required",
+        )
         doc = frappe.get_doc(ENRICHED_DOCTYPE, item_code)
         doc.check_permission("write")
         # Idempotent against a double accept of the SAME preview (a

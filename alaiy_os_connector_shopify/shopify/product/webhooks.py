@@ -483,6 +483,12 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
                 for order, url in enumerate(images):
                     listing.append("images", {"image": url, "source": "Original", "sort_order": order})
                 listing_dirty = True
+            # Every time, not only when the listing's images changed just now: a
+            # draft seeded or accepted onto before an earlier push is just as out
+            # of step. See follow_rehosted_urls.
+            from alaiy_os_connector_shopify.listing.images import follow_rehosted_urls
+
+            follow_rehosted_urls(listing.name, images)
         else:
             from alaiy_os_connector_shopify.shopify.product.media import (
                 _set_item_image, _set_item_slideshow

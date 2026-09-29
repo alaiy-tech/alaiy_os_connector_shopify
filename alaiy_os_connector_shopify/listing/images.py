@@ -42,6 +42,18 @@ MEDIA_TYPES_BY_MIME = {v: k for k, v in MEDIA_TYPES.items()}
 FETCH_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; AlaiyOS-ShopifyListing/1.0)"}
 
 
+def file_stem(url):
+    """A photo's file name without its folder, query string or extension.
+
+    How one photo is recognised across the addresses it lives at: a Shopify
+    push re-hosts /files/listing-worn-abc.jpeg as
+    https://cdn.shopify.com/.../listing-worn-abc.jpg?v=123 - another host, a
+    version suffix, and sometimes a different extension.
+    """
+    name = (url or "").split("?", 1)[0].rsplit("/", 1)[-1]
+    return name.rsplit(".", 1)[0]
+
+
 def media_type(path_or_name):
     """Guess an image media type from a filename or URL extension, or None."""
     ext = os.path.splitext(path_or_name or "")[1].lower()
@@ -175,3 +187,44 @@ def save_public_image(prefix, content, mime, default_ext=".png"):
     ext = MEDIA_TYPES_BY_MIME.get(mime, default_ext)
     file_name = f"{prefix}-{frappe.generate_hash(length=8)}{ext}"
     return save_file(file_name, content, None, None, is_private=0).file_url
+
+
+def follow_rehosted_urls(item_code, shopify_urls):
+    """Point the product's enriched draft at the addresses Shopify now hosts its
+    photos at. Returns how many row fields moved.
+
+    A push uploads each /files/ photo to Shopify, and the products/update webhook
+    then rewrites the listing's images to Shopify's own CDN urls - but the draft
+    kept the local ones. Everything that pairs a draft row with a listing photo by
+    url then stopped matching: the admin grid showed each published worn photo
+    twice and kept offering Save for photos already live, trashing the extra
+    tile removed the draft row but not the live photo, and reordering lost track
+    of them. Rewritten here, the draft and the listing name each photo the same
+    way again.
+
+    Matched by file_stem. A row still waiting on a render (no `url`) keeps its
+    `source_url`: that is what the job in flight will deliver against (see
+    image_stage._match), and moving it would make the result land as a new row.
+    Written straight to the rows, like image_stage's own state writes, so no
+    document hook fires for what is only a change of address.
+    """
+    by_stem = {file_stem(url): url for url in shopify_urls if url}
+    if not by_stem:
+        return 0
+
+    rows = frappe.get_all(
+        "Shopify Enriched Listing Image",
+        filters={"parent": item_code, "parenttype": "Shopify Enriched Listing"},
+        fields=["name", "url", "source_url"],
+    )
+    moved = 0
+    for row in rows:
+        values = {}
+        if row.url and by_stem.get(file_stem(row.url), row.url) != row.url:
+            values["url"] = by_stem[file_stem(row.url)]
+        if row.url and row.source_url and by_stem.get(file_stem(row.source_url), row.source_url) != row.source_url:
+            values["source_url"] = by_stem[file_stem(row.source_url)]
+        if values:
+            frappe.db.set_value("Shopify Enriched Listing Image", row.name, values, update_modified=False)
+            moved += len(values)
+    return moved

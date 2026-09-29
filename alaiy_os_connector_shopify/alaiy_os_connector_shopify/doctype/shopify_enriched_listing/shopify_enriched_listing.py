@@ -8,14 +8,9 @@ from frappe.model.document import Document
 
 from alaiy_os_connector_shopify.listing import filter_matrix, matrix
 from alaiy_os_connector_shopify.listing.handlers import ADDITIONAL_IMAGE_KINDS, ATTRIBUTE_NAMESPACE
+from alaiy_os_connector_shopify.listing.images import file_stem as _file_stem
 
 FILTER_NAMESPACE = "uploadify_product"
-
-
-def _file_stem(url):
-    """A photo's file name without its folder, query string or extension."""
-    name = (url or "").split("?", 1)[0].rsplit("/", 1)[-1]
-    return name.rsplit(".", 1)[0]
 
 
 # What each kind of enriched row publishes as on the listing.
