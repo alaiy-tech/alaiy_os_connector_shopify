@@ -341,10 +341,12 @@ def _ensure_enriched_listing(item_code, listing, image_status="Queued"):
 
     # ignore_permissions=True: both callers (enrich_listing_image,
     # ensure_enriched_listing above) already check permission on the source
-    # listing before reaching this private helper.
+    # listing before reaching this private helper - OS Agent Run create plus
+    # listing read for a retouch, listing write for a hand edit. The row is a
+    # copy of what the product already says; publishing it checks write again.
     frappe.db.savepoint("ensure_enriched_listing")
     try:
-        doc.insert(ignore_permissions=True)
+        doc.insert(ignore_permissions=True)  # nosemgrep: frapsec-ignore-permissions -- callers check permission first, see above
     except frappe.DuplicateEntryError:
         # Another request seeded it first. The Media tab sends one
         # enrich_listing_image per ticked photo, all at once, and with no draft
