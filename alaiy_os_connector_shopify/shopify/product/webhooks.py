@@ -265,24 +265,36 @@ def _handle_product_update(product_id: str, product: dict, connection=None):
         locked_item.unlock()
  
 
+def _reloaded_with_changes(listing):
+    fresh = frappe.get_doc("Shopify Product Listing", listing.name)
+    # Carry over only what this run changed; anything the other writer
+    # landed in the meantime stays as it left it.
+    for field, value in listing.as_dict().items():
+        if field not in ("name", "modified", "creation", "owner", "modified_by", "idx", "doctype"):
+            fresh.set(field, value)
+    return fresh
+
+
 def _save_listing_with_retry(listing, _attempt=0):
-    """Save a Shopify Product Listing, retrying once if it went stale."""
+    """Save a Shopify Product Listing, retrying once if it went stale or Frappe's webhook cache was None."""
     listing.flags.from_shopify_sync = True
     listing.flags.ignore_permissions = True
     try:
         with _as_administrator():
-            listing.save()
+            # Skips the Version doc, whose after_insert reached run_webhooks with a None webhook cache.
+            listing.save(ignore_version=True)
     except frappe.TimestampMismatchError:
         if _attempt:
             raise
         frappe.db.rollback()
-        fresh = frappe.get_doc("Shopify Product Listing", listing.name)
-        # Carry over only what this run changed; anything the other writer
-        # landed in the meantime stays as it left it.
-        for field, value in listing.as_dict().items():
-            if field not in ("name", "modified", "creation", "owner", "modified_by", "idx", "doctype"):
-                fresh.set(field, value)
-        _save_listing_with_retry(fresh, _attempt=1)
+        _save_listing_with_retry(_reloaded_with_changes(listing), _attempt=1)
+    except AttributeError as e:
+        # Only run_webhooks' None cache; dropping the key makes the next read regenerate it.
+        if _attempt or "'NoneType' object has no attribute 'get'" not in str(e):
+            raise
+        frappe.db.rollback()
+        frappe.client_cache.delete_value("webhooks")
+        _save_listing_with_retry(_reloaded_with_changes(listing), _attempt=1)
 
 
 def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=None):
