@@ -67,8 +67,10 @@ pixels, and one that does:
     call does the whole job — background, shadow, everything — and whatever
     Gemini returns ships as the finished photo, with only its ground pulled
     onto the exact house hex in place (see `_snap_background`) — Gemini lands
-    near a requested colour, not on it. No mask, no crop from the original, no
-    local compositor, so its framing and shadow stay as drawn. Simpler, and it is what a plain
+    near a requested colour, not on it — and, where Gemini framed a complete piece
+    tighter than `padding`, the ground grown back out to it (see `_pad_to_floor`).
+    No mask, no crop from the original, no local compositor, so its shadow stays
+    as drawn. Simpler, and it is what a plain
     manual test of the same prompt against the same photo produced cleanly when
     `gemini`'s mask-only path could not separate a busy backdrop — but it means
     the product's own pixels are no longer guaranteed to be the photographer's:
@@ -679,8 +681,9 @@ def _finish_gemini_full(content, spec, client):
     all give. See the module docstring's `gemini_full` entry for why that is a
     considered trade rather than an oversight.
 
-    The one thing corrected afterward is the ground colour, in place — see
-    `_snap_background`. If the render has no plain ground to correct, the
+    Two things are corrected afterward: the ground colour, in place — see
+    `_snap_background` — and a margin under `padding`, by growing the ground
+    — see `_pad_to_floor`. If the render has no plain ground to correct, the
     finish is skipped rather than shipped on the wrong background.
 
     No mask means no cutout to keep: `spec["keep_cutout"]` has no effect on
@@ -706,8 +709,10 @@ def _finish_gemini_full(content, spec, client):
     if snapped is None:
         return _skipped(content, "the rendered photo did not come back on a plain background to recolour")
 
+    padded = _pad_to_floor(snapped, spec)
+
     return {
-        "image": _encode(snapped),
+        "image": _encode(padded),
         "mime": "image/png",
         "cutout": None,
         "note": None,
@@ -797,6 +802,117 @@ def _snap_background(image, hex_color):
     exact = np.where(region, exact, 0.0)[..., None]
     out = out + exact * (target - out)
     return Image.fromarray(np.round(out).astype(np.uint8), "RGB")
+
+
+# What counts as the product when a gemini_full render is measured for its
+# margin: plain RGB distance from the house ground past _PAD_PRODUCT_DISTANCE,
+# minus shadow (darker than the ground, same hue within _SNAP_HUE_IN). Low on
+# purpose — a white strap on #f4f4f4 is only a few levels off the ground, and
+# its outline is what has to be found. A row or column needs _PAD_MIN_RUN of
+# the frame's width in such pixels (at least 3) to count, so ground grain
+# doesn't.
+_PAD_PRODUCT_DISTANCE = 10
+_PAD_MIN_RUN = 0.002
+
+# A side the product is closer to than this, in pixels, is one it runs off —
+# a strap cut by the frame on purpose. That side is left flush: growing the
+# ground past it would leave the strap ending in mid-air.
+_PAD_BLEED = 1
+
+# Over how much of the new band, as a fraction of the finished canvas, the
+# render's own edge fades onto the flat hex. A shadow Gemini drew right to the
+# frame edge would otherwise stop in a hard line where the new ground starts.
+_PAD_FADE = 0.03
+
+
+def _pad_to_floor(image, spec):
+    """`image` with the ground grown so the product clears `padding`, or unchanged.
+
+    The gemini_full path's one concession to the house margin. Gemini frames
+    the photo itself, and sometimes a complete piece — a watch with both strap
+    ends in shot — comes back with those ends a hair off the frame, which reads
+    as crowded (slide 7). This measures the product and, on each side that is
+    inside the floor without running off it, adds plain ground until it isn't.
+
+    Same floor-not-target reading as `_compose`: the render is never scaled up,
+    a margin never shrinks, and nothing is cropped. A side the product runs off
+    stays flush, so a strap the frame cuts on purpose stays cut. The canvas
+    keeps the render's own aspect; if that would need ground past a side the
+    product runs off, the render is returned as drawn.
+    """
+    import numpy as np
+
+    padding = float(spec.get("padding", DEFAULTS["padding"]))
+    if padding <= 0:
+        return image
+
+    pixels = np.asarray(image, dtype=np.float32)
+    height, width = pixels.shape[:2]
+    target = np.array(_rgb(spec["background"]), dtype=np.float32)
+
+    distance = np.linalg.norm(pixels - target, axis=2)
+    brightness = pixels.sum(axis=2, keepdims=True)
+    at_ground_brightness = pixels * (target.sum() / np.maximum(brightness, 1.0))
+    shadow = (brightness[..., 0] < target.sum()) & (
+        np.linalg.norm(at_ground_brightness - target, axis=2) <= _SNAP_HUE_IN
+    )
+    product = (distance > _PAD_PRODUCT_DISTANCE) & ~shadow
+
+    run = max(3, round(max(width, height) * _PAD_MIN_RUN))
+    rows = np.flatnonzero(product.sum(axis=1) >= run)
+    cols = np.flatnonzero(product.sum(axis=0) >= run)
+    if not len(rows) or not len(cols):
+        return image
+
+    def grow(near, far, size):
+        """New (near, far) margins along one axis, each at least the floor."""
+        extent = size - near - far
+        bleed_near, bleed_far = near <= _PAD_BLEED, far <= _PAD_BLEED
+        if bleed_near and bleed_far:
+            return near, far
+        new_near, new_far = near, far
+        # The floor is a fraction of the grown canvas, so a few rounds settle it.
+        for _ in range(8):
+            total = extent + new_near + new_far
+            new_near = near if bleed_near else max(near, padding * total)
+            new_far = far if bleed_far else max(far, padding * total)
+        return new_near, new_far
+
+    top, bottom = grow(rows[0], height - 1 - rows[-1], height)
+    left, right = grow(cols[0], width - 1 - cols[-1], width)
+    add = [top - rows[0], bottom - (height - 1 - rows[-1]), left - cols[0], right - (width - 1 - cols[-1])]
+    if max(add) < 1:
+        return image
+
+    # Back to the render's own aspect, the extra split over the sides that can take it.
+    new_h = height + add[0] + add[1]
+    new_w = width + add[2] + add[3]
+    aspect = width / height
+    if new_w / new_h < aspect:
+        axis, extra, sides = "w", new_h * aspect - new_w, (2, 3)
+    else:
+        axis, extra, sides = "h", new_w / aspect - new_h, (0, 1)
+    margins = {0: rows[0], 1: height - 1 - rows[-1], 2: cols[0], 3: width - 1 - cols[-1]}
+    open_sides = [side for side in sides if margins[side] > _PAD_BLEED]
+    if extra >= 1 and not open_sides:
+        return image
+    for side in open_sides:
+        add[side] += extra / len(open_sides)
+
+    top_add, bottom_add, left_add, right_add = (round(value) for value in add)
+    grown = np.pad(pixels, ((top_add, bottom_add), (left_add, right_add), (0, 0)), mode="edge")
+
+    grown_h, grown_w = grown.shape[:2]
+    ys = np.arange(grown_h)[:, None]
+    xs = np.arange(grown_w)[None, :]
+    outside = np.maximum(
+        np.maximum(top_add - ys, ys - (top_add + height - 1)).clip(0),
+        np.maximum(left_add - xs, xs - (left_add + width - 1)).clip(0),
+    )
+    fade = max(1.0, max(grown_w, grown_h) * _PAD_FADE)
+    weight = np.clip(outside / fade, 0, 1)[..., None]
+    grown = grown + weight * (target - grown)
+    return Image.fromarray(np.round(grown).astype(np.uint8), "RGB")
 
 
 def _session(model):
