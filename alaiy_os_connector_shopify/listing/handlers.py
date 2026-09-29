@@ -729,7 +729,18 @@ def save_listing(listing, item_code=None):
         frappe.log_error(title=f"Listing provenance: could not read the evidence for {item_code}")
         metafields, pages_read = {}, []
 
-    if frappe.db.exists(ENRICHED_DOCTYPE, item_code):
+    # Waits for any photo job mid-save on this same record, then holds it until
+    # the commit below - the lock the image stage's own jobs take (see
+    # image_stage._lock_row), so a retouch can run from the Media tab while an
+    # enrichment runs. Without it, a photo job saving between this load and the
+    # save below failed the save on its timestamp check, which the except branch
+    # reports to the model as a rejected field. Committed first so the record is
+    # read from a snapshot taken after the lock, not one this run's earlier
+    # reads already fixed (REPEATABLE READ).
+    from alaiy_os_connector_shopify.listing.image_stage import _lock_row
+
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit
+    if _lock_row(item_code):
         doc = frappe.get_doc(ENRICHED_DOCTYPE, item_code)
     else:
         doc = frappe.new_doc(ENRICHED_DOCTYPE)

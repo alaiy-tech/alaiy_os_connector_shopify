@@ -557,3 +557,43 @@ class DraftFollowsShopifysRehostedUrls(unittest.TestCase):
 	def test_a_retouch_not_on_shopify_yet_keeps_its_url(self):
 		written = self._follow([{"name": "r", "url": "/files/a-enhanced.png", "source_url": "/files/a.png"}])
 		self.assertEqual(written["r"], {"source_url": self.CDN + "a.png?v=1"})
+
+
+class SaveListingWaitsForPhotoJobs(unittest.TestCase):
+	"""An enrichment's save must queue behind a photo job's, not race it.
+
+	A retouch can run from the Media tab while an enrichment runs. The photo
+	job's save holds the record's row lock (image_stage._lock_row); save_listing
+	takes the same lock, after a commit so its read of the record is fresh.
+	Without it a photo job landing mid-save failed the enrichment's save on its
+	timestamp check.
+	"""
+
+	def test_commits_then_locks_then_loads(self):
+		from unittest.mock import MagicMock, patch
+
+		from alaiy_os_connector_shopify.listing import handlers
+
+		calls = []
+
+		class Loaded(Exception):
+			pass
+
+		def get_doc(doctype, name):
+			calls.append("get_doc")
+			raise Loaded
+
+		fake = MagicMock()
+		fake.db.exists.return_value = True
+		fake.db.commit.side_effect = lambda: calls.append("commit")
+		fake.get_doc.side_effect = get_doc
+
+		with patch.object(handlers, "frappe", fake), \
+			patch.object(handlers, "get_listing"), \
+			patch.object(handlers, "published_attributes"), \
+			patch.object(handlers, "provenance"), \
+			patch.object(image_stage, "_lock_row", side_effect=lambda item: calls.append("lock") or True):
+			with self.assertRaises(Loaded):
+				handlers.save_listing({}, item_code="SH-1")
+
+		self.assertEqual(calls, ["commit", "lock", "get_doc"])
