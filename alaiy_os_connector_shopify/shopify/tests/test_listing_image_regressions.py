@@ -22,15 +22,24 @@ from alaiy_os_connector_shopify.alaiy_os_connector_shopify.doctype.shopify_enric
 from alaiy_os_connector_shopify.listing import image_stage
 
 
+class _ListingImage:
+	def __init__(self, image, source="Original", generated_by_agent=None):
+		self.image = image
+		self.source = source
+		self.generated_by_agent = generated_by_agent
+
+
 class _Listing:
 	"""Stands in for a Shopify Product Listing being written to.
 
 	Records whether anything touched its image table. `set` and `append` are the
-	only two methods _sync_images uses.
+	only two methods _sync_images uses. Photos it starts with are rows (read by
+	attribute, as a child row is); photos written to it are the dicts
+	_sync_images appends.
 	"""
 
 	def __init__(self, images):
-		self.images = list(images)
+		self.images = [_ListingImage(url) for url in images]
 		self.set_calls = []
 
 	def set(self, field, value):
@@ -41,6 +50,9 @@ class _Listing:
 	def append(self, field, row):
 		self.images.append(row)
 		return row
+
+	def urls(self):
+		return [row["image"] if isinstance(row, dict) else row.image for row in self.images]
 
 
 class _Row:
@@ -59,11 +71,14 @@ class _Draft:
 		self.name = "SH-123"
 
 
+def _sync(draft_rows, listing):
+	ShopifyEnrichedListing._sync_images(_Draft(draft_rows), listing)
+
+
 class SyncImagesLeavesUntouchedPhotosAlone(unittest.TestCase):
 	"""A draft with no image rows must not clear the listing's photos.
 
-	_sync_images REPLACES the listing's image table rather than adding to it. The
-	per-row fallback (a row with no url publishes the photo it was made from)
+	The per-row fallback (a row with no url publishes the photo it was made from)
 	covers a render that failed, but it is per row — and a text-only enrichment,
 	which is what you get with the image toggle off, has no rows at all. Emptying
 	the table and refilling it from nothing stripped the product of every photo it
@@ -73,10 +88,10 @@ class SyncImagesLeavesUntouchedPhotosAlone(unittest.TestCase):
 	def test_no_image_rows_leaves_the_listing_untouched(self):
 		listing = _Listing(["existing-a.jpg", "existing-b.jpg"])
 
-		ShopifyEnrichedListing._sync_images(_Draft([]), listing)
+		_sync([], listing)
 
 		self.assertEqual(
-			listing.images,
+			listing.urls(),
 			["existing-a.jpg", "existing-b.jpg"],
 			"a text-only enrichment must leave the product's photos alone",
 		)
@@ -84,34 +99,116 @@ class SyncImagesLeavesUntouchedPhotosAlone(unittest.TestCase):
 			listing.set_calls, [], "the image table must not even be cleared"
 		)
 
+	def test_variant_rows_alone_leave_the_gallery_untouched(self):
+		"""Variant photos are delivered to variant rows, never to the gallery."""
+		listing = _Listing(["a.jpg"])
+
+		_sync([_Row(item_variant="V1", source_url="v.jpg", url="v-enhanced.jpg")], listing)
+
+		self.assertEqual(listing.set_calls, [])
+
 	def test_a_row_that_failed_to_render_still_publishes_its_original(self):
 		"""The per-row fallback this sits beside must keep working.
 
 		Guarding the empty case would be worth nothing if it also swallowed the
 		case the guard is NOT for: rows exist, but none of them rendered.
 		"""
-		listing = _Listing(["existing-a.jpg"])
-		draft = _Draft([_Row(source_url="original.jpg", url=None, kind="generated")])
+		listing = _Listing(["original.jpg"])
 
-		ShopifyEnrichedListing._sync_images(draft, listing)
+		_sync([_Row(source_url="original.jpg", url=None, kind="generated")], listing)
 
-		self.assertEqual(len(listing.images), 1)
-		self.assertEqual(listing.images[0]["image"], "original.jpg")
+		self.assertEqual(listing.urls(), ["original.jpg"])
 		self.assertEqual(
 			listing.images[0]["source"],
 			"Original",
 			"a row with no result publishes as the original it actually is",
 		)
 
-	def test_a_rendered_row_replaces_the_table(self):
-		listing = _Listing(["existing-a.jpg", "existing-b.jpg"])
-		draft = _Draft([_Row(source_url="original.jpg", url="enhanced.jpg", kind="generated")])
+	def test_a_rendered_row_replaces_the_photo_it_was_made_from(self):
+		listing = _Listing(["a.jpg", "b.jpg"])
 
-		ShopifyEnrichedListing._sync_images(draft, listing)
+		_sync([
+			_Row(source_url="a.jpg", url="a-enhanced.jpg", kind="generated"),
+			_Row(source_url="b.jpg", url="b.jpg", kind="hero"),
+		], listing)
 
-		self.assertEqual(len(listing.images), 1)
-		self.assertEqual(listing.images[0]["image"], "enhanced.jpg")
+		self.assertEqual(listing.urls(), ["a-enhanced.jpg", "b.jpg"])
 		self.assertEqual(listing.images[0]["source"], "AI Enhanced")
+		self.assertEqual(listing.images[1]["source"], "Original")
+
+	def test_a_draft_speaking_for_every_photo_sets_the_order(self):
+		"""The full-draft case keeps its draft order - a dragged worn photo stays put."""
+		listing = _Listing(["a.jpg", "b.jpg"])
+
+		_sync([
+			_Row(source_url="a.jpg", url="/files/worn-1.jpeg", kind="worn"),
+			_Row(source_url="b.jpg", url="b.jpg", kind="hero"),
+			_Row(source_url="a.jpg", url="a.jpg", kind="hero"),
+		], listing)
+
+		self.assertEqual(listing.urls(), ["/files/worn-1.jpeg", "b.jpg", "a.jpg"])
+
+
+class SyncImagesNeverDropsAPhotoTheDraftDoesNotKnow(unittest.TestCase):
+	"""A draft holding fewer photos than the listing must not shrink the gallery.
+
+	Found in production (Z058-03285, 2026-09-29): a text-only re-run rebuilt the
+	draft's image table to nothing, an admin then kept a worn photo, and approving
+	published that one row as the product's entire gallery. Retouching a single
+	photo after such a run, or uploading one after the draft was seeded, left the
+	draft just as short of the real gallery.
+	"""
+
+	def test_worn_only_draft_adds_to_the_end_of_the_gallery(self):
+		listing = _Listing(["a.png", "b.png", "c.png"])
+
+		_sync([_Row(source_url="a.png", url="/files/listing-worn-1.jpeg", kind="worn")], listing)
+
+		self.assertEqual(listing.urls(), ["a.png", "b.png", "c.png", "/files/listing-worn-1.jpeg"])
+		self.assertEqual(listing.images[-1]["source"], "AI Enhanced")
+		self.assertEqual(listing.images[0]["source"], "Original", "kept photos keep their own source")
+
+	def test_one_retouched_photo_is_replaced_in_place(self):
+		listing = _Listing(["a.png", "b.png", "c.png"])
+
+		_sync([_Row(source_url="b.png", url="b-enhanced.png", kind="generated")], listing)
+
+		self.assertEqual(listing.urls(), ["a.png", "b-enhanced.png", "c.png"])
+
+	def test_a_photo_uploaded_after_the_draft_was_seeded_is_kept(self):
+		listing = _Listing(["a.png", "b.png", "/files/upload.jpg"])
+
+		_sync([
+			_Row(source_url="a.png", url="a-enhanced.png", kind="generated"),
+			_Row(source_url="b.png", url="b.png", kind="hero"),
+		], listing)
+
+		self.assertEqual(listing.urls(), ["a-enhanced.png", "b.png", "/files/upload.jpg"])
+
+	def test_a_worn_photo_already_on_the_listing_is_not_added_twice(self):
+		"""Publishing the same worn-only draft again - after a Shopify push swapped
+		the local file for its CDN copy - must not duplicate it."""
+		listing = _Listing([
+			"a.png",
+			"https://cdn.shopify.com/s/files/1/0/files/listing-worn-1.jpg?v=179",
+		])
+
+		_sync([_Row(source_url="a.png", url="/files/listing-worn-1.jpeg", kind="worn")], listing)
+
+		self.assertEqual(len(listing.images), 2)
+
+	def test_a_draft_seeded_before_a_shopify_push_still_matches_its_photos(self):
+		listing = _Listing([
+			"https://cdn.shopify.com/s/files/1/0/files/a.jpg?v=1",
+			"https://cdn.shopify.com/s/files/1/0/files/b.jpg?v=1",
+		])
+
+		_sync([
+			_Row(source_url="/files/a.jpg", url="/files/a-enhanced.png", kind="generated"),
+			_Row(source_url="/files/b.jpg", url="/files/b.jpg", kind="hero"),
+		], listing)
+
+		self.assertEqual(listing.urls(), ["/files/a-enhanced.png", "/files/b.jpg"])
 
 
 class RunStepAlwaysNotifiesBatching(unittest.TestCase):
@@ -352,3 +449,111 @@ def _is_nudge(stmt):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class _EnrichedRow:
+	def __init__(self, **kw):
+		for key in ("kind", "item_variant", "source_url", "url", "brief", "note"):
+			setattr(self, key, kw.get(key))
+
+
+class _Enriched:
+	"""Stands in for the Shopify Enriched Listing save_listing is writing."""
+
+	def __init__(self, images, image_status=None):
+		self.images = list(images)
+		self.image_status = image_status
+		self.image_error = "earlier error"
+
+	def set(self, field, value):
+		setattr(self, field, list(value))
+
+	def append(self, field, row):
+		row = _EnrichedRow(**row)
+		getattr(self, field).append(row)
+		return row
+
+
+class TextOnlyRunLeavesTheDraftsPhotosAlone(unittest.TestCase):
+	"""A run that produced no imagery must not rebuild the draft's photos.
+
+	Found in production (Z058-03285, 2026-09-29): "Enrich" and "Enrich + images"
+	ran over the same product; the text-only run saved last and emptied the
+	draft's image table, taking four retouches with it.
+	"""
+
+	def test_no_imagery_keeps_every_row_and_the_status(self):
+		from alaiy_os_connector_shopify.listing import handlers
+
+		retouched = _EnrichedRow(source_url="a.png", url="a-enhanced.png")
+		worn = _EnrichedRow(source_url="a.png", url="worn.jpeg", kind="worn")
+		doc = _Enriched([retouched, worn], image_status="Ready")
+
+		handlers._rebuild_images(doc, [])
+
+		self.assertEqual(doc.images, [retouched, worn])
+		self.assertEqual(doc.image_status, "Ready")
+
+	def test_no_imagery_on_a_fresh_record_is_not_required(self):
+		from alaiy_os_connector_shopify.listing import handlers
+
+		doc = _Enriched([])
+
+		handlers._rebuild_images(doc, [])
+
+		self.assertEqual(doc.image_status, "Not Required")
+
+	def test_imagery_rebuilds_and_keeps_additional_photos(self):
+		from alaiy_os_connector_shopify.listing import handlers
+
+		doc = _Enriched([
+			_EnrichedRow(source_url="a.png", url="old.png"),
+			_EnrichedRow(source_url="a.png", url="worn.jpeg", kind="worn"),
+		])
+
+		handlers._rebuild_images(doc, [{"kind": None, "source_url": "a.png", "url": None}])
+
+		self.assertEqual([(r.kind, r.url) for r in doc.images], [(None, None), ("worn", "worn.jpeg")])
+		self.assertEqual(doc.image_status, "Queued")
+		self.assertIsNone(doc.image_error)
+
+
+class DraftFollowsShopifysRehostedUrls(unittest.TestCase):
+	"""After a push, the draft must name each photo the way the listing does.
+
+	Found on 13A419-5001 (2026-09-29): the listing's worn photos became
+	cdn.shopify.com urls, the draft kept /files/ ones, and the admin grid showed
+	each one twice and kept offering Save for photos already live.
+	"""
+
+	CDN = "https://cdn.shopify.com/s/files/1/0/files/"
+
+	def _follow(self, rows):
+		from unittest.mock import MagicMock, patch
+
+		import frappe
+
+		from alaiy_os_connector_shopify.listing import images
+
+		written = {}
+		with patch.object(images.frappe, "get_all", return_value=[frappe._dict(r) for r in rows]), \
+			patch.object(images.frappe, "db", new=MagicMock()) as db:
+			db.set_value.side_effect = lambda dt, name, values, **kw: written.__setitem__(name, values)
+			images.follow_rehosted_urls("SH-1", [self.CDN + "a.png?v=1", self.CDN + "worn-1.jpg?v=1"])
+		return written
+
+	def test_published_rows_move_to_the_cdn_urls(self):
+		written = self._follow([
+			{"name": "hero", "url": "/files/a.png", "source_url": "/files/a.png"},
+			{"name": "worn", "url": "/files/worn-1.jpeg", "source_url": "/files/a.png"},
+		])
+		self.assertEqual(written["hero"], {"url": self.CDN + "a.png?v=1", "source_url": self.CDN + "a.png?v=1"})
+		self.assertEqual(written["worn"], {"url": self.CDN + "worn-1.jpg?v=1", "source_url": self.CDN + "a.png?v=1"})
+
+	def test_a_row_waiting_on_a_render_keeps_its_source(self):
+		"""Its job delivers against that source_url; moving it would orphan the result."""
+		self.assertEqual(self._follow([{"name": "pending", "url": None, "source_url": "/files/a.png"}]), {})
+
+	def test_a_retouch_not_on_shopify_yet_keeps_its_url(self):
+		written = self._follow([{"name": "r", "url": "/files/a-enhanced.png", "source_url": "/files/a.png"}])
+		self.assertEqual(written["r"], {"source_url": self.CDN + "a.png?v=1"})

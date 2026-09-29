@@ -7,9 +7,35 @@ import frappe
 from frappe.model.document import Document
 
 from alaiy_os_connector_shopify.listing import filter_matrix, matrix
-from alaiy_os_connector_shopify.listing.handlers import ATTRIBUTE_NAMESPACE
+from alaiy_os_connector_shopify.listing.handlers import ADDITIONAL_IMAGE_KINDS, ATTRIBUTE_NAMESPACE
+from alaiy_os_connector_shopify.listing.images import file_stem as _file_stem
 
 FILTER_NAMESPACE = "uploadify_product"
+
+
+# What each kind of enriched row publishes as on the listing.
+_SOURCE_BY_KIND = {
+    "hero": "Original",
+    "generated": "AI Enhanced",
+    "translated": "AI Enhanced",
+}
+
+
+def _published_row(row, agent_name):
+    """The listing photo one enriched row publishes as.
+
+    A row with no result falls back to the photo it was made from, published as
+    the original it is — whatever the row was going to become, what is being
+    published is the original.
+    """
+    source = _SOURCE_BY_KIND.get((row.kind or "").lower(), "AI Enhanced")
+    if not row.url:
+        source = "Original"
+    return {
+        "image": row.url or row.source_url,
+        "source": source,
+        "generated_by_agent": agent_name if source == "AI Enhanced" else None,
+    }
 
 
 class ShopifyEnrichedListing(Document):
@@ -215,46 +241,71 @@ class ShopifyEnrichedListing(Document):
         Variant images (rows with item_variant) are not listing images — they are
         delivered by _sync_variant_images instead.
 
-        A row with no result falls back to the photo it was made from, published as
-        the original it is. This table REPLACES the listing's images rather than
-        adding to them, so skipping such a row does not leave the old photo alone —
-        it deletes it. Without the fallback, approving a listing whose imagery failed,
-        or is still rendering, would strip the product of the very photos the
-        enrichment was supposed to improve.
+        A row with no result falls back to the photo it was made from (see
+        _published_row). Without the fallback, approving a listing whose imagery
+        failed, or is still rendering, would strip the product of the very photos
+        the enrichment was supposed to improve.
 
-        A run with no image rows at all - image generation wasn't requested, so
-        the agent never touched images - is different from one whose rows failed:
-        there is nothing to fall back to per-row, so leave the listing's existing
-        images alone rather than replacing them with nothing.
+        A draft with no listing rows at all - a text-only run, where the agent
+        never touched images - says nothing about the photos, so the listing's
+        are left exactly as they are.
+
+        When the draft speaks for every photo the listing has, its table IS the
+        gallery: it replaces the listing's, in the draft's own order (which
+        reorder_listing_images keeps in step with the grid). But a draft can hold
+        fewer photos than the listing — a text-only re-run rebuilt its table to
+        nothing and one photo was retouched or one worn photo kept afterwards, or
+        a photo was uploaded after the draft was seeded. Replacing from that
+        published the one photo as the product's whole gallery (Z058-03285,
+        2026-09-29). So a photo the draft does not speak for is kept where it is,
+        each photo the draft does speak for is published from its row in that
+        same place, and anything left on the draft (a worn photo not yet
+        published) goes on the end. Nothing is ever dropped for being missing
+        from the draft; removing a photo removes it from both.
+
+        Photos are matched by file stem, not the full URL: a Shopify push swaps
+        the listing's local /files/ copy for its CDN one (another host, a ?v=
+        suffix, sometimes .jpeg -> .jpg), and a draft seeded before that push
+        still names the local file.
         """
-        if not self.images:
+        rows = [
+            row for row in (self.images or [])
+            if not row.item_variant and (row.url or row.source_url)
+        ]
+        if not rows:
             return
 
+        # Which draft row speaks for each photo. A retouch speaks for the photo
+        # it was made from as well as its own result; a lifestyle/worn photo only
+        # for itself - it was generated FROM a photo, it does not replace it.
+        claims = {}
+        for row in rows:
+            urls = [row.url] if row.kind in ADDITIONAL_IMAGE_KINDS else [row.source_url, row.url]
+            for url in urls:
+                if url:
+                    claims.setdefault(_file_stem(url), row)
+
+        live = list(listing_doc.images or [])
+        if all(_file_stem(photo.image) in claims for photo in live):
+            gallery = [_published_row(row, self.name) for row in rows]
+        else:
+            gallery, used = [], set()
+            for photo in live:
+                row = claims.get(_file_stem(photo.image))
+                if row is None:
+                    gallery.append({
+                        "image": photo.image,
+                        "source": photo.source,
+                        "generated_by_agent": photo.generated_by_agent,
+                    })
+                elif id(row) not in used:
+                    used.add(id(row))
+                    gallery.append(_published_row(row, self.name))
+            gallery += [_published_row(row, self.name) for row in rows if id(row) not in used]
+
         listing_doc.set("images", [])
-
-        for idx, enriched_img in enumerate(self.images):
-            if enriched_img.item_variant:
-                continue
-            if not enriched_img.url and not enriched_img.source_url:
-                continue
-
-            source_map = {
-                "hero": "Original",
-                "generated": "AI Enhanced",
-                "translated": "AI Enhanced",
-            }
-            source = source_map.get((enriched_img.kind or "").lower(), "AI Enhanced")
-            if not enriched_img.url:
-                # Falling back to the source photo: whatever the row was going to
-                # become, what is being published is the original.
-                source = "Original"
-
-            row = listing_doc.append("images", {
-                "image": enriched_img.url or enriched_img.source_url,
-                "source": source,
-                "sort_order": idx,
-                "generated_by_agent": self.name if source == "AI Enhanced" else None,
-            })
+        for idx, photo in enumerate(gallery):
+            listing_doc.append("images", {**photo, "sort_order": idx})
 
     def _sync_variant_images(self, listing_doc):
         """Write each variant image onto its variant row's `variant_image`.

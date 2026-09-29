@@ -892,48 +892,7 @@ def save_listing(listing, item_code=None):
             "notes": variant.get("notes"),
         })
 
-    # A lifestyle/worn photo (see ADDITIONAL_IMAGE_KINDS) is an admin's own
-    # request, saved onto this same row the moment it is generated — never
-    # something a run's own image tool produces or knows about. Carried over
-    # by hand before the rebuild below, which would otherwise drop them: the
-    # run's `images` list is that tool's own output, with no way to say
-    # "also keep whatever additional photos already lived here."
-    additional = [row for row in (doc.images or []) if row.kind in ADDITIONAL_IMAGE_KINDS]
-
-    # rebuild the image child table from whatever the image tool produced
-    doc.set("images", [])
-    for img in (listing.get("images") or []):
-        doc.append("images", {
-            "kind": img.get("kind"),
-            "item_variant": img.get("item_variant"),
-            "source_url": img.get("source_url"),
-            "url": img.get("url"),
-            "brief": img.get("brief"),
-            "note": img.get("note"),
-        })
-    for row in additional:
-        doc.append("images", {
-            "kind": row.kind,
-            "item_variant": row.item_variant,
-            "source_url": row.source_url,
-            "url": row.url,
-            "brief": row.brief,
-            "note": row.note,
-        })
-
-    # A row with no url is one the image step queued: the imagery is rendered after
-    # this run finishes (see image_stage.py), so the listing is reviewable now and
-    # says plainly that its pictures are still coming. Rows that already have a url
-    # are ones the image step reused from an earlier run — nothing is owed for those,
-    # so the listing is already Ready. Recomputed on every save, so a re-run that
-    # queues fresh images resets a previous run's verdict.
-    if any(not row.url for row in doc.images):
-        doc.image_status = "Queued"
-    elif doc.images:
-        doc.image_status = "Ready"
-    else:
-        doc.image_status = "Not Required"
-    doc.image_error = None
+    _rebuild_images(doc, listing.get("images") or [])
 
     _flag_missing_mandatory(doc, published)
 
@@ -999,3 +958,60 @@ def save_listing(listing, item_code=None):
         "status": doc.status,
         "url": f"/app/shopify-enriched-listing/{doc.name}",
     }
+
+
+def _rebuild_images(doc, produced):
+    """Put one run's imagery onto its enriched record.
+
+    A run that produced no imagery (the image toggle off) says nothing about the
+    photos, so the record's image rows - a retouch not saved yet, an accepted
+    worn photo - are left exactly as they are, and so is image_status. Rebuilding
+    from nothing here wiped them (Z058-03285, 2026-09-29): an admin's retouches
+    vanished from the draft, and the next photo added to it became the only one
+    it held.
+    """
+    if not produced:
+        if not doc.images:
+            doc.image_status = "Not Required"
+        return
+
+    # A lifestyle/worn photo (see ADDITIONAL_IMAGE_KINDS) is an admin's own
+    # request, saved onto this same row the moment it is generated — never
+    # something a run's own image tool produces or knows about. Carried over
+    # by hand before the rebuild below, which would otherwise drop them: the
+    # run's `images` list is that tool's own output, with no way to say
+    # "also keep whatever additional photos already lived here."
+    additional = [row for row in (doc.images or []) if row.kind in ADDITIONAL_IMAGE_KINDS]
+
+    # rebuild the image child table from whatever the image tool produced
+    doc.set("images", [])
+    for img in produced:
+        doc.append("images", {
+            "kind": img.get("kind"),
+            "item_variant": img.get("item_variant"),
+            "source_url": img.get("source_url"),
+            "url": img.get("url"),
+            "brief": img.get("brief"),
+            "note": img.get("note"),
+        })
+    for row in additional:
+        doc.append("images", {
+            "kind": row.kind,
+            "item_variant": row.item_variant,
+            "source_url": row.source_url,
+            "url": row.url,
+            "brief": row.brief,
+            "note": row.note,
+        })
+
+    # A row with no url is one the image step queued: the imagery is rendered after
+    # this run finishes (see image_stage.py), so the listing is reviewable now and
+    # says plainly that its pictures are still coming. Rows that already have a url
+    # are ones the image step reused from an earlier run — nothing is owed for those,
+    # so the listing is already Ready. Recomputed on every save that produced
+    # imagery, so a re-run that queues fresh images resets a previous run's verdict.
+    if any(not row.url for row in doc.images):
+        doc.image_status = "Queued"
+    else:
+        doc.image_status = "Ready"
+    doc.image_error = None
