@@ -3,6 +3,8 @@ Image/media helpers -- moved verbatim from product_import.py and
 product_sync.py, unchanged.
 """
 
+from urllib.parse import quote
+
 import frappe
 
 
@@ -154,7 +156,8 @@ def _absolute_file_url(url: str) -> str:
     Shopify's servers are concerned.
     """
     if url.startswith("/"):
-        return frappe.utils.get_url(url)
+        # Names like "Photo 1 (2).jpg" are not valid URLs as stored; keep % ? = & so encoded paths and queries survive.
+        return frappe.utils.get_url(quote(url, safe="/%?=&"))
     return url
 
 
