@@ -67,8 +67,11 @@ pixels, and one that does:
     call does the whole job — background, shadow, everything — and whatever
     Gemini returns ships as the finished photo, with only its ground pulled
     onto the exact house hex in place (see `_snap_background`) — Gemini lands
-    near a requested colour, not on it. No mask, no crop from the original, no
-    local compositor, so its framing and shadow stay as drawn. Simpler, and it is what a plain
+    near a requested colour, not on it — and, where Gemini framed a complete piece
+    tighter than `padding` or in another shape, the ground grown out to the
+    house margin and aspect (see `_frame_to_spec`).
+    No mask, no crop from the original, no local compositor, so its shadow stays
+    as drawn. Simpler, and it is what a plain
     manual test of the same prompt against the same photo produced cleanly when
     `gemini`'s mask-only path could not separate a busy backdrop — but it means
     the product's own pixels are no longer guaranteed to be the photographer's:
@@ -679,8 +682,9 @@ def _finish_gemini_full(content, spec, client):
     all give. See the module docstring's `gemini_full` entry for why that is a
     considered trade rather than an oversight.
 
-    The one thing corrected afterward is the ground colour, in place — see
-    `_snap_background`. If the render has no plain ground to correct, the
+    Two things are corrected afterward: the ground colour, in place — see
+    `_snap_background` — and the frame, grown to the house margin and aspect
+    — see `_frame_to_spec`. If the render has no plain ground to correct, the
     finish is skipped rather than shipped on the wrong background.
 
     No mask means no cutout to keep: `spec["keep_cutout"]` has no effect on
@@ -706,8 +710,10 @@ def _finish_gemini_full(content, spec, client):
     if snapped is None:
         return _skipped(content, "the rendered photo did not come back on a plain background to recolour")
 
+    framed = _frame_to_spec(snapped, spec)
+
     return {
-        "image": _encode(snapped),
+        "image": _encode(framed),
         "mime": "image/png",
         "cutout": None,
         "note": None,
@@ -797,6 +803,163 @@ def _snap_background(image, hex_color):
     exact = np.where(region, exact, 0.0)[..., None]
     out = out + exact * (target - out)
     return Image.fromarray(np.round(out).astype(np.uint8), "RGB")
+
+
+# What counts as the product when a gemini_full render is measured for its
+# margin: plain RGB distance from the house ground past _PAD_PRODUCT_DISTANCE,
+# minus shadow (darker than the ground, same hue within _SNAP_HUE_IN). Low on
+# purpose — a white strap on #f4f4f4 is only a few levels off the ground, and
+# its outline is what has to be found. A row or column needs _PAD_MIN_RUN of
+# the frame's width in such pixels (at least 3) to count, so ground grain
+# doesn't.
+_PAD_PRODUCT_DISTANCE = 10
+_PAD_MIN_RUN = 0.002
+
+# A side the product is closer to than this, in pixels, is one it runs off —
+# a strap cut by the frame on purpose. That side is left flush: growing the
+# ground past it would leave the strap ending in mid-air.
+_PAD_BLEED = 1
+
+# Over how much of the new band, as a fraction of the finished canvas, the
+# render's own edge fades onto the flat hex. A shadow Gemini drew right to the
+# frame edge would otherwise stop in a hard line where the new ground starts.
+_PAD_FADE = 0.03
+
+
+def _frame_to_spec(image, spec):
+    """`image` on a canvas of the house aspect, with the product clear of `padding`.
+
+    The gemini_full path's one concession to the house frame. Gemini frames the
+    photo itself: it returns whatever shape it likes, and sometimes a complete
+    piece — a watch with both strap ends in shot — comes back with those ends a
+    hair off the frame, which reads as crowded (slide 7). This measures the
+    product, adds plain ground on each side that is inside the floor without
+    running off it, then grows the ground again until the canvas is `aspect`.
+
+    Same floor-not-target reading as `_compose`: the render is never scaled up
+    and a margin never drops below the floor. A side the product runs off stays
+    flush, so a strap the frame cuts on purpose stays cut. The one case that
+    cannot be met by adding ground alone is a short side the product runs off
+    at both ends (a landscape render of a strap cut top and bottom): there,
+    spare ground is trimmed off the long side first, and only what that cannot
+    cover is added across the cut — the canvas is always `aspect`.
+    """
+    import numpy as np
+
+    padding = max(float(spec.get("padding", DEFAULTS["padding"])), 0.0)
+    aspect = float(spec.get("aspect") or DEFAULTS["aspect"])
+
+    pixels = np.asarray(image, dtype=np.float32)
+    height, width = pixels.shape[:2]
+    target = np.array(_rgb(spec["background"]), dtype=np.float32)
+
+    distance = np.linalg.norm(pixels - target, axis=2)
+    brightness = pixels.sum(axis=2, keepdims=True)
+    at_ground_brightness = pixels * (target.sum() / np.maximum(brightness, 1.0))
+    shadow = (brightness[..., 0] < target.sum()) & (
+        np.linalg.norm(at_ground_brightness - target, axis=2) <= _SNAP_HUE_IN
+    )
+    product = (distance > _PAD_PRODUCT_DISTANCE) & ~shadow
+
+    run = max(3, round(max(width, height) * _PAD_MIN_RUN))
+    rows = np.flatnonzero(product.sum(axis=1) >= run)
+    cols = np.flatnonzero(product.sum(axis=0) >= run)
+    # Clear ground on each side: top, bottom, left, right. With no product
+    # found every side is all ground — the canvas is still squared, just
+    # never trimmed.
+    if len(rows) and len(cols):
+        margins = [rows[0], height - 1 - rows[-1], cols[0], width - 1 - cols[-1]]
+    else:
+        margins = [height, height, width, width]
+    bleeds = [margin <= _PAD_BLEED for margin in margins]
+
+    def grow(near, far, size):
+        """New (near, far) margins along one axis, each at least the floor."""
+        extent = size - near - far
+        bleed_near, bleed_far = near <= _PAD_BLEED, far <= _PAD_BLEED
+        if padding <= 0 or (bleed_near and bleed_far) or extent >= size:
+            return near, far
+        new_near, new_far = near, far
+        # The floor is a fraction of the grown canvas, so a few rounds settle it.
+        for _ in range(8):
+            total = extent + new_near + new_far
+            new_near = near if bleed_near else max(near, padding * total)
+            new_far = far if bleed_far else max(far, padding * total)
+        return new_near, new_far
+
+    top, bottom = grow(margins[0], margins[1], height)
+    left, right = grow(margins[2], margins[3], width)
+    # Signed, per side: ground added (positive) or trimmed (negative).
+    add = [top - margins[0], bottom - margins[1], left - margins[2], right - margins[3]]
+
+    # Then to the house aspect. The short axis takes the extra on the sides the
+    # product does not run off; failing that, the long axis gives up spare ground.
+    new_h = height + add[0] + add[1]
+    new_w = width + add[2] + add[3]
+    if new_w / new_h < aspect:
+        short, long_, extra = (2, 3), (0, 1), new_h * aspect - new_w
+        long_size, to_long = new_h, 1 / aspect
+    else:
+        short, long_, extra = (0, 1), (2, 3), new_w / aspect - new_h
+        long_size, to_long = new_w, aspect
+    if extra >= 0.5:
+        open_sides = [side for side in short if not bleeds[side]]
+        if open_sides:
+            for side in open_sides:
+                add[side] += extra / len(open_sides)
+        else:
+            # Trim the long axis toward the size the short one already is,
+            # never past the floor of the canvas that leaves.
+            short_size = long_size - extra * to_long
+            floor = padding * short_size
+            spare = {
+                side: max(margins[side] + add[side] - floor, 0) for side in long_ if not bleeds[side]
+            }
+            needed = long_size - short_size
+            # Evenly where both sides have room, the rest from whichever does.
+            open_long = sorted(spare, key=spare.get)
+            for index, side in enumerate(open_long):
+                cut = min(spare[side], needed / (len(open_long) - index))
+                add[side] -= cut
+                needed -= cut
+            long_size = short_size + needed
+            short_now = sum(add[side] for side in short) + (width if short == (2, 3) else height)
+            # What trimming could not cover goes across the cut, split evenly.
+            for side in short:
+                add[side] += (long_size / to_long - short_now) / 2
+
+    top_add, bottom_add, left_add, right_add = (round(value) for value in add)
+    if not any((top_add, bottom_add, left_add, right_add)):
+        return image
+
+    # Trim first (a negative side), then grow (a positive one).
+    cropped = pixels[
+        max(-top_add, 0) : height - max(-bottom_add, 0),
+        max(-left_add, 0) : width - max(-right_add, 0),
+    ]
+    inner_h, inner_w = cropped.shape[:2]
+    pad_top, pad_bottom, pad_left, pad_right = (max(value, 0) for value in (top_add, bottom_add, left_add, right_add))
+    grown = np.pad(cropped, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode="edge")
+
+    grown_h, grown_w = grown.shape[:2]
+    ys = np.arange(grown_h)[:, None]
+    xs = np.arange(grown_w)[None, :]
+    outside = np.maximum(
+        np.maximum(pad_top - ys, ys - (pad_top + inner_h - 1)).clip(0),
+        np.maximum(pad_left - xs, xs - (pad_left + inner_w - 1)).clip(0),
+    )
+    fade = max(1.0, max(grown_w, grown_h) * _PAD_FADE)
+    weight = np.clip(outside / fade, 0, 1)[..., None]
+    grown = grown + weight * (target - grown)
+    framed = Image.fromarray(np.round(grown).astype(np.uint8), "RGB")
+
+    # Rounding each side can leave the canvas a pixel off; settle it exactly.
+    want_w = round(framed.height * aspect)
+    if framed.width != want_w:
+        settled = Image.new("RGB", (want_w, framed.height), _rgb(spec["background"]))
+        settled.paste(framed, ((want_w - framed.width) // 2, 0))
+        framed = settled
+    return framed
 
 
 def _session(model):
