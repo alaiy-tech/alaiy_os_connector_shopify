@@ -395,6 +395,16 @@ def _variant_inventory_item_payload(variant) -> dict:
     return payload
 
 
+def _variant_barcode(variant) -> str:
+    """The barcode to send for a variant: the first row of its barcode list,
+    else the barcode recorded from Shopify on import. Imported variants carry
+    only the latter, so without the fallback a push omits their barcode."""
+    barcodes = variant.get("barcodes")
+    if barcodes and barcodes[0].barcode:
+        return barcodes[0].barcode
+    return variant.get("sh_barcode") or ""
+
+
 def _variant_canonical(variant, settings, listing) -> dict:
     # Fingerprint-only dict (diffed to decide "needs push", never pushed
     # itself) -- safe to default missing prices to 0 here, unlike the
@@ -414,7 +424,7 @@ def _variant_canonical(variant, settings, listing) -> dict:
             {"attribute": a.attribute, "value": a.attribute_value}
             for a in (variant.attributes or [])
         ],
-        "barcode": variant.barcodes[0].barcode if variant.get("barcodes") else "",
+        "barcode": _variant_barcode(variant),
         "variant_image": listing_resolver.effective_variant_image(listing, variant.item_code) or "",
         "harmonized_system_code": variant.get("sh_harmonized_system_code") or "",
         "country_of_origin": variant.get("sh_country_of_origin") or "",
@@ -500,8 +510,9 @@ def _variant_set_payload(variant, settings, option_names: list, listing, is_new_
     shopify_variant_id = listing_resolver.variant_shopify_id(listing, variant.item_code)
     if shopify_variant_id:
         payload["id"] = f"gid://shopify/ProductVariant/{shopify_variant_id}"
-    if variant.get("barcodes"):
-        payload["barcode"] = variant.barcodes[0].barcode
+    barcode = _variant_barcode(variant)
+    if barcode:
+        payload["barcode"] = barcode
     compare_at = _variant_compare_at_price(variant.item_code)
     if compare_at is not None and compare_at > 0:
         payload["compareAtPrice"] = f"{compare_at:.2f}"
