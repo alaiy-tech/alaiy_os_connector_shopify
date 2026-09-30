@@ -161,6 +161,11 @@ DEFAULTS = {
     # Keep the transparent cutout as its own file, so the background can be changed
     # later without paying for the photo again.
     "keep_cutout": True,
+    # Where the product runs out of the original frame (a strap cropped at the top
+    # and bottom of the shot), let it run out of the finished canvas on that side
+    # too, instead of padding it and leaving the cut end in mid-air. Off keeps the
+    # padding on every side. See `_cut_edges`.
+    "bleed_cut_edges": False,
 }
 
 _UNSET = object()
@@ -182,10 +187,28 @@ _BORDER_FRACTION = 0.04
 _BORDER_MIN_MEAN = 225
 _BORDER_MAX_STDEV = 12
 
-# How far from a corner's own colour the fill is allowed to travel. Generous enough
+# How much of the ring must be ground — see `_ground_complaint`. A strap running
+# out of both ends of a shot covered 13% of it.
+_BORDER_MIN_GROUND = 0.6
+
+# How far from its seed's own colour the fill is allowed to travel. Generous enough
 # to cross the slight unevenness of a real render, tight enough to stop at the
 # edge of anything that is actually the product.
 _FILL_TOLERANCE = 36
+
+# How close an edge pixel must be to the ground to seed the fill — the same
+# 1-norm distance Pillow's floodfill measures `thresh` in. The edge of the frame is
+# not all ground: a strap that runs out of the shot puts the product itself on the
+# edge, often in a corner, and a fill seeded there takes the strap's colour for
+# the ground and erases the whole strap. A pale pink strap measured 129-149 from a
+# light grey ground; a render that lands near the requested ground rather than on
+# it stays well inside this.
+_SEED_TOLERANCE = 60
+
+# How many evenly spaced points along each side of the frame are tried as seeds,
+# corners included. Enough to reach every pocket of ground a product crossing the
+# edge can cut off; a seed already filled by an earlier one costs nothing.
+_SEEDS_PER_EDGE = 64
 
 # A pixel counts as "filled" if the flood moved it at all. Compared against the
 # untouched original rather than against the fill colour, so a product that happens
@@ -210,6 +233,18 @@ _MAX_SUBJECT = 0.98
 # 60, while a hallucinated blob on a blank frame is 0. This sits ~7x under the
 # worst real photo and well clear of the failure it is for.
 _MIN_SUBJECT_DETAIL = 1.5
+
+# How close to a side of the frame, as a fraction of the shorter side, the product
+# must reach for that side to be looked at — see `_cut_edges`. Not zero: a photo
+# exported with a thin white rim (one had 3px of it on a 371px frame) crops the
+# strap just inside the rim, not at the frame's own edge.
+_CUT_EDGE_REACH = 0.015
+
+# How much of the product's own width (or height) its outermost line on a side
+# must cover for that side to count as cut on its own. Cropped straps, straight
+# across or diagonal, measured 11-33%; a round bezel touching the side of a tight
+# crop measured 1.3%, and a crown 4%.
+_CUT_RUN_MIN = 0.08
 
 # Softens the one-pixel staircase the flood leaves behind. Deliberately under a
 # pixel: any more and a bright metal edge starts to glow against the grey.
@@ -401,19 +436,27 @@ def _finish(content, spec, client):
             )
         else:
             alpha = _subject_alpha(mask_source)
-            if alpha.size != image.size:
-                # Gemini is not contracted to return the exact pixel dimensions
-                # it was handed, only the same framing — resize the MASK to
-                # match the original, never the other way around, since the
-                # cutout below is cropped from `image`, not from Gemini's
-                # render.
-                alpha = alpha.resize(image.size, Image.LANCZOS)
+        if alpha is None:
+            # No point on the render's edge is its ground — the product covers
+            # the whole border. Same fallback as above.
+            alpha = _repair(
+                image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
+            )
+        elif alpha.size != image.size:
+            # Gemini is not contracted to return the exact pixel dimensions
+            # it was handed, only the same framing — resize the MASK to
+            # match the original, never the other way around, since the
+            # cutout below is cropped from `image`, not from Gemini's
+            # render.
+            alpha = alpha.resize(image.size, Image.LANCZOS)
     else:
         # The flood needs the ground to already be clean; the model does not.
         uneven = _ground_complaint(image)
         if uneven:
             return _skipped(content, uneven)
         alpha = _subject_alpha(image)
+        if alpha is None:
+            return _skipped(content, "no background could be found along the edge of the photo")
 
     subject = _coverage(alpha)
     if subject < _MIN_SUBJECT:
@@ -427,12 +470,14 @@ def _finish(content, spec, client):
     if not box:
         return _skipped(content, "no product could be separated from the background")
 
+    cut = _cut_edges(alpha) if spec.get("bleed_cut_edges") else frozenset()
+
     cutout = image.convert("RGBA")
     cutout.putalpha(alpha)
     cutout = cutout.crop(box)
 
     return {
-        "image": _encode(_compose(cutout, image.size, spec)),
+        "image": _encode(_compose(cutout, image.size, spec, cut)),
         "mime": "image/png",
         "cutout": _encode(cutout) if spec.get("keep_cutout") else None,
         "note": None,
@@ -1105,20 +1150,24 @@ def _ground_complaint(image):
     Only the border ring is judged. What is inside the frame is the product's
     business — a dark dial or a black strap says nothing about whether the ground
     behind it is clean.
+
+    And only the ground within the ring: a product that runs out of the shot (a
+    strap cropped at the top and bottom) crosses the ring, and measured together
+    with the ground it reads as a badly uneven background. So the ring's pixels
+    near its median colour are taken as the ground and judged on their own, and
+    they must make up most of the ring — a patterned or graded backdrop leaves too
+    few of them to pass.
     """
-    width, height = image.size
-    ring = max(1, int(min(width, height) * _BORDER_FRACTION))
-    if width <= ring * 2 or height <= ring * 2:
+    ring = _border_ring(image.size)
+    if ring is None:
         return "the rendered photo is too small to finish"
 
-    # The ring, laid out as one strip: the two full-width bands plus what is left
-    # of the sides between them.
-    mask = Image.new("L", image.size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rectangle([0, 0, width - 1, height - 1], fill=255)
-    draw.rectangle([ring, ring, width - 1 - ring, height - 1 - ring], fill=0)
+    ground = _ground_mask(image, ring)
+    ring_pixels = ImageStat.Stat(ring).sum[0] / 255.0
+    if ImageStat.Stat(ground).sum[0] / 255.0 < _BORDER_MIN_GROUND * ring_pixels:
+        return "the background of the rendered photo was not even enough to separate"
 
-    stat = ImageStat.Stat(image, mask)
+    stat = ImageStat.Stat(image, ground)
     if min(stat.mean) < _BORDER_MIN_MEAN:
         return "the rendered photo did not come back on a plain light background"
     if max(stat.stddev) > _BORDER_MAX_STDEV:
@@ -1126,26 +1175,146 @@ def _ground_complaint(image):
     return None
 
 
-def _subject_alpha(image):
-    """An opacity mask for the product: the frame minus the ground touching its edge.
+def _ground_mask(image, ring):
+    """The pixels of `ring` within `_SEED_TOLERANCE` of the ring's median colour."""
+    median = tuple(int(v) for v in ImageStat.Stat(image, ring).median)
+    r, g, b = ImageChops.difference(image, Image.new("RGB", image.size, median)).split()
+    # Clipped at 255, which is far past the tolerance, so the sum is exact where it
+    # matters.
+    distance = ImageChops.add(ImageChops.add(r, g), b)
+    near = distance.point(lambda v: 255 if v <= _SEED_TOLERANCE else 0)
+    return ImageChops.multiply(near, ring)
 
-    Flooded inward from the four corners rather than keyed on a colour. A colour key
-    is the obvious implementation and the wrong one for this catalog: white is not
-    only the background here, it is also a pearl, the table of a diamond and the
-    specular highlight down a polished band, and keying would punch every one of
-    them out of the middle of the product. A flood only ever reaches background that
-    is connected to the edge of the frame, so an enclosed white stays.
+
+def _border_ring(size):
+    """A mask of the band around the frame's edge that counts as "the background",
+    or None when the frame is too small to have one."""
+    width, height = size
+    ring = max(1, int(min(width, height) * _BORDER_FRACTION))
+    if width <= ring * 2 or height <= ring * 2:
+        return None
+
+    # The ring, laid out as one strip: the two full-width bands plus what is left
+    # of the sides between them.
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rectangle([0, 0, width - 1, height - 1], fill=255)
+    draw.rectangle([ring, ring, width - 1 - ring, height - 1 - ring], fill=0)
+    return mask
+
+
+def _subject_alpha(image):
+    """An opacity mask for the product: the frame minus the ground touching its edge,
+    or None when no point on the edge is ground.
+
+    Flooded inward from the edge rather than keyed on a colour. A colour key is the
+    obvious implementation and the wrong one for this catalog: white is not only the
+    background here, it is also a pearl, the table of a diamond and the specular
+    highlight down a polished band, and keying would punch every one of them out of
+    the middle of the product. A flood only ever reaches background that is
+    connected to the edge of the frame, so an enclosed white stays.
+
+    Seeded only from edge points that are the ground — the median colour of the
+    border ring, which the ground dominates even where the product crosses it. A
+    fill seeded on the product itself (a strap running out of a corner of the shot)
+    would take the product's colour for the ground and erase it.
     """
+    mask = _border_ring(image.size)
+    if mask is None:
+        return None
+    ground = tuple(int(v) for v in ImageStat.Stat(image, mask).median)
+
     flooded = image.copy()
     width, height = flooded.size
-    for corner in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
-        ImageDraw.floodfill(flooded, corner, _FILL_COLOR, thresh=_FILL_TOLERANCE)
+    pixels = image.load()
+    seeded = False
+    for xy in _edge_points(width, height):
+        if sum(abs(a - b) for a, b in zip(pixels[xy], ground)) <= _SEED_TOLERANCE:
+            ImageDraw.floodfill(flooded, xy, _FILL_COLOR, thresh=_FILL_TOLERANCE)
+            seeded = True
+    if not seeded:
+        return None
 
     # "Filled" is "this pixel moved", not "this pixel is now magenta" — so a product
     # that genuinely contains the sentinel colour survives.
     moved = ImageChops.difference(flooded, image).convert("L")
     alpha = moved.point(lambda v: 0 if v > _FILL_DELTA else 255)
     return alpha.filter(ImageFilter.GaussianBlur(_EDGE_FEATHER))
+
+
+def _edge_points(width, height):
+    """Evenly spaced points along all four sides of the frame, corners included."""
+    xs = sorted({round(i * (width - 1) / (_SEEDS_PER_EDGE - 1)) for i in range(_SEEDS_PER_EDGE)})
+    ys = sorted({round(i * (height - 1) / (_SEEDS_PER_EDGE - 1)) for i in range(_SEEDS_PER_EDGE)})
+    points = [(x, y) for x in xs for y in (0, height - 1)]
+    points += [(x, y) for y in ys for x in (0, width - 1)]
+    return list(dict.fromkeys(points))
+
+
+def _cut_edges(alpha):
+    """The sides of the frame the product runs out of, as a subset of
+    {"left", "top", "right", "bottom"}.
+
+    Only a side the product reaches within `_CUT_EDGE_REACH` of is looked at, and
+    reaching it is not enough: a round bezel or a crown touching the side of a
+    tight crop reaches it too, and setting that side flush pushes the whole piece
+    off centre. A side counts when either
+
+      * the product's outermost line on that side covers at least
+        `_CUT_RUN_MIN` of its own extent along it — a crop cuts across the
+        piece, where a curve meeting the side only touches it; or
+      * the product runs out through a corner of it, next to a side that counts
+        by the first rule — a strap leaving the shot diagonally crosses one side
+        broadly and only clips the other.
+    """
+    solid = alpha.point(lambda v: 255 if v > 128 else 0)
+    box = solid.getbbox()
+    if not box:
+        return frozenset()
+    width, height = solid.size
+    reach = max(1, round(min(width, height) * _CUT_EDGE_REACH))
+    x0, y0, x1, y1 = box
+    extent_w, extent_h = x1 - x0, y1 - y0
+
+    def column(x):
+        return solid.crop((x, y0, x + 1, y1))
+
+    def row(y):
+        return solid.crop((x0, y, x1, y + 1))
+
+    def share(line):
+        return ImageStat.Stat(line).mean[0] / 255.0
+
+    near = {
+        "left": x0 <= reach,
+        "top": y0 <= reach,
+        "right": x1 >= width - reach,
+        "bottom": y1 >= height - reach,
+    }
+    outer = {
+        "left": column(x0),
+        "top": row(y0),
+        "right": column(x1 - 1),
+        "bottom": row(y1 - 1),
+    }
+    cut = {side for side, line in outer.items() if near[side] and share(line) >= _CUT_RUN_MIN}
+
+    # The corner rule: does the product's run along this side reach the end of it
+    # that meets an already-cut side?
+    ends = {
+        "left": {"top": (0, 0, 1, reach), "bottom": (0, extent_h - reach, 1, extent_h)},
+        "right": {"top": (0, 0, 1, reach), "bottom": (0, extent_h - reach, 1, extent_h)},
+        "top": {"left": (0, 0, reach, 1), "right": (extent_w - reach, 0, extent_w, 1)},
+        "bottom": {"left": (0, 0, reach, 1), "right": (extent_w - reach, 0, extent_w, 1)},
+    }
+    for side in ("left", "top", "right", "bottom"):
+        if side in cut or not near[side]:
+            continue
+        for neighbour, end in ends[side].items():
+            if neighbour in cut and outer[side].crop(end).getbbox():
+                cut.add(side)
+                break
+    return frozenset(cut)
 
 
 def _featureless(image, alpha):
@@ -1174,11 +1343,14 @@ def _coverage(alpha):
     return ImageStat.Stat(alpha).sum[0] / (255.0 * width * height)
 
 
-def _compose(cutout, frame, spec):
+def _compose(cutout, frame, spec, cut=frozenset()):
     """The cutout on the house ground, with its margin and its shadow.
 
     `frame` is the size of the photo the cutout came out of, and it matters as much
-    as the cutout does — see below.
+    as the cutout does — see below. `cut` is the sides of that frame the product
+    runs out of (see `_cut_edges`); on those sides the product is set flush to the
+    canvas edge with no margin, so what the shot cropped still reads as cropped
+    rather than as a piece that ends in mid-air.
     """
     shadow = dict(DEFAULTS["shadow"], **(spec.get("shadow") or {}))
     padding = float(spec.get("padding", DEFAULTS["padding"]))
@@ -1199,9 +1371,17 @@ def _compose(cutout, frame, spec):
     # an edge than the margin allows. A photo that already has room keeps its own
     # framing and its own resolution. Padding is a FLOOR on the empty space, never a
     # target, and the only resize in this whole module is downward, for max_size.
-    usable = max(1.0 - 2.0 * padding, 0.05)
+    #
+    # A cut side takes no margin. When both opposite sides are cut but the canvas
+    # still has to be larger than the product on that axis (to keep the aspect),
+    # the product is centred on it, as it is when neither side is cut.
+    def margin(side):
+        return 0.0 if side in cut else padding
+
+    usable_w = max(1.0 - margin("left") - margin("right"), 0.05)
+    usable_h = max(1.0 - margin("top") - margin("bottom"), 0.05)
     frame_w, frame_h = frame
-    canvas_h = max(frame_h, frame_w / aspect, height / usable, width / (usable * aspect))
+    canvas_h = max(frame_h, frame_w / aspect, height / usable_h, width / (usable_w * aspect))
     canvas_w = canvas_h * aspect
 
     longest = max(canvas_w, canvas_h)
@@ -1216,13 +1396,23 @@ def _compose(cutout, frame, spec):
 
     canvas_w, canvas_h = max(1, round(canvas_w)), max(1, round(canvas_h))
     width, height = product.size
-    left = (canvas_w - width) // 2
-    top = (canvas_h - height) // 2
+    left = _place(canvas_w, width, "left" in cut, "right" in cut)
+    top = _place(canvas_h, height, "top" in cut, "bottom" in cut)
 
     base = Image.new("RGB", (canvas_w, canvas_h), _rgb(spec["background"]))
     base = _cast_shadow(base, product, (left, top), shadow)
     base.paste(product, (left, top), product)
     return base
+
+
+def _place(canvas, size, near_cut, far_cut):
+    """Offset of the product along one axis: flush to whichever end is cut,
+    centred when neither or both are."""
+    if near_cut and not far_cut:
+        return 0
+    if far_cut and not near_cut:
+        return canvas - size
+    return (canvas - size) // 2
 
 
 def _cast_shadow(base, product, position, shadow):
