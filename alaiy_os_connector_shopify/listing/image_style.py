@@ -125,7 +125,10 @@ DEFAULTS = {
     # isolates the product onto the house ground; only used to find the outline
     # via a flood-fill, never for the product's own pixels — see the module
     # docstring), "flood" (fill in from the frame edge; needs an already-clean
-    # pale background) or "gemini_full" (Gemini does the whole finish — background,
+    # pale background), "gemini_key" (as "gemini", but Gemini isolates the product
+    # onto a vivid key colour that is then removed by colour, gaps inside the
+    # product included — see `_gemini_keyed`) or "gemini_full" (Gemini does the
+    # whole finish — background,
     # shadow, everything — and its own render ships as the finished photo; the
     # only one of the five where the product's pixels are not guaranteed to be
     # the photographer's own — see the module docstring).
@@ -396,7 +399,7 @@ def finish_capability(spec):
     matte = spec.get("matte") or DEFAULTS["matte"]
     if matte == "photoroom":
         return "remove_background"
-    if matte in ("gemini", "gemini_full"):
+    if matte in ("gemini", "gemini_key", "gemini_full"):
         return "generate"
     return None
 
@@ -419,36 +422,15 @@ def _finish(content, spec, client):
     elif matte == "gemini":
         if not client:
             return _skipped(content, "no background/matting provider is configured")
-        mask_source = _gemini_isolated(client, image, spec["background"])
-        # The same believability check `flood` makes on a real photo, made here
-        # on Gemini's render instead — Gemini can be told to make its ground
-        # clean, but is not always able to: a strongly patterned or richly
-        # coloured original backdrop can come back from Gemini still uneven
-        # enough to fail this. That is exactly the case `segment` never cared
-        # about — a real segmentation model reads the product regardless of
-        # what is behind it — so rather than skip a photo Gemini could not
-        # clean up, fall back to the local model for THIS photo only. Gemini
-        # still gets to fix what it is here for (the holes ISNet punches
-        # through a metal bracelet or chain on an ordinary clean photo).
-        if _ground_complaint(mask_source):
-            alpha = _repair(
-                image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
-            )
-        else:
-            alpha = _subject_alpha(mask_source)
+        alpha = _gemini_mask(client, image, spec)
+    elif matte == "gemini_key":
+        if not client:
+            return _skipped(content, "no background/matting provider is configured")
+        # A photo whose own colours leave no key clear, or a render that did not
+        # come back on a clean key, is matted the `gemini` way instead.
+        alpha = _gemini_keyed(client, image)
         if alpha is None:
-            # No point on the render's edge is its ground — the product covers
-            # the whole border. Same fallback as above.
-            alpha = _repair(
-                image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
-            )
-        elif alpha.size != image.size:
-            # Gemini is not contracted to return the exact pixel dimensions
-            # it was handed, only the same framing — resize the MASK to
-            # match the original, never the other way around, since the
-            # cutout below is cropped from `image`, not from Gemini's
-            # render.
-            alpha = alpha.resize(image.size, Image.LANCZOS)
+            alpha = _gemini_mask(client, image, spec)
     else:
         # The flood needs the ground to already be clean; the model does not.
         uneven = _ground_complaint(image)
@@ -683,7 +665,44 @@ _GEMINI_ISOLATE_PROMPT = (
 )
 
 
-def _gemini_isolated(client, image, background_hex):
+def _gemini_mask(client, image, spec):
+    """The `gemini` matte's alpha for `image`: Gemini isolates the product onto
+    the house ground and the ground is flooded in from the edge."""
+    mask_source = _gemini_isolated(client, image, spec["background"])
+
+    # The same believability check `flood` makes on a real photo, made here
+    # on Gemini's render instead — Gemini can be told to make its ground
+    # clean, but is not always able to: a strongly patterned or richly
+    # coloured original backdrop can come back from Gemini still uneven
+    # enough to fail this. That is exactly the case `segment` never cared
+    # about — a real segmentation model reads the product regardless of
+    # what is behind it — so rather than skip a photo Gemini could not
+    # clean up, fall back to the local model for THIS photo only. Gemini
+    # still gets to fix what it is here for (the holes ISNet punches
+    # through a metal bracelet or chain on an ordinary clean photo).
+    if _ground_complaint(mask_source):
+        alpha = _repair(
+            image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
+        )
+    else:
+        alpha = _subject_alpha(mask_source)
+    if alpha is None:
+        # No point on the render's edge is its ground — the product covers
+        # the whole border. Same fallback as above.
+        alpha = _repair(
+            image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
+        )
+    elif alpha.size != image.size:
+        # Gemini is not contracted to return the exact pixel dimensions
+        # it was handed, only the same framing — resize the MASK to
+        # match the original, never the other way around, since the
+        # cutout below is cropped from `image`, not from Gemini's
+        # render.
+        alpha = alpha.resize(image.size, Image.LANCZOS)
+    return alpha
+
+
+def _gemini_isolated(client, image, background_hex, prompt=_GEMINI_ISOLATE_PROMPT):
     """Gemini's placement of this photo's product onto the house ground.
 
     Used for exactly one thing below: a flood-fill run over it to find where
@@ -695,13 +714,110 @@ def _gemini_isolated(client, image, background_hex):
     """
     reference = f"data:image/png;base64,{base64.b64encode(_encode(image)).decode('ascii')}"
     result = client.generate_image(
-        _GEMINI_ISOLATE_PROMPT.format(hex=background_hex),
+        prompt.format(hex=background_hex),
         reference_data_uri=reference,
         model=_GEMINI_MASK_MODEL,
     )
     mask_source = Image.open(io.BytesIO(base64.b64decode(result["b64"])))
     mask_source.load()
     return mask_source.convert("RGB")
+
+
+# ── the gemini_key matte ─────────────────────────────────────────────────────
+#
+# `gemini` floods the render's ground in from the frame's edge, which cannot reach
+# ground the product encloses — the inside of a bangle, the loop of a cord
+# bracelet, the gaps between a pendant's petals. It must not: on a pale ground a
+# pearl or a diamond's table is the ground's colour too, and only connectivity
+# tells them apart. So those gaps were kept as "product", and the original
+# photo's own backdrop showed through them on the finished ground.
+#
+# Put the render on a colour no part of the product is, and colour alone is
+# enough: every pixel of the key is ground wherever it is, enclosed or not. The
+# cutout is still cropped from the original photo; only the alpha comes from the
+# render.
+
+# The keys tried, in order of preference. Vivid primaries, because a photographed
+# product almost never contains one at full saturation.
+_KEY_COLORS = ("#ff00ff", "#00ff00", "#0000ff")
+
+# 1-norm distance from a key at which a pixel of the ORIGINAL photo counts as
+# that key's colour, and the share of the photo allowed to be — above it the key
+# is not clear of the product, and the next key is tried. Measured on a 256px
+# thumbnail.
+_KEY_CLASH = 200
+_KEY_MAX_CLASH = 0.002
+
+# How the render's key becomes alpha, in 1-norm distance from the key colour the
+# render actually used: fully ground inside _KEY_IN, fully product past
+# _KEY_OUT, a ramp between them for the antialiased edge.
+_KEY_IN = 60
+_KEY_OUT = 140
+
+# How far the render's own ground may land from the requested key and still be
+# taken as that key.
+_KEY_MAX_DRIFT = 120
+
+_GEMINI_KEY_PROMPT = (
+    "Put this exact product photo on a plain, even {hex} background. Keep the "
+    "product exactly as it is - do not retouch, restyle, or redraw it. Fill every "
+    "gap and opening where the background shows through the product with the same "
+    "{hex}. Do not add any shadow, reflection, or texture to the background."
+)
+
+
+def _gemini_keyed(client, image):
+    """The `gemini_key` matte's alpha for `image`, or None when this photo cannot
+    be keyed: none of `_KEY_COLORS` is clear of its colours, or the render did
+    not come back on a clean key.
+
+    Where the original photo is itself near the key, the pixel stays product
+    whatever the render shows — a key that clashes with a sliver of the product
+    must not cut that sliver out.
+    """
+    key = _pick_key(image)
+    if key is None:
+        return None
+    render = _gemini_isolated(client, image, key, prompt=_GEMINI_KEY_PROMPT)
+
+    ring = _border_ring(render.size)
+    if ring is None:
+        return None
+    ground = _ground_mask(render, ring)
+    ring_pixels = ImageStat.Stat(ring).sum[0] / 255.0
+    if ImageStat.Stat(ground).sum[0] / 255.0 < _BORDER_MIN_GROUND * ring_pixels:
+        return None
+    rendered_key = tuple(int(v) for v in ImageStat.Stat(render, ring).median)
+    if _distance_to(Image.new("RGB", (1, 1), rendered_key), _rgb(key)).getpixel((0, 0)) > _KEY_MAX_DRIFT:
+        return None
+
+    span = _KEY_OUT - _KEY_IN
+    alpha = _distance_to(render, rendered_key).point(
+        lambda v: 0 if v <= _KEY_IN else 255 if v >= _KEY_OUT else round((v - _KEY_IN) * 255 / span)
+    )
+    if alpha.size != image.size:
+        alpha = alpha.resize(image.size, Image.LANCZOS)
+
+    keep = _distance_to(image, _rgb(key)).point(lambda v: 255 if v < _KEY_OUT else 0)
+    return ImageChops.lighter(alpha, keep)
+
+
+def _pick_key(image):
+    """The first of `_KEY_COLORS` the photo's own colours leave clear, or None."""
+    small = image.copy()
+    small.thumbnail((256, 256))
+    for key in _KEY_COLORS:
+        near = _distance_to(small, _rgb(key)).point(lambda v: 255 if v < _KEY_CLASH else 0)
+        if ImageStat.Stat(near).mean[0] / 255.0 <= _KEY_MAX_CLASH:
+            return key
+    return None
+
+
+def _distance_to(image, color):
+    """Per-pixel 1-norm distance from `color`, clipped at 255 (past every
+    threshold it is compared with)."""
+    r, g, b = ImageChops.difference(image, Image.new("RGB", image.size, color)).split()
+    return ImageChops.add(ImageChops.add(r, g), b)
 
 
 # The pro tier, unlike `_GEMINI_MASK_MODEL` — and for the mirror-image reason.
@@ -1178,11 +1294,7 @@ def _ground_complaint(image):
 def _ground_mask(image, ring):
     """The pixels of `ring` within `_SEED_TOLERANCE` of the ring's median colour."""
     median = tuple(int(v) for v in ImageStat.Stat(image, ring).median)
-    r, g, b = ImageChops.difference(image, Image.new("RGB", image.size, median)).split()
-    # Clipped at 255, which is far past the tolerance, so the sum is exact where it
-    # matters.
-    distance = ImageChops.add(ImageChops.add(r, g), b)
-    near = distance.point(lambda v: 255 if v <= _SEED_TOLERANCE else 0)
+    near = _distance_to(image, median).point(lambda v: 255 if v <= _SEED_TOLERANCE else 0)
     return ImageChops.multiply(near, ring)
 
 
