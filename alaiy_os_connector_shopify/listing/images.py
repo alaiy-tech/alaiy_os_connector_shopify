@@ -60,17 +60,37 @@ def media_type(path_or_name):
     return MEDIA_TYPES.get(ext)
 
 
+def _as_png(content):
+    """PNG bytes for an image in a format the vision API does not accept (AVIF,
+    BMP, TIFF ...), or None when Pillow cannot decode it."""
+    import io
+
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(content))
+        img.load()
+        out = io.BytesIO()
+        img.convert("RGBA" if "A" in img.getbands() else "RGB").save(out, "PNG")
+        return out.getvalue()
+    except Exception:
+        return None
+
+
 def image_block_from_file(file_name):
     """Build a base64 Anthropic image block from a File docname, or None."""
     mime = media_type(file_name)
     try:
         file_doc = frappe.get_doc("File", file_name)
         mime = mime or media_type(file_doc.file_name or file_doc.file_url)
-        if not mime:
-            return None
         content = file_doc.get_content()  # bytes for a binary/image file
         if isinstance(content, str):
             content = content.encode("utf-8", "ignore")
+        if not mime:
+            content = _as_png(content)
+            if not content:
+                return None
+            mime = "image/png"
         return {
             "type": "image",
             "source": {
@@ -140,6 +160,11 @@ def reference_source(url):
         block = image_block_from_file(file_name)
         if block:
             return block["source"]
+    if not url.startswith(("http://", "https://")):
+        # A stored path that could not be turned into a block is a missing file
+        # or an undecodable format; fetching a site-relative path can only fail
+        # with a misleading "No scheme supplied".
+        raise ValueError(f"the stored file {url} is missing or is not a readable image")
     return fetch_image_block(url)["source"]
 
 
