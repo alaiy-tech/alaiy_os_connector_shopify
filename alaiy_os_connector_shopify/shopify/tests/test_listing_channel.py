@@ -322,6 +322,29 @@ class TestPublishedMetafieldsReachTheModel(unittest.TestCase):
         self.assertEqual(handlers.published_attributes(listing), {"material": "18K Rose Gold"})
 
 
+class TestTheBarcodeReachesTheModel(unittest.TestCase):
+    """`get_product` shows the Item's barcode, and "" when it has none.
+
+    "" rather than a missing key: told nothing, the model goes looking for a
+    code in the description or the photos and puts that in the title instead.
+    """
+
+    def _barcode(self, rows):
+        from unittest.mock import patch
+
+        with patch.object(handlers.frappe, "get_all", return_value=rows) as get_all:
+            return handlers.item_barcode("X1"), get_all
+
+    def test_the_first_barcode_row_is_read(self):
+        barcode, get_all = self._barcode([frappe._dict(barcode=" 116333 ")])
+        self.assertEqual(barcode, "116333")
+        self.assertEqual(get_all.call_args.kwargs["filters"], {"parent": "X1", "parenttype": "Item"})
+
+    def test_no_barcode_is_empty(self):
+        self.assertEqual(self._barcode([])[0], "")
+        self.assertEqual(self._barcode([frappe._dict(barcode=None)])[0], "")
+
+
 class TestNothingTheModelSendsFailsTheSave(unittest.TestCase):
     """One rejected field must not cost the listing.
 

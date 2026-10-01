@@ -34,7 +34,7 @@ import re
 
 import frappe
 
-from alaiy_os_connector_shopify.listing import matrix, provenance, title
+from alaiy_os_connector_shopify.listing import matrix, provenance
 from alaiy_os_connector_shopify.listing import images
 
 # Cap how many photos we send to the model to keep token/latency cost bounded.
@@ -237,13 +237,26 @@ def _collect_image_blocks(listing):
 # ── tools ─────────────────────────────────────────────────────────────────────
 
 
+def item_barcode(item_code):
+    """The Item's first barcode, or "" when it has none."""
+    rows = frappe.get_all(
+        "Item Barcode",
+        filters={"parent": item_code, "parenttype": "Item"},
+        fields=["barcode"],
+        order_by="idx asc",
+        limit=1,
+    )
+    return (rows[0].barcode or "").strip() if rows else ""
+
+
 def get_product(item_code):
     """
     Return a Shopify Product Listing's data plus its product photos as vision
     content blocks. The listing's `name` is the template item_code, so the
     caller's item_code is used directly as the listing name. The model receives a
     text block of the structured data followed by one labelled image block per
-    photo. Reads strictly from the listing — never the underlying Item.
+    photo. Reads from the listing, with one exception: `barcode` is the
+    underlying Item's, because the listing has no barcode of its own.
 
     `published_attributes` and `other_metafields` are what the store already
     records about this product. They are here because without them the model
@@ -257,6 +270,10 @@ def get_product(item_code):
     Both `image_urls` (all photos, in order) and `primary_image_url` (the best
     one to use as an edit base) are returned, so an image tool has whichever it
     needs without a second read.
+
+    `barcode` is the Item's first barcode, or "" when it has none -- "" rather
+    than a missing key, so the model reads "no barcode" and does not go looking
+    for one in the description or the photos.
     """
     listing = get_listing(item_code)
 
@@ -264,6 +281,7 @@ def get_product(item_code):
         "item_code": listing.item,
         "title": listing.get("listing_title"),
         "description": listing.get("listing_description"),
+        "barcode": item_barcode(listing.item),
         "price": listing.get("listing_price"),
         "shopify_status": listing.get("sh_shopify_status"),
         "is_enabled": bool(listing.get("is_enabled")),
@@ -759,10 +777,7 @@ def save_listing(listing, item_code=None):
     # Both of these are clamped rather than trusted, and both for the same
     # reason: a value the DocType would reject fails the whole save, and the
     # model's retry rebuilds the payload from scratch and loses attributes.
-    # The store's own title rule runs first, so the clamp sees what is saved.
-    doc.title, overlong = _clamp_data(
-        ENRICHED_DOCTYPE, "title", title.apply(item_code, listing.get("title"))
-    )
+    doc.title, overlong = _clamp_data(ENRICHED_DOCTYPE, "title", listing.get("title"))
     doc.confidence, bad_confidence = _select_value(
         ENRICHED_DOCTYPE, "confidence", listing.get("confidence")
     )
