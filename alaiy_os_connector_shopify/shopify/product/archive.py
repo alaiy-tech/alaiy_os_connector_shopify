@@ -133,17 +133,16 @@ def set_product_status(item_code: str, status: str):
             return {"ok": False, "reason": "; ".join(e.get("message", "") for e in errors)}
         pushed = True
 
+    # Written after Shopify has accepted the change, and left to the request's
+    # own commit: this runs inside an admin request, which commits on success.
     if listing.sh_shopify_status != status:
         listing.db_set("sh_shopify_status", status, update_modified=False)
     if template.get("sh_shopify_status") != status:
         frappe.db.set_value("Item", template.name, "sh_shopify_status", status, update_modified=False)
-    frappe.db.commit()
 
     if pushed:
         from alaiy_os_connector_shopify.shopify.sync_engine import entities
         entity = entities.get_by_erpnext("product", "Item", template.name, connection=template.get("sh_shopify_connection"))
         if entity:
-            entity.erpnext_fingerprint = None
-            entity.save(ignore_permissions=True)
-            frappe.db.commit()
+            entity.db_set("erpnext_fingerprint", None, update_modified=False)
     return {"ok": True, "pushed": pushed}
