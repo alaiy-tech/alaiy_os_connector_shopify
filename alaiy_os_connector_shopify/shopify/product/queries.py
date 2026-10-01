@@ -248,6 +248,7 @@ mutation PushProduct($input: ProductSetInput!, $identifier: ProductSetIdentifier
     product {
       id
       legacyResourceId
+      updatedAt
       variants(first: 100) {
         nodes {
           id

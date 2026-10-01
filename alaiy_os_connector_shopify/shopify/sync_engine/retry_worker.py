@@ -116,11 +116,18 @@ def _retry_fulfillment_push(payload):
     )
 
 
+def _recheck_product_images(payload):
+    from alaiy_os_connector_shopify.shopify.product.webhooks import recheck_product_images
+
+    recheck_product_images(payload["product_id"], payload.get("connection"))
+
+
 #: (direction, entity_type) -> what retrying it means. Keyed on both because
 #: an inbound order and an outbound one are different operations entirely.
 _HANDLERS = {
     ("outbound", "order"): _retry_order_cancel,
     ("outbound", "inventory"): _retry_fulfillment_push,
+    ("inbound", "product"): _recheck_product_images,
 }
 
 

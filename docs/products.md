@@ -143,6 +143,10 @@ A full field-by-field audit against Shopify's schema (`query_audit.py`) found re
 
 For each variant in the payload, `_ensure_variant_exists_locally` creates the Item variant if missing (matching an existing sibling by attribute values first, so an older/differently-named variant already occupying that attribute combination is reused instead of raising `ItemVariantExistsError`), and a matching enabled `Shopify Listing Variant` row is added inline if one doesn't already exist — a variant added on Shopify reaches the Listing on the very next webhook, not just on a later re-import.
 
+**Photos are read from Shopify, not from the payload** (`product/inbound_images.py`). Shopify processes photos sent by URL asynchronously (`UPLOADED` → `PROCESSING` → `READY`), so a payload built in that window lists only the photos already finished. The update path therefore queries the product's media and replaces the photo set only when no photo is still `UPLOADED` or `PROCESSING` (a `FAILED` photo is left out and logged). Otherwise the photos are left as they are and a re-check is queued on the retry queue (`inbound`/`product`, one per product): `recheck_product_images` raises while photos are still processing, so the queue backs off, and dead-letters with an admin alert if they never settle.
+
+**Stale deliveries are judged on Shopify's clock.** Shopify does not guarantee webhook order. `Shopify Synced Entity.shopify_updated_at` holds Shopify's `updatedAt` for the newest state applied in either direction — set from the `productSet` response on push and from the payload's `updated_at` on each applied update — and a delivery older than it is skipped. Equal timestamps are applied, since `updated_at` has one-second resolution.
+
 Inbound saves set `flags.from_shopify_sync` so nothing echoes back. A product deleted on Shopify also disables + unlinks its Listing (so hourly reconciliation doesn't recreate it); a variant missing from an inbound payload has its `Shopify Listing Variant` row disabled (Item variant left intact).
 
 ---

@@ -806,6 +806,15 @@ def _push_product_unlocked(item):
     from alaiy_os_connector_shopify.shopify.product.metafields import push_listing_metafields
     push_listing_metafields(listing, f"gid://shopify/Product/{product_id}", client)
 
+    # Shopify's own clock for the state this push just set. An inbound
+    # products/update older than it describes the product before this push
+    # and is skipped -- see webhooks._handle_product_update.
+    pushed = {}
+    if product.get("updatedAt"):
+        from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
+        pushed["shopify_updated_at"] = _to_utc_naive(
+            frappe.utils.get_datetime(product["updatedAt"]))
+
     entities.save(
         entity or entities.get_or_new(
             "product", "Item", item.name, product_id, connection=settings),
@@ -813,6 +822,7 @@ def _push_product_unlocked(item):
         erpnext_doctype="Item",
         erpnext_name=item.name,
         erpnext_fingerprint=fp,
+        **pushed,
     )
     frappe.db.commit()
 
