@@ -12,6 +12,8 @@ from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator
+from alaiy_os_connector_shopify.shopify.product import inbound_images
+from alaiy_os_connector_shopify.shopify.product.listing import get_listing
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical
 from alaiy_os_connector_shopify.shopify.product.export import _variants_of
 from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
@@ -184,18 +186,22 @@ def _handle_product_update(product_id: str, product: dict, connection=None):
     if not shopify_updated:
         return
 
-    # Shopify wins if newer than our last sync. Both sides must be
-    # normalized to the same UTC-naive form before comparing -- Shopify's
-    # timestamp string carries a UTC offset (parses to a timezone-AWARE
-    # datetime) while entity.last_synced_at is a naive Alaiy OS-local
-    # datetime; comparing aware to naive directly raises TypeError, which
-    # was silently swallowed by this function's own caller and made every
-    # single real webhook update fail with no visible symptom beyond
-    # "the update just didn't happen."
-    last_synced = entity.last_synced_at
-    if last_synced and _to_utc_naive(frappe.utils.get_datetime(shopify_updated)) < _to_utc_naive(frappe.utils.get_datetime(last_synced)):
+    # Skip a delivery older than the newest state already applied in either
+    # direction -- Shopify does not deliver webhooks in order. Both sides are
+    # Shopify's own clock: shopify_updated_at holds Shopify's updatedAt from
+    # our last push or the last update applied here.
+    #
+    # This used to compare against last_synced_at, which is OUR clock at the
+    # moment a sync FINISHED. Handling one delivery stamped it a second or
+    # two past the updated_at of the delivery right behind it, so that
+    # delivery -- the newer, complete one -- read as stale and was dropped.
+    # Both sides are normalised to naive UTC: Shopify's string carries an
+    # offset and parses timezone-aware, and comparing aware to naive raises.
+    shopify_updated_utc = _to_utc_naive(frappe.utils.get_datetime(shopify_updated))
+    last_applied = entity.get("shopify_updated_at")
+    if last_applied and shopify_updated_utc < frappe.utils.get_datetime(last_applied):
         frappe.logger().debug(
-            f"Product {product_id} older than local, skipping update"
+            f"Product {product_id} older than the newest state applied, skipping update"
         )
         return
 
@@ -232,33 +238,15 @@ def _handle_product_update(product_id: str, product: dict, connection=None):
     try:
         _update_item_from_shopify(item, product, connection=connection)
 
-        # Recompute and store the fingerprint for the post-update state so the
-        # hourly outbound reconciliation (push_changed_items_only) doesn't see
-        # this inbound-driven change as "different from last push" and push it
-        # straight back to Shopify.
-        #
-        # Reassigning `item` here (rather than a differently-named var) used
-        # to leave the unlock below calling .unlock() on THIS fresh instance,
-        # which never held the lock -- the original locked_item's file lock
-        # was orphaned every time this ran, confirmed live as the real cause
-        # of later saves on the same Item hitting DocumentLockedError against
-        # a lock that no in-memory reference could ever clear (only the
-        # 3-hour hard expiry eventually did).
-        item = frappe.get_doc("Item", item.name)
+        # Re-read by name inside the helper rather than reassigning `item`:
+        # that used to leave the unlock below calling .unlock() on a fresh
+        # instance which never held the lock, orphaning the original lock file
+        # until its 3-hour hard expiry.
         settings = connections.resolve(connection) if connection else connections.require_enabled()
-        from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
-        listing = listing_resolver.get_listing(item.name)
-        # Only re-fingerprint when a Listing exists (i.e. this product is
-        # outbound-managed) -- the canonical must match what an outbound push
-        # would build, which now reads the Listing. No Listing => outbound never
-        # pushes this product anyway, so there's nothing to guard against.
-        if listing:
-            if not listing.is_enabled or product.get("status") == "archived":
-                entities.save(entity, erpnext_fingerprint=None)
-            else:
-                variants = _variants_of(item)
-                canonical = _product_canonical(item, variants, settings, listing)
-                entities.save(entity, erpnext_fingerprint=fingerprint.fingerprint(canonical))
+        _refresh_push_fingerprint(
+            entity, item.name, settings, shopify_status=product.get("status"),
+            shopify_updated_at=shopify_updated_utc,
+        )
 
         frappe.logger().info(f"Updated Item {item.name} from Shopify product {product_id}")
     finally:
@@ -297,6 +285,134 @@ def _save_listing_with_retry(listing, _attempt=0):
         _save_listing_with_retry(_reloaded_with_changes(listing), _attempt=1)
 
 
+def _settled_shopify_images(product_id: str, connection=None):
+    """The product's photos to apply, or None to leave the photos alone.
+
+    None whenever the answer could be partial: Shopify could not be asked, or
+    a photo is still processing. Either way a re-check is queued, so the
+    photos are brought into step once Shopify has finished rather than never.
+    """
+    if not product_id:
+        return None
+    try:
+        fetched = inbound_images.fetch_product_images(product_id, connection)
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: could not read photos for product {product_id}",
+            message=frappe.get_traceback(),
+        )
+        fetched = False
+    if fetched is None:
+        return None  # gone from Shopify; products/delete handles that
+    if fetched and fetched[1]:
+        return fetched[0]
+
+    entity = entities.get_by_external_id("product", product_id, connection)
+    if entity:
+        inbound_images.schedule_recheck(product_id, entity.name, connection)
+    return None
+
+
+def _apply_inbound_images(item, listing, images, settings) -> bool:
+    """Make the product's photos Shopify's `images`. Returns whether the
+    Listing was changed and needs saving.
+
+    Images are LISTING-scoped. With a Listing, Shopify's images become the
+    Listing's image rows and the Item's own image is left untouched (don't
+    corrupt the shared default). Without a Listing, keep the old Item-image
+    behavior.
+    """
+    if listing:
+        dirty = False
+        existing = {row.image for row in (listing.images or [])}
+        if set(images) != existing:
+            listing.set("images", [])
+            for order, url in enumerate(images):
+                listing.append("images", {"image": url, "source": "Original", "sort_order": order})
+            dirty = True
+        # Every time, not only when the listing's images changed just now: a
+        # draft seeded or accepted onto before an earlier push is just as out
+        # of step. See follow_rehosted_urls.
+        from alaiy_os_connector_shopify.listing.images import follow_rehosted_urls
+
+        follow_rehosted_urls(listing.name, images)
+        return dirty
+
+    from alaiy_os_connector_shopify.shopify.product.media import (
+        _set_item_image, _set_item_slideshow
+    )
+    _set_item_image(item.name, images[0])
+    if len(images) > 1:
+        _set_item_slideshow(item.name, images, settings)
+    return False
+
+
+def recheck_product_images(product_id: str, connection=None):
+    """Bring a product's photos into step once Shopify has finished them.
+
+    Run by the retry queue for a product whose photos were still processing
+    when its webhook was handled. Raises PhotosStillProcessing while any
+    still is, so the queue backs off and asks again -- and, if they never
+    settle, dead-letters the entry and tells an admin, rather than leaving
+    the listing quietly short of photos.
+    """
+    from .export import LOCK_TIMEOUT_SECONDS
+
+    entity = entities.get_by_external_id("product", product_id, connection)
+    if not entity or not frappe.db.exists("Item", entity.erpnext_name):
+        return
+
+    fetched = inbound_images.fetch_product_images(product_id, connection)
+    if fetched is None:
+        return
+    images, settled = fetched
+    if not settled:
+        raise inbound_images.PhotosStillProcessing(
+            f"Shopify product {product_id} still has photos processing."
+        )
+    if not images:
+        return
+
+    item = frappe.get_doc("Item", entity.erpnext_name)
+    # A webhook for the same product may be mid-apply. Raising lets the queue
+    # retry after it, the same as a photo still processing.
+    item.lock(timeout=LOCK_TIMEOUT_SECONDS)
+    try:
+        settings = connections.resolve(connection) if connection else connections.require_enabled()
+        listing = get_listing(item.name)
+        # No commit here: the retry worker commits once this returns, and rolls
+        # the whole attempt back if it raises.
+        if _apply_inbound_images(item, listing, images, settings):
+            _save_listing_with_retry(listing)
+        _refresh_push_fingerprint(entity, item.name, settings)
+    finally:
+        item.unlock()
+
+
+def _refresh_push_fingerprint(entity, item_name, settings, shopify_status=None, **fields):
+    """Store the fingerprint of the state an inbound update just wrote.
+
+    So the hourly outbound reconciliation (push_changed_items_only) doesn't
+    see this inbound-driven change as "different from last push" and push it
+    straight back to Shopify. Only when a Listing exists (i.e. this product
+    is outbound-managed) -- the canonical must match what an outbound push
+    would build, which reads the Listing. No Listing => outbound never pushes
+    this product anyway, so there's nothing to guard against. `fields` are
+    saved on the entity alongside.
+    """
+    item = frappe.get_doc("Item", item_name)
+    listing = get_listing(item.name)
+    if listing:
+        if not listing.is_enabled or shopify_status == "archived":
+            fields["erpnext_fingerprint"] = None
+        else:
+            variants = _variants_of(item)
+            canonical = _product_canonical(item, variants, settings, listing)
+            fields["erpnext_fingerprint"] = fingerprint.fingerprint(canonical)
+    if fields:
+        entities.save(entity, **fields)
+
+
 def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=None):
     """
     Update Alaiy OS Item from Shopify product (inbound sync).
@@ -316,8 +432,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
     """
     settings = connections.resolve(connection) if connection else connections.require_enabled()
 
-    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
-    listing = listing_resolver.get_listing(item.name)
+    listing = get_listing(item.name)
     listing_dirty = False
 
     # Title & description are LISTING-scoped (marketplace-specific). A change
@@ -480,34 +595,16 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
         frappe.db.rollback()
         fresh_item = frappe.get_doc("Item", item.name)
         return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1, connection=connection)
-    frappe.db.commit()
+    # The Item has to be committed on its own: the photo read below calls
+    # Shopify, and _save_listing_with_retry rolls back on a lost race, which
+    # would otherwise discard the Item changes along with the Listing's.
+    frappe.db.commit()  # nosemgrep
 
-    # Images are LISTING-scoped too. With a Listing, route Shopify's images
-    # into the Listing's image rows and leave the Item's own image untouched
-    # (don't corrupt the shared default). Without a Listing, keep the old
-    # Item-image behavior.
-    images = [img.get("src") for img in (product.get("images") or []) if img.get("src")]
-    if images:
-        if listing:
-            existing = {row.image for row in (listing.images or [])}
-            if set(images) != existing:
-                listing.set("images", [])
-                for order, url in enumerate(images):
-                    listing.append("images", {"image": url, "source": "Original", "sort_order": order})
-                listing_dirty = True
-            # Every time, not only when the listing's images changed just now: a
-            # draft seeded or accepted onto before an earlier push is just as out
-            # of step. See follow_rehosted_urls.
-            from alaiy_os_connector_shopify.listing.images import follow_rehosted_urls
-
-            follow_rehosted_urls(listing.name, images)
-        else:
-            from alaiy_os_connector_shopify.shopify.product.media import (
-                _set_item_image, _set_item_slideshow
-            )
-            _set_item_image(item.name, images[0])
-            if len(images) > 1:
-                _set_item_slideshow(item.name, images, settings)
+    # Photos come from Shopify as it is now, not from this payload, and only
+    # once every photo has finished processing -- see inbound_images.
+    images = _settled_shopify_images(str(product.get("id") or ""), connection)
+    if images and _apply_inbound_images(item, listing, images, settings):
+        listing_dirty = True
 
     # Disable Listing Variant rows for variants no longer present on Shopify,
     # and clear their stale Item-level ids. The Listing's rows are the
