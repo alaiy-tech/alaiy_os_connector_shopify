@@ -628,6 +628,12 @@ def _collection_membership_call(client, mutation, collection_gid, product_gid, v
         data = client.execute(mutation, {"id": collection_gid, "productIds": [product_gid]})
         key = "collectionAddProducts" if verb == "add" else "collectionRemoveProducts"
         errors = (data.get(key) or {}).get("userErrors") or []
+        if errors and verb == "remove" and all(
+            "does not exist" in (e.get("message") or "") for e in errors
+        ):
+            # The collection was deleted on Shopify, so the product is already
+            # out of it. Nothing to retry and nothing to report.
+            return
         if errors:
             frappe.log_error(
                 title=f"Shopify: collection {verb} failed for {item_name}",
