@@ -1,5 +1,6 @@
 """
-Stock Alaiy OS holds is tracked on Shopify.
+Stock Alaiy OS holds is tracked on Shopify, and a new supplier product starts
+at its supplier's location.
 
 A variant created through productSet without `inventoryItem.tracked` is left
 untracked, and Shopify then ignores every quantity pushed to it and sells the
@@ -23,11 +24,19 @@ class Variant(dict):
     __getattr__ = dict.get
 
 
-def _load(has_bin=True, cost=None):
+def _load(has_bin=True, cost=None, bin_qty=None, gid="gid://shopify/Location/9"):
     frappe = types.ModuleType("frappe")
+
+    def get_value(doctype, filters=None, fieldname=None, *a, **k):
+        if doctype == "Shopify Location":
+            return gid
+        if doctype == "Bin":
+            return bin_qty
+        return None
+
     frappe.db = types.SimpleNamespace(
         exists=lambda doctype, filters=None: has_bin and doctype == "Bin",
-        get_value=lambda *a, **k: None,
+        get_value=get_value,
     )
     utils = types.ModuleType("frappe.utils")
     utils.flt = lambda v, *a: float(v or 0)
@@ -75,9 +84,48 @@ class VariantTrackingTests(unittest.TestCase):
         payload = _load(has_bin=False)._variant_inventory_item_payload(Variant(item_code="GIFT-1"))
         self.assertNotIn("tracked", payload)
 
+    def test_a_variant_at_a_supplier_location_is_tracked_even_with_no_stock_yet(self):
+        payload = _load(has_bin=False)._variant_inventory_item_payload(
+            Variant(item_code="IT-1", shopify_location="kaj8bk954r"))
+        self.assertTrue(payload["tracked"])
+
     def test_cost_and_tracking_travel_together(self):
         payload = _load(has_bin=True, cost=12.5)._variant_inventory_item_payload(Variant(item_code="IT-1"))
         self.assertEqual(payload, {"tracked": True, "cost": "12.50"})
+
+
+class Settings:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def get(self, key):
+        return self.rows if key == "sh_location_map" else []
+
+
+MAP = [types.SimpleNamespace(shopify_location="kaj8bk954r", warehouse="OAK GEM - TS")]
+
+
+class InitialQuantityTests(unittest.TestCase):
+    def quantities(self, variant, bin_qty=None, rows=MAP):
+        mod = _load(bin_qty=bin_qty)
+        return mod._variant_initial_inventory_quantities(variant, Settings(rows))
+
+    def test_no_stock_record_starts_at_zero_at_the_supplier_location(self):
+        # Without this the product is created with no stock anywhere and Shopify
+        # puts it at its default location.
+        out = self.quantities(Variant(item_code="IT-1", shopify_location="kaj8bk954r"), bin_qty=None)
+        self.assertEqual(out, [{"locationId": "gid://shopify/Location/9", "name": "available", "quantity": 0}])
+
+    def test_recorded_stock_is_sent_as_is(self):
+        out = self.quantities(Variant(item_code="IT-1", shopify_location="kaj8bk954r"), bin_qty=3.0)
+        self.assertEqual(out[0]["quantity"], 3)
+
+    def test_a_variant_with_no_location_sends_nothing(self):
+        self.assertEqual(self.quantities(Variant(item_code="IT-1"), bin_qty=3.0), [])
+
+    def test_a_location_with_no_mapped_warehouse_sends_nothing(self):
+        self.assertEqual(
+            self.quantities(Variant(item_code="IT-1", shopify_location="elsewhere"), bin_qty=3.0), [])
 
 
 if __name__ == "__main__":

@@ -377,9 +377,11 @@ def _variant_inventory_item_payload(variant) -> dict:
     # A variant whose stock Alaiy OS holds has to be tracked on Shopify, or
     # Shopify ignores every quantity pushed to it and sells the product as
     # always available. Left out of the payload, tracking stays off: nothing
-    # else ever turns it on. Items with no Bin (gift cards, digital products)
-    # are not stock we hold, so their setting is left as Shopify has it.
-    if frappe.db.exists("Bin", {"item_code": variant.item_code}):
+    # else ever turns it on. That is stock a supplier location holds (the
+    # variant has a location) or stock already recorded (it has a Bin), even if
+    # it is 0 today. Items with neither (gift cards, digital products) are not
+    # stock we hold, so their setting is left as Shopify has it.
+    if variant.get("shopify_location") or frappe.db.exists("Bin", {"item_code": variant.item_code}):
         payload["tracked"] = True
     cost = _variant_cost(variant.item_code)
     if cost is not None and cost > 0:
@@ -455,9 +457,12 @@ def _variant_initial_inventory_quantities(variant, settings) -> list:
     inventory_sync._resolve_location_pairs already uses (just inverted:
     location -> warehouse instead of warehouse -> location), so this stays
     the one source of truth for that mapping rather than inventing a second.
-    A location with no mapped Warehouse, or a Warehouse with no Bin row for
-    this item, means "no known quantity" -- skipped, never pushed as an
-    assumed zero (same rule inventory_sync's own bulk push follows).
+    A location with no mapped Warehouse is skipped. A Warehouse with no Bin
+    row for this item starts at 0: the product does not exist on Shopify yet,
+    so there is no stock there to overwrite and 0 is the truth. Skipping it
+    instead is what sent such products to Shopify's default location. (The
+    bulk push, which only ever updates existing products, still never pushes
+    an assumed zero.)
     """
     location_name = variant.get("shopify_location")
     if not location_name:
@@ -474,12 +479,10 @@ def _variant_initial_inventory_quantities(variant, settings) -> list:
         return []
     bin_qty = frappe.db.get_value(
         "Bin", {"item_code": variant.item_code, "warehouse": warehouse}, "actual_qty")
-    if bin_qty is None:
-        return []
     return [{
         "locationId": location_gid,
         "name": "available",
-        "quantity": int(flt(bin_qty)),
+        "quantity": int(flt(bin_qty)) if bin_qty is not None else 0,
     }]
 
 
