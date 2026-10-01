@@ -271,6 +271,11 @@ mutation UpdateVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInp
       id
       price
       compareAtPrice
+      inventoryItem {
+        unitCost {
+          amount
+        }
+      }
     }
     userErrors {
       field
