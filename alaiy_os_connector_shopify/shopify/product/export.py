@@ -161,28 +161,7 @@ def update_variant_prices_api(item_code_to_price, domain=None):
     return update_variant_prices(payload, domain=domain)
 
 
-def clear_variant_compare_at(item_codes, connection=None):
-    """Remove the compare-at price from Shopify for each Item and drop the
-    local "Shopify Compare At" Item Price, so a later push does not send it
-    again (the push omits compareAtPrice when no price exists, so clearing
-    locally alone never reaches Shopify). A variant is only reported cleared
-    when Shopify's response shows no compare-at price; the local row is only
-    deleted for those. Returns {"updated": [...], "failed": {item: reason}}.
-    """
-    from alaiy_os_connector_shopify.shopify.product.pricing import _COMPARE_AT_PRICE_LIST
-
-    result = update_variant_prices(
-        {code: None for code in item_codes}, connection=connection, clear_compare_at=True
-    )
-    for code in result["updated"]:
-        for name in frappe.get_all(
-            "Item Price", filters={"item_code": code, "price_list": _COMPARE_AT_PRICE_LIST}, pluck="name"
-        ):
-            frappe.delete_doc("Item Price", name, ignore_permissions=True)
-    return result
-
-
-def update_variant_prices(item_code_to_price: dict, domain=None, connection=None, clear_compare_at=False):
+def update_variant_prices(item_code_to_price: dict, domain=None, connection=None, compare_at=False):
     """Price-ONLY push via productVariantsBulkUpdate -- deliberately NOT
     push_item/productSet.
 
@@ -208,6 +187,10 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
     resolvable Shopify variant is reported back as a failure, never
     silently routed through push_item/productSet as a fallback, since that
     would reintroduce the exact risk this function exists to avoid.
+
+    compare_at=True sends the compare-at price instead of the price; a value
+    of None removes it, and is only reported updated once Shopify's response
+    shows no compare-at price.
 
     item_code_to_price: {item_code: float}. Returns
     {"updated": [item_code, ...], "failed": {item_code: reason, ...}}.
@@ -249,8 +232,11 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
             "variants": [
                 # Shopify's price field is a String, same formatting
                 # convention as _variant_set_payload's own productSet push.
-                {"id": f"gid://shopify/ProductVariant/{variant_id}", "compareAtPrice": None}
-                if clear_compare_at
+                {
+                    "id": f"gid://shopify/ProductVariant/{variant_id}",
+                    "compareAtPrice": None if price is None else f"{price:.2f}",
+                }
+                if compare_at
                 else {"id": f"gid://shopify/ProductVariant/{variant_id}", "price": f"{price:.2f}"}
                 for _item_code, variant_id, price in rows
             ],
@@ -267,10 +253,10 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
             still_set = {
                 v["id"].rsplit("/", 1)[-1]
                 for v in result.get("productVariants") or []
-                if clear_compare_at and v.get("compareAtPrice")
+                if v.get("compareAtPrice")
             }
-            for item_code, variant_id, _price in rows:
-                if str(variant_id) in still_set:
+            for item_code, variant_id, price in rows:
+                if compare_at and price is None and str(variant_id) in still_set:
                     failed[item_code] = "Shopify kept the compare-at price."
                 else:
                     updated.append(item_code)
