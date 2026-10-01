@@ -45,13 +45,13 @@ def rename_item_code(old_code: str, new_code: str) -> str:
             frappe.throw(frappe._("{0} {1} already exists.").format(doctype, new_code))
 
     try:
-        frappe.rename_doc("Item", old_code, new_code, force=True, ignore_permissions=True, show_alert=False)
+        frappe.rename_doc("Item", old_code, new_code, force=True, show_alert=False)
 
         # The Link field on each is already on the new code; only the name is stale.
         for doctype, field in _ITEM_NAMED_DOCTYPES:
             for name in frappe.get_all(doctype, filters={field: new_code}, pluck="name"):
                 if name != new_code:
-                    frappe.rename_doc(doctype, name, new_code, force=True, ignore_permissions=True, show_alert=False)
+                    frappe.rename_doc(doctype, name, new_code, force=True, show_alert=False)
 
         frappe.db.sql(
             """UPDATE `tabShopify Synced Entity` SET erpnext_name = %s
