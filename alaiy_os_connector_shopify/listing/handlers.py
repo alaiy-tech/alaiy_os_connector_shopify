@@ -34,7 +34,7 @@ import re
 
 import frappe
 
-from alaiy_os_connector_shopify.listing import matrix, provenance
+from alaiy_os_connector_shopify.listing import matrix, provenance, title
 from alaiy_os_connector_shopify.listing import images
 
 # Cap how many photos we send to the model to keep token/latency cost bounded.
@@ -759,7 +759,10 @@ def save_listing(listing, item_code=None):
     # Both of these are clamped rather than trusted, and both for the same
     # reason: a value the DocType would reject fails the whole save, and the
     # model's retry rebuilds the payload from scratch and loses attributes.
-    doc.title, overlong = _clamp_data(ENRICHED_DOCTYPE, "title", listing.get("title"))
+    # The store's own title rule runs first, so the clamp sees what is saved.
+    doc.title, overlong = _clamp_data(
+        ENRICHED_DOCTYPE, "title", title.apply(item_code, listing.get("title"))
+    )
     doc.confidence, bad_confidence = _select_value(
         ENRICHED_DOCTYPE, "confidence", listing.get("confidence")
     )
