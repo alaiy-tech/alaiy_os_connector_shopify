@@ -249,6 +249,15 @@ _CUT_EDGE_REACH = 0.015
 # crop measured 1.3%, and a crown 4%.
 _CUT_RUN_MIN = 0.08
 
+# A thin product cropped by the shot — a chain leaving through the top of the
+# frame — covers far less than that: two strands measured 6.6%. What marks it as
+# cut is that it is straight at the edge: its outermost line is as wide as the
+# line `reach` pixels in (99% for the chain), where a curve meeting the side is
+# still narrowing to a point (11% for a bezel, 49% for a crown). Cropped straps
+# measured 75-140%. `_CUT_THIN_MIN` keeps a speck on the edge from counting.
+_CUT_STRAIGHT_MIN = 0.7
+_CUT_THIN_MIN = 0.01
+
 # Softens the one-pixel staircase the flood leaves behind. Deliberately under a
 # pixel: any more and a bright metal edge starts to glow against the grey.
 _EDGE_FEATHER = 0.7
@@ -1374,10 +1383,12 @@ def _cut_edges(alpha):
 
       * the product's outermost line on that side covers at least
         `_CUT_RUN_MIN` of its own extent along it — a crop cuts across the
-        piece, where a curve meeting the side only touches it; or
+        piece, where a curve meeting the side only touches it;
+      * it covers less, but is as wide at that line as just inside it — a thin
+        chain cropped straight across (see `_CUT_STRAIGHT_MIN`); or
       * the product runs out through a corner of it, next to a side that counts
-        by the first rule — a strap leaving the shot diagonally crosses one side
-        broadly and only clips the other.
+        by the rules above — a strap leaving the shot diagonally crosses one
+        side broadly and only clips the other.
     """
     solid = alpha.point(lambda v: 255 if v > 128 else 0)
     box = solid.getbbox()
@@ -1409,7 +1420,20 @@ def _cut_edges(alpha):
         "right": column(x1 - 1),
         "bottom": row(y1 - 1),
     }
-    cut = {side for side, line in outer.items() if near[side] and share(line) >= _CUT_RUN_MIN}
+    inner = {
+        "left": column(min(x0 + reach, x1 - 1)),
+        "top": row(min(y0 + reach, y1 - 1)),
+        "right": column(max(x1 - 1 - reach, x0)),
+        "bottom": row(max(y1 - 1 - reach, y0)),
+    }
+
+    def crosses(side):
+        edge, inside = share(outer[side]), share(inner[side])
+        if edge >= _CUT_RUN_MIN:
+            return True
+        return edge >= _CUT_THIN_MIN and edge >= _CUT_STRAIGHT_MIN * inside
+
+    cut = {side for side in outer if near[side] and crosses(side)}
 
     # The corner rule: does the product's run along this side reach the end of it
     # that meets an already-cut side?

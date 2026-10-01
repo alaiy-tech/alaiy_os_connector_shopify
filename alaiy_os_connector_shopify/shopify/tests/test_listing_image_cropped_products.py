@@ -97,6 +97,16 @@ class CutEdges(unittest.TestCase):
 	def test_strap_leaving_through_corners_cuts_every_side(self):
 		self.assertEqual(self._cut(_diagonal_strap()), {"left", "top", "right", "bottom"})
 
+	def test_thin_chain_cropped_at_the_top_is_cut(self):
+		# Two strands crossing the top: far under _CUT_RUN_MIN of the piece's
+		# width, but straight at the edge.
+		image = Image.new("RGB", (1000, 1000), GROUND)
+		draw = ImageDraw.Draw(image)
+		draw.line([(310, -60), (470, 420)], fill=CASE, width=14)
+		draw.line([(690, -60), (530, 420)], fill=CASE, width=14)
+		draw.ellipse([250, 380, 750, 880], fill=CASE)
+		self.assertEqual(self._cut(image), {"top"})
+
 	def test_round_piece_touching_a_side_is_not_cut(self):
 		# At a photo's resolution, not a thumbnail's: a hard-edged circle's
 		# outermost column is ~1/sqrt(radius) of its height.
