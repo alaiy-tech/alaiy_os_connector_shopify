@@ -21,7 +21,7 @@ import frappe
 from alaiy_os_connector_shopify.listing import images as _listing_images  # noqa: F401
 from alaiy_os_connector_shopify.shopify import graphql_client as _graphql_client  # noqa: F401
 from alaiy_os_connector_shopify.shopify.product import export as _export  # noqa: F401
-from alaiy_os_connector_shopify.shopify.product import inbound_images, webhooks
+from alaiy_os_connector_shopify.shopify.product import importer, inbound_images, webhooks
 from alaiy_os_connector_shopify.shopify.product import listing as _listing  # noqa: F401
 from alaiy_os_connector_shopify.shopify.sync_engine import retry_queue as _retry_queue  # noqa: F401
 from alaiy_os_connector_shopify.shopify.sync_engine import retry_worker as _retry_worker  # noqa: F401
@@ -289,6 +289,54 @@ class TestScheduleRecheck(_TestCase):
         from alaiy_os_connector_shopify.shopify.sync_engine import retry_worker
 
         self.assertIn(inbound_images.RECHECK_KEY, retry_worker._HANDLERS)
+
+
+class TestImportPathWaitsForPhotos(_TestCase):
+    """A re-import or pull reads the same partial list while photos process."""
+
+    def _node(self, *statuses):
+        return {"featuredMedia": None, "media": {"nodes": _media(*statuses)}}
+
+    def test_media_settled(self):
+        self.assertTrue(inbound_images.media_settled(self._node("READY", "FAILED")))
+        self.assertFalse(inbound_images.media_settled(self._node("READY", "PROCESSING")))
+        self.assertFalse(inbound_images.media_settled(self._node("UPLOADED")))
+
+    def test_a_node_without_status_reads_as_settled(self):
+        # A webhook payload reshaped into a node carries no media status.
+        node = {"media": {"nodes": [{"mediaContentType": "IMAGE", "preview": None}]}}
+        self.assertTrue(inbound_images.media_settled(node))
+
+    def test_partial_photos_are_withheld_from_the_listing_and_rechecked(self):
+        entity = SimpleNamespace(name="ENT-1", external_id="42")
+        with patch.object(inbound_images, "schedule_recheck") as schedule:
+            images = importer._settled_listing_images(self._node("READY", "PROCESSING"), entity)
+        self.assertIsNone(images)
+        schedule.assert_called_once_with("42", "ENT-1", None)
+
+    def test_settled_photos_reach_the_listing(self):
+        entity = SimpleNamespace(name="ENT-1", external_id="42")
+        with patch.object(inbound_images, "schedule_recheck") as schedule:
+            images = importer._settled_listing_images(self._node("READY", "READY"), entity)
+        self.assertEqual(images, [f"{CDN}p0.png", f"{CDN}p1.png"])
+        schedule.assert_not_called()
+
+    def test_every_listing_photo_write_in_the_importer_is_gated(self):
+        import inspect
+
+        source = inspect.getsource(importer)
+        self.assertEqual(source.count("apply_inbound_from_shopify("), 3)
+        calls = source.split("apply_inbound_from_shopify(")[1:]
+        for call in calls:
+            args = call.split(")")[0]
+            self.assertNotIn("images=images", args)
+            self.assertNotIn("images=product_image_urls", args)
+
+    def test_the_import_query_reads_media_status(self):
+        from alaiy_os_connector_shopify.shopify.product import queries
+
+        media = queries._PRODUCT_NODE_FIELDS.split("media(first")[1].split("variants(")[0]
+        self.assertIn("status", media)
 
 
 if __name__ == "__main__":

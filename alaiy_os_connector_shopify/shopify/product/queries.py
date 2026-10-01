@@ -82,6 +82,9 @@ _PRODUCT_NODE_FIELDS = """
           nodes {
             id
             mediaContentType
+            # A photo still UPLOADED or PROCESSING is missing from preview, so a
+            # list read then is partial -- see inbound_images.media_settled.
+            status
             preview {
               image {
                 url

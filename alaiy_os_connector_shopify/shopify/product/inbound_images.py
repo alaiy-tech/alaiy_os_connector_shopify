@@ -84,12 +84,8 @@ def fetch_product_images(product_id, connection=None):
     if not node:
         return None
 
-    photos = [
-        m for m in ((node.get("media") or {}).get("nodes") or [])
-        if m.get("mediaContentType") == "IMAGE"
-    ]
-    settled = not any(m.get("status") in NOT_YET_READY for m in photos)
-    failed = sum(1 for m in photos if m.get("status") == FAILED)
+    settled = media_settled(node)
+    failed = sum(1 for m in _photos(node) if m.get("status") == FAILED)
     if failed:
         # Left out of the list by product_image_urls (a failed photo has no
         # image url), which is right: it is not a photo the product has. Said
@@ -99,6 +95,23 @@ def fetch_product_images(product_id, connection=None):
             "and were left out of the inbound photo sync."
         )
     return product_image_urls(node), settled
+
+
+def _photos(node):
+    return [
+        m for m in ((node.get("media") or {}).get("nodes") or [])
+        if m.get("mediaContentType") == "IMAGE"
+    ]
+
+
+def media_settled(node) -> bool:
+    """Whether no photo on a product node is still being processed.
+
+    A node read without media status (an older query shape, or a webhook
+    payload reshaped into a node) has nothing to say otherwise and reads as
+    settled, which is the behaviour it had before status was read at all.
+    """
+    return not any(m.get("status") in NOT_YET_READY for m in _photos(node))
 
 
 def schedule_recheck(product_id, synced_entity, connection=None):
