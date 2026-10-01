@@ -371,9 +371,16 @@ def _variant_inventory_item_id(variant: dict) -> str:
 
 
 def _variant_inventory_item_payload(variant) -> dict:
-    """inventoryItem sub-input for ProductVariantSetInput -- cost and
-    weight live here, not flat on the variant."""
+    """inventoryItem sub-input for ProductVariantSetInput -- cost, weight and
+    stock tracking live here, not flat on the variant."""
     payload = {}
+    # A variant whose stock Alaiy OS holds has to be tracked on Shopify, or
+    # Shopify ignores every quantity pushed to it and sells the product as
+    # always available. Left out of the payload, tracking stays off: nothing
+    # else ever turns it on. Items with no Bin (gift cards, digital products)
+    # are not stock we hold, so their setting is left as Shopify has it.
+    if frappe.db.exists("Bin", {"item_code": variant.item_code}):
+        payload["tracked"] = True
     cost = _variant_cost(variant.item_code)
     if cost is not None and cost > 0:
         payload["cost"] = f"{cost:.2f}"
