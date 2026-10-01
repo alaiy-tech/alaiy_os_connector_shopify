@@ -246,7 +246,7 @@ class TestRecheckProductImages(_TestCase):
                 patch.object(webhooks.entities, "get_by_external_id", return_value=entity), \
                 patch.object(webhooks.connections, "require_enabled", return_value=MagicMock()), \
                 patch.object(inbound_images, "fetch_product_images", return_value=fetched), \
-                patch.object(webhooks.listing_resolver, "get_listing", return_value=listing), \
+                patch.object(webhooks, "get_listing", return_value=listing), \
                 patch.object(webhooks, "_apply_inbound_images", return_value=True) as apply, \
                 patch.object(webhooks, "_save_listing_with_retry") as save, \
                 patch.object(webhooks, "_refresh_push_fingerprint") as refresh:

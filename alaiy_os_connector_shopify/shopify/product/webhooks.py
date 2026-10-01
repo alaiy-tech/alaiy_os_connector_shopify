@@ -13,7 +13,7 @@ from alaiy_os_connector_shopify.shopify.sync_engine import entities
 
 from alaiy_os_connector_shopify.shopify.order.utils import _as_administrator
 from alaiy_os_connector_shopify.shopify.product import inbound_images
-from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+from alaiy_os_connector_shopify.shopify.product.listing import get_listing
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical
 from alaiy_os_connector_shopify.shopify.product.export import _variants_of
 from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
@@ -379,10 +379,11 @@ def recheck_product_images(product_id: str, connection=None):
     item.lock(timeout=LOCK_TIMEOUT_SECONDS)
     try:
         settings = connections.resolve(connection) if connection else connections.require_enabled()
-        listing = listing_resolver.get_listing(item.name)
+        listing = get_listing(item.name)
+        # No commit here: the retry worker commits once this returns, and rolls
+        # the whole attempt back if it raises.
         if _apply_inbound_images(item, listing, images, settings):
             _save_listing_with_retry(listing)
-            frappe.db.commit()
         _refresh_push_fingerprint(entity, item.name, settings)
     finally:
         item.unlock()
@@ -400,7 +401,7 @@ def _refresh_push_fingerprint(entity, item_name, settings, shopify_status=None, 
     saved on the entity alongside.
     """
     item = frappe.get_doc("Item", item_name)
-    listing = listing_resolver.get_listing(item.name)
+    listing = get_listing(item.name)
     if listing:
         if not listing.is_enabled or shopify_status == "archived":
             fields["erpnext_fingerprint"] = None
@@ -431,8 +432,7 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
     """
     settings = connections.resolve(connection) if connection else connections.require_enabled()
 
-    from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
-    listing = listing_resolver.get_listing(item.name)
+    listing = get_listing(item.name)
     listing_dirty = False
 
     # Title & description are LISTING-scoped (marketplace-specific). A change
@@ -595,7 +595,10 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
         frappe.db.rollback()
         fresh_item = frappe.get_doc("Item", item.name)
         return _update_item_from_shopify(fresh_item, product, _retry_count=_retry_count + 1, connection=connection)
-    frappe.db.commit()
+    # The Item has to be committed on its own: the photo read below calls
+    # Shopify, and _save_listing_with_retry rolls back on a lost race, which
+    # would otherwise discard the Item changes along with the Listing's.
+    frappe.db.commit()  # nosemgrep
 
     # Photos come from Shopify as it is now, not from this payload, and only
     # once every photo has finished processing -- see inbound_images.
