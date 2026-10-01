@@ -808,7 +808,73 @@ def _gemini_keyed(client, image):
         alpha = alpha.resize(image.size, Image.LANCZOS)
 
     keep = _distance_to(image, _rgb(key)).point(lambda v: 255 if v < _KEY_OUT else 0)
-    return ImageChops.lighter(alpha, keep)
+    return _keep_enclosed_product(image, ImageChops.lighter(alpha, keep))
+
+
+# Ground the product ENCLOSES is only taken as ground when the photo itself shows
+# backdrop there. The render alone over-reads "every gap and opening": asked to
+# key a wide band ring shot from above, it keyed out the ring's inner wall, and
+# on a band of wrapped wires the grooves between them — both solid metal in the
+# photo. The photo is the evidence: through the hole of a bangle it shows the
+# backdrop, on an inner wall it shows metal. Ground that touches the frame's
+# edge is never second-guessed; it is the backdrop by definition.
+
+# A pixel of an enclosed region counts as backdrop when it is within this 1-norm
+# distance of the backdrop's median colour — or of however much the backdrop
+# itself varies along the frame's edge (its 95th percentile), plus
+# _ENCLOSED_MARGIN, when that is more.
+_ENCLOSED_MIN_TOL = 45
+_ENCLOSED_MARGIN = 20
+
+# The share of an enclosed region that must look like backdrop for it to be a
+# real opening. Under it the region goes back to being product. Not 1.0: a
+# shadow inside a bangle's hole is still the hole.
+_ENCLOSED_SEE_THROUGH = 0.6
+
+# How far a region put back as product is grown, in pixels, so the soft edge the
+# key left around it does not survive as a faint outline in the metal.
+_ENCLOSED_GROW = 2
+
+
+def _keep_enclosed_product(image, alpha):
+    """`alpha` with every enclosed ground region the photo shows as product put
+    back to opaque. Regions connected to the frame's edge are left alone.
+    """
+    import numpy as np
+    from scipy import ndimage
+
+    ground = np.asarray(alpha) < 128
+    labels, count = ndimage.label(ground)
+    if count < 2:
+        return alpha
+
+    edge = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+    edge = edge[edge > 0]
+    outer = np.isin(labels, edge)
+    if not outer.any():
+        # No backdrop to compare with: the product fills the frame.
+        return alpha
+
+    rgb = np.asarray(image.convert("RGB"), dtype=np.int16)
+    backdrop = np.median(rgb[outer], axis=0)
+    distance = np.abs(rgb - backdrop).sum(axis=2)
+    tolerance = max(_ENCLOSED_MIN_TOL, float(np.percentile(distance[outer], 95)) + _ENCLOSED_MARGIN)
+
+    sizes = np.bincount(labels.ravel(), minlength=count + 1)
+    backdrop_like = np.bincount(
+        labels.ravel(), weights=(distance <= tolerance).ravel(), minlength=count + 1
+    )
+    share = backdrop_like / np.maximum(sizes, 1)
+    product = np.zeros(count + 1, dtype=bool)
+    product[1:] = share[1:] < _ENCLOSED_SEE_THROUGH
+    product[edge] = False
+    if not product.any():
+        return alpha
+
+    restore = ndimage.binary_dilation(product[labels], iterations=_ENCLOSED_GROW)
+    out = np.asarray(alpha).copy()
+    out[restore] = 255
+    return Image.fromarray(out)
 
 
 def _pick_key(image):

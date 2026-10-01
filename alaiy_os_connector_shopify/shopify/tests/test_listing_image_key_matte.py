@@ -100,6 +100,59 @@ class ProductNearTheKeyIsKept(unittest.TestCase):
 		self.assertEqual(alpha.getpixel((71, 150)), 255)
 
 
+INNER_WALL = (205, 205, 210)
+
+
+def _band(size=300):
+	"""A wide band seen from above: a metal rim around an inner wall that is also
+	metal - pale, but not the backdrop - with grooves cut across its face."""
+	image = Image.new("RGB", (size, size), GROUND)
+	draw = ImageDraw.Draw(image)
+	draw.ellipse([40, 40, 260, 260], fill=METAL)
+	draw.ellipse([90, 90, 210, 210], fill=INNER_WALL)
+	for y in range(225, 250, 8):
+		draw.line([(110, y), (190, y)], fill=(120, 120, 125), width=2)
+	return image
+
+
+def _keys_too_much(photo, key):
+	"""A render that over-reads "every gap and opening": the inner wall and the
+	grooves come back as key, alongside the real ground."""
+	render = _onto_key(photo, key)
+	draw = ImageDraw.Draw(render)
+	draw.ellipse([90, 90, 210, 210], fill=key)
+	for y in range(225, 250, 8):
+		draw.line([(110, y), (190, y)], fill=key, width=2)
+	return render
+
+
+class EnclosedProductIsKept(unittest.TestCase):
+	"""Ground the product encloses is only ground where the photo shows backdrop."""
+
+	def test_an_inner_wall_the_render_keyed_out_is_kept(self):
+		alpha = image_style._gemini_keyed(_Client(_keys_too_much), _band())
+		self.assertEqual(alpha.getpixel((150, 150)), 255)
+
+	def test_grooves_the_render_keyed_out_are_kept(self):
+		alpha = image_style._gemini_keyed(_Client(_keys_too_much), _band())
+		self.assertEqual(alpha.getpixel((150, 233)), 255)
+
+	def test_the_backdrop_around_the_band_is_still_ground(self):
+		alpha = image_style._gemini_keyed(_Client(_keys_too_much), _band())
+		self.assertEqual(alpha.getpixel((5, 5)), 0)
+
+	def test_a_shadowed_bangle_hole_is_still_ground(self):
+		# Mostly backdrop, with a soft shadow across part of it: still the hole.
+		image = _bangle()
+		ImageDraw.Draw(image).rectangle([100, 175, 200, 200], fill=(200, 200, 200))
+		def render(photo, key):
+			out = _onto_key(photo, key)
+			ImageDraw.Draw(out).ellipse([100, 100, 200, 200], fill=key)
+			return out
+		alpha = image_style._gemini_keyed(_Client(render), image)
+		self.assertEqual(alpha.getpixel((150, 140)), 0)
+
+
 class RenderOffTheKeyIsRefused(unittest.TestCase):
 	def test_render_on_the_wrong_colour(self):
 		client = _Client(lambda photo, key: photo)
