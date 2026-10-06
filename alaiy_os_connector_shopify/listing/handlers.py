@@ -581,12 +581,20 @@ def _flag_missing_mandatory(doc, published):
     with gaps it can see beats a listing that lost the parts it got right.
     """
     profile = doc.get(matrix.category_field() or "")
-    required = matrix.mandatory(profile, product_type=doc.product_type)
+    # What the product will carry: this run's values over the published ones.
+    # Some conditionals read them -- Color & Clarity is mandatory when the
+    # Gemstones value names a diamond.
+    values = dict(published or {})
+    values.update({
+        row.key: row.value for row in doc.attributes if row.key and (row.value or "").strip()
+    })
+    required = matrix.mandatory(
+        profile, product_type=doc.product_type, title=doc.title, attributes=values
+    )
     if not required:
         return
 
-    filled = {row.key for row in doc.attributes if row.key and (row.value or "").strip()}
-    filled |= set(published or {})
+    filled = set(values)
     flagged = set(matrix.match_keys((doc.needs_review or "").splitlines()))
 
     for key, label in required:
