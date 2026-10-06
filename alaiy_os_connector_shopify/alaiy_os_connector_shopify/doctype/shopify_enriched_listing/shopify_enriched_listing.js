@@ -14,16 +14,28 @@
 //
 // So neither tool needs its own form script; each just fills the columns that
 // apply to what it produces.
+//
+// A produced image the site keeps in S3 is private, so its stored url is not one a
+// browser can load. The thumbnails are drawn at once from the stored urls (a local
+// File or a supplier photo loads as it is), then again from the signed links
+// `image_view_links` answers with.
 
 frappe.ui.form.on("Shopify Enriched Listing", {
 	refresh(frm) {
-		render_image_preview(frm);
+		render_image_preview(frm, {});
+		if (frm.is_new() || !(frm.doc.images || []).length) return;
+		frappe
+			.call({
+				method: "alaiy_os_connector_shopify.listing.api.image_view_links",
+				args: { item_code: frm.doc.name },
+			})
+			.then((r) => render_image_preview(frm, (r && r.message) || {}));
 	},
 });
 
 const THUMB = 190;
 
-function pane(url, label, placeholder) {
+function pane(url, label, placeholder, links) {
 	const caption = label
 		? `<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">${frappe.utils.escape_html(
 				label
@@ -42,7 +54,7 @@ function pane(url, label, placeholder) {
 			</div>`;
 	}
 
-	const safe = frappe.utils.escape_html(url);
+	const safe = frappe.utils.escape_html((links && links[url]) || url);
 	return `
 		<div style="width:${THUMB}px;">
 			<a href="${safe}" target="_blank" rel="noopener">
@@ -70,7 +82,7 @@ function side_text(row) {
 	                    word-break:break-word;">${frappe.utils.escape_html(parts.join("\n\n"))}</div>`;
 }
 
-function render_image_preview(frm) {
+function render_image_preview(frm, links) {
 	const field = frm.get_field("images_preview");
 	if (!field) return;
 
@@ -98,10 +110,10 @@ function render_image_preview(frm) {
 			}
 
 			const panes = paired
-				? `${pane(row.source_url, __("Source"), "")}
+				? `${pane(row.source_url, __("Source"), "", links)}
 				   <div style="padding-top:${THUMB / 2 - 10}px;color:var(--text-muted);font-size:16px;">&rarr;</div>
-				   ${pane(row.url, result_label, __("not produced"))}`
-				: pane(row.url, result_label, __("not produced"));
+				   ${pane(row.url, result_label, __("not produced"), links)}`
+				: pane(row.url, result_label, __("not produced"), links);
 
 			return `
 				<div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:14px;

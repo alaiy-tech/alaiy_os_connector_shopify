@@ -166,14 +166,7 @@ def _product_set_input(item, variants: list, settings, listing, client=None, is_
         )
         all_images = all_images[:250]
     if all_images:
-        payload["files"] = [
-            {"originalSource": url, "contentType": "IMAGE"} for url in all_images
-        ]
-        allowed = set(all_images)
-        for v_payload in payload["variants"]:
-            f = v_payload.get("file")
-            if f and f.get("originalSource") not in allowed:
-                del v_payload["file"]
+        _set_files(payload, all_images)
     tags = _item_tags(item)
     if tags:
         payload["tags"] = sorted(tags)
@@ -187,3 +180,29 @@ def _product_set_input(item, variants: list, settings, listing, client=None, is_
     if seo:
         payload["seo"] = seo
     return payload
+
+
+def _set_files(payload, all_images):
+    """Put the product's images on a productSet payload, as URLs Shopify can fetch.
+
+    A variant's `file` must name one of the product's `files` exactly, so a variant
+    image not among them is dropped first. Shopify downloads each originalSource
+    itself, so a produced image the site keeps in its private S3 bucket goes out
+    signed. Signed once per URL and only here, after the variant files are matched:
+    the URLs the fingerprint is built from stay unsigned, so signing never reads as a
+    change, and a variant's file still names exactly what `files` does.
+    """
+    from alaiy_os import image_store
+
+    allowed = set(all_images)
+    for v_payload in payload["variants"]:
+        f = v_payload.get("file")
+        if f and f.get("originalSource") not in allowed:
+            del v_payload["file"]
+
+    signed = {url: image_store.presigned_url(url) for url in all_images}
+    payload["files"] = [{"originalSource": signed[url], "contentType": "IMAGE"} for url in all_images]
+    for v_payload in payload["variants"]:
+        f = v_payload.get("file")
+        if f:
+            f["originalSource"] = signed[f["originalSource"]]

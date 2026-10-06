@@ -128,14 +128,43 @@ def fetch_image_block(image_url):
     }
 
 
+def _stored_block(url):
+    """A vision block for an image the site holds in its S3 bucket, read with the
+    site's own access, or None. A stored object is private, so a plain HTTP GET of its
+    URL is refused; this is how the model still sees it."""
+    from alaiy_os import image_store
+
+    if not image_store.is_stored_url(url):
+        return None
+    try:
+        stored = image_store.read(url)
+    except Exception:
+        return None
+    if not stored:
+        return None
+    content, mime = stored
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": mime or media_type(url) or "image/jpeg",
+            "data": base64.b64encode(content).decode("ascii"),
+        },
+    }
+
+
 def image_block_from_url(url):
     """
-    Build a vision block from an image URL stored on a listing row: resolve a
-    local /files or /private/files URL to its File doc, otherwise fetch an
-    external http(s) URL directly. Returns None if it cannot be read.
+    Build a vision block from an image URL stored on a listing row: read an image
+    in the site's S3 bucket with the site's own access, resolve a local /files or
+    /private/files URL to its File doc, otherwise fetch an external http(s) URL
+    directly. Returns None if it cannot be read.
     """
     if not url:
         return None
+    block = _stored_block(url)
+    if block:
+        return block
     file_name = frappe.db.get_value("File", {"file_url": url}, "name")
     if file_name:
         return image_block_from_file(file_name)
@@ -155,6 +184,9 @@ def reference_source(url):
     http(s) url by downloading it. Used to ground an image call in the real
     product photo.
     """
+    block = _stored_block(url)
+    if block:
+        return block["source"]
     file_name = frappe.db.get_value("File", {"file_url": url}, "name")
     if file_name:
         block = image_block_from_file(file_name)
@@ -187,31 +219,39 @@ def public_image_url(url):
     """
     An absolute URL a third-party service can fetch for itself.
 
-    Supplier CDN photos are already absolute and pass straight through. A photo
-    stored as a local Frappe File is only a site-relative path ('/files/x.jpg'),
-    so we expand it against the site URL; that only actually resolves when the
-    site is reachable from the public internet, which is why a local/dev site
-    will fail for any service that fetches the image itself.
+    See `alaiy_os.image_store.fetchable_url`: an image in the site's S3 bucket comes
+    back presigned, a local File is moved to the bucket on first use and presigned (or,
+    on a site with no bucket, expanded against the site URL), and a supplier CDN photo
+    passes straight through.
     """
-    if url.startswith("http://") or url.startswith("https://"):
-        return url
-    return frappe.utils.get_url(url)
+    from alaiy_os import image_store
+
+    return image_store.fetchable_url(url)
+
+
+#: Prefixes of photos rendered from a translated supplier photo; everything else this
+#: connector saves (enhanced, cutout, lifestyle, worn) is generated.
+_TRANSLATED_PREFIXES = ("listing-prepared",)
 
 
 def save_public_image(prefix, content, mime, default_ext=".png"):
     """
-    Store image bytes as a standalone public File and return its file_url.
+    Store produced image bytes where the site keeps them and return the URL to record:
+    the site's S3 bucket when it has one, else a standalone public File (see
+    `alaiy_os.image_store.save`). The URL stored is the object's own, never a signed
+    link -- those expire, and this URL is matched on and copied onto listings.
 
     Standalone (attached to no doctype) on purpose: an image a run produced shows
     up in that run's own output instead of mutating the product it came from, and
     the original photo is never overwritten — so a bad result is always
     recoverable.
     """
-    from frappe.utils.file_manager import save_file
+    from alaiy_os import image_store
 
     ext = MEDIA_TYPES_BY_MIME.get(mime, default_ext)
     file_name = f"{prefix}-{frappe.generate_hash(length=8)}{ext}"
-    return save_file(file_name, content, None, None, is_private=0).file_url
+    category = image_store.TRANSLATED if prefix in _TRANSLATED_PREFIXES else image_store.GENERATED
+    return image_store.save(file_name, content, mime, category=category)
 
 
 def follow_rehosted_urls(item_code, shopify_urls):

@@ -348,14 +348,16 @@ def get_product(item_code):
 
 def view_image(image_url):
     """
-    Fetch an external image URL and hand it back as a vision block, so the model
-    can actually look at a product it only knows as a bare URL (no item_code /
-    listing to read a photo from otherwise).
+    Read an image URL and hand it back as a vision block, so the model can actually
+    look at a product it only knows as a bare URL (no item_code / listing to read a
+    photo from otherwise). An image the site holds -- in its bucket or as a File -- is
+    read with the site's own access; anything else is downloaded.
     """
+    block = images.image_block_from_url(image_url) or images.fetch_image_block(image_url)
     return {
         "_content_blocks": [
             {"type": "text", "text": f"Reference image ({image_url}):"},
-            images.fetch_image_block(image_url),
+            block,
         ]
     }
 
