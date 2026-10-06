@@ -479,3 +479,67 @@ class TestTheSellersRulesAreTheSellers(unittest.TestCase):
             self.assertEqual(fields["properties"]["watch_category"]["enum"], ["Watches"])
             # The one confusion worth spelling out: this is not `category`.
             self.assertIn("NOT", fields["properties"]["watch_category"]["description"])
+
+
+_HERE = "alaiy_os_connector_shopify.shopify.tests.test_listing_channel"
+
+
+def _mandatory_reading_the_listing(profile, product_type=None, title=None, attributes=None):
+    """A client rule like Color & Clarity: mandatory when a diamond is named."""
+    texts = [title or "", (attributes or {}).get("gemstones") or ""]
+    return [("color_and_clarity", "Color & Clarity")] if any("Diamond" in t for t in texts) else []
+
+
+def _mandatory_from_before_the_listing_was_passed(profile, product_type=None):
+    return [("material", "Material")]
+
+
+class TestTheListingReachesTheSellersRules(unittest.TestCase):
+    """A conditional can hang on what the piece is made of, which only the
+    listing says -- so the save path hands the client its title and values."""
+
+    def _spec(self, fn):
+        return {
+            "category_field": "watch_category",
+            "field_labels": {"color_and_clarity": "Color & Clarity", "material": "Material"},
+            "profiles": {"Jewelry": {"mandatory": [], "conditional": [], "optional": []}},
+            "mandatory": f"{_HERE}.{fn.__name__}",
+        }
+
+    def _doc(self, gemstones=None, color_and_clarity=None, needs_review=""):
+        rows = [frappe._dict(key="gemstones", value=gemstones),
+                frappe._dict(key="color_and_clarity", value=color_and_clarity)]
+        return frappe._dict(
+            watch_category="Jewelry", product_type="Ring", title="Gold Band Ring",
+            attributes=[row for row in rows if row.value], needs_review=needs_review,
+        )
+
+    def test_a_diamond_in_gemstones_makes_color_and_clarity_owed(self):
+        with _matrix(self._spec(_mandatory_reading_the_listing)):
+            doc = self._doc(gemstones="Diamond: 0.22 ct. twd.")
+            handlers._flag_missing_mandatory(doc, {})
+            self.assertIn("Color & Clarity", doc.needs_review)
+
+    def test_a_published_diamond_counts_too(self):
+        with _matrix(self._spec(_mandatory_reading_the_listing)):
+            doc = self._doc()
+            handlers._flag_missing_mandatory(doc, {"gemstones": "Diamond: 0.22 ct. twd."})
+            self.assertIn("Color & Clarity", doc.needs_review)
+
+    def test_filled_or_no_diamond_flags_nothing(self):
+        with _matrix(self._spec(_mandatory_reading_the_listing)):
+            doc = self._doc(gemstones="Diamond: 0.22 ct.", color_and_clarity="Color: G; Clarity: VS1")
+            handlers._flag_missing_mandatory(doc, {})
+            self.assertEqual(doc.needs_review, "")
+
+            doc = self._doc(gemstones="Sapphire")
+            handlers._flag_missing_mandatory(doc, {})
+            self.assertEqual(doc.needs_review, "")
+
+    def test_a_client_rule_from_before_still_runs(self):
+        """Passing arguments its function does not take would fail every save."""
+        with _matrix(self._spec(_mandatory_from_before_the_listing_was_passed)):
+            self.assertEqual(
+                matrix.mandatory("Jewelry", product_type="Ring", title="x", attributes={}),
+                [("material", "Material")],
+            )
