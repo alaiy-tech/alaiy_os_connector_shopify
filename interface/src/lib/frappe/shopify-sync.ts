@@ -67,7 +67,7 @@ async function callMethod<T>(method: string, body?: Record<string, unknown>): Pr
   return payload.message;
 }
 
-function serverMessage(payload: { _server_messages?: string; exception?: string } | null): string | null {
+export function serverMessage(payload: { _server_messages?: string; exception?: string } | null): string | null {
   if (!payload) return null;
   try {
     const messages = JSON.parse(payload._server_messages ?? "[]") as string[];

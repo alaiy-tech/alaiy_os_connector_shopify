@@ -233,7 +233,7 @@ export function StoreSettings({ connection }: { connection: string }) {
       toast.warning("Add the shop URL first.");
       return;
     }
-    if (!form.clientId.trim()) {
+    if (form.authMethod !== "OAuth" && !form.clientId.trim()) {
       toast.warning("Add the Client ID first.");
       return;
     }

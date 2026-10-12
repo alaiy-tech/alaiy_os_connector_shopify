@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Badge } from "@alaiy-os/ui/badge";
 import { Button } from "@alaiy-os/ui/button";
@@ -124,19 +124,35 @@ export function SyncDashboard() {
   // Polls the sync log for one job every 2s while it's queued/running, same
   // cadence as the old Desk page's poll_import_progress, stopping once the
   // job leaves that state.
-  function pollLog(key: string, logName: string) {
+  // Each poll chain carries the token it started under; switching store or
+  // leaving the page bumps the token, which ends every chain still running.
+  const pollToken = useRef(0);
+  useEffect(() => {
+    pollToken.current += 1;
+    return () => {
+      pollToken.current += 1;
+    };
+  }, [selected]);
+
+  function pollLog(key: string, logName: string, token = pollToken.current, failures = 0) {
     fetchSyncStatus(undefined, selected ?? undefined)
       .then((rows) => {
+        if (token !== pollToken.current) return;
         const row = rows.find((r) => r.name === logName);
         setProgress((prev) => ({ ...prev, [key]: row }));
         if (row && ACTIVE_LOG_STATUSES.has(row.status)) {
-          setTimeout(() => pollLog(key, logName), POLL_MS);
+          setTimeout(() => pollLog(key, logName, token), POLL_MS);
         } else {
           void load();
         }
       })
       .catch(() => {
-        // transient — the next manual refresh will pick the final state up
+        if (token !== pollToken.current) return;
+        if (failures < 3) {
+          setTimeout(() => pollLog(key, logName, token, failures + 1), POLL_MS);
+        } else {
+          toast.error("Lost track of the sync job. Refresh to see its final state.");
+        }
       });
   }
 

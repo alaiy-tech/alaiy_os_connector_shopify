@@ -121,7 +121,7 @@ const RESOURCE = `/api/resource/${encodeURIComponent("Shopify Enriched Listing")
 async function resourceFetch(name: string, init: RequestInit): Promise<Record<string, unknown>> {
   const res = await fetch(`${RESOURCE}/${encodeURIComponent(name)}`, { cache: "no-store", ...init });
   const data = await res.json().catch(() => ({}) as Record<string, unknown>);
-  if (!res.ok) throw new Error((data as { message?: string }).message ?? `Request failed (${res.status}).`);
+  if (!res.ok) throw new Error(serverMessage(data as { _server_messages?: string; exception?: string }) ?? `Request failed (${res.status}).`);
   return data;
 }
 

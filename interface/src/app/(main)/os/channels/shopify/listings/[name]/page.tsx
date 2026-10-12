@@ -23,7 +23,6 @@ import { getListingStatusBadgeClass } from "@/constants/shopify";
 import {
   deleteListing,
   fetchEffectiveValues,
-  fetchItemChildren,
   fetchListingDetail,
   saveListing,
   type ShopifyListingDetail,
@@ -46,7 +45,6 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
   const [effective, setEffective] = useState<ShopifyListingEffectiveValues>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [populating, setPopulating] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -138,44 +136,6 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
       toast.error(shopifyErrorMessage(error, "Could not save the listing."));
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function handlePopulateFromItem() {
-    if (!listing) return;
-    setPopulating(true);
-    try {
-      const data = await fetchItemChildren(listing.item);
-      setListing((prev) =>
-        prev
-          ? {
-              ...prev,
-              images: data.images.map((row) => ({
-                name: null,
-                image: row.image,
-                source: row.source,
-                sort_order: row.sort_order,
-                generated_by_agent: null,
-              })),
-              variants: data.variants.map((row) => ({
-                name: null,
-                item_variant: row.item_variant,
-                is_enabled: row.is_enabled,
-                variant_price: row.variant_price,
-                variant_image: row.variant_image,
-                sh_shopify_variant_id: row.sh_shopify_variant_id,
-                metafields: [],
-              })),
-              listing_category: data.listing_category ?? prev.listing_category,
-              listing_product_type: data.listing_product_type ?? prev.listing_product_type,
-            }
-          : prev,
-      );
-      toast.success("Replaced images, variants, category and product type from the Item. Review and Save to apply.");
-    } catch (error) {
-      toast.error(shopifyErrorMessage(error, "Could not load the Item's current data."));
-    } finally {
-      setPopulating(false);
     }
   }
 
@@ -335,9 +295,6 @@ export default function Page({ params }: { params: Promise<{ name: string }> }) 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between border-b font-medium text-sm">
               Images ({listing.images.length})
-              <Button variant="outline" size="sm" onClick={() => void handlePopulateFromItem()} disabled={populating || saving}>
-                {populating ? <Loader2 className="animate-spin" /> : <Wand2 />} Populate from Item
-              </Button>
             </CardHeader>
             <CardContent className="pt-4">
               <ImagesEditor rows={listing.images} onChange={(images) => set("images", images)} disabled={saving} />

@@ -3,8 +3,10 @@
  * on `Shopify Product Listing` (same pattern as shopify-listing-toggle.ts
  * and shopify-listing-create.ts), plus the two bespoke whitelisted reads the
  * page needs from listing.py -- effective_values (resolved override/fallback
- * preview) and get_item_children ("Populate from Item").
+ * preview).
  */
+
+import { serverMessage } from "./shopify-sync";
 
 export interface ShopifyListingImage {
   name: string | null;
@@ -67,22 +69,6 @@ export interface ShopifyListingEffectiveValues {
   variant_prices?: Record<string, number | null>;
 }
 
-/** listing.get_item_children(item) result -- see listing.py. Category/type
- * are explicit snapshot overrides (team decision, per that function's own
- * docstring), images/variants are the template's current children. */
-export interface ShopifyListingItemChildren {
-  images: Array<{ image: string; source: string | null; sort_order: number }>;
-  variants: Array<{
-    item_variant: string;
-    is_enabled: 0 | 1;
-    sh_shopify_variant_id: string | null;
-    variant_image: string | null;
-    variant_price: number | null;
-  }>;
-  listing_category: string | null;
-  listing_product_type: string | null;
-}
-
 const RESOURCE = `/api/resource/${encodeURIComponent("Shopify Product Listing")}`;
 
 async function resourceFetch(name: string, init: RequestInit): Promise<Record<string, unknown>> {
@@ -92,7 +78,7 @@ async function resourceFetch(name: string, init: RequestInit): Promise<Record<st
   });
   const data = await res.json().catch(() => ({}) as Record<string, unknown>);
   if (!res.ok) {
-    throw new Error((data as { message?: string }).message ?? `Request failed (${res.status}).`);
+    throw new Error(serverMessage(data as { _server_messages?: string; exception?: string }) ?? `Request failed (${res.status}).`);
   }
   return data;
 }
@@ -124,7 +110,7 @@ async function callMethod<T>(method: string, params: Record<string, string>): Pr
   const res = await fetch(`/api/method/${method}?${qs}`, { cache: "no-store" });
   const data = await res.json().catch(() => ({}) as Record<string, unknown>);
   if (!res.ok) {
-    throw new Error((data as { message?: string; exception?: string }).message ?? `${method} failed.`);
+    throw new Error(serverMessage(data as { _server_messages?: string; exception?: string }) ?? `${method} failed.`);
   }
   const message = (data as { message?: T }).message;
   if (message === undefined) throw new Error(`${method} returned nothing.`);
@@ -135,8 +121,4 @@ export function fetchEffectiveValues(listingName: string): Promise<ShopifyListin
   return callMethod("alaiy_os_connector_shopify.shopify.product.listing.effective_values", {
     listing_name: listingName,
   });
-}
-
-export function fetchItemChildren(item: string): Promise<ShopifyListingItemChildren> {
-  return callMethod("alaiy_os_connector_shopify.shopify.product.listing.get_item_children", { item });
 }
