@@ -124,7 +124,7 @@ def resolve_optional(connection=None):
     """
     Like `resolve`, but None instead of a throw.
 
-    For the document events. `on_sales_order_submit` runs on every Sales Order
+    For the document events. `on_sales_order_update` runs on every Sales Order
     on the bench; on a multi-tenant site most of them are not Shopify's, and
     raising NoConnection there would turn "this connector has nothing to say
     about this document" into a failed save for an unrelated app.

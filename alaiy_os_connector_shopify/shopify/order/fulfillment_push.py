@@ -116,8 +116,7 @@ def _open_fulfillment_order_line_items(client, order_gid):
 def _match_dn_items_to_fulfillment_orders(dn, open_by_fulfillment_order, connection=None):
     """
     Matches each Delivery Note item to the Shopify fulfillment-order line
-    item it corresponds to (by variant id first, SKU as fallback -- same as
-    push.py's own push_order_create), and caps the quantity requested at the
+    item it corresponds to (by variant id first, SKU as fallback), and caps the quantity requested at the
     smaller of what the DN actually shipped and what Shopify still has open.
     Only lines the DN really has get pushed -- this is what makes partial/
     warehouse-scanned shipments correct instead of blindly fulfilling

@@ -30,11 +30,9 @@ from alaiy_os_connector_shopify.shopify.order.snapshot import (
 )
 from alaiy_os_connector_shopify.shopify.order.doc_events import (
     on_sales_order_update,
-    on_sales_order_submit,
     on_sales_order_cancel,
 )
 from alaiy_os_connector_shopify.shopify.order.push import (
     push_order_update,
-    push_order_create,
     push_order_cancel,
 )
