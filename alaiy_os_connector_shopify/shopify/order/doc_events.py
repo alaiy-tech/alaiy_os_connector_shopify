@@ -117,6 +117,9 @@ def on_sales_order_submit(doc, method=None):
         return
     if doc.get("sh_shopify_order_id"):
         return  # already a Shopify-origin order, nothing to push
+    conn = connections.resolve_optional(doc.get("sh_shopify_connection"))
+    if conn is None or not conn.get("sh_push_new_orders"):
+        return  # orders enter Alaiy OS by pull unless this store opts in
     # Listing Variant's copy first, Item as fallback.
     if not any(
         listing_resolver.variant_id_of_item(item.item_code)
