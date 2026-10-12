@@ -103,6 +103,37 @@ def on_sales_order_update(doc, method=None):
     )
 
 
+def on_sales_order_submit(doc, method=None):
+    """
+    The one 'vice versa' direction that was genuinely missing: a Sales
+    Order created directly in Alaiy OS (not from a Shopify pull/webhook)
+    never had anything pushing it to Shopify at all. Only fires for orders
+    with at least one Shopify-linked Item -- an order with zero Shopify
+    products has nothing meaningful to create over there.
+    """
+    if doc.flags.from_shopify_sync:
+        return
+    if not _connector_enabled(doc):
+        return
+    if doc.get("sh_shopify_order_id"):
+        return  # already a Shopify-origin order, nothing to push
+    conn = connections.resolve_optional(doc.get("sh_shopify_connection"))
+    if conn is None or not conn.get("sh_push_new_orders"):
+        return  # orders enter Alaiy OS by pull unless this store opts in
+    # Listing Variant's copy first, Item as fallback.
+    if not any(
+        listing_resolver.variant_id_of_item(item.item_code)
+        for item in doc.items
+    ):
+        return
+    frappe.enqueue(
+        "alaiy_os_connector_shopify.shopify.order_push.push_order_create",
+        queue="short",
+        timeout=120,
+        sales_order=doc.name,
+    )
+
+
 def on_sales_order_cancel(doc, method=None):
     if doc.flags.from_shopify_sync:
         return

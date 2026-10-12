@@ -119,6 +119,7 @@ When an order qualifies (per `sh_invoice_trigger`: **Paid and Fulfilled** defaul
 ## Outbound edits (Alaiy OS → Shopify)
 
 `doc_events.py` + `push.py` + `push_line_items.py`, driven by Sales Order doc_events:
+- `on_sales_order_submit` → `push_order_create` — a Sales Order created in Alaiy OS (not from Shopify) with Shopify-linked items is created on Shopify (`orderCreate`).
 - `on_sales_order_update` / `on_update_after_submit` → `push_order_update` — pushes status/notes; line-item add/remove goes through Shopify's **Order Editing API** (`_apply_shopify_line_item_changes`: begin → set qty 0 / add variant → commit), since `orderUpdate` has no line-item support.
 - `on_sales_order_cancel` → `push_order_cancel` (`orderCancel`).
 - Item add/remove detection uses a **before-save snapshot** (`snapshot.py`) cached at the `before_request` boundary — Alaiy OS's "Update Items" grid saves twice internally, so a doc.flags snapshot wouldn't survive.

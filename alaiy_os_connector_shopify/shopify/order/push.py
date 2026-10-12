@@ -188,6 +188,83 @@ def push_order_update(order_id: str, sales_order: str, status: str, items_change
         )
 
 
+def push_order_create(sales_order: str):
+    """
+    Builds an orderCreate mutation from a Sales Order's own items/customer.
+    Line items without a linked sh_shopify_variant_id are skipped (and
+    logged) rather than failing the whole push -- a partially-representable
+    order on Shopify is more useful than none at all, but skipped lines are
+    flagged loudly since Shopify's total won't match Alaiy OS's.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    so = frappe.get_doc("Sales Order", sales_order)
+
+    line_items = []
+    skipped = []
+    for item in so.items:
+        # Listing Variant's copy first, Item as fallback.
+        variant_id = listing_resolver.variant_id_of_item(item.item_code)
+        if not variant_id:
+            skipped.append(item.item_code)
+            continue
+        line_items.append({
+            "variantId": f"gid://shopify/ProductVariant/{variant_id}",
+            "quantity": int(item.qty),
+        })
+
+    if not line_items:
+        frappe.log_error(
+            title=f"Shopify: order create push skipped for {sales_order}",
+            message="No line item on this Sales Order has a linked Shopify variant.",
+        )
+        return
+
+    customer_email = frappe.db.get_value("Customer", so.customer, "email_id")
+
+    try:
+        connection = so.sh_shopify_connection
+        client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
+        order_input = {
+            "lineItems": line_items,
+            "financialStatus": "PENDING",
+        }
+        if customer_email:
+            order_input["email"] = customer_email
+
+        data = client.execute(_ORDER_CREATE_MUTATION, {
+            "order": order_input,
+            "options": {"sendReceipt": False, "sendFulfillmentReceipt": False},
+        })
+        result = data.get("orderCreate") or {}
+        errors = result.get("userErrors") or []
+        if errors:
+            frappe.log_error(
+                title=f"Shopify: order create push failed for {sales_order}",
+                message=str(errors),
+            )
+            return
+
+        order = result.get("order") or {}
+        if order.get("legacyResourceId"):
+            frappe.db.set_value("Sales Order", sales_order, {
+                "sh_shopify_order_id": order["legacyResourceId"],
+                "sh_shopify_order_name": order.get("name", ""),
+            })
+            frappe.db.commit()
+
+        if skipped:
+            frappe.log_error(
+                title=f"Shopify: order create push for {sales_order} skipped some items",
+                message=f"No Shopify variant linked for: {', '.join(skipped)}",
+            )
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify: order create push failed for {sales_order}",
+            message=frappe.get_traceback(),
+        )
+
+
 def _queue_retry_or_log(entity_type: str, payload: dict, title: str):
     """Queue a failed outbound push for retry, or log it if queuing fails.
 
