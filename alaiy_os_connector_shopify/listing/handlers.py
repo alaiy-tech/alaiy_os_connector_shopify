@@ -237,13 +237,26 @@ def _collect_image_blocks(listing):
 # ── tools ─────────────────────────────────────────────────────────────────────
 
 
+def item_barcode(item_code):
+    """The Item's first barcode, or "" when it has none."""
+    rows = frappe.get_all(
+        "Item Barcode",
+        filters={"parent": item_code, "parenttype": "Item"},
+        fields=["barcode"],
+        order_by="idx asc",
+        limit=1,
+    )
+    return (rows[0].barcode or "").strip() if rows else ""
+
+
 def get_product(item_code):
     """
     Return a Shopify Product Listing's data plus its product photos as vision
     content blocks. The listing's `name` is the template item_code, so the
     caller's item_code is used directly as the listing name. The model receives a
     text block of the structured data followed by one labelled image block per
-    photo. Reads strictly from the listing — never the underlying Item.
+    photo. Reads from the listing, with one exception: `barcode` is the
+    underlying Item's, because the listing has no barcode of its own.
 
     `published_attributes` and `other_metafields` are what the store already
     records about this product. They are here because without them the model
@@ -257,6 +270,10 @@ def get_product(item_code):
     Both `image_urls` (all photos, in order) and `primary_image_url` (the best
     one to use as an edit base) are returned, so an image tool has whichever it
     needs without a second read.
+
+    `barcode` is the Item's first barcode, or "" when it has none -- "" rather
+    than a missing key, so the model reads "no barcode" and does not go looking
+    for one in the description or the photos.
     """
     listing = get_listing(item_code)
 
@@ -264,6 +281,7 @@ def get_product(item_code):
         "item_code": listing.item,
         "title": listing.get("listing_title"),
         "description": listing.get("listing_description"),
+        "barcode": item_barcode(listing.item),
         "price": listing.get("listing_price"),
         "shopify_status": listing.get("sh_shopify_status"),
         "is_enabled": bool(listing.get("is_enabled")),
@@ -330,14 +348,16 @@ def get_product(item_code):
 
 def view_image(image_url):
     """
-    Fetch an external image URL and hand it back as a vision block, so the model
-    can actually look at a product it only knows as a bare URL (no item_code /
-    listing to read a photo from otherwise).
+    Read an image URL and hand it back as a vision block, so the model can actually
+    look at a product it only knows as a bare URL (no item_code / listing to read a
+    photo from otherwise). An image the site holds -- in its bucket or as a File -- is
+    read with the site's own access; anything else is downloaded.
     """
+    block = images.image_block_from_url(image_url) or images.fetch_image_block(image_url)
     return {
         "_content_blocks": [
             {"type": "text", "text": f"Reference image ({image_url}):"},
-            images.fetch_image_block(image_url),
+            block,
         ]
     }
 
@@ -563,12 +583,20 @@ def _flag_missing_mandatory(doc, published):
     with gaps it can see beats a listing that lost the parts it got right.
     """
     profile = doc.get(matrix.category_field() or "")
-    required = matrix.mandatory(profile, product_type=doc.product_type)
+    # What the product will carry: this run's values over the published ones.
+    # Some conditionals read them -- Color & Clarity is mandatory when the
+    # Gemstones value names a diamond.
+    values = dict(published or {})
+    values.update({
+        row.key: row.value for row in doc.attributes if row.key and (row.value or "").strip()
+    })
+    required = matrix.mandatory(
+        profile, product_type=doc.product_type, title=doc.title, attributes=values
+    )
     if not required:
         return
 
-    filled = {row.key for row in doc.attributes if row.key and (row.value or "").strip()}
-    filled |= set(published or {})
+    filled = set(values)
     flagged = set(matrix.match_keys((doc.needs_review or "").splitlines()))
 
     for key, label in required:
@@ -729,7 +757,18 @@ def save_listing(listing, item_code=None):
         frappe.log_error(title=f"Listing provenance: could not read the evidence for {item_code}")
         metafields, pages_read = {}, []
 
-    if frappe.db.exists(ENRICHED_DOCTYPE, item_code):
+    # Waits for any photo job mid-save on this same record, then holds it until
+    # the commit below - the lock the image stage's own jobs take (see
+    # image_stage._lock_row), so a retouch can run from the Media tab while an
+    # enrichment runs. Without it, a photo job saving between this load and the
+    # save below failed the save on its timestamp check, which the except branch
+    # reports to the model as a rejected field. Committed first so the record is
+    # read from a snapshot taken after the lock, not one this run's earlier
+    # reads already fixed (REPEATABLE READ).
+    from alaiy_os_connector_shopify.listing.image_stage import _lock_row
+
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit
+    if _lock_row(item_code):
         doc = frappe.get_doc(ENRICHED_DOCTYPE, item_code)
     else:
         doc = frappe.new_doc(ENRICHED_DOCTYPE)
@@ -892,48 +931,7 @@ def save_listing(listing, item_code=None):
             "notes": variant.get("notes"),
         })
 
-    # A lifestyle/worn photo (see ADDITIONAL_IMAGE_KINDS) is an admin's own
-    # request, saved onto this same row the moment it is generated — never
-    # something a run's own image tool produces or knows about. Carried over
-    # by hand before the rebuild below, which would otherwise drop them: the
-    # run's `images` list is that tool's own output, with no way to say
-    # "also keep whatever additional photos already lived here."
-    additional = [row for row in (doc.images or []) if row.kind in ADDITIONAL_IMAGE_KINDS]
-
-    # rebuild the image child table from whatever the image tool produced
-    doc.set("images", [])
-    for img in (listing.get("images") or []):
-        doc.append("images", {
-            "kind": img.get("kind"),
-            "item_variant": img.get("item_variant"),
-            "source_url": img.get("source_url"),
-            "url": img.get("url"),
-            "brief": img.get("brief"),
-            "note": img.get("note"),
-        })
-    for row in additional:
-        doc.append("images", {
-            "kind": row.kind,
-            "item_variant": row.item_variant,
-            "source_url": row.source_url,
-            "url": row.url,
-            "brief": row.brief,
-            "note": row.note,
-        })
-
-    # A row with no url is one the image step queued: the imagery is rendered after
-    # this run finishes (see image_stage.py), so the listing is reviewable now and
-    # says plainly that its pictures are still coming. Rows that already have a url
-    # are ones the image step reused from an earlier run — nothing is owed for those,
-    # so the listing is already Ready. Recomputed on every save, so a re-run that
-    # queues fresh images resets a previous run's verdict.
-    if any(not row.url for row in doc.images):
-        doc.image_status = "Queued"
-    elif doc.images:
-        doc.image_status = "Ready"
-    else:
-        doc.image_status = "Not Required"
-    doc.image_error = None
+    _rebuild_images(doc, listing.get("images") or [])
 
     _flag_missing_mandatory(doc, published)
 
@@ -999,3 +997,60 @@ def save_listing(listing, item_code=None):
         "status": doc.status,
         "url": f"/app/shopify-enriched-listing/{doc.name}",
     }
+
+
+def _rebuild_images(doc, produced):
+    """Put one run's imagery onto its enriched record.
+
+    A run that produced no imagery (the image toggle off) says nothing about the
+    photos, so the record's image rows - a retouch not saved yet, an accepted
+    worn photo - are left exactly as they are, and so is image_status. Rebuilding
+    from nothing here wiped them (Z058-03285, 2026-09-29): an admin's retouches
+    vanished from the draft, and the next photo added to it became the only one
+    it held.
+    """
+    if not produced:
+        if not doc.images:
+            doc.image_status = "Not Required"
+        return
+
+    # A lifestyle/worn photo (see ADDITIONAL_IMAGE_KINDS) is an admin's own
+    # request, saved onto this same row the moment it is generated — never
+    # something a run's own image tool produces or knows about. Carried over
+    # by hand before the rebuild below, which would otherwise drop them: the
+    # run's `images` list is that tool's own output, with no way to say
+    # "also keep whatever additional photos already lived here."
+    additional = [row for row in (doc.images or []) if row.kind in ADDITIONAL_IMAGE_KINDS]
+
+    # rebuild the image child table from whatever the image tool produced
+    doc.set("images", [])
+    for img in produced:
+        doc.append("images", {
+            "kind": img.get("kind"),
+            "item_variant": img.get("item_variant"),
+            "source_url": img.get("source_url"),
+            "url": img.get("url"),
+            "brief": img.get("brief"),
+            "note": img.get("note"),
+        })
+    for row in additional:
+        doc.append("images", {
+            "kind": row.kind,
+            "item_variant": row.item_variant,
+            "source_url": row.source_url,
+            "url": row.url,
+            "brief": row.brief,
+            "note": row.note,
+        })
+
+    # A row with no url is one the image step queued: the imagery is rendered after
+    # this run finishes (see image_stage.py), so the listing is reviewable now and
+    # says plainly that its pictures are still coming. Rows that already have a url
+    # are ones the image step reused from an earlier run — nothing is owed for those,
+    # so the listing is already Ready. Recomputed on every save that produced
+    # imagery, so a re-run that queues fresh images resets a previous run's verdict.
+    if any(not row.url for row in doc.images):
+        doc.image_status = "Queued"
+    else:
+        doc.image_status = "Ready"
+    doc.image_error = None

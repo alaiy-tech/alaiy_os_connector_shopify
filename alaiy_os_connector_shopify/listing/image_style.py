@@ -67,8 +67,11 @@ pixels, and one that does:
     call does the whole job — background, shadow, everything — and whatever
     Gemini returns ships as the finished photo, with only its ground pulled
     onto the exact house hex in place (see `_snap_background`) — Gemini lands
-    near a requested colour, not on it. No mask, no crop from the original, no
-    local compositor, so its framing and shadow stay as drawn. Simpler, and it is what a plain
+    near a requested colour, not on it — and, where Gemini framed a complete piece
+    tighter than `padding` or in another shape, the ground grown out to the
+    house margin and aspect (see `_frame_to_spec`).
+    No mask, no crop from the original, no local compositor, so its shadow stays
+    as drawn. Simpler, and it is what a plain
     manual test of the same prompt against the same photo produced cleanly when
     `gemini`'s mask-only path could not separate a busy backdrop — but it means
     the product's own pixels are no longer guaranteed to be the photographer's:
@@ -122,7 +125,10 @@ DEFAULTS = {
     # isolates the product onto the house ground; only used to find the outline
     # via a flood-fill, never for the product's own pixels — see the module
     # docstring), "flood" (fill in from the frame edge; needs an already-clean
-    # pale background) or "gemini_full" (Gemini does the whole finish — background,
+    # pale background), "gemini_key" (as "gemini", but Gemini isolates the product
+    # onto a vivid key colour that is then removed by colour, gaps inside the
+    # product included — see `_gemini_keyed`) or "gemini_full" (Gemini does the
+    # whole finish — background,
     # shadow, everything — and its own render ships as the finished photo; the
     # only one of the five where the product's pixels are not guaranteed to be
     # the photographer's own — see the module docstring).
@@ -158,6 +164,11 @@ DEFAULTS = {
     # Keep the transparent cutout as its own file, so the background can be changed
     # later without paying for the photo again.
     "keep_cutout": True,
+    # Where the product runs out of the original frame (a strap cropped at the top
+    # and bottom of the shot), let it run out of the finished canvas on that side
+    # too, instead of padding it and leaving the cut end in mid-air. Off keeps the
+    # padding on every side. See `_cut_edges`.
+    "bleed_cut_edges": False,
 }
 
 _UNSET = object()
@@ -179,10 +190,28 @@ _BORDER_FRACTION = 0.04
 _BORDER_MIN_MEAN = 225
 _BORDER_MAX_STDEV = 12
 
-# How far from a corner's own colour the fill is allowed to travel. Generous enough
+# How much of the ring must be ground — see `_ground_complaint`. A strap running
+# out of both ends of a shot covered 13% of it.
+_BORDER_MIN_GROUND = 0.6
+
+# How far from its seed's own colour the fill is allowed to travel. Generous enough
 # to cross the slight unevenness of a real render, tight enough to stop at the
 # edge of anything that is actually the product.
 _FILL_TOLERANCE = 36
+
+# How close an edge pixel must be to the ground to seed the fill — the same
+# 1-norm distance Pillow's floodfill measures `thresh` in. The edge of the frame is
+# not all ground: a strap that runs out of the shot puts the product itself on the
+# edge, often in a corner, and a fill seeded there takes the strap's colour for
+# the ground and erases the whole strap. A pale pink strap measured 129-149 from a
+# light grey ground; a render that lands near the requested ground rather than on
+# it stays well inside this.
+_SEED_TOLERANCE = 60
+
+# How many evenly spaced points along each side of the frame are tried as seeds,
+# corners included. Enough to reach every pocket of ground a product crossing the
+# edge can cut off; a seed already filled by an earlier one costs nothing.
+_SEEDS_PER_EDGE = 64
 
 # A pixel counts as "filled" if the flood moved it at all. Compared against the
 # untouched original rather than against the fill colour, so a product that happens
@@ -207,6 +236,27 @@ _MAX_SUBJECT = 0.98
 # 60, while a hallucinated blob on a blank frame is 0. This sits ~7x under the
 # worst real photo and well clear of the failure it is for.
 _MIN_SUBJECT_DETAIL = 1.5
+
+# How close to a side of the frame, as a fraction of the shorter side, the product
+# must reach for that side to be looked at — see `_cut_edges`. Not zero: a photo
+# exported with a thin white rim (one had 3px of it on a 371px frame) crops the
+# strap just inside the rim, not at the frame's own edge.
+_CUT_EDGE_REACH = 0.015
+
+# How much of the product's own width (or height) its outermost line on a side
+# must cover for that side to count as cut on its own. Cropped straps, straight
+# across or diagonal, measured 11-33%; a round bezel touching the side of a tight
+# crop measured 1.3%, and a crown 4%.
+_CUT_RUN_MIN = 0.08
+
+# A thin product cropped by the shot — a chain leaving through the top of the
+# frame — covers far less than that: two strands measured 6.6%. What marks it as
+# cut is that it is straight at the edge: its outermost line is as wide as the
+# line `reach` pixels in (99% for the chain), where a curve meeting the side is
+# still narrowing to a point (11% for a bezel, 49% for a crown). Cropped straps
+# measured 75-140%. `_CUT_THIN_MIN` keeps a speck on the edge from counting.
+_CUT_STRAIGHT_MIN = 0.7
+_CUT_THIN_MIN = 0.01
 
 # Softens the one-pixel staircase the flood leaves behind. Deliberately under a
 # pixel: any more and a bright metal edge starts to glow against the grey.
@@ -358,7 +408,7 @@ def finish_capability(spec):
     matte = spec.get("matte") or DEFAULTS["matte"]
     if matte == "photoroom":
         return "remove_background"
-    if matte in ("gemini", "gemini_full"):
+    if matte in ("gemini", "gemini_key", "gemini_full"):
         return "generate"
     return None
 
@@ -381,36 +431,23 @@ def _finish(content, spec, client):
     elif matte == "gemini":
         if not client:
             return _skipped(content, "no background/matting provider is configured")
-        mask_source = _gemini_isolated(client, image, spec["background"])
-        # The same believability check `flood` makes on a real photo, made here
-        # on Gemini's render instead — Gemini can be told to make its ground
-        # clean, but is not always able to: a strongly patterned or richly
-        # coloured original backdrop can come back from Gemini still uneven
-        # enough to fail this. That is exactly the case `segment` never cared
-        # about — a real segmentation model reads the product regardless of
-        # what is behind it — so rather than skip a photo Gemini could not
-        # clean up, fall back to the local model for THIS photo only. Gemini
-        # still gets to fix what it is here for (the holes ISNet punches
-        # through a metal bracelet or chain on an ordinary clean photo).
-        if _ground_complaint(mask_source):
-            alpha = _repair(
-                image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
-            )
-        else:
-            alpha = _subject_alpha(mask_source)
-            if alpha.size != image.size:
-                # Gemini is not contracted to return the exact pixel dimensions
-                # it was handed, only the same framing — resize the MASK to
-                # match the original, never the other way around, since the
-                # cutout below is cropped from `image`, not from Gemini's
-                # render.
-                alpha = alpha.resize(image.size, Image.LANCZOS)
+        alpha = _gemini_mask(client, image, spec)
+    elif matte == "gemini_key":
+        if not client:
+            return _skipped(content, "no background/matting provider is configured")
+        # A photo whose own colours leave no key clear, or a render that did not
+        # come back on a clean key, is matted the `gemini` way instead.
+        alpha = _gemini_keyed(client, image)
+        if alpha is None:
+            alpha = _gemini_mask(client, image, spec)
     else:
         # The flood needs the ground to already be clean; the model does not.
         uneven = _ground_complaint(image)
         if uneven:
             return _skipped(content, uneven)
         alpha = _subject_alpha(image)
+        if alpha is None:
+            return _skipped(content, "no background could be found along the edge of the photo")
 
     subject = _coverage(alpha)
     if subject < _MIN_SUBJECT:
@@ -424,12 +461,14 @@ def _finish(content, spec, client):
     if not box:
         return _skipped(content, "no product could be separated from the background")
 
+    cut = _cut_edges(alpha) if spec.get("bleed_cut_edges") else frozenset()
+
     cutout = image.convert("RGBA")
     cutout.putalpha(alpha)
     cutout = cutout.crop(box)
 
     return {
-        "image": _encode(_compose(cutout, image.size, spec)),
+        "image": _encode(_compose(cutout, image.size, spec, cut)),
         "mime": "image/png",
         "cutout": _encode(cutout) if spec.get("keep_cutout") else None,
         "note": None,
@@ -635,7 +674,44 @@ _GEMINI_ISOLATE_PROMPT = (
 )
 
 
-def _gemini_isolated(client, image, background_hex):
+def _gemini_mask(client, image, spec):
+    """The `gemini` matte's alpha for `image`: Gemini isolates the product onto
+    the house ground and the ground is flooded in from the edge."""
+    mask_source = _gemini_isolated(client, image, spec["background"])
+
+    # The same believability check `flood` makes on a real photo, made here
+    # on Gemini's render instead — Gemini can be told to make its ground
+    # clean, but is not always able to: a strongly patterned or richly
+    # coloured original backdrop can come back from Gemini still uneven
+    # enough to fail this. That is exactly the case `segment` never cared
+    # about — a real segmentation model reads the product regardless of
+    # what is behind it — so rather than skip a photo Gemini could not
+    # clean up, fall back to the local model for THIS photo only. Gemini
+    # still gets to fix what it is here for (the holes ISNet punches
+    # through a metal bracelet or chain on an ordinary clean photo).
+    if _ground_complaint(mask_source):
+        alpha = _repair(
+            image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
+        )
+    else:
+        alpha = _subject_alpha(mask_source)
+    if alpha is None:
+        # No point on the render's edge is its ground — the product covers
+        # the whole border. Same fallback as above.
+        alpha = _repair(
+            image, _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
+        )
+    elif alpha.size != image.size:
+        # Gemini is not contracted to return the exact pixel dimensions
+        # it was handed, only the same framing — resize the MASK to
+        # match the original, never the other way around, since the
+        # cutout below is cropped from `image`, not from Gemini's
+        # render.
+        alpha = alpha.resize(image.size, Image.LANCZOS)
+    return alpha
+
+
+def _gemini_isolated(client, image, background_hex, prompt=_GEMINI_ISOLATE_PROMPT):
     """Gemini's placement of this photo's product onto the house ground.
 
     Used for exactly one thing below: a flood-fill run over it to find where
@@ -647,13 +723,176 @@ def _gemini_isolated(client, image, background_hex):
     """
     reference = f"data:image/png;base64,{base64.b64encode(_encode(image)).decode('ascii')}"
     result = client.generate_image(
-        _GEMINI_ISOLATE_PROMPT.format(hex=background_hex),
+        prompt.format(hex=background_hex),
         reference_data_uri=reference,
         model=_GEMINI_MASK_MODEL,
     )
     mask_source = Image.open(io.BytesIO(base64.b64decode(result["b64"])))
     mask_source.load()
     return mask_source.convert("RGB")
+
+
+# ── the gemini_key matte ─────────────────────────────────────────────────────
+#
+# `gemini` floods the render's ground in from the frame's edge, which cannot reach
+# ground the product encloses — the inside of a bangle, the loop of a cord
+# bracelet, the gaps between a pendant's petals. It must not: on a pale ground a
+# pearl or a diamond's table is the ground's colour too, and only connectivity
+# tells them apart. So those gaps were kept as "product", and the original
+# photo's own backdrop showed through them on the finished ground.
+#
+# Put the render on a colour no part of the product is, and colour alone is
+# enough: every pixel of the key is ground wherever it is, enclosed or not. The
+# cutout is still cropped from the original photo; only the alpha comes from the
+# render.
+
+# The keys tried, in order of preference. Vivid primaries, because a photographed
+# product almost never contains one at full saturation.
+_KEY_COLORS = ("#ff00ff", "#00ff00", "#0000ff")
+
+# 1-norm distance from a key at which a pixel of the ORIGINAL photo counts as
+# that key's colour, and the share of the photo allowed to be — above it the key
+# is not clear of the product, and the next key is tried. Measured on a 256px
+# thumbnail.
+_KEY_CLASH = 200
+_KEY_MAX_CLASH = 0.002
+
+# How the render's key becomes alpha, in 1-norm distance from the key colour the
+# render actually used: fully ground inside _KEY_IN, fully product past
+# _KEY_OUT, a ramp between them for the antialiased edge.
+_KEY_IN = 60
+_KEY_OUT = 140
+
+# How far the render's own ground may land from the requested key and still be
+# taken as that key.
+_KEY_MAX_DRIFT = 120
+
+_GEMINI_KEY_PROMPT = (
+    "Put this exact product photo on a plain, even {hex} background. Keep the "
+    "product exactly as it is - do not retouch, restyle, or redraw it. Fill every "
+    "gap and opening where the background shows through the product with the same "
+    "{hex}. Do not add any shadow, reflection, or texture to the background."
+)
+
+
+def _gemini_keyed(client, image):
+    """The `gemini_key` matte's alpha for `image`, or None when this photo cannot
+    be keyed: none of `_KEY_COLORS` is clear of its colours, or the render did
+    not come back on a clean key.
+
+    Where the original photo is itself near the key, the pixel stays product
+    whatever the render shows — a key that clashes with a sliver of the product
+    must not cut that sliver out.
+    """
+    key = _pick_key(image)
+    if key is None:
+        return None
+    render = _gemini_isolated(client, image, key, prompt=_GEMINI_KEY_PROMPT)
+
+    ring = _border_ring(render.size)
+    if ring is None:
+        return None
+    ground = _ground_mask(render, ring)
+    ring_pixels = ImageStat.Stat(ring).sum[0] / 255.0
+    if ImageStat.Stat(ground).sum[0] / 255.0 < _BORDER_MIN_GROUND * ring_pixels:
+        return None
+    rendered_key = tuple(int(v) for v in ImageStat.Stat(render, ring).median)
+    if _distance_to(Image.new("RGB", (1, 1), rendered_key), _rgb(key)).getpixel((0, 0)) > _KEY_MAX_DRIFT:
+        return None
+
+    span = _KEY_OUT - _KEY_IN
+    alpha = _distance_to(render, rendered_key).point(
+        lambda v: 0 if v <= _KEY_IN else 255 if v >= _KEY_OUT else round((v - _KEY_IN) * 255 / span)
+    )
+    if alpha.size != image.size:
+        alpha = alpha.resize(image.size, Image.LANCZOS)
+
+    keep = _distance_to(image, _rgb(key)).point(lambda v: 255 if v < _KEY_OUT else 0)
+    return _keep_enclosed_product(image, ImageChops.lighter(alpha, keep))
+
+
+# Ground the product ENCLOSES is only taken as ground when the photo itself shows
+# backdrop there. The render alone over-reads "every gap and opening": asked to
+# key a wide band ring shot from above, it keyed out the ring's inner wall, and
+# on a band of wrapped wires the grooves between them — both solid metal in the
+# photo. The photo is the evidence: through the hole of a bangle it shows the
+# backdrop, on an inner wall it shows metal. Ground that touches the frame's
+# edge is never second-guessed; it is the backdrop by definition.
+
+# A pixel of an enclosed region counts as backdrop when it is within this 1-norm
+# distance of the backdrop's median colour — or of however much the backdrop
+# itself varies along the frame's edge (its 95th percentile), plus
+# _ENCLOSED_MARGIN, when that is more.
+_ENCLOSED_MIN_TOL = 45
+_ENCLOSED_MARGIN = 20
+
+# The share of an enclosed region that must look like backdrop for it to be a
+# real opening. Under it the region goes back to being product. Not 1.0: a
+# shadow inside a bangle's hole is still the hole.
+_ENCLOSED_SEE_THROUGH = 0.6
+
+# How far a region put back as product is grown, in pixels, so the soft edge the
+# key left around it does not survive as a faint outline in the metal.
+_ENCLOSED_GROW = 2
+
+
+def _keep_enclosed_product(image, alpha):
+    """`alpha` with every enclosed ground region the photo shows as product put
+    back to opaque. Regions connected to the frame's edge are left alone.
+    """
+    import numpy as np
+    from scipy import ndimage
+
+    ground = np.asarray(alpha) < 128
+    labels, count = ndimage.label(ground)
+    if count < 2:
+        return alpha
+
+    edge = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+    edge = edge[edge > 0]
+    outer = np.isin(labels, edge)
+    if not outer.any():
+        # No backdrop to compare with: the product fills the frame.
+        return alpha
+
+    rgb = np.asarray(image.convert("RGB"), dtype=np.int16)
+    backdrop = np.median(rgb[outer], axis=0)
+    distance = np.abs(rgb - backdrop).sum(axis=2)
+    tolerance = max(_ENCLOSED_MIN_TOL, float(np.percentile(distance[outer], 95)) + _ENCLOSED_MARGIN)
+
+    sizes = np.bincount(labels.ravel(), minlength=count + 1)
+    backdrop_like = np.bincount(
+        labels.ravel(), weights=(distance <= tolerance).ravel(), minlength=count + 1
+    )
+    share = backdrop_like / np.maximum(sizes, 1)
+    product = np.zeros(count + 1, dtype=bool)
+    product[1:] = share[1:] < _ENCLOSED_SEE_THROUGH
+    product[edge] = False
+    if not product.any():
+        return alpha
+
+    restore = ndimage.binary_dilation(product[labels], iterations=_ENCLOSED_GROW)
+    out = np.asarray(alpha).copy()
+    out[restore] = 255
+    return Image.fromarray(out)
+
+
+def _pick_key(image):
+    """The first of `_KEY_COLORS` the photo's own colours leave clear, or None."""
+    small = image.copy()
+    small.thumbnail((256, 256))
+    for key in _KEY_COLORS:
+        near = _distance_to(small, _rgb(key)).point(lambda v: 255 if v < _KEY_CLASH else 0)
+        if ImageStat.Stat(near).mean[0] / 255.0 <= _KEY_MAX_CLASH:
+            return key
+    return None
+
+
+def _distance_to(image, color):
+    """Per-pixel 1-norm distance from `color`, clipped at 255 (past every
+    threshold it is compared with)."""
+    r, g, b = ImageChops.difference(image, Image.new("RGB", image.size, color)).split()
+    return ImageChops.add(ImageChops.add(r, g), b)
 
 
 # The pro tier, unlike `_GEMINI_MASK_MODEL` — and for the mirror-image reason.
@@ -679,8 +918,9 @@ def _finish_gemini_full(content, spec, client):
     all give. See the module docstring's `gemini_full` entry for why that is a
     considered trade rather than an oversight.
 
-    The one thing corrected afterward is the ground colour, in place — see
-    `_snap_background`. If the render has no plain ground to correct, the
+    Two things are corrected afterward: the ground colour, in place — see
+    `_snap_background` — and the frame, grown to the house margin and aspect
+    — see `_frame_to_spec`. If the render has no plain ground to correct, the
     finish is skipped rather than shipped on the wrong background.
 
     No mask means no cutout to keep: `spec["keep_cutout"]` has no effect on
@@ -706,8 +946,10 @@ def _finish_gemini_full(content, spec, client):
     if snapped is None:
         return _skipped(content, "the rendered photo did not come back on a plain background to recolour")
 
+    framed = _frame_to_spec(snapped, spec)
+
     return {
-        "image": _encode(snapped),
+        "image": _encode(framed),
         "mime": "image/png",
         "cutout": None,
         "note": None,
@@ -797,6 +1039,163 @@ def _snap_background(image, hex_color):
     exact = np.where(region, exact, 0.0)[..., None]
     out = out + exact * (target - out)
     return Image.fromarray(np.round(out).astype(np.uint8), "RGB")
+
+
+# What counts as the product when a gemini_full render is measured for its
+# margin: plain RGB distance from the house ground past _PAD_PRODUCT_DISTANCE,
+# minus shadow (darker than the ground, same hue within _SNAP_HUE_IN). Low on
+# purpose — a white strap on #f4f4f4 is only a few levels off the ground, and
+# its outline is what has to be found. A row or column needs _PAD_MIN_RUN of
+# the frame's width in such pixels (at least 3) to count, so ground grain
+# doesn't.
+_PAD_PRODUCT_DISTANCE = 10
+_PAD_MIN_RUN = 0.002
+
+# A side the product is closer to than this, in pixels, is one it runs off —
+# a strap cut by the frame on purpose. That side is left flush: growing the
+# ground past it would leave the strap ending in mid-air.
+_PAD_BLEED = 1
+
+# Over how much of the new band, as a fraction of the finished canvas, the
+# render's own edge fades onto the flat hex. A shadow Gemini drew right to the
+# frame edge would otherwise stop in a hard line where the new ground starts.
+_PAD_FADE = 0.03
+
+
+def _frame_to_spec(image, spec):
+    """`image` on a canvas of the house aspect, with the product clear of `padding`.
+
+    The gemini_full path's one concession to the house frame. Gemini frames the
+    photo itself: it returns whatever shape it likes, and sometimes a complete
+    piece — a watch with both strap ends in shot — comes back with those ends a
+    hair off the frame, which reads as crowded (slide 7). This measures the
+    product, adds plain ground on each side that is inside the floor without
+    running off it, then grows the ground again until the canvas is `aspect`.
+
+    Same floor-not-target reading as `_compose`: the render is never scaled up
+    and a margin never drops below the floor. A side the product runs off stays
+    flush, so a strap the frame cuts on purpose stays cut. The one case that
+    cannot be met by adding ground alone is a short side the product runs off
+    at both ends (a landscape render of a strap cut top and bottom): there,
+    spare ground is trimmed off the long side first, and only what that cannot
+    cover is added across the cut — the canvas is always `aspect`.
+    """
+    import numpy as np
+
+    padding = max(float(spec.get("padding", DEFAULTS["padding"])), 0.0)
+    aspect = float(spec.get("aspect") or DEFAULTS["aspect"])
+
+    pixels = np.asarray(image, dtype=np.float32)
+    height, width = pixels.shape[:2]
+    target = np.array(_rgb(spec["background"]), dtype=np.float32)
+
+    distance = np.linalg.norm(pixels - target, axis=2)
+    brightness = pixels.sum(axis=2, keepdims=True)
+    at_ground_brightness = pixels * (target.sum() / np.maximum(brightness, 1.0))
+    shadow = (brightness[..., 0] < target.sum()) & (
+        np.linalg.norm(at_ground_brightness - target, axis=2) <= _SNAP_HUE_IN
+    )
+    product = (distance > _PAD_PRODUCT_DISTANCE) & ~shadow
+
+    run = max(3, round(max(width, height) * _PAD_MIN_RUN))
+    rows = np.flatnonzero(product.sum(axis=1) >= run)
+    cols = np.flatnonzero(product.sum(axis=0) >= run)
+    # Clear ground on each side: top, bottom, left, right. With no product
+    # found every side is all ground — the canvas is still squared, just
+    # never trimmed.
+    if len(rows) and len(cols):
+        margins = [rows[0], height - 1 - rows[-1], cols[0], width - 1 - cols[-1]]
+    else:
+        margins = [height, height, width, width]
+    bleeds = [margin <= _PAD_BLEED for margin in margins]
+
+    def grow(near, far, size):
+        """New (near, far) margins along one axis, each at least the floor."""
+        extent = size - near - far
+        bleed_near, bleed_far = near <= _PAD_BLEED, far <= _PAD_BLEED
+        if padding <= 0 or (bleed_near and bleed_far) or extent >= size:
+            return near, far
+        new_near, new_far = near, far
+        # The floor is a fraction of the grown canvas, so a few rounds settle it.
+        for _ in range(8):
+            total = extent + new_near + new_far
+            new_near = near if bleed_near else max(near, padding * total)
+            new_far = far if bleed_far else max(far, padding * total)
+        return new_near, new_far
+
+    top, bottom = grow(margins[0], margins[1], height)
+    left, right = grow(margins[2], margins[3], width)
+    # Signed, per side: ground added (positive) or trimmed (negative).
+    add = [top - margins[0], bottom - margins[1], left - margins[2], right - margins[3]]
+
+    # Then to the house aspect. The short axis takes the extra on the sides the
+    # product does not run off; failing that, the long axis gives up spare ground.
+    new_h = height + add[0] + add[1]
+    new_w = width + add[2] + add[3]
+    if new_w / new_h < aspect:
+        short, long_, extra = (2, 3), (0, 1), new_h * aspect - new_w
+        long_size, to_long = new_h, 1 / aspect
+    else:
+        short, long_, extra = (0, 1), (2, 3), new_w / aspect - new_h
+        long_size, to_long = new_w, aspect
+    if extra >= 0.5:
+        open_sides = [side for side in short if not bleeds[side]]
+        if open_sides:
+            for side in open_sides:
+                add[side] += extra / len(open_sides)
+        else:
+            # Trim the long axis toward the size the short one already is,
+            # never past the floor of the canvas that leaves.
+            short_size = long_size - extra * to_long
+            floor = padding * short_size
+            spare = {
+                side: max(margins[side] + add[side] - floor, 0) for side in long_ if not bleeds[side]
+            }
+            needed = long_size - short_size
+            # Evenly where both sides have room, the rest from whichever does.
+            open_long = sorted(spare, key=spare.get)
+            for index, side in enumerate(open_long):
+                cut = min(spare[side], needed / (len(open_long) - index))
+                add[side] -= cut
+                needed -= cut
+            long_size = short_size + needed
+            short_now = sum(add[side] for side in short) + (width if short == (2, 3) else height)
+            # What trimming could not cover goes across the cut, split evenly.
+            for side in short:
+                add[side] += (long_size / to_long - short_now) / 2
+
+    top_add, bottom_add, left_add, right_add = (round(value) for value in add)
+    if not any((top_add, bottom_add, left_add, right_add)):
+        return image
+
+    # Trim first (a negative side), then grow (a positive one).
+    cropped = pixels[
+        max(-top_add, 0) : height - max(-bottom_add, 0),
+        max(-left_add, 0) : width - max(-right_add, 0),
+    ]
+    inner_h, inner_w = cropped.shape[:2]
+    pad_top, pad_bottom, pad_left, pad_right = (max(value, 0) for value in (top_add, bottom_add, left_add, right_add))
+    grown = np.pad(cropped, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode="edge")
+
+    grown_h, grown_w = grown.shape[:2]
+    ys = np.arange(grown_h)[:, None]
+    xs = np.arange(grown_w)[None, :]
+    outside = np.maximum(
+        np.maximum(pad_top - ys, ys - (pad_top + inner_h - 1)).clip(0),
+        np.maximum(pad_left - xs, xs - (pad_left + inner_w - 1)).clip(0),
+    )
+    fade = max(1.0, max(grown_w, grown_h) * _PAD_FADE)
+    weight = np.clip(outside / fade, 0, 1)[..., None]
+    grown = grown + weight * (target - grown)
+    framed = Image.fromarray(np.round(grown).astype(np.uint8), "RGB")
+
+    # Rounding each side can leave the canvas a pixel off; settle it exactly.
+    want_w = round(framed.height * aspect)
+    if framed.width != want_w:
+        settled = Image.new("RGB", (want_w, framed.height), _rgb(spec["background"]))
+        settled.paste(framed, ((want_w - framed.width) // 2, 0))
+        framed = settled
+    return framed
 
 
 def _session(model):
@@ -942,20 +1341,24 @@ def _ground_complaint(image):
     Only the border ring is judged. What is inside the frame is the product's
     business — a dark dial or a black strap says nothing about whether the ground
     behind it is clean.
+
+    And only the ground within the ring: a product that runs out of the shot (a
+    strap cropped at the top and bottom) crosses the ring, and measured together
+    with the ground it reads as a badly uneven background. So the ring's pixels
+    near its median colour are taken as the ground and judged on their own, and
+    they must make up most of the ring — a patterned or graded backdrop leaves too
+    few of them to pass.
     """
-    width, height = image.size
-    ring = max(1, int(min(width, height) * _BORDER_FRACTION))
-    if width <= ring * 2 or height <= ring * 2:
+    ring = _border_ring(image.size)
+    if ring is None:
         return "the rendered photo is too small to finish"
 
-    # The ring, laid out as one strip: the two full-width bands plus what is left
-    # of the sides between them.
-    mask = Image.new("L", image.size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rectangle([0, 0, width - 1, height - 1], fill=255)
-    draw.rectangle([ring, ring, width - 1 - ring, height - 1 - ring], fill=0)
+    ground = _ground_mask(image, ring)
+    ring_pixels = ImageStat.Stat(ring).sum[0] / 255.0
+    if ImageStat.Stat(ground).sum[0] / 255.0 < _BORDER_MIN_GROUND * ring_pixels:
+        return "the background of the rendered photo was not even enough to separate"
 
-    stat = ImageStat.Stat(image, mask)
+    stat = ImageStat.Stat(image, ground)
     if min(stat.mean) < _BORDER_MIN_MEAN:
         return "the rendered photo did not come back on a plain light background"
     if max(stat.stddev) > _BORDER_MAX_STDEV:
@@ -963,26 +1366,157 @@ def _ground_complaint(image):
     return None
 
 
-def _subject_alpha(image):
-    """An opacity mask for the product: the frame minus the ground touching its edge.
+def _ground_mask(image, ring):
+    """The pixels of `ring` within `_SEED_TOLERANCE` of the ring's median colour."""
+    median = tuple(int(v) for v in ImageStat.Stat(image, ring).median)
+    near = _distance_to(image, median).point(lambda v: 255 if v <= _SEED_TOLERANCE else 0)
+    return ImageChops.multiply(near, ring)
 
-    Flooded inward from the four corners rather than keyed on a colour. A colour key
-    is the obvious implementation and the wrong one for this catalog: white is not
-    only the background here, it is also a pearl, the table of a diamond and the
-    specular highlight down a polished band, and keying would punch every one of
-    them out of the middle of the product. A flood only ever reaches background that
-    is connected to the edge of the frame, so an enclosed white stays.
+
+def _border_ring(size):
+    """A mask of the band around the frame's edge that counts as "the background",
+    or None when the frame is too small to have one."""
+    width, height = size
+    ring = max(1, int(min(width, height) * _BORDER_FRACTION))
+    if width <= ring * 2 or height <= ring * 2:
+        return None
+
+    # The ring, laid out as one strip: the two full-width bands plus what is left
+    # of the sides between them.
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rectangle([0, 0, width - 1, height - 1], fill=255)
+    draw.rectangle([ring, ring, width - 1 - ring, height - 1 - ring], fill=0)
+    return mask
+
+
+def _subject_alpha(image):
+    """An opacity mask for the product: the frame minus the ground touching its edge,
+    or None when no point on the edge is ground.
+
+    Flooded inward from the edge rather than keyed on a colour. A colour key is the
+    obvious implementation and the wrong one for this catalog: white is not only the
+    background here, it is also a pearl, the table of a diamond and the specular
+    highlight down a polished band, and keying would punch every one of them out of
+    the middle of the product. A flood only ever reaches background that is
+    connected to the edge of the frame, so an enclosed white stays.
+
+    Seeded only from edge points that are the ground — the median colour of the
+    border ring, which the ground dominates even where the product crosses it. A
+    fill seeded on the product itself (a strap running out of a corner of the shot)
+    would take the product's colour for the ground and erase it.
     """
+    mask = _border_ring(image.size)
+    if mask is None:
+        return None
+    ground = tuple(int(v) for v in ImageStat.Stat(image, mask).median)
+
     flooded = image.copy()
     width, height = flooded.size
-    for corner in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
-        ImageDraw.floodfill(flooded, corner, _FILL_COLOR, thresh=_FILL_TOLERANCE)
+    pixels = image.load()
+    seeded = False
+    for xy in _edge_points(width, height):
+        if sum(abs(a - b) for a, b in zip(pixels[xy], ground)) <= _SEED_TOLERANCE:
+            ImageDraw.floodfill(flooded, xy, _FILL_COLOR, thresh=_FILL_TOLERANCE)
+            seeded = True
+    if not seeded:
+        return None
 
     # "Filled" is "this pixel moved", not "this pixel is now magenta" — so a product
     # that genuinely contains the sentinel colour survives.
     moved = ImageChops.difference(flooded, image).convert("L")
     alpha = moved.point(lambda v: 0 if v > _FILL_DELTA else 255)
     return alpha.filter(ImageFilter.GaussianBlur(_EDGE_FEATHER))
+
+
+def _edge_points(width, height):
+    """Evenly spaced points along all four sides of the frame, corners included."""
+    xs = sorted({round(i * (width - 1) / (_SEEDS_PER_EDGE - 1)) for i in range(_SEEDS_PER_EDGE)})
+    ys = sorted({round(i * (height - 1) / (_SEEDS_PER_EDGE - 1)) for i in range(_SEEDS_PER_EDGE)})
+    points = [(x, y) for x in xs for y in (0, height - 1)]
+    points += [(x, y) for y in ys for x in (0, width - 1)]
+    return list(dict.fromkeys(points))
+
+
+def _cut_edges(alpha):
+    """The sides of the frame the product runs out of, as a subset of
+    {"left", "top", "right", "bottom"}.
+
+    Only a side the product reaches within `_CUT_EDGE_REACH` of is looked at, and
+    reaching it is not enough: a round bezel or a crown touching the side of a
+    tight crop reaches it too, and setting that side flush pushes the whole piece
+    off centre. A side counts when either
+
+      * the product's outermost line on that side covers at least
+        `_CUT_RUN_MIN` of its own extent along it — a crop cuts across the
+        piece, where a curve meeting the side only touches it;
+      * it covers less, but is as wide at that line as just inside it — a thin
+        chain cropped straight across (see `_CUT_STRAIGHT_MIN`); or
+      * the product runs out through a corner of it, next to a side that counts
+        by the rules above — a strap leaving the shot diagonally crosses one
+        side broadly and only clips the other.
+    """
+    solid = alpha.point(lambda v: 255 if v > 128 else 0)
+    box = solid.getbbox()
+    if not box:
+        return frozenset()
+    width, height = solid.size
+    reach = max(1, round(min(width, height) * _CUT_EDGE_REACH))
+    x0, y0, x1, y1 = box
+    extent_w, extent_h = x1 - x0, y1 - y0
+
+    def column(x):
+        return solid.crop((x, y0, x + 1, y1))
+
+    def row(y):
+        return solid.crop((x0, y, x1, y + 1))
+
+    def share(line):
+        return ImageStat.Stat(line).mean[0] / 255.0
+
+    near = {
+        "left": x0 <= reach,
+        "top": y0 <= reach,
+        "right": x1 >= width - reach,
+        "bottom": y1 >= height - reach,
+    }
+    outer = {
+        "left": column(x0),
+        "top": row(y0),
+        "right": column(x1 - 1),
+        "bottom": row(y1 - 1),
+    }
+    inner = {
+        "left": column(min(x0 + reach, x1 - 1)),
+        "top": row(min(y0 + reach, y1 - 1)),
+        "right": column(max(x1 - 1 - reach, x0)),
+        "bottom": row(max(y1 - 1 - reach, y0)),
+    }
+
+    def crosses(side):
+        edge, inside = share(outer[side]), share(inner[side])
+        if edge >= _CUT_RUN_MIN:
+            return True
+        return edge >= _CUT_THIN_MIN and edge >= _CUT_STRAIGHT_MIN * inside
+
+    cut = {side for side in outer if near[side] and crosses(side)}
+
+    # The corner rule: does the product's run along this side reach the end of it
+    # that meets an already-cut side?
+    ends = {
+        "left": {"top": (0, 0, 1, reach), "bottom": (0, extent_h - reach, 1, extent_h)},
+        "right": {"top": (0, 0, 1, reach), "bottom": (0, extent_h - reach, 1, extent_h)},
+        "top": {"left": (0, 0, reach, 1), "right": (extent_w - reach, 0, extent_w, 1)},
+        "bottom": {"left": (0, 0, reach, 1), "right": (extent_w - reach, 0, extent_w, 1)},
+    }
+    for side in ("left", "top", "right", "bottom"):
+        if side in cut or not near[side]:
+            continue
+        for neighbour, end in ends[side].items():
+            if neighbour in cut and outer[side].crop(end).getbbox():
+                cut.add(side)
+                break
+    return frozenset(cut)
 
 
 def _featureless(image, alpha):
@@ -1011,11 +1545,14 @@ def _coverage(alpha):
     return ImageStat.Stat(alpha).sum[0] / (255.0 * width * height)
 
 
-def _compose(cutout, frame, spec):
+def _compose(cutout, frame, spec, cut=frozenset()):
     """The cutout on the house ground, with its margin and its shadow.
 
     `frame` is the size of the photo the cutout came out of, and it matters as much
-    as the cutout does — see below.
+    as the cutout does — see below. `cut` is the sides of that frame the product
+    runs out of (see `_cut_edges`); on those sides the product is set flush to the
+    canvas edge with no margin, so what the shot cropped still reads as cropped
+    rather than as a piece that ends in mid-air.
     """
     shadow = dict(DEFAULTS["shadow"], **(spec.get("shadow") or {}))
     padding = float(spec.get("padding", DEFAULTS["padding"]))
@@ -1036,9 +1573,17 @@ def _compose(cutout, frame, spec):
     # an edge than the margin allows. A photo that already has room keeps its own
     # framing and its own resolution. Padding is a FLOOR on the empty space, never a
     # target, and the only resize in this whole module is downward, for max_size.
-    usable = max(1.0 - 2.0 * padding, 0.05)
+    #
+    # A cut side takes no margin. When both opposite sides are cut but the canvas
+    # still has to be larger than the product on that axis (to keep the aspect),
+    # the product is centred on it, as it is when neither side is cut.
+    def margin(side):
+        return 0.0 if side in cut else padding
+
+    usable_w = max(1.0 - margin("left") - margin("right"), 0.05)
+    usable_h = max(1.0 - margin("top") - margin("bottom"), 0.05)
     frame_w, frame_h = frame
-    canvas_h = max(frame_h, frame_w / aspect, height / usable, width / (usable * aspect))
+    canvas_h = max(frame_h, frame_w / aspect, height / usable_h, width / (usable_w * aspect))
     canvas_w = canvas_h * aspect
 
     longest = max(canvas_w, canvas_h)
@@ -1053,13 +1598,23 @@ def _compose(cutout, frame, spec):
 
     canvas_w, canvas_h = max(1, round(canvas_w)), max(1, round(canvas_h))
     width, height = product.size
-    left = (canvas_w - width) // 2
-    top = (canvas_h - height) // 2
+    left = _place(canvas_w, width, "left" in cut, "right" in cut)
+    top = _place(canvas_h, height, "top" in cut, "bottom" in cut)
 
     base = Image.new("RGB", (canvas_w, canvas_h), _rgb(spec["background"]))
     base = _cast_shadow(base, product, (left, top), shadow)
     base.paste(product, (left, top), product)
     return base
+
+
+def _place(canvas, size, near_cut, far_cut):
+    """Offset of the product along one axis: flush to whichever end is cut,
+    centred when neither or both are."""
+    if near_cut and not far_cut:
+        return 0
+    if far_cut and not near_cut:
+        return canvas - size
+    return (canvas - size) // 2
 
 
 def _cast_shadow(base, product, position, shadow):

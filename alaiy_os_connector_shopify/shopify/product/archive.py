@@ -8,6 +8,7 @@ import frappe
 from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
 from alaiy_os_connector_shopify.shopify.product.queries import _PRODUCT_UPDATE_MUTATION
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
+from alaiy_os_connector_shopify.shopify.product import status as status_map
 
 from alaiy_os_connector_shopify import connections
 
@@ -92,3 +93,56 @@ def archive_item(item_code: str):
                 frappe.db.commit()
     finally:
         item.unlock()
+
+
+def set_product_status(item_code: str, status: str):
+    """Set a product's status on Shopify (Active, Draft or Archived), whether or
+    not continuous sync is on.
+
+    Status only: it sends productUpdate with the status and nothing else, so it
+    cannot overwrite any other field with this app's copy. The local Listing and
+    Item copies are written only after Shopify accepts the change, and the
+    push fingerprint is cleared so the next push sees the new status.
+
+    A product that has never been pushed has no Shopify status to change; the
+    Listing's status is recorded instead and used when it is first published.
+    Returns {"ok": True, "pushed": bool}, or {"ok": False, "reason": str}.
+    """
+    if status not in status_map.LOCAL_VALUES:
+        return {"ok": False, "reason": f"Status must be one of {', '.join(status_map.LOCAL_VALUES)}."}
+
+    item = frappe.get_doc("Item", item_code)
+    template = frappe.get_doc("Item", item.variant_of) if item.variant_of else item
+    listing = listing_resolver.get_listing(template.name)
+    if not listing:
+        return {"ok": False, "reason": "This item has no Shopify Product Listing yet."}
+
+    product_id = listing.sh_shopify_product_id or template.get("sh_shopify_product_id")
+    pushed = False
+    if product_id:
+        conn = template.get("sh_shopify_connection")
+        client = ShopifyGraphQLClient(connections.resolve(conn) if conn else connections.require_enabled())
+        data = client.execute(_PRODUCT_UPDATE_MUTATION, {
+            "input": {
+                "id": f"gid://shopify/Product/{product_id}",
+                "status": status_map.TO_SHOPIFY[status],
+            }
+        })
+        errors = (data.get("productUpdate") or {}).get("userErrors") or []
+        if errors:
+            return {"ok": False, "reason": "; ".join(e.get("message", "") for e in errors)}
+        pushed = True
+
+    # Written after Shopify has accepted the change, and left to the request's
+    # own commit: this runs inside an admin request, which commits on success.
+    if listing.sh_shopify_status != status:
+        listing.db_set("sh_shopify_status", status, update_modified=False)
+    if template.get("sh_shopify_status") != status:
+        frappe.db.set_value("Item", template.name, "sh_shopify_status", status, update_modified=False)
+
+    if pushed:
+        from alaiy_os_connector_shopify.shopify.sync_engine import entities
+        entity = entities.get_by_erpnext("product", "Item", template.name, connection=template.get("sh_shopify_connection"))
+        if entity:
+            entity.db_set("erpnext_fingerprint", None, update_modified=False)
+    return {"ok": True, "pushed": pushed}

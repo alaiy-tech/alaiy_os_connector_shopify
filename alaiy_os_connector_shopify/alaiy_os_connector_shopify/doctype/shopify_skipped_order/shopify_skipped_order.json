@@ -1,0 +1,104 @@
+{
+  "autoname": "hash",
+  "creation": "2026-10-07 00:00:00.000000",
+  "docstatus": 0,
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "connection",
+    "shopify_order_id",
+    "shopify_order_name",
+    "order_date",
+    "reason",
+    "financial_status",
+    "location_ids",
+    "skus",
+    "lines"
+  ],
+  "fields": [
+    {
+      "fieldname": "connection",
+      "fieldtype": "Link",
+      "label": "Shopify Connection",
+      "options": "Shopify Connection",
+      "read_only": 1,
+      "search_index": 1,
+      "description": "The Shopify store this order belongs to. Order ids are only unique within one store."
+    },
+    {
+      "fieldname": "shopify_order_id",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Shopify Order ID",
+      "read_only": 1,
+      "reqd": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "shopify_order_name",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Shopify Order Name",
+      "read_only": 1
+    },
+    {
+      "fieldname": "order_date",
+      "fieldtype": "Date",
+      "in_list_view": 1,
+      "label": "Order Date",
+      "read_only": 1
+    },
+    {
+      "fieldname": "reason",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Reason",
+      "options": "Cancelled\nRefunded",
+      "read_only": 1
+    },
+    {
+      "fieldname": "financial_status",
+      "fieldtype": "Data",
+      "label": "Financial Status",
+      "read_only": 1
+    },
+    {
+      "description": "Comma separated Shopify location ids the order's fulfillments shipped from. Blank when nothing was fulfilled.",
+      "fieldname": "location_ids",
+      "fieldtype": "Small Text",
+      "label": "Location IDs",
+      "read_only": 1
+    },
+    {
+      "description": "Comma separated SKUs of the order's lines.",
+      "fieldname": "skus",
+      "fieldtype": "Small Text",
+      "label": "SKUs",
+      "read_only": 1
+    },
+    {
+      "description": "JSON list of {sku, title, qty} using the original ordered quantity.",
+      "fieldname": "lines",
+      "fieldtype": "Long Text",
+      "label": "Lines",
+      "read_only": 1
+    }
+  ],
+  "links": [],
+  "modified": "2026-10-07 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Alaiy OS Connector Shopify",
+  "name": "Shopify Skipped Order",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "read": 1,
+      "report": 1,
+      "role": "System Manager"
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "track_changes": 0
+}

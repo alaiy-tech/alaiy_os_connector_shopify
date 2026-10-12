@@ -49,6 +49,7 @@
   "sh_location_map",
   "sb_sync",
   "sh_order_status_filter",
+  "sh_push_new_orders",
   "sh_fulfillment_sync_direction",
   "sh_inventory_sync_direction",
   "sh_inventory_sync_interval",
@@ -336,6 +337,13 @@
    "fieldname": "sb_sync",
    "fieldtype": "Section Break",
    "label": "Sync Settings"
+  },
+  {
+   "default": "0",
+   "description": "Create a Shopify order from a Sales Order made in Alaiy OS that did not come from Shopify. Leave off on a site that also receives orders from other marketplaces: those orders would be duplicated onto this store. Orders pulled from Shopify are never affected.",
+   "fieldname": "sh_push_new_orders",
+   "fieldtype": "Check",
+   "label": "Create Shopify Orders From Alaiy OS Sales Orders"
   },
   {
    "default": "Any",

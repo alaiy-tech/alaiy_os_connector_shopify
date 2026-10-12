@@ -82,6 +82,9 @@ _PRODUCT_NODE_FIELDS = """
           nodes {
             id
             mediaContentType
+            # A photo still UPLOADED or PROCESSING is missing from preview, so a
+            # list read then is partial -- see inbound_images.media_settled.
+            status
             preview {
               image {
                 url
@@ -248,6 +251,7 @@ mutation PushProduct($input: ProductSetInput!, $identifier: ProductSetIdentifier
     product {
       id
       legacyResourceId
+      updatedAt
       variants(first: 100) {
         nodes {
           id
@@ -270,6 +274,12 @@ mutation UpdateVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInp
     productVariants {
       id
       price
+      compareAtPrice
+      inventoryItem {
+        unitCost {
+          amount
+        }
+      }
     }
     userErrors {
       field

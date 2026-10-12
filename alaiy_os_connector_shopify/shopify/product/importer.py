@@ -486,6 +486,23 @@ def _shopify_node_fingerprint(node: dict) -> str:
     return fingerprint.fingerprint(canonical)
 
 
+def _settled_listing_images(node: dict, entity, connection=None):
+    """The node's photos for a Listing, or None to leave its photos alone.
+
+    None while any photo is still processing on Shopify: the node's list is
+    then partial, and a Listing replaces its photos wholesale, so applying it
+    would drop the rest. A re-check is queued to apply them once they settle
+    -- same rule as the webhook path, see inbound_images.
+    """
+    from alaiy_os_connector_shopify.shopify.product import inbound_images
+
+    if inbound_images.media_settled(node):
+        return product_image_urls(node)
+    if entity and entity.external_id:
+        inbound_images.schedule_recheck(entity.external_id, entity.name, connection)
+    return None
+
+
 def _update_existing_product(entity, node: dict, connection=None) -> tuple:
     """
     Product already imported (Synced Entity + Item both exist). Compares a
@@ -521,6 +538,7 @@ def _update_existing_product(entity, node: dict, connection=None) -> tuple:
     # prices to the Listing below. No Listing => keep the old Item behavior.
     from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
     has_listing = bool(listing_resolver.get_listing(template_name))
+    listing_images = _settled_listing_images(node, entity, connection) if has_listing else None
 
     has_variants = frappe.db.get_value("Item", template_name, "has_variants")
     if has_variants:
@@ -544,7 +562,7 @@ def _update_existing_product(entity, node: dict, connection=None) -> tuple:
         if has_listing:
             listing_resolver.sync_listing_variants(template_name)
             listing_resolver.apply_inbound_from_shopify(
-                template_name, images=images, variant_prices=variant_prices)
+                template_name, images=listing_images, variant_prices=variant_prices)
         reason = f"updated (template + {updated_skus} variant(s))"
     else:
         variant = variants[0] if variants else {}
@@ -554,7 +572,7 @@ def _update_existing_product(entity, node: dict, connection=None) -> tuple:
         if has_listing:
             price = flt(variant.get("price") or 0)
             listing_resolver.apply_inbound_from_shopify(
-                template_name, images=images,
+                template_name, images=listing_images,
                 template_price=price if price > 0 else None)
         reason = "updated"
 
@@ -648,7 +666,8 @@ def _import_product(node: dict, connection=None) -> tuple:
                     # apply_inbound_from_shopify) rather than depending on
                     # the Item/slideshow download path at all.
                     listing_resolver.apply_inbound_from_shopify(
-                        entity.erpnext_name, images=product_image_urls(node),
+                        entity.erpnext_name,
+                        images=_settled_listing_images(node, entity, connection),
                     )
         except Exception:
             frappe.log_error(

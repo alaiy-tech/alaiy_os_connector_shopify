@@ -63,6 +63,33 @@ _CANCELLED = {"CANCELED", "CANCELLED"}
 # One Shopify call per batch rather than per Delivery Note.
 _BATCH = 50
 
+# Seconds to wait before the single retry of a batch Shopify answered with a
+# gateway error or that timed out.
+_RETRY_WAIT = 5
+
+
+def _execute_with_retry(client, query, variables):
+    """client.execute, retried once on a Shopify 5xx or a network timeout.
+
+    A gateway timeout on a 50-id lookup is transient and says nothing about the
+    ids, so one more attempt usually clears it. Anything else, including a
+    second failure, propagates to the caller's per-batch handling.
+    """
+    import time
+
+    import requests
+
+    try:
+        return client.execute(query, variables)
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        pass
+    except requests.exceptions.HTTPError as exc:
+        status = getattr(exc.response, "status_code", 0) or 0
+        if status < 500:
+            raise
+    time.sleep(_RETRY_WAIT)
+    return client.execute(query, variables)
+
 _FULFILLMENT_STATUS_QUERY = """
 query($ids: [ID!]!) {
   nodes(ids: $ids) {
@@ -317,7 +344,7 @@ def _sync_delivery_status_for(connection_name, limit=None):
         # Fulfillment one is built here rather than widening a shared helper.
         gids = [f"gid://shopify/Fulfillment/{fid}" for fid in chunk]
         try:
-            data = client.execute(_FULFILLMENT_STATUS_QUERY, {"ids": gids})
+            data = _execute_with_retry(client, _FULFILLMENT_STATUS_QUERY, {"ids": gids})
         except Exception:
             summary["failed"] += len(chunk)
             frappe.log_error(
@@ -610,7 +637,7 @@ def _sync_order_status_for(connection_name, limit=None):
         chunk = ids[start:start + _BATCH]
         gids = [f"gid://shopify/Order/{oid}" for oid in chunk]
         try:
-            data = client.execute(_ORDER_STATUS_QUERY, {"ids": gids})
+            data = _execute_with_retry(client, _ORDER_STATUS_QUERY, {"ids": gids})
         except Exception:
             summary["failed"] += len(chunk)
             frappe.log_error(
@@ -747,7 +774,7 @@ def _sync_refund_status_for(connection_name, limit=500):
         chunk = ids[start:start + _BATCH]
         gids = [f"gid://shopify/Order/{oid}" for oid in chunk]
         try:
-            data = client.execute(_ORDER_STATUS_QUERY, {"ids": gids})
+            data = _execute_with_retry(client, _ORDER_STATUS_QUERY, {"ids": gids})
         except Exception:
             summary["failed"] += len(chunk)
             frappe.log_error(

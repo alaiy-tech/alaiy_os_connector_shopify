@@ -161,7 +161,7 @@ def update_variant_prices_api(item_code_to_price, domain=None):
     return update_variant_prices(payload, domain=domain)
 
 
-def update_variant_prices(item_code_to_price: dict, domain=None, connection=None):
+def update_variant_prices(item_code_to_price: dict, domain=None, connection=None, compare_at=False):
     """Price-ONLY push via productVariantsBulkUpdate -- deliberately NOT
     push_item/productSet.
 
@@ -187,6 +187,10 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
     resolvable Shopify variant is reported back as a failure, never
     silently routed through push_item/productSet as a fallback, since that
     would reintroduce the exact risk this function exists to avoid.
+
+    compare_at=True sends the compare-at price instead of the price; a value
+    of None removes it, and is only reported updated once Shopify's response
+    shows no compare-at price.
 
     item_code_to_price: {item_code: float}. Returns
     {"updated": [item_code, ...], "failed": {item_code: reason, ...}}.
@@ -228,7 +232,12 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
             "variants": [
                 # Shopify's price field is a String, same formatting
                 # convention as _variant_set_payload's own productSet push.
-                {"id": f"gid://shopify/ProductVariant/{variant_id}", "price": f"{price:.2f}"}
+                {
+                    "id": f"gid://shopify/ProductVariant/{variant_id}",
+                    "compareAtPrice": None if price is None else f"{price:.2f}",
+                }
+                if compare_at
+                else {"id": f"gid://shopify/ProductVariant/{variant_id}", "price": f"{price:.2f}"}
                 for _item_code, variant_id, price in rows
             ],
         }
@@ -241,8 +250,16 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
                 for item_code, _variant_id, _price in rows:
                     failed[item_code] = message
                 continue
-            for item_code, _variant_id, _price in rows:
-                updated.append(item_code)
+            still_set = {
+                v["id"].rsplit("/", 1)[-1]
+                for v in result.get("productVariants") or []
+                if v.get("compareAtPrice")
+            }
+            for item_code, variant_id, price in rows:
+                if compare_at and price is None and str(variant_id) in still_set:
+                    failed[item_code] = "Shopify kept the compare-at price."
+                else:
+                    updated.append(item_code)
         except Exception:
             frappe.log_error(
                 title="Shopify connector: update_variant_prices failed",
@@ -789,6 +806,15 @@ def _push_product_unlocked(item):
     from alaiy_os_connector_shopify.shopify.product.metafields import push_listing_metafields
     push_listing_metafields(listing, f"gid://shopify/Product/{product_id}", client)
 
+    # Shopify's own clock for the state this push just set. An inbound
+    # products/update older than it describes the product before this push
+    # and is skipped -- see webhooks._handle_product_update.
+    pushed = {}
+    if product.get("updatedAt"):
+        from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
+        pushed["shopify_updated_at"] = _to_utc_naive(
+            frappe.utils.get_datetime(product["updatedAt"]))
+
     entities.save(
         entity or entities.get_or_new(
             "product", "Item", item.name, product_id, connection=settings),
@@ -796,6 +822,7 @@ def _push_product_unlocked(item):
         erpnext_doctype="Item",
         erpnext_name=item.name,
         erpnext_fingerprint=fp,
+        **pushed,
     )
     frappe.db.commit()
 

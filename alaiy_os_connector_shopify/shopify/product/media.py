@@ -3,6 +3,8 @@ Image/media helpers -- moved verbatim from product_import.py and
 product_sync.py, unchanged.
 """
 
+from urllib.parse import quote
+
 import frappe
 
 
@@ -119,10 +121,12 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
         # session) since insert() was never actually reached before now.
         slideshow.slideshow_name = slideshow_name
 
+        failed = 0
         for image_url in image_urls[1:]:  # First image is already set as main
             try:
                 file_url = _download_to_file(image_url, "Website Slideshow", slideshow_name)
             except Exception:
+                failed += 1
                 continue  # Skip failed images
             slideshow.append("slideshow_items", {
                 "image": file_url,
@@ -136,6 +140,15 @@ def _set_item_slideshow(item_code: str, image_urls: list, settings):
             # Link to Item
             frappe.db.set_value("Item", item_code, "slideshow", slideshow_name)
             frappe.db.commit()
+        elif failed:
+            # Every image download failed -- _download_to_file already logs each
+            # one individually, but that left no signal that the slideshow itself
+            # never got created at all (the item is left with only its single
+            # main image, silently, since this whole thing just returns here).
+            frappe.log_error(
+                title=f"Slideshow not created for {item_code}: all {failed} image(s) failed",
+                message=f"Attempted URLs: {image_urls[1:]}",
+            )
 
     except Exception:
         frappe.log_error(
@@ -154,7 +167,8 @@ def _absolute_file_url(url: str) -> str:
     Shopify's servers are concerned.
     """
     if url.startswith("/"):
-        return frappe.utils.get_url(url)
+        # Names like "Photo 1 (2).jpg" are not valid URLs as stored; keep % ? = & so encoded paths and queries survive.
+        return frappe.utils.get_url(quote(url, safe="/%?=&"))
     return url
 
 

@@ -371,9 +371,18 @@ def _variant_inventory_item_id(variant: dict) -> str:
 
 
 def _variant_inventory_item_payload(variant) -> dict:
-    """inventoryItem sub-input for ProductVariantSetInput -- cost and
-    weight live here, not flat on the variant."""
+    """inventoryItem sub-input for ProductVariantSetInput -- cost, weight and
+    stock tracking live here, not flat on the variant."""
     payload = {}
+    # A variant whose stock Alaiy OS holds has to be tracked on Shopify, or
+    # Shopify ignores every quantity pushed to it and sells the product as
+    # always available. Left out of the payload, tracking stays off: nothing
+    # else ever turns it on. That is stock a supplier location holds (the
+    # variant has a location) or stock already recorded (it has a Bin), even if
+    # it is 0 today. Items with neither (gift cards, digital products) are not
+    # stock we hold, so their setting is left as Shopify has it.
+    if variant.get("shopify_location") or frappe.db.exists("Bin", {"item_code": variant.item_code}):
+        payload["tracked"] = True
     cost = _variant_cost(variant.item_code)
     if cost is not None and cost > 0:
         payload["cost"] = f"{cost:.2f}"
@@ -395,6 +404,16 @@ def _variant_inventory_item_payload(variant) -> dict:
     return payload
 
 
+def _variant_barcode(variant) -> str:
+    """The barcode to send for a variant: the first row of its barcode list,
+    else the barcode recorded from Shopify on import. Imported variants carry
+    only the latter, so without the fallback a push omits their barcode."""
+    barcodes = variant.get("barcodes")
+    if barcodes and barcodes[0].barcode:
+        return barcodes[0].barcode
+    return variant.get("sh_barcode") or ""
+
+
 def _variant_canonical(variant, settings, listing) -> dict:
     # Fingerprint-only dict (diffed to decide "needs push", never pushed
     # itself) -- safe to default missing prices to 0 here, unlike the
@@ -414,7 +433,7 @@ def _variant_canonical(variant, settings, listing) -> dict:
             {"attribute": a.attribute, "value": a.attribute_value}
             for a in (variant.attributes or [])
         ],
-        "barcode": variant.barcodes[0].barcode if variant.get("barcodes") else "",
+        "barcode": _variant_barcode(variant),
         "variant_image": listing_resolver.effective_variant_image(listing, variant.item_code) or "",
         "harmonized_system_code": variant.get("sh_harmonized_system_code") or "",
         "country_of_origin": variant.get("sh_country_of_origin") or "",
@@ -438,9 +457,12 @@ def _variant_initial_inventory_quantities(variant, settings) -> list:
     inventory_sync._resolve_location_pairs already uses (just inverted:
     location -> warehouse instead of warehouse -> location), so this stays
     the one source of truth for that mapping rather than inventing a second.
-    A location with no mapped Warehouse, or a Warehouse with no Bin row for
-    this item, means "no known quantity" -- skipped, never pushed as an
-    assumed zero (same rule inventory_sync's own bulk push follows).
+    A location with no mapped Warehouse is skipped. A Warehouse with no Bin
+    row for this item starts at 0: the product does not exist on Shopify yet,
+    so there is no stock there to overwrite and 0 is the truth. Skipping it
+    instead is what sent such products to Shopify's default location. (The
+    bulk push, which only ever updates existing products, still never pushes
+    an assumed zero.)
     """
     location_name = variant.get("shopify_location")
     if not location_name:
@@ -457,12 +479,10 @@ def _variant_initial_inventory_quantities(variant, settings) -> list:
         return []
     bin_qty = frappe.db.get_value(
         "Bin", {"item_code": variant.item_code, "warehouse": warehouse}, "actual_qty")
-    if bin_qty is None:
-        return []
     return [{
         "locationId": location_gid,
         "name": "available",
-        "quantity": int(flt(bin_qty)),
+        "quantity": int(flt(bin_qty)) if bin_qty is not None else 0,
     }]
 
 
@@ -500,8 +520,9 @@ def _variant_set_payload(variant, settings, option_names: list, listing, is_new_
     shopify_variant_id = listing_resolver.variant_shopify_id(listing, variant.item_code)
     if shopify_variant_id:
         payload["id"] = f"gid://shopify/ProductVariant/{shopify_variant_id}"
-    if variant.get("barcodes"):
-        payload["barcode"] = variant.barcodes[0].barcode
+    barcode = _variant_barcode(variant)
+    if barcode:
+        payload["barcode"] = barcode
     compare_at = _variant_compare_at_price(variant.item_code)
     if compare_at is not None and compare_at > 0:
         payload["compareAtPrice"] = f"{compare_at:.2f}"

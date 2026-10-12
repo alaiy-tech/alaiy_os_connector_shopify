@@ -341,8 +341,28 @@ def _ensure_enriched_listing(item_code, listing, image_status="Queued"):
 
     # ignore_permissions=True: both callers (enrich_listing_image,
     # ensure_enriched_listing above) already check permission on the source
-    # listing before reaching this private helper.
-    doc.insert(ignore_permissions=True)
+    # listing before reaching this private helper - OS Agent Run create plus
+    # listing read for a retouch, listing write for a hand edit. The row is a
+    # copy of what the product already says; publishing it checks write again.
+    frappe.db.savepoint("ensure_enriched_listing")
+    try:
+        doc.insert(ignore_permissions=True)  # nosemgrep: frapsec-ignore-permissions -- callers check permission first, see above
+    except frappe.DuplicateEntryError:
+        # Another request seeded it first. The Media tab sends one
+        # enrich_listing_image per ticked photo, all at once, and with no draft
+        # yet every one of them got past the exists() check above - all but one
+        # then failed here with a 409, shown as "N photos could not be enriched"
+        # (Z058-03286R, 2026-09-29). Their draft is as good as ours.
+        #
+        # Committed, not just rolled back to the savepoint: under REPEATABLE READ
+        # this request's snapshot predates the other request's commit, so the
+        # draft's rows would stay invisible to it - and clear_rendered, next,
+        # would find nothing to clear, leaving the retouch to land beside the
+        # original instead of in place of it. Nothing else is written before this
+        # on either path that can collide (the duplicate means the other insert
+        # committed, which a delete in the same transaction would have blocked).
+        frappe.db.rollback(save_point="ensure_enriched_listing")
+        frappe.db.commit()  # nosemgrep: frapsec-manual-commit
 
 
 @frappe.whitelist(methods=["POST"])
@@ -445,7 +465,8 @@ def preview_lifestyle_image(item_code, source_url, query):
     changes.
     """
     url = _generate_additional_preview(item_code, source_url, "lifestyle", query, require_query=True)
-    return {"item_code": item_code, "source_url": source_url, "url": url, "kind": "lifestyle", "query": query}
+    return {"item_code": item_code, "source_url": source_url, "url": url, "view_url": _view(url),
+            "kind": "lifestyle", "query": query}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -469,7 +490,8 @@ def preview_worn_image(item_code, source_url, prompt=None):
     `alaiy_os.engine.llm.stage_product`.
     """
     url = _generate_additional_preview(item_code, source_url, "worn", prompt, require_query=False)
-    return {"item_code": item_code, "source_url": source_url, "url": url, "kind": "worn", "query": prompt}
+    return {"item_code": item_code, "source_url": source_url, "url": url, "view_url": _view(url),
+            "kind": "worn", "query": prompt}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -513,7 +535,7 @@ def preview_regenerate_additional_image(item_code, source_url, url):
     new_url = _generate_additional_preview(item_code, source_url, row.kind, row.brief, require_query=False)
     return {
         "item_code": item_code, "source_url": source_url, "kind": row.kind,
-        "url": new_url, "query": row.brief, "original_url": url,
+        "url": new_url, "view_url": _view(new_url), "query": row.brief, "original_url": url,
     }
 
 
@@ -613,7 +635,14 @@ def accept_additional_image(item_code, source_url, kind, url, query=None, replac
         if query is not None:
             row.brief = query
     else:
-        _ensure_enriched_listing(item_code, listing)
+        # Not the image step's default "Queued": accepting a preview queues no
+        # render, and a Draft left claiming one is in flight never settles - Save
+        # then never deletes it, and the review screen waits on photos nobody
+        # asked for. Same rule as ensure_enriched_listing.
+        _ensure_enriched_listing(
+            item_code, listing,
+            image_status="Ready" if base.listing_image_urls(listing) else "Not Required",
+        )
         doc = frappe.get_doc(ENRICHED_DOCTYPE, item_code)
         doc.check_permission("write")
         # Idempotent against a double accept of the SAME preview (a
@@ -752,6 +781,40 @@ def remove_additional_image(item_code, source_url, url):
     return {"item_code": item_code, "removed": removed}
 
 
+def _view(url):
+    """A link a browser can draw for an image URL (see `alaiy_os.image_store.viewable_url`)."""
+    from alaiy_os import image_store
+
+    return image_store.viewable_url(url) if url else url
+
+
+@frappe.whitelist()
+def image_view_links(item_code):
+    """
+    Links a browser can draw for one product's images, `{url: link}`, covering its
+    enrichment's photos and its listing's own image rows.
+
+    A produced image the site keeps in S3 is private, so its stored URL is not one a
+    browser can load; anything else comes back unchanged. Scoped to one product the
+    caller may read, and only ever answers about URLs that product holds -- a signed
+    link for an arbitrary key would be read access to the bucket.
+    """
+    from alaiy_os import image_store
+
+    urls = []
+    if frappe.db.exists(ENRICHED_DOCTYPE, item_code):
+        doc = frappe.get_doc(ENRICHED_DOCTYPE, item_code)
+        doc.check_permission("read")
+        urls += [url for row in doc.images or [] for url in (row.source_url, row.url, row.cutout_url)]
+    listing_doctype = base_listing_doctype()
+    if frappe.db.exists(listing_doctype, item_code):
+        listing = frappe.get_doc(listing_doctype, item_code)
+        listing.check_permission("read")
+        urls += [row.image for row in listing.get("images") or []]
+        urls += [row.variant_image for row in listing.get("variants") or []]
+    return image_store.viewable_urls(urls)
+
+
 def base_listing_doctype():
     from alaiy_os_connector_shopify.listing import handlers as base
 
@@ -828,6 +891,11 @@ def get_listing_images(item_code):
                 "item_variant": row.item_variant,
                 "url": row.url,
                 "cutout_url": row.cutout_url,
+                # What to draw: a produced image the site keeps in S3 is private,
+                # so these are signed links. Act on `url`; show `view_url`.
+                "view_url": _view(row.url),
+                "cutout_view_url": _view(row.cutout_url),
+                "source_view_url": _view(row.source_url),
                 "note": row.note,
                 # How an additional photo was generated (see
                 # _generate_and_save_additional_image) — null on every other row.

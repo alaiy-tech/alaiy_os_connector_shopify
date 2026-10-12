@@ -137,6 +137,38 @@ def _attribute_fulfilled_locations(order, connection=None):
                 )
 
 
+def _record_skipped_order(order, order_id, connection):
+    """Keep a read-only record of an order that is imported as nothing because
+    every line is refunded or cancelled, so reports can still list it.
+
+    Never raises: bookkeeping must not stop the import."""
+    try:
+        if frappe.db.exists("Shopify Skipped Order", {"connection": connection, "shopify_order_id": order_id}):
+            return
+        raw_lines = order.get("line_items") or []
+        location_ids = sorted({
+            str(f.get("location_id")) for f in (order.get("fulfillments") or []) if f.get("location_id")
+        })
+        frappe.get_doc({
+            "doctype": "Shopify Skipped Order",
+            "connection": connection,
+            "shopify_order_id": order_id,
+            "shopify_order_name": order.get("name"),
+            "order_date": frappe.utils.getdate(order.get("created_at")) if order.get("created_at") else None,
+            "reason": "Cancelled" if order.get("cancelled_at") else "Refunded",
+            "financial_status": order.get("financial_status") or "",
+            "location_ids": ",".join(location_ids),
+            "skus": ",".join(li.get("sku") for li in raw_lines if li.get("sku")),
+            "lines": frappe.as_json([
+                {"sku": li.get("sku") or "", "title": li.get("title") or li.get("name") or "",
+                 "qty": flt(li.get("quantity", 1))}
+                for li in raw_lines
+            ]),
+        }).insert(ignore_permissions=True)
+    except Exception:
+        frappe.log_error(title="Shopify: could not record skipped order", message=frappe.get_traceback())
+
+
 def _upsert_order_unlocked(order, order_id, connection=None):
     """Returns True if a new Sales Order was created, False if skipped."""
     # Resolved before the dedupe, not after: the dedupe has to ask "does THIS
@@ -206,6 +238,7 @@ def _upsert_order_unlocked(order, order_id, connection=None):
             _line_item_qty(li) <= 0 for li in raw_lines
         )
         if all_zero:
+            _record_skipped_order(order, order_id, settings.name)
             title = f"Shopify order {order.get('name')}: every line refunded or cancelled"
             reason = (
                 "Every line on this order has quantity 0, so there is nothing to import. "

@@ -129,6 +129,7 @@ def _local_variants(listing, item, settings):
         _variant_compare_at_price,
         _variant_cost,
     )
+    from alaiy_os_connector_shopify.shopify.product.variants import _variant_barcode
 
     out = {}
     for variant in _variants_of(item):
@@ -137,7 +138,7 @@ def _local_variants(listing, item, settings):
             "price": _money(listing_resolver.variant_price(listing, code, settings) or 0),
             "compare_at_price": _money(_variant_compare_at_price(code) or 0),
             "cost": _money(_variant_cost(code) or 0),
-            "barcode": (variant.barcodes[0].barcode if variant.get("barcodes") else "") or "",
+            "barcode": _variant_barcode(variant),
             "harmonized_system_code": variant.get("sh_harmonized_system_code") or "",
             "country_of_origin": variant.get("sh_country_of_origin") or "",
         }

@@ -71,12 +71,16 @@ def _set_item_tags(item, tag_names: list, connection=None):
             # reaching here -- this only creates an internal reference/cache
             # row (the master tag list a MultiSelect picks from), not
             # something a caller directly names or controls.
-            # nosemgrep: frapsec-ignore-permissions
-            frappe.get_doc({
-                "doctype": "Shopify Tag",
-                "tag_name": tag_name,
-                "connection": getattr(connection, "name", connection) or None,
-            }).insert(ignore_permissions=True)
+            # exists() is only a fast path; concurrent jobs can both miss, and the loser's duplicate means the tag exists.
+            try:
+                # nosemgrep: frapsec-ignore-permissions
+                frappe.get_doc({
+                    "doctype": "Shopify Tag",
+                    "tag_name": tag_name,
+                    "connection": getattr(connection, "name", connection) or None,
+                }).insert(ignore_permissions=True)
+            except frappe.DuplicateEntryError:
+                pass
         usable_tags.append(doc_name)
     item.set("sh_shopify_tags", [{"shopify_tag": t} for t in usable_tags])
 

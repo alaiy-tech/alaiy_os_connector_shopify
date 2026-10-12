@@ -467,6 +467,13 @@ def sync_listing_variants(template_name):
         listing.save(ignore_permissions=True)
 
 
+def _same_price(a, b) -> bool:
+    """Money-safe equality: raw float comparison flags a spurious diff on
+    binary rounding drift (e.g. 19.990000000000002), marking the Listing
+    dirty and re-saving on every inbound sync even though nothing changed."""
+    return round(float(a or 0), 2) == round(float(b or 0), 2)
+
+
 def apply_inbound_from_shopify(template_name, images=None, variant_prices=None, template_price=None):
     """
     Route inbound Shopify ABSTRACTED fields (images, per-variant price, and a
@@ -490,13 +497,13 @@ def apply_inbound_from_shopify(template_name, images=None, variant_prices=None, 
                 listing.append("images", {"image": url, "source": "Original", "sort_order": order})
             dirty = True
 
-    if template_price is not None and float(listing.listing_price or 0) != float(template_price):
+    if template_price is not None and not _same_price(listing.listing_price, template_price):
         listing.listing_price = template_price
         dirty = True
 
     for code, price in (variant_prices or {}).items():
         row = next((r for r in listing.variants if r.item_variant == code), None)
-        if row and float(row.variant_price or 0) != float(price):
+        if row and not _same_price(row.variant_price, price):
             row.variant_price = price
             dirty = True
 

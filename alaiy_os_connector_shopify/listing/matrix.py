@@ -24,6 +24,7 @@ connector still installs and runs on a bench with no client app at all.
 handling, not client policy, and work either way.
 """
 
+import inspect
 import re
 
 import frappe
@@ -132,12 +133,26 @@ def resolve(category=None, product_type=None, title=None):
     )
 
 
-def mandatory(profile, product_type=None):
-    """`[(key, label)]` this profile must fill or flag. Empty when no matrix."""
+def mandatory(profile, product_type=None, title=None, attributes=None):
+    """
+    `[(key, label)]` this profile must fill or flag. Empty when no matrix.
+
+    `title` and `attributes` ({key: value}) are what the listing says, for a
+    conditional that hangs on what the piece is made of rather than what kind
+    of piece it is. Each is passed only to a client function that takes it, so
+    a client matrix written before they existed keeps working.
+    """
     spec = load()
     if not spec or not profile:
         return []
-    return frappe.get_attr(spec["mandatory"])(profile, product_type=product_type)
+    fn = frappe.get_attr(spec["mandatory"])
+    context = {"product_type": product_type}
+    params = inspect.signature(fn).parameters
+    takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    for name, value in (("title", title), ("attributes", attributes)):
+        if value is not None and (takes_any or name in params):
+            context[name] = value
+    return fn(profile, **context)
 
 
 def applicable(profile):

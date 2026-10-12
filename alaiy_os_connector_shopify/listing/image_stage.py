@@ -54,6 +54,12 @@ PREPARE = "prepare"
 _APPLY_ATTEMPTS = 3
 _APPLY_BACKOFF = 0.5
 
+# How many times _apply_locked waits out the database's own lock-wait timeout
+# (innodb_lock_wait_timeout, 50s by default) for another photo job on the SAME
+# product to commit. Each holder keeps the row for one save, so running out of
+# all of these means something is stuck, not merely busy.
+_APPLY_LOCK_ATTEMPTS = 3
+
 # What sits on a photo between someone asking for it and the result arriving. Read by
 # a human on the Desk form, so it says why the picture went away. Deliberately does
 # not say "again": the same clearing happens on a photo's first enhancement, because a
@@ -205,7 +211,31 @@ def run_step(item_code, step, work):
         return
 
     rendered = result["images"]
-    produced = _apply(item_code, rendered)
+    try:
+        produced = _apply_locked(item_code, rendered)
+    except frappe.QueryTimeoutError:
+        # _apply_locked already logged why. Handled the same as a render
+        # failure (see above): the image itself was already paid for, but
+        # nothing here got the chance to say so, so this job reports it as
+        # a failure rather than crashing the job -- a crash would skip
+        # _nudge_batches and could leave a bulk batch waiting forever.
+        _set_state(item_code, "Failed", _summary(
+            "Timed out waiting for another photo job on this product to finish saving."
+        ))
+        _publish(item_code, "Failed")
+        _nudge_batches(item_code)
+        return
+    if produced is None:
+        # The listing was deleted out from under this job while it rendered --
+        # different from run_step's own top-of-function check (nothing was
+        # ever there), this render already happened and was already paid
+        # for. Logged, unlike that early check, because there IS something
+        # to say here: an image that cost real money has nowhere to land.
+        frappe.log_error(
+            title=f"Listing images {item_code}: {step} rendered but listing was deleted"
+        )
+        _nudge_batches(item_code)
+        return
     failed = len(rendered) - produced
 
     if not produced:
@@ -273,6 +303,54 @@ def _render(step, item_code, work):
     frappe.throw(f"Unknown image step '{step}'.")
 
 
+def _apply_locked(item_code, rendered):
+    """_apply, serialized against every other photo job writing the SAME
+    product's enriched listing at once. Returns None if the listing is gone
+    by the time this job gets to write (see run_step's own handling of that).
+
+    Photo-by-photo enrichment queues one job per photo (see queue_step), and
+    a product with several photos ticked at once can have that many jobs
+    finish rendering within moments of each other, each holding its own
+    stale copy of the document. Before this lock existed, that collision was
+    only ever handled AFTER the fact, by _apply's own retry-on-conflict —
+    which protects the document's save, but not what happens around it.
+    Confirmed live on 2026-09-28 (item 13A419-5001): three such jobs landed
+    close enough together that one job's already-rendered, already-paid-for
+    image never made it onto any row it could be found by again — the write
+    that was supposed to record it either lost the race entirely or landed
+    on a document a concurrent retry had already reloaded past. Locking
+    around the write, not just retrying after losing it, means only one
+    photo job for a given product can ever be mid-save at a time — the
+    render itself (the slow, paid-for part) still happens fully in
+    parallel across workers, since the lock is taken only for the
+    load-modify-save that follows it.
+
+    The lock is the listing's own database row (see _lock_row), NOT
+    Document.lock(). Document.lock() is Frappe's "queued for a background
+    action" marker, and while its lock file exists Document.save() refuses to
+    run for ANYONE -- including the job holding it -- so taking it here made
+    every photo job's own save fail with DocumentLockedError (live on
+    2026-09-28/29, reported as "Timed out waiting for another photo job...").
+    A row lock blocks the other photo jobs, and is released by the commit
+    _apply_once already does.
+    """
+    # Everything the render wrote -- the File record of each re-hosted image --
+    # is committed before waiting on anyone, so neither a lock-wait timeout
+    # below nor _apply's rollback-on-conflict can undo a paid-for result.
+    frappe.db.commit()  # nosemgrep: frapsec-manual-commit
+
+    for attempt in range(_APPLY_LOCK_ATTEMPTS):
+        try:
+            return _apply(item_code, rendered)
+        except frappe.QueryTimeoutError:
+            frappe.db.rollback()
+            if attempt == _APPLY_LOCK_ATTEMPTS - 1:
+                frappe.log_error(
+                    title=f"Listing images {item_code}: timed out waiting to save"
+                )
+                raise
+
+
 def _apply(item_code, rendered):
     """Write the rendered urls onto the listing's image rows. Returns how many worked.
 
@@ -289,13 +367,13 @@ def _apply(item_code, rendered):
     plan the tool queued wins, and the listing ends up with the rows it should have
     regardless of what the model reported.
 
-    Retried on a concurrent write. Photo-by-photo enrichment puts two jobs for the
-    same product on the queue at once (see queue_step), and both land here holding
-    their own copy of the document — the second to save would otherwise die on a
-    stale timestamp and lose an image already paid for. Each attempt re-reads the
-    document, so it sees the rows the other job just committed, and the writes are
-    per-row and idempotent, which is what makes retrying safe rather than merely
-    hopeful.
+    Retried on a concurrent write, as defense-in-depth: _apply_locked is what
+    actually keeps two photo jobs for the same product from writing at once
+    now, but a writer that does not take the row lock first (a reviewer saving
+    the listing from Desk, say) can still land in between. Each attempt re-reads the
+    document, so it sees the rows the other job just committed, and the
+    writes are per-row and idempotent, which is what makes retrying safe
+    rather than merely hopeful.
     """
     for attempt in range(_APPLY_ATTEMPTS):
         try:
@@ -308,7 +386,9 @@ def _apply(item_code, rendered):
 
 
 def _apply_once(item_code, rendered):
-    """One attempt at _apply's load-modify-save."""
+    """One attempt at _apply's load-modify-save. None if the listing is gone."""
+    if not _lock_row(item_code):
+        return None
     doc = frappe.get_doc(ENRICHED_DOCTYPE, item_code)
     existing = list(doc.images or [])
     produced = 0
@@ -342,6 +422,23 @@ def _apply_once(item_code, rendered):
     # the render, not just the write.
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit
     return produced
+
+
+def _lock_row(item_code):
+    """Hold the listing's row until this transaction commits. False if it is gone.
+
+    Blocks while another photo job holds it, up to the database's lock-wait
+    timeout (raised as frappe.QueryTimeoutError -- see _apply_locked). Raw SQL on
+    purpose, and the first statement of the transaction: under REPEATABLE READ the
+    snapshot the document is then loaded from starts AFTER this returns, so it
+    already includes whatever the previous holder committed.
+    """
+    return bool(
+        frappe.db.sql(
+            "select name from `tabShopify Enriched Listing` where name = %s for update",
+            item_code,
+        )
+    )
 
 
 def _match(rows, image):
