@@ -16,7 +16,7 @@ import { cn } from "@alaiy-os/utils";
 import { Check } from "lucide-react";
 import { toast } from "sonner";
 
-import { fetchEnrichmentQueue, type EnrichedListingQueueRow } from "@/lib/frappe/shopify-enrichment";
+import { ENRICHMENT_PAGE_SIZE, fetchEnrichmentQueue, type EnrichedListingQueueRow } from "@/lib/frappe/shopify-enrichment";
 import { approveListings } from "@/lib/frappe/shopify-enrichment-review";
 
 import { useShopifyStore } from "../../_lib/use-shopify-store";
@@ -40,17 +40,37 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [approving, setApproving] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   function load() {
     setRows(null);
+    setHasMore(false);
     setChecked(new Set());
     fetchEnrichmentQueue(selected ?? undefined)
-      .then(setRows)
+      .then((page) => {
+        setRows(page);
+        setHasMore(page.length === ENRICHMENT_PAGE_SIZE);
+      })
       .catch((err) => {
         const message = err instanceof Error ? err.message : "Could not load the enrichment queue.";
         setError(message);
         toast.error(message);
       });
+  }
+
+  async function loadMore() {
+    if (!rows) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchEnrichmentQueue(selected ?? undefined, undefined, rows.length);
+      setRows((current) => [...(current ?? []), ...page]);
+      setHasMore(page.length === ENRICHMENT_PAGE_SIZE);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not load more.");
+    } finally {
+      setLoadingMore(false);
+    }
   }
 
   useEffect(() => {
@@ -189,6 +209,13 @@ export default function Page() {
                 </TableBody>
               </Table>
             </div>
+            {hasMore && (
+              <div className="flex justify-center p-3">
+                <Button variant="outline" size="sm" disabled={loadingMore} onClick={() => void loadMore()}>
+                  {loadingMore && <Spinner />} Load more
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

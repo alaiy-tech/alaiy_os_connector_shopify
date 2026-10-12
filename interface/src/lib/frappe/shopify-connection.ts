@@ -17,7 +17,7 @@ export async function testShopifyConnection(connection?: string): Promise<Shopif
   });
 
   const text = await res.text();
-  let payload: { message?: ShopifyConnectionResult; _server_messages?: string; exception?: string } | null = null;
+  let payload = null as { message?: ShopifyConnectionResult; _server_messages?: string; exception?: string } | null;
   try {
     payload = JSON.parse(text) as typeof payload;
   } catch {

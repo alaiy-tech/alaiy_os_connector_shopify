@@ -55,7 +55,7 @@ async function callMethod<T>(method: string, body?: Record<string, unknown>): Pr
   });
 
   const text = await res.text();
-  let payload: { message?: T; _server_messages?: string; exception?: string } | null = null;
+  let payload = null as { message?: T; _server_messages?: string; exception?: string } | null;
   try {
     payload = JSON.parse(text) as typeof payload;
   } catch {

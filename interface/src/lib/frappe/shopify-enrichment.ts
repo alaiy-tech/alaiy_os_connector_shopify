@@ -93,7 +93,7 @@ async function callMethod<T>(method: string, body?: Record<string, unknown>): Pr
     cache: "no-store",
   });
   const text = await res.text();
-  let payload: { message?: T; _server_messages?: string; exception?: string } | null = null;
+  let payload = null as { message?: T; _server_messages?: string; exception?: string } | null;
   try {
     payload = JSON.parse(text) as typeof payload;
   } catch {
@@ -125,8 +125,12 @@ async function resourceFetch(name: string, init: RequestInit): Promise<Record<st
   return data;
 }
 
-export function fetchEnrichmentQueue(connection?: string, status?: string): Promise<EnrichedListingQueueRow[]> {
+/** Rows per page; the backend's default page_length, so a full page means there may be more. */
+export const ENRICHMENT_PAGE_SIZE = 200;
+
+export function fetchEnrichmentQueue(connection?: string, status?: string, start = 0): Promise<EnrichedListingQueueRow[]> {
   const params = new URLSearchParams();
+  if (start) params.set("start", String(start));
   if (connection) params.set("connection", connection);
   if (status) params.set("status", status);
   const qs = params.toString();

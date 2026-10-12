@@ -23,7 +23,7 @@ export async function fetchShopifyStores(): Promise<ShopifyStoreList> {
   });
 
   const text = await res.text();
-  let payload: { message?: ShopifyStoreList; exception?: string } | null = null;
+  let payload = null as { message?: ShopifyStoreList; exception?: string } | null;
   try {
     payload = JSON.parse(text) as typeof payload;
   } catch {
