@@ -722,4 +722,10 @@ def effective_values(listing_name: str) -> dict:
         "seo_title": seo["title"],
         "seo_description": seo["description"],
         "image_count": len(effective_images(listing, item, settings)),
+        # The Item's own price on the selling list, i.e. what a blank override inherits.
+        "price": _variant_price(listing.item, settings),
+        "variant_prices": {
+            r.item_variant: _variant_price(r.item_variant, settings)
+            for r in (listing.variants or []) if r.item_variant
+        },
     }

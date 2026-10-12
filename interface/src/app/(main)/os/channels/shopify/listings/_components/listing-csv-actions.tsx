@@ -15,6 +15,7 @@ import {
   triggerUpdateListingsCsv,
   uploadPrivateFile,
 } from "@/lib/frappe/shopify-sync";
+import { useShopifyStore } from "../../_lib/use-shopify-store";
 
 /**
  * Export and bulk-update actions for the Listings page.
@@ -25,13 +26,14 @@ import {
  * Sync Log, same as every other sync trigger on the dashboard.
  */
 export function ListingCsvActions() {
+  const { selected } = useShopifyStore();
   const [exporting, setExporting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
   async function runExport() {
     setExporting(true);
     try {
-      await exportListingsCsv();
+      await exportListingsCsv({ connection: selected ?? undefined });
       toast.success("Export started — check the Shopify dashboard's sync log for the result.");
     } catch (error) {
       toast.error(shopifyErrorMessage(error, "Could not start the export."));
@@ -48,12 +50,20 @@ export function ListingCsvActions() {
       <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
         <Upload /> Update from CSV
       </Button>
-      <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
+      <ImportDialog open={importOpen} onOpenChange={setImportOpen} connection={selected ?? undefined} />
     </div>
   );
 }
 
-function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+function ImportDialog({
+  open,
+  onOpenChange,
+  connection,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  connection?: string;
+}) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
 
@@ -66,7 +76,7 @@ function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
     setBusy(true);
     try {
       const fileUrl = await uploadPrivateFile(file);
-      await triggerUpdateListingsCsv(fileUrl);
+      await triggerUpdateListingsCsv(fileUrl, connection);
       toast.success("Update queued — every change is logged as a before/after diff on the sync log once it runs.");
       onOpenChange(false);
     } catch (error) {
