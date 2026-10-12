@@ -13,4 +13,5 @@ import frappe
 
 
 def execute():
-	frappe.db.sql("update `tabShopify Connection` set sh_push_new_orders = 1")
+	for name in frappe.get_all("Shopify Connection", filters={"sh_push_new_orders": 0}, pluck="name"):
+		frappe.db.set_value("Shopify Connection", name, "sh_push_new_orders", 1)
