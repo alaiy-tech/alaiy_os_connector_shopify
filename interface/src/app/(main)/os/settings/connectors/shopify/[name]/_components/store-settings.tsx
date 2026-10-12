@@ -58,6 +58,7 @@ type Form = {
   taxAccount: string;
   roundingWriteOffAccount: string;
   autoSalesInvoice: boolean;
+  pushNewOrders: boolean;
   invoiceTrigger: string;
   orderStatusFilter: string;
   fulfillmentSyncDirection: string;
@@ -94,6 +95,7 @@ const EMPTY: Form = {
   taxAccount: "",
   roundingWriteOffAccount: "",
   autoSalesInvoice: false,
+  pushNewOrders: false,
   invoiceTrigger: "",
   orderStatusFilter: "",
   fulfillmentSyncDirection: "",
@@ -175,6 +177,7 @@ export function StoreSettings({ connection }: { connection: string }) {
           taxAccount: asText(v.sh_tax_account),
           roundingWriteOffAccount: asText(v.sh_rounding_write_off_account),
           autoSalesInvoice: Boolean(v.sh_auto_sales_invoice),
+          pushNewOrders: Boolean(v.sh_push_new_orders),
           invoiceTrigger: asText(v.sh_invoice_trigger),
           orderStatusFilter: asText(v.sh_order_status_filter),
           fulfillmentSyncDirection: asText(v.sh_fulfillment_sync_direction),
@@ -255,6 +258,7 @@ export function StoreSettings({ connection }: { connection: string }) {
         sh_tax_account: form.taxAccount,
         sh_rounding_write_off_account: form.roundingWriteOffAccount,
         sh_auto_sales_invoice: form.autoSalesInvoice ? 1 : 0,
+        sh_push_new_orders: form.pushNewOrders ? 1 : 0,
         sh_invoice_trigger: form.invoiceTrigger,
         sh_order_status_filter: form.orderStatusFilter,
         sh_fulfillment_sync_direction: form.fulfillmentSyncDirection,
@@ -560,6 +564,17 @@ export function StoreSettings({ connection }: { connection: string }) {
             options={INVOICE_TRIGGER_OPTIONS}
             disabled={busy || !form.autoSalesInvoice}
           />
+          <div className="flex items-center justify-between gap-4 rounded-lg border p-3 md:col-span-2">
+            <div>
+              <Label htmlFor="sh-push-new-orders">Create Shopify Orders From Alaiy OS Sales Orders</Label>
+              <p className="text-muted-foreground text-sm">
+                Create a Shopify order from a Sales Order made in Alaiy OS that did not come from Shopify. Leave off on
+                a site that also receives orders from other marketplaces: those orders would be duplicated onto this
+                store. Orders pulled from Shopify are never affected.
+              </p>
+            </div>
+            <Switch id="sh-push-new-orders" checked={form.pushNewOrders} onCheckedChange={(v) => set("pushNewOrders", v)} disabled={busy} />
+          </div>
           <SelectField
             label="Sync Orders With Status"
             description="Filter for which orders to pull from Shopify"
