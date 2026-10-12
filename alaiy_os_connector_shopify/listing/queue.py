@@ -9,6 +9,7 @@ directly -- the generic REST list can't do that join.
 
 import frappe
 
+from alaiy_os_connector_shopify.api import require_access
 from alaiy_os_connector_shopify.listing.handlers import ENRICHED_DOCTYPE, LISTING_DOCTYPE
 
 
@@ -27,6 +28,7 @@ def list_enriched_listings(status=None, connection=None):
     conditions = ["e.status != 'Draft'"] if not status else ["e.status = %(status)s"]
     values = {"status": status} if status else {}
 
+    require_access(connection, "read")
     if connection:
         conditions.append("l.connection = %(connection)s")
         values["connection"] = connection

@@ -84,7 +84,7 @@ def save_store_config(connection: str, values):
 
     for fieldname, value in values.items():
         field_meta = meta.get_field(fieldname)
-        if not field_meta:
+        if not field_meta or field_meta.read_only:
             continue
         if field_meta.fieldtype == "Password":
             if value and str(value).strip():
