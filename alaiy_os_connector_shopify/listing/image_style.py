@@ -243,18 +243,16 @@ _MIN_SUBJECT_DETAIL = 1.5
 # strap just inside the rim, not at the frame's own edge.
 _CUT_EDGE_REACH = 0.015
 
-# How much of the product's own width (or height) its outermost line on a side
-# must cover for that side to count as cut on its own. Cropped straps, straight
-# across or diagonal, measured 11-33%; a round bezel touching the side of a tight
-# crop measured 1.3%, and a crown 4%.
-_CUT_RUN_MIN = 0.08
-
-# A thin product cropped by the shot — a chain leaving through the top of the
-# frame — covers far less than that: two strands measured 6.6%. What marks it as
-# cut is that it is straight at the edge: its outermost line is as wide as the
-# line `reach` pixels in (99% for the chain), where a curve meeting the side is
-# still narrowing to a point (11% for a bezel, 49% for a crown). Cropped straps
-# measured 75-140%. `_CUT_THIN_MIN` keeps a speck on the edge from counting.
+# What marks a side as cut is that the product is straight at it: its outermost
+# line is as wide as the line `reach` pixels in. A crop slices across the piece,
+# so the two match — cropped straps, straight across or diagonal, measured
+# 75-140%, a thin chain cropped across the top 99%. A piece whose own end meets
+# the side is still narrowing to it: a round bezel measured 11%, a crown 49%, and
+# the rounded tips of a strap in a cutout cropped tight to the piece 3-11%, and
+# still under 40% with the mask grown by up to seven pixels. Grown by two, the
+# blunter tip's last line already covered 8% of the piece's width — which is why
+# breadth alone is not evidence of a crop. `_CUT_THIN_MIN` keeps a speck on the
+# edge from counting.
 _CUT_STRAIGHT_MIN = 0.7
 _CUT_THIN_MIN = 0.01
 
@@ -423,9 +421,14 @@ def _finish(content, spec, client):
 
     image = Image.open(io.BytesIO(content))
     image.load()
+    own = _own_alpha(image)
     image = image.convert("RGB")
 
-    if matte == "segment":
+    if own is not None:
+        # Already a cutout: its outline is exact, where any matte below would
+        # rebuild one from the flattened pixels, a pixel or two off.
+        alpha = own
+    elif matte == "segment":
         alpha = _segment_alpha(image, spec.get("segment_model") or DEFAULTS["segment_model"])
         alpha = _repair(image, alpha)
     elif matte == "gemini":
@@ -1445,15 +1448,16 @@ def _cut_edges(alpha):
     Only a side the product reaches within `_CUT_EDGE_REACH` of is looked at, and
     reaching it is not enough: a round bezel or a crown touching the side of a
     tight crop reaches it too, and setting that side flush pushes the whole piece
-    off centre. A side counts when either
+    off centre. So is a strap's own finished end in a cutout cropped tight to the
+    piece, and a mask a pixel or two generous makes that end's last line look
+    broad. A side counts when either
 
-      * the product's outermost line on that side covers at least
-        `_CUT_RUN_MIN` of its own extent along it — a crop cuts across the
-        piece, where a curve meeting the side only touches it;
-      * it covers less, but is as wide at that line as just inside it — a thin
-        chain cropped straight across (see `_CUT_STRAIGHT_MIN`); or
+      * the product is as wide at its outermost line on that side as just
+        inside it — a crop cuts straight across the piece, where anything
+        meeting the side by its own shape is still narrowing to it (see
+        `_CUT_STRAIGHT_MIN`); or
       * the product runs out through a corner of it, next to a side that counts
-        by the rules above — a strap leaving the shot diagonally crosses one
+        by the rule above — a strap leaving the shot diagonally crosses one
         side broadly and only clips the other.
     """
     solid = alpha.point(lambda v: 255 if v > 128 else 0)
@@ -1495,8 +1499,6 @@ def _cut_edges(alpha):
 
     def crosses(side):
         edge, inside = share(outer[side]), share(inner[side])
-        if edge >= _CUT_RUN_MIN:
-            return True
         return edge >= _CUT_THIN_MIN and edge >= _CUT_STRAIGHT_MIN * inside
 
     cut = {side for side in outer if near[side] and crosses(side)}
@@ -1537,6 +1539,28 @@ def _featureless(image, alpha):
     if not mask.getbbox():
         return True
     return max(ImageStat.Stat(image, mask).stddev) < _MIN_SUBJECT_DETAIL
+
+
+def _own_alpha(image):
+    """The photo's own transparency as a matte, when the photo is already a
+    cutout; otherwise None.
+
+    A transparent PNG of the product needs no separating: its alpha channel is
+    the exact outline. Flattening it and asking a matte for one throws that
+    away, and what comes back is close but not exact — enough, at a strap's tip,
+    to read a piece cropped tight as one cropped by the shot (see `_cut_edges`).
+    An alpha channel that is opaque everywhere, or that leaves no believable
+    product behind, is not a cutout, and the configured matte runs as before.
+    """
+    if "A" not in image.getbands() and "transparency" not in image.info:
+        return None
+    alpha = image.convert("RGBA").getchannel("A")
+    low, high = alpha.getextrema()
+    if low > 128 or high <= 128:
+        return None
+    if not _MIN_SUBJECT <= _coverage(alpha) <= _MAX_SUBJECT:
+        return None
+    return alpha
 
 
 def _coverage(alpha):

@@ -17,7 +17,7 @@ Run via `bench run-tests`; nothing here needs a site.
 import io
 import unittest
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from alaiy_os_connector_shopify.listing import image_style
 
@@ -46,6 +46,24 @@ def _vertical_strap(width=200, height=340):
 	return image
 
 
+def _tight_cutout(size=1000):
+	"""A transparent cutout cropped to the piece: a strap with rounded, finished
+	ends that touch the top and bottom of the frame, a case in the middle."""
+	image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+	draw = ImageDraw.Draw(image)
+	middle = size // 2
+	draw.rounded_rectangle([middle - 100, 1, middle + 100, size - 2], radius=90, fill=STRAP + (255,))
+	draw.ellipse([middle - 230, middle - 230, middle + 230, middle + 230], fill=CASE + (255,))
+	return image
+
+
+class _NoMatting:
+	"""A matting client that fails the test if it is asked for anything."""
+
+	def __getattr__(self, name):
+		raise AssertionError(f"the matte was called ({name}) for a photo that is already a cutout")
+
+
 def _share_kept(alpha, image, color):
 	"""What fraction of the pixels of `color` the mask keeps."""
 	kept = total = 0
@@ -58,11 +76,12 @@ def _share_kept(alpha, image, color):
 	return kept / total
 
 
-def _finish(image, **spec):
+def _finish(image, client=None, **spec):
 	buf = io.BytesIO()
 	image.save(buf, "PNG")
-	style = dict(image_style.DEFAULTS, background="#f4f4f4", matte="flood", **spec)
-	result = image_style.apply_finish(buf.getvalue(), style)
+	style = dict(image_style.DEFAULTS, background="#f4f4f4", matte="flood")
+	style.update(spec)
+	result = image_style.apply_finish(buf.getvalue(), style, client)
 	return result, Image.open(io.BytesIO(result["image"])).convert("RGB")
 
 
@@ -98,8 +117,8 @@ class CutEdges(unittest.TestCase):
 		self.assertEqual(self._cut(_diagonal_strap()), {"left", "top", "right", "bottom"})
 
 	def test_thin_chain_cropped_at_the_top_is_cut(self):
-		# Two strands crossing the top: far under _CUT_RUN_MIN of the piece's
-		# width, but straight at the edge.
+		# Two strands crossing the top: a small share of the piece's width, but
+		# straight at the edge.
 		image = Image.new("RGB", (1000, 1000), GROUND)
 		draw = ImageDraw.Draw(image)
 		draw.line([(310, -60), (470, 420)], fill=CASE, width=14)
@@ -118,6 +137,40 @@ class CutEdges(unittest.TestCase):
 		image = Image.new("RGB", (206, 350), (253, 253, 253))
 		image.paste(_vertical_strap(200, 344), (3, 3))
 		self.assertEqual(self._cut(image), {"top", "bottom"})
+
+	def test_finished_strap_ends_in_a_tight_cutout_are_not_cut(self):
+		# The strap's own rounded ends touch the frame because the cutout is
+		# cropped to the piece, not because the shot cropped the strap. A mask
+		# rebuilt from the flattened photo comes back a pixel or two generous,
+		# which broadens each tip's last line; that alone must not make it a cut.
+		alpha = _tight_cutout().getchannel("A")
+		for grow in (0, 1, 2, 4, 7):
+			with self.subTest(grow=grow):
+				mask = alpha.filter(ImageFilter.MaxFilter(2 * grow + 1)) if grow else alpha
+				self.assertEqual(image_style._cut_edges(mask), frozenset())
+
+
+class TransparentCutoutKeepsItsOwnOutline(unittest.TestCase):
+	def test_tight_cutout_is_padded_at_both_ends(self):
+		result, finished = _finish(
+			_tight_cutout(), matte="gemini_key", bleed_cut_edges=True, client=_NoMatting()
+		)
+		self.assertIsNone(result["note"])
+		# The strap ends inside the margin at both ends, as the piece itself does.
+		for y in (0, finished.height - 1):
+			self.assertNotIn(STRAP, {finished.getpixel((x, y)) for x in range(finished.width)})
+		self.assertIn(STRAP, {finished.getpixel((finished.width // 2, y)) for y in range(finished.height)})
+
+	def test_cutout_needs_no_matting_provider(self):
+		result, _ = _finish(_tight_cutout(), matte="gemini_key")
+		self.assertIsNone(result["note"])
+
+	def test_opaque_alpha_is_not_a_cutout(self):
+		image = _vertical_strap().convert("RGBA")
+		self.assertIsNone(image_style._own_alpha(image))
+
+	def test_fully_transparent_alpha_is_not_a_cutout(self):
+		self.assertIsNone(image_style._own_alpha(Image.new("RGBA", (100, 100), (0, 0, 0, 0))))
 
 
 class CutStrapRunsOffTheCanvas(unittest.TestCase):
