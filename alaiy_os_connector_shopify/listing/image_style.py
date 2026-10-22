@@ -104,7 +104,7 @@ import io
 import threading
 
 import frappe
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageStat, PngImagePlugin
 
 HOOK = "listing_image_style"
 
@@ -306,6 +306,14 @@ _HOLE_MIN_PIXELS = 20
 # pixels wide to begin with.
 _EDGE_PULL = 1.5
 
+# Where a kept cutout came from, written into the cutout's own PNG so `recompose`
+# can finish it again without matting it again: the size of the photo it was cut
+# out of, which carries the piece's relative scale (see `_compose`), and the sides
+# that photo cropped the piece at. The cut sides cannot be measured again from the
+# cutout itself — cropped tight to the piece, it touches every side of its frame.
+_FRAME_KEY = "alaiy:frame"
+_CUT_KEY = "alaiy:cut"
+
 
 # ── the spec ─────────────────────────────────────────────────────────────────
 
@@ -473,9 +481,112 @@ def _finish(content, spec, client):
     return {
         "image": _encode(_compose(cutout, image.size, spec, cut)),
         "mime": "image/png",
-        "cutout": _encode(cutout) if spec.get("keep_cutout") else None,
+        "cutout": _encode(cutout, _framing(image.size, cut)) if spec.get("keep_cutout") else None,
         "note": None,
     }
+
+
+def recompose(cutout, spec):
+    """A kept cutout finished again exactly as `apply_finish` made it, without
+    matting it again. Returns PNG bytes.
+
+    `cutout` is the bytes `apply_finish` returned as `cutout`. A cutout kept before
+    its framing was recorded in it (and the Photoroom path's, which records none) is
+    treated as its own photo, with no side cut.
+    """
+    image = Image.open(io.BytesIO(cutout))
+    image.load()
+    frame, cut = _read_framing(image)
+    product = image.convert("RGBA")
+    return _encode(_compose(product, frame or product.size, spec, cut))
+
+
+def place(content, spec, frame, crop=None, max_size=None):
+    """A photo or a kept cutout set by hand in the house frame. Returns PNG bytes.
+
+    The manual counterpart of `apply_finish`, for a reviewer who wants the piece
+    somewhere other than where the finish put it. Every number is a share of the
+    image, so a recipe made against a small preview applies to the full photo:
+
+      * `crop`, {x, y, width, height} or None, trims the image first.
+      * `frame`, {x, y, width, height}, is the square of the trimmed image the
+        canvas shows. It may run past the image on any side, which is how room is
+        left around the piece; whatever the image does not cover is the house
+        ground. Its width and height are the same length in pixels.
+
+    The canvas is the house aspect at the frame's own resolution, so the piece is
+    never scaled up, only down to `max_size` (or the style's). A cutout casts the
+    house shadow; a photo with its own background is pasted as it is.
+    """
+    image = Image.open(io.BytesIO(content))
+    image.load()
+    product = image.convert("RGBA") if _own_alpha(image) is not None else image.convert("RGB")
+
+    if crop:
+        width, height = product.size
+        box = (
+            round(float(crop["x"]) * width),
+            round(float(crop["y"]) * height),
+            round((float(crop["x"]) + float(crop["width"])) * width),
+            round((float(crop["y"]) + float(crop["height"])) * height),
+        )
+        box = (max(box[0], 0), max(box[1], 0), min(box[2], width), min(box[3], height))
+        if box[2] - box[0] < 1 or box[3] - box[1] < 1:
+            raise ValueError("the crop leaves nothing of the photo")
+        product = product.crop(box)
+
+    width, height = product.size
+    left, top = float(frame["x"]) * width, float(frame["y"]) * height
+    side_w, side_h = float(frame["width"]) * width, float(frame["height"]) * height
+    if side_w <= 0 or side_h <= 0:
+        raise ValueError("the frame is empty")
+    aspect = float(spec.get("aspect") or DEFAULTS["aspect"])
+    limit = int(spec.get("max_size") or DEFAULTS["max_size"])
+    if max_size:
+        limit = min(limit, int(max_size))
+
+    # The frame is drawn square on the image; the canvas takes the house aspect
+    # from its height, so a square house style reproduces exactly what was framed.
+    canvas_h = side_h
+    canvas_w = canvas_h * aspect
+    scale = min(1.0, limit / max(canvas_w, canvas_h))
+    canvas_w, canvas_h = max(1, round(canvas_w * scale)), max(1, round(canvas_h * scale))
+    if scale < 1.0:
+        product = product.resize(
+            (max(1, round(width * scale)), max(1, round(height * scale))),
+            Image.LANCZOS,
+        )
+    # Centred across when the house aspect is not square.
+    offset_x = round((canvas_w - side_w * scale) / 2)
+    position = (round(-left * scale) + offset_x, round(-top * scale))
+
+    base = Image.new("RGB", (canvas_w, canvas_h), _rgb(spec["background"]))
+    if product.mode == "RGBA":
+        shadow = dict(DEFAULTS["shadow"], **(spec.get("shadow") or {}))
+        base = _cast_shadow(base, product, position, shadow)
+        base.paste(product, position, product)
+    else:
+        base.paste(product, position)
+    return _encode(base)
+
+
+def _framing(frame, cut):
+    """The PNG text chunks `recompose` reads back: see `_FRAME_KEY`."""
+    info = PngImagePlugin.PngInfo()
+    info.add_text(_FRAME_KEY, f"{frame[0]},{frame[1]}")
+    info.add_text(_CUT_KEY, ",".join(sorted(cut)))
+    return info
+
+
+def _read_framing(image):
+    """(frame size or None, cut sides) as `_framing` recorded them on a cutout."""
+    try:
+        width, height = (int(v) for v in image.info[_FRAME_KEY].split(","))
+    except (KeyError, ValueError):
+        return None, frozenset()
+    sides = {"left", "top", "right", "bottom"}
+    cut = frozenset(s for s in (image.info.get(_CUT_KEY) or "").split(",") if s in sides)
+    return (width, height), cut
 
 
 # ── the Photoroom finish ──────────────────────────────────────────────────
@@ -1677,12 +1788,12 @@ def _rgb(color):
     return ImageColor.getrgb(color)
 
 
-def _encode(image):
+def _encode(image, info=None):
     buffer = io.BytesIO()
     # PNG, not JPEG: the ground is a single flat tone and the product edge sits
     # right against it, which is exactly where JPEG puts its worst ringing — on a
     # catalog whose whole point is zooming into a stone.
-    image.save(buffer, format="PNG", optimize=True)
+    image.save(buffer, format="PNG", optimize=True, pnginfo=info)
     return buffer.getvalue()
 
 
