@@ -140,7 +140,7 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None,
                         skip_examples.append(f"{node.get('title', 'Unknown')}: {reason}")
                     continue
                 try:
-                    was_created, reason = _import_product(node, connection)
+                    was_created, reason = _import_product(node, connection, allowed_statuses)
                     if was_created and reason.startswith("updated"):
                         updated += 1
                     elif was_created:
@@ -408,7 +408,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                     skip_reason_counts["not stocked at the chosen location"] += 1
                     continue
                 try:
-                    was_created, reason = _import_product(node, connection)
+                    was_created, reason = _import_product(node, connection, allowed_statuses)
                     if was_created:
                         created += 1
                     else:
@@ -623,7 +623,7 @@ def _warn_if_truncated(node: dict):
         )
 
 
-def _import_product(node: dict, connection=None) -> tuple:
+def _import_product(node: dict, connection=None, allowed_statuses=None) -> tuple:
     """
     Import a single Shopify product, then make sure it has a manageable
     Shopify Product Listing. A product linked/imported inbound must get a
@@ -641,7 +641,10 @@ def _import_product(node: dict, connection=None) -> tuple:
     # product archived on Shopify was imported as a fresh, enabled Item on a
     # site with archived import switched off. Re-check the node itself so the
     # setting holds wherever a product comes from.
-    if not status_map.import_allows(node.get("status"), connection=connection):
+    # A run that was given its own status choice passes it down. Without it this check
+    # fell back to the saved checkboxes and overruled the run: a pull asked for Draft
+    # products was skipped here, one product at a time, because Draft is off in settings.
+    if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
         return False, f"skipped ({(node.get('status') or 'unknown').lower()} not enabled for import)"
 
     _warn_if_truncated(node)
