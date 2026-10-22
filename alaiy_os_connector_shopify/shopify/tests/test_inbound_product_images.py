@@ -339,5 +339,29 @@ class TestImportPathWaitsForPhotos(_TestCase):
         self.assertIn("status", media)
 
 
+class TestImportSeedsListingPhotos(_TestCase):
+    """The Item after_insert hook creates the Listing before the importer's own
+    ensure_listing call, so "was the Listing just created" is always false for a
+    new import. Photos are copied when the Listing has none, not when it is new."""
+
+    def _import(self, listing):
+        from alaiy_os_connector_shopify.shopify.product import listing as listing_module
+
+        node = {"legacyResourceId": "42", "status": "DRAFT", "featuredMedia": None,
+                "media": {"nodes": _media("READY", "READY")}}
+        entity = SimpleNamespace(erpnext_name="ITEM-1", external_id="42", name="ENT-1")
+        with patch.object(importer.status_map, "import_allows", return_value=True),                 patch.object(importer, "_import_product_inner", return_value=(True, "created")),                 patch.object(importer.entities, "get_by_external_id", return_value=entity),                 patch.object(importer, "_sync_product_metafields"),                 patch.object(listing_module, "ensure_listing", return_value=listing),                 patch.object(listing_module, "sync_listing_variants"),                 patch.object(listing_module, "apply_inbound_from_shopify") as apply:
+            importer._import_product(node)
+        return apply
+
+    def test_a_listing_made_by_the_item_hook_with_no_photos_is_seeded(self):
+        apply = self._import(SimpleNamespace(images=[]))
+        apply.assert_called_once_with("ITEM-1", images=[f"{CDN}p0.png", f"{CDN}p1.png"])
+
+    def test_a_listing_that_already_has_photos_is_left_alone(self):
+        apply = self._import(SimpleNamespace(images=[SimpleNamespace(image="x")]))
+        apply.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
