@@ -140,7 +140,7 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None,
                         skip_examples.append(f"{node.get('title', 'Unknown')}: {reason}")
                     continue
                 try:
-                    was_created, reason = _import_product(node, connection)
+                    was_created, reason = _import_product(node, connection, allowed_statuses)
                     if was_created and reason.startswith("updated"):
                         updated += 1
                     elif was_created:
@@ -385,6 +385,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
         variables = {"after": None, "query": query, "first": 50}
 
         processed = created = skipped = failed = pages = 0
+        skip_reason_counts = Counter()
         cancelled = False
 
         for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, variables, ["products"]):
@@ -400,16 +401,19 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                 processed += 1
                 if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
                     skipped += 1
+                    skip_reason_counts[f"status {node.get('status')} not selected for import"] += 1
                     continue
                 if location_id and not _product_stocked_at_location(node, location_id):
                     skipped += 1
+                    skip_reason_counts["not stocked at the chosen location"] += 1
                     continue
                 try:
-                    was_created, reason = _import_product(node, connection)
+                    was_created, reason = _import_product(node, connection, allowed_statuses)
                     if was_created:
                         created += 1
                     else:
                         skipped += 1
+                        skip_reason_counts[reason] += 1
                 except Exception as exc:
                     failed += 1
                     product_name = node.get("title", "Unknown")
@@ -435,6 +439,12 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
         log.finished_at = now_datetime()
         _append_log(log, f"Missing-only import: {created} created, {skipped} skipped, {failed} failed "
                           f"out of {processed} products not already linked locally.")
+        # One reason per line group, so a run that added nothing says why instead of
+        # leaving "N skipped" to be guessed at.
+        if skip_reason_counts:
+            _append_log(log, "Skipped because: " + "; ".join(
+                f"{reason} ({count})" for reason, count in skip_reason_counts.most_common()
+            ))
         log.save(ignore_permissions=True)
         frappe.db.commit()
 
@@ -613,7 +623,7 @@ def _warn_if_truncated(node: dict):
         )
 
 
-def _import_product(node: dict, connection=None) -> tuple:
+def _import_product(node: dict, connection=None, allowed_statuses=None) -> tuple:
     """
     Import a single Shopify product, then make sure it has a manageable
     Shopify Product Listing. A product linked/imported inbound must get a
@@ -631,7 +641,10 @@ def _import_product(node: dict, connection=None) -> tuple:
     # product archived on Shopify was imported as a fresh, enabled Item on a
     # site with archived import switched off. Re-check the node itself so the
     # setting holds wherever a product comes from.
-    if not status_map.import_allows(node.get("status"), connection=connection):
+    # A run that was given its own status choice passes it down. Without it this check
+    # fell back to the saved checkboxes and overruled the run: a pull asked for Draft
+    # products was skipped here, one product at a time, because Draft is off in settings.
+    if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
         return False, f"skipped ({(node.get('status') or 'unknown').lower()} not enabled for import)"
 
     _warn_if_truncated(node)
