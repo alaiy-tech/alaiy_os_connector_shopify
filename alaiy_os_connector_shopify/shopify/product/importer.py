@@ -385,6 +385,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
         variables = {"after": None, "query": query, "first": 50}
 
         processed = created = skipped = failed = pages = 0
+        skip_reason_counts = Counter()
         cancelled = False
 
         for page_nodes in client.execute_paginated(_PRODUCTS_QUERY, variables, ["products"]):
@@ -400,9 +401,11 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                 processed += 1
                 if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
                     skipped += 1
+                    skip_reason_counts[f"status {node.get('status')} not selected for import"] += 1
                     continue
                 if location_id and not _product_stocked_at_location(node, location_id):
                     skipped += 1
+                    skip_reason_counts["not stocked at the chosen location"] += 1
                     continue
                 try:
                     was_created, reason = _import_product(node, connection)
@@ -410,6 +413,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                         created += 1
                     else:
                         skipped += 1
+                        skip_reason_counts[reason] += 1
                 except Exception as exc:
                     failed += 1
                     product_name = node.get("title", "Unknown")
@@ -435,6 +439,12 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
         log.finished_at = now_datetime()
         _append_log(log, f"Missing-only import: {created} created, {skipped} skipped, {failed} failed "
                           f"out of {processed} products not already linked locally.")
+        # One reason per line group, so a run that added nothing says why instead of
+        # leaving "N skipped" to be guessed at.
+        if skip_reason_counts:
+            _append_log(log, "Skipped because: " + "; ".join(
+                f"{reason} ({count})" for reason, count in skip_reason_counts.most_common()
+            ))
         log.save(ignore_permissions=True)
         frappe.db.commit()
 
