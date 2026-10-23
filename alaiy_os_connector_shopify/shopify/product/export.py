@@ -192,10 +192,19 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
     of None removes it, and is only reported updated once Shopify's response
     shows no compare-at price.
 
+    A product whose Listing has Enable Sync off is skipped, not pushed: the
+    same gate on_listing_update applies to every other outbound write. Any
+    write here makes Shopify send products/update back with the whole
+    product, and the inbound handler applies Shopify's title, description
+    and photos over the Listing -- so a price push on a product still being
+    edited locally replaced those unpushed edits with Shopify's older copy.
+    The local price is not lost: the full push reads it once sync is on.
+
     item_code_to_price: {item_code: float}. Returns
-    {"updated": [item_code, ...], "failed": {item_code: reason, ...}}.
+    {"updated": [item_code, ...], "failed": {item_code: reason, ...},
+    "skipped": [item_code, ...]}.
     """
-    updated, failed = [], {}
+    updated, failed, skipped = [], {}, []
 
     # productVariantsBulkUpdate takes one productId + an array of variants,
     # so multiple sale variants of the same parent product batch into a
@@ -211,6 +220,9 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
         if not listing:
             failed[item_code] = "No Shopify Product Listing exists for this item yet."
             continue
+        if not listing.is_enabled:
+            skipped.append(item_code)
+            continue
 
         variant_id = listing_resolver.variant_shopify_id(listing, item_code)
         product_id = listing.sh_shopify_product_id or frappe.db.get_value(
@@ -223,7 +235,7 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
         by_product.setdefault(product_id, []).append((item_code, variant_id, price))
 
     if not by_product:
-        return {"updated": updated, "failed": failed}
+        return {"updated": updated, "failed": failed, "skipped": skipped}
 
     client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
     for product_id, rows in by_product.items():
@@ -268,7 +280,7 @@ def update_variant_prices(item_code_to_price: dict, domain=None, connection=None
             for item_code, _variant_id, _price in rows:
                 failed[item_code] = "Request to Shopify failed -- see Error Log."
 
-    return {"updated": updated, "failed": failed}
+    return {"updated": updated, "failed": failed, "skipped": skipped}
 
 
 def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None, connection=None):
