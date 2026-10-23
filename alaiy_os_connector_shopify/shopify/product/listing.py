@@ -355,17 +355,16 @@ def _template_variant_items(tmpl_name: str, has_variants) -> list:
     return frappe.get_all("Item", filters=filters, fields=["name", "sh_shopify_variant_id", "image"])
 
 
-def should_enable_new_listing(default_enabled, product_id, status) -> bool:
+def should_enable_new_listing(default_enabled) -> bool:
     """Whether a Listing created now starts with Enable Sync on.
 
-    An explicit choice wins. With none, a product that already exists on Shopify
-    (it has a Shopify id) starts on, unless it is archived there, and anything
-    else starts off: a never-published product must not be created on Shopify by
-    the hourly sweep just because a Listing exists for it.
+    An explicit choice wins; with none it starts on. A never-published product
+    is safe with sync on, because push_item does not create a product on Shopify
+    unless the push is forced (an explicit publish).
     """
     if default_enabled is not None:
         return bool(default_enabled)
-    return bool(product_id) and (status or "") != "Archived"
+    return True
 
 
 def ensure_listing(template_name: str, default_enabled=None):
@@ -376,11 +375,11 @@ def ensure_listing(template_name: str, default_enabled=None):
     returned untouched, so re-running never duplicates or clobbers merchant
     edits. Returns None if the Item doesn't exist.
 
-    is_enabled starts on for a product that already exists on Shopify (an
-    inbound import) and off for anything never published; see
+    is_enabled starts on unless the caller passes a value; see
     should_enable_new_listing. Starting on does not push: the Listing is
-    inserted as a mirror, and the import records its state as already in sync
-    (see importer._import_product). Callers that need a specific value pass 0 or 1.
+    inserted as a mirror, the import records its state as already in sync (see
+    importer._import_product), and a never-published product is not pushed until
+    it is published explicitly. Callers that need a specific value pass 0 or 1.
     """
     existing = get_listing(template_name)
     if existing:
@@ -401,8 +400,7 @@ def ensure_listing(template_name: str, default_enabled=None):
     # Product Listing", ...) lookup elsewhere in this connector depends on
     # this being set, not left blank.
     listing.connection = tmpl.sh_shopify_connection or None
-    listing.is_enabled = 1 if should_enable_new_listing(
-        default_enabled, tmpl.sh_shopify_product_id, tmpl.sh_shopify_status) else 0
+    listing.is_enabled = 1 if should_enable_new_listing(default_enabled) else 0
     # sh_shopify_product_id (not sh_shopify_status) is the real signal for
     # "does this already exist on Shopify". An inbound import sets both the
     # id and the real status on the Item before this ever runs, so that path

@@ -123,6 +123,16 @@ def push_item(item_code: str, allowed_statuses=None, force=False):
     Listing must already exist either way; force does not create one --
     see publish_now, which ensures it first."""
     item = frappe.get_doc("Item", item_code)
+    # A product that was never published has no Shopify id, so an enabled Listing
+    # for it would make this create the product on Shopify -- from the hourly
+    # sweep, with nobody having chosen to publish it. Enable Sync is on for every
+    # Listing, so it cannot be the thing that decides that: publishing is its own
+    # action (publish_now, or force=True here). A product only starts syncing once
+    # it exists on Shopify.
+    if not force:
+        listing = listing_resolver.get_listing(item.variant_of or item.name)
+        if listing and not (listing.sh_shopify_product_id or item.get("sh_shopify_product_id")):
+            return
     # The Shopify Product Listing's is_enabled is the sole live gate now
     # (replaces Item.sync_to_shopify) -- no enabled Listing, nothing pushes,
     # unless force explicitly asked for a one-off push anyway.
@@ -367,7 +377,7 @@ def run_bulk_export_to_shopify(trigger="manual", log_name=None, statuses=None, c
                     listing.is_enabled = 1
                     listing.flags.from_shopify_sync = True  # push explicitly below, not via echo
                     listing.save(ignore_permissions=True)
-                push_item(item_code, allowed_statuses)
+                push_item(item_code, allowed_statuses, force=True)  # a first push of a never-published product
                 # A real Shopify id landing on this Item is the only
                 # reliable signal the push actually created something --
                 # push_item silently no-ops on an unchanged/already-synced
