@@ -110,7 +110,7 @@ def ensure_listing_for_new_item(doc, method=None):
         return
     from alaiy_os_connector_shopify.shopify.product.listing import ensure_listing
     from alaiy_os_connector_shopify.shopify.product.stock import _write_shopify_location_from_supplier
-    ensure_listing(doc.name, default_enabled=0)
+    ensure_listing(doc.name)
     # A Listing is the point a locally-created Item (never imported FROM
     # Shopify, so it has no inventory-level data to resolve from) becomes
     # a real Shopify-linkable product. If it already has an Item Supplier
