@@ -62,15 +62,13 @@ def on_listing_update(doc, method=None):
     via publish_now / push_item's productSet, or the archive/unarchive
     actions that explicitly set it) -- never as a side effect of this toggle.
 
-    is_enabled turning on auto-pushes ONLY when this Listing already has a
-    real sh_shopify_product_id -- a refresh of a product that already
-    exists on Shopify. For one that has never been published at all, this
-    would otherwise create a brand-new Shopify product as a silent side
-    effect of a single settings toggle, with no explicit action anyone took
-    to actually publish anything. The first-ever push for a never-published
-    Listing must go through an explicit publish call (product_sync.push_item
-    with force=True) instead -- enabling sync only takes effect starting
-    with the next real edit's own save.
+    Turning is_enabled on does NOT push. For a Listing that already has a real
+    sh_shopify_product_id it records the current local state as already in sync
+    (see _adopt_current_state) and sends nothing, so enabling is a pure switch
+    and only later edits push. A Listing that was never published has no product
+    id, so enabling it cannot create a Shopify product either: its first push
+    goes through an explicit publish call (product_sync.push_item with
+    force=True).
     """
     if doc.flags.from_shopify_sync:
         # Provisioning insert (backfill / inbound import) -- data mirrored
@@ -79,11 +77,79 @@ def on_listing_update(doc, method=None):
     if not _connector_enabled(doc):
         return
     if doc.is_enabled and doc.sh_shopify_product_id:
+        before = doc.get_doc_before_save()
+        if should_adopt_on_enable(doc.is_enabled, before.is_enabled if before else None):
+            _adopt_current_state(doc)
+            return
         frappe.enqueue(
             "alaiy_os_connector_shopify.shopify.product_sync.push_item",
             queue="short", timeout=120, item_code=doc.item,
             enqueue_after_commit=True,
         )
+
+
+def should_adopt_on_enable(is_enabled, was_enabled) -> bool:
+    """True only for the save that switches Enable Sync from off to on.
+
+    `was_enabled` is None when the Listing has no before-image (a first insert),
+    which keeps the existing behaviour: a brand-new Listing is not an enable of
+    something that already exists on Shopify.
+    """
+    return bool(is_enabled) and was_enabled is not None and not was_enabled
+
+
+def _adopt_current_state(doc):
+    """Switching Enable Sync on records the product as already in sync; nothing
+    is sent.
+
+    While sync was off the importer kept no push fingerprint (see
+    webhooks._refresh_push_fingerprint), so the first push after enabling would
+    be a full productSet of everything the Listing holds -- titles, descriptions,
+    images, tags, variants, metafields -- over whatever is live on Shopify,
+    including enriched content that was never published. Storing the fingerprint
+    of the current local state makes that push, and the hourly sweep, see "no
+    change" until someone actually edits the product. The edit that follows
+    pushes as usual.
+
+    If the state cannot be recorded, Enable Sync is put back off and the error is
+    raised: leaving it on with no fingerprint is exactly the full push this
+    exists to avoid.
+    """
+    from alaiy_os_connector_shopify.shopify.sync_engine import entities, fingerprint
+    from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical
+    from alaiy_os_connector_shopify.shopify.product.export import _variants_of
+
+    try:
+        item = frappe.get_doc("Item", doc.item)
+        conn = item.get("sh_shopify_connection") or doc.get("connection")
+        settings = connections.resolve(conn) if conn else connections.require_enabled()
+        canonical = _product_canonical(item, _variants_of(item), settings, doc)
+        entity = entities.get_or_new(
+            "product", "Item", item.name, doc.sh_shopify_product_id, connection=settings)
+        entities.save(
+            entity,
+            external_id=doc.sh_shopify_product_id,
+            erpnext_doctype="Item",
+            erpnext_name=item.name,
+            erpnext_fingerprint=fingerprint.fingerprint(canonical),
+        )
+    except Exception:
+        frappe.db.set_value("Shopify Product Listing", doc.name, "is_enabled", 0)
+        raise
+
+
+def check_adopt_on_enable():
+    """Self-check for the enable transition. No DB, no API.
+
+    bench --site <site> execute         alaiy_os_connector_shopify.shopify.product.listing_hooks.check_adopt_on_enable
+    """
+    assert should_adopt_on_enable(1, 0) is True
+    assert should_adopt_on_enable(1, 1) is False
+    assert should_adopt_on_enable(0, 0) is False
+    assert should_adopt_on_enable(0, 1) is False
+    # No before-image: a first insert, never an enable of an existing product.
+    assert should_adopt_on_enable(1, None) is False
+    print("adopt-on-enable self-check passed")
 
 
 def on_listing_trash(doc, method=None):

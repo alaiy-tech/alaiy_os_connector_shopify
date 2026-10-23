@@ -287,7 +287,7 @@ def register(product):
             "note": f"'{product}' already had a {LISTING_DOCTYPE}; it was left as it is.",
         }
 
-    created = listing_resolver.ensure_listing(product)
+    created = listing_resolver.ensure_listing(product, default_enabled=0)
     if not created:
         frappe.throw(f"No Item '{product}', so there is nothing to create a listing for.")
 

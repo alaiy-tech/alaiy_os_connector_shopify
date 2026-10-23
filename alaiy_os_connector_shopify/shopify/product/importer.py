@@ -682,6 +682,20 @@ def _import_product(node: dict, connection=None, allowed_statuses=None) -> tuple
                         entity.erpnext_name,
                         images=_settled_listing_images(node, entity, connection),
                     )
+                # A new or just-updated product mirrors Shopify, so with Enable
+                # Sync on its state is recorded as already pushed. Otherwise the
+                # hourly sweep sees no fingerprint and pushes the whole product
+                # straight back. Only these two outcomes: an unchanged product
+                # keeps whatever fingerprint it has, so a push still waiting on
+                # a local edit is not dropped.
+                if created or str(reason).startswith("updated"):
+                    fresh = listing_resolver.get_listing(entity.erpnext_name)
+                    if (fresh and fresh.is_enabled and fresh.sh_shopify_product_id
+                            and fresh.sh_shopify_status != "Archived"):
+                        from alaiy_os_connector_shopify.shopify.product.listing_hooks import (
+                            _adopt_current_state,
+                        )
+                        _adopt_current_state(fresh)
         except Exception:
             frappe.log_error(
                 title=f"Shopify import: ensure_listing failed for product {product_id}",
