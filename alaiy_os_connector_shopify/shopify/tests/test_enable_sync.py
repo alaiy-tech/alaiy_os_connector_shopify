@@ -1,9 +1,9 @@
-"""Enable Sync is a pure switch, and a never-published product is never created by it.
+"""Enable Sync is a pure switch, publishing turns it on, and a sweep never creates a product.
 
 Switching Enable Sync on for a product that already exists on Shopify records its
-current state as in sync and sends nothing; only a later edit pushes. A Listing
-with no Shopify id can have sync on, but the sweep (push_item without force) does
-not create it on Shopify: publishing is an explicit action.
+current state as in sync and sends nothing; only a later edit pushes. Publishing a
+product switches sync on for it. A Listing with no Shopify id is never created on
+Shopify by the sweep (push_item without force): publishing is an explicit action.
 
     python -m unittest alaiy_os_connector_shopify.shopify.tests.test_enable_sync
 """
@@ -48,10 +48,18 @@ class TestShouldAdoptOnEnable(unittest.TestCase):
 
 
 class TestNewListingDefault(unittest.TestCase):
-    def test_starts_on_unless_told_otherwise(self):
-        self.assertTrue(listing.should_enable_new_listing(None))
-        self.assertTrue(listing.should_enable_new_listing(1))
-        self.assertFalse(listing.should_enable_new_listing(0))
+    def test_a_product_already_on_shopify_starts_on(self):
+        self.assertTrue(listing.should_enable_new_listing(None, "123", "Active"))
+        self.assertTrue(listing.should_enable_new_listing(None, "123", "Draft"))
+
+    def test_archived_and_never_published_start_off(self):
+        self.assertFalse(listing.should_enable_new_listing(None, "123", "Archived"))
+        self.assertFalse(listing.should_enable_new_listing(None, "", "Draft"))
+        self.assertFalse(listing.should_enable_new_listing(None, None, "Active"))
+
+    def test_an_explicit_value_wins(self):
+        self.assertFalse(listing.should_enable_new_listing(0, "123", "Active"))
+        self.assertTrue(listing.should_enable_new_listing(1, "", "Draft"))
 
 
 class TestOnListingUpdate(unittest.TestCase):
@@ -128,6 +136,37 @@ class TestPushItemNeverPublished(unittest.TestCase):
     def test_a_published_product_pushes(self):
         self._push(product_id="123")
         self.push.assert_called_once()
+
+
+class TestPublishTurnsSyncOn(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.dict(sys.modules, _REAL_MODULES)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.set_value = MagicMock()
+        self.enqueue = MagicMock()
+        self.listing = SimpleNamespace(name="L-1", is_enabled=0, sh_shopify_product_id="")
+        for target, attr, value in (
+            (frappe, "has_permission", MagicMock()),
+            (frappe, "enqueue", self.enqueue),
+            (frappe, "db", SimpleNamespace(set_value=self.set_value)),
+            (listing, "ensure_listing", MagicMock(return_value=self.listing)),
+        ):
+            p = patch.object(target, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_publishing_switches_sync_on_and_pushes(self):
+        export.publish_now("ITEM-1")
+        self.set_value.assert_any_call("Shopify Product Listing", "L-1", "is_enabled", 1)
+        self.enqueue.assert_called_once()
+        self.assertTrue(self.enqueue.call_args.kwargs["force"])
+
+    def test_already_on_is_left_alone(self):
+        self.listing.is_enabled = 1
+        export.publish_now("ITEM-1")
+        self.assertNotIn(("Shopify Product Listing", "L-1", "is_enabled", 1),
+                         [c.args for c in self.set_value.call_args_list])
 
 
 if __name__ == "__main__":

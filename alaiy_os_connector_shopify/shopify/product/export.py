@@ -55,8 +55,8 @@ def publish_now(item_code: str, status: str = None):
     action alongside is_enabled ("Enable Sync"), not something each client
     app should have to reimplement on its own. One-time push, right now,
     regardless of whether continuous sync (is_enabled) is on -- ensures a
-    Listing exists (default_enabled=0, so this is never what turns
-    continuous sync on) and force-pushes past the is_enabled gate. See
+    Listing exists, turns Enable Sync on for it (a published product keeps
+    syncing) and force-pushes past the is_enabled gate. See
     push_item's own force param for why that gate exists to bypass.
 
     status (one of status.LOCAL_VALUES -- "Active", "Draft", "Archived")
@@ -89,6 +89,13 @@ def publish_now(item_code: str, status: str = None):
     listing = ensure_listing(item_code, default_enabled=0)
     if not listing:
         frappe.throw(frappe._("Could not create a Shopify Product Listing for this item."))
+    # Publishing is what puts the product on Shopify, so its later edits go with
+    # it: Enable Sync comes on here. Set directly rather than through a save, since
+    # the forced push below is the only push this needs. Until that push has
+    # created the product, push_item skips an unpublished Listing, so the hourly
+    # sweep cannot create it first.
+    if not listing.is_enabled:
+        frappe.db.set_value("Shopify Product Listing", listing.name, "is_enabled", 1)
     # Never pushed to Shopify before -- the real "going live for the first
     # time" signal. The Listing row itself being new is NOT the same thing:
     # Listings are now created automatically at supplier-approval time
