@@ -93,9 +93,21 @@ def _cooldown_cache_key(connection_name: str, topic: str) -> str:
     return f"shopify_webhook_register_failed::{connection_name}::{topic}"
 
 
+WEBHOOK_PATH = "/api/method/alaiy_os_connector_shopify.api.webhooks.handle_webhook"
+
+
 def get_webhook_address():
+    """Where Shopify delivers this site's webhooks.
+
+    The site's own URL unless site_config sets `shopify_webhook_address`, as it
+    does `shopify_oauth_redirect_uri`: for a site Shopify reaches through a
+    different public host than the one it serves itself on.
+    """
+    configured = (frappe.conf.get("shopify_webhook_address") or "").strip()
+    if configured:
+        return configured
     site_url = frappe.utils.get_url().rstrip("/")
-    return f"{site_url}/api/method/alaiy_os_connector_shopify.api.webhooks.handle_webhook"
+    return f"{site_url}{WEBHOOK_PATH}"
 
 
 def ensure_webhooks_registered(connection=None):

@@ -262,6 +262,8 @@ def run_full_import(log_name=None, date_from=None, date_to=None, connection=None
     date_from/date_to (YYYY-MM-DD) optionally scope the pull to orders
     created in that window instead of the full history.
     """
-    log = load_or_create_log("orders", "manual", log_name)
+    # The store goes on the log: the pull reads it from there, and without it falls
+    # back to the single enabled store, which a self-serve connection never is.
+    log = load_or_create_log("orders", "manual", log_name, connection=connection)
     query_string = _build_full_import_query(date_from, date_to)
     return _run_orders_pull(log, query_string, skip_existing=True)

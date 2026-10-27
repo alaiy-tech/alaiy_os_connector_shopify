@@ -11,6 +11,22 @@ import frappe
 from alaiy_os_connector_shopify.shopify.scoping import owned_by
 
 
+def _default_customer_group():
+    """A Customer Group a new shopper can go in, for a store with none configured.
+
+    "All Customer Groups" is the tree's root, a group, which ERPNext refuses on a
+    Customer -- so a connection made without the setting (a self-serve one) failed
+    every order at the customer. The site's own default comes first, then
+    "Individual", which is what a shopper is, then any group that is not a group.
+    """
+    configured = frappe.db.get_single_value("Selling Settings", "customer_group")
+    if configured:
+        return configured
+    if frappe.db.exists("Customer Group", {"name": "Individual", "is_group": 0}):
+        return "Individual"
+    return frappe.db.get_value("Customer Group", {"is_group": 0}, "name") or "All Customer Groups"
+
+
 def _get_or_create_customer(customer_data, settings):
     connection = getattr(settings, "name", None)
     shopify_id = str(customer_data.get("id", ""))
@@ -55,7 +71,7 @@ def _get_or_create_customer(customer_data, settings):
     c = frappe.new_doc("Customer")
     c.customer_name = full_name
     c.customer_type = "Individual"
-    c.customer_group = settings.sh_customer_group or "All Customer Groups"
+    c.customer_group = settings.sh_customer_group or _default_customer_group()
     c.territory = _resolve_default_territory(settings)
     if shopify_id:
         c.sh_shopify_customer_id = shopify_id
