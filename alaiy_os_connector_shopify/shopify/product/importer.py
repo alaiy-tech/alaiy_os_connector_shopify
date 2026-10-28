@@ -27,7 +27,7 @@ from alaiy_os_connector_shopify.shopify.sync_engine import entities
 from alaiy_os_connector_shopify.shopify.sync_engine import fingerprint
 
 from alaiy_os_connector_shopify.shopify.product.queries import (
-    _PRODUCTS_QUERY, _PRODUCT_BY_ID_QUERY, _PRODUCT_SEARCH_QUERY,
+    _PRODUCTS_QUERY, _PRODUCT_BY_ID_QUERY, _PRODUCT_SEARCH_QUERY, _PRODUCT_SEARCH_PAGE_QUERY,
 )
 from alaiy_os_connector_shopify.shopify.product.masters import _ensure_brand, _ensure_item_group, _ensure_item_group_path, _ensure_item_attribute, _dedupe_item_uoms
 from alaiy_os_connector_shopify.shopify.product.pricing import _set_item_price, _set_item_compare_at_price
@@ -249,6 +249,42 @@ def search_products_live(term: str, limit: int = 20, connection=None) -> list:
         }
         for node in nodes
     ]
+
+
+def search_products_page(term: str, limit: int = 20, after: str = None, connection=None) -> dict:
+    """search_products_live, newest first and one page at a time.
+
+    Returns {products, next_cursor}; next_cursor is None on the last page and is
+    passed back as `after` to get the next one. Same match rule and result shape
+    as search_products_live. Newest first so a recently activated product is not
+    pushed past the page limit by older, archived matches of a broad term.
+    """
+    from alaiy_os_connector_shopify.shopify.graphql_client import ShopifyGraphQLClient
+
+    term = (term or "").strip()
+    if not term:
+        return {"products": [], "next_cursor": None}
+
+    escaped = term.replace('"', '\\"')
+    query = f'title:*{escaped}* OR sku:*{escaped}*'
+
+    client = ShopifyGraphQLClient(connections.resolve(connection) if connection else connections.require_enabled())
+    data = client.execute(_PRODUCT_SEARCH_PAGE_QUERY, {"query": query, "first": limit, "after": after or None})
+    page = (data or {}).get("products") or {}
+    page_info = page.get("pageInfo") or {}
+    return {
+        "products": [
+            {
+                "product_id": node.get("legacyResourceId"),
+                "title": node.get("title"),
+                "handle": node.get("handle"),
+                "status": node.get("status"),
+                "image": (node.get("featuredImage") or {}).get("url"),
+            }
+            for node in page.get("nodes") or []
+        ],
+        "next_cursor": page_info.get("endCursor") if page_info.get("hasNextPage") else None,
+    }
 
 
 def import_single_product(product_id: str, connection=None) -> tuple:

@@ -171,6 +171,18 @@ def search_shopify_products(term, limit=20, connection=None):
 
 
 @frappe.whitelist()
+def search_shopify_products_page(term, limit=20, after=None, connection=None):
+    """search_shopify_products, newest first and paged: {products, next_cursor}.
+    Pass the previous call's next_cursor as `after` for the next page."""
+    from alaiy_os_connector_shopify.shopify.product.importer import search_products_page
+
+    connection = connections.resolve(connection)
+    require_access(connection.name)
+    return search_products_page(term, limit=int(limit) if limit else 20, after=after or None,
+                                connection=connection)
+
+
+@frappe.whitelist()
 def import_shopify_product(product_id, connection=None):
     """Pull and import exactly one Shopify product by id -- the pull step
     of the "Search for a product…" flow, once the admin has picked a match
