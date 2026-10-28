@@ -108,9 +108,15 @@ def publish_now(item_code: str, status: str = None):
         # though this call already committed the real, intended one.
         frappe.db.set_value("Item", item_code, "sh_shopify_status", status)
 
+    # One publish per product at a time. A second click, or a retry, while one is
+    # already queued or running is dropped instead of queued behind it: each queued
+    # push of a never-published product used to create its own copy on Shopify.
+    # A separate id from any auto-push, so a queued non-forced push never swallows
+    # this one (force skips the Enable Sync gate).
     frappe.enqueue(
         "alaiy_os_connector_shopify.shopify.product_sync.push_item",
         queue="short", timeout=120, item_code=item_code, force=True,
+        job_id=f"shopify_publish::{item_code}", deduplicate=True,
         enqueue_after_commit=True,
     )
     return {"ok": True, "item_code": item_code, "published": True}
@@ -565,6 +571,13 @@ def _push_product(item):
         # Another push for this same template is already in flight (or just
         # finished writing back its Shopify ID) -- let it own this update.
         return
+
+    # Start a fresh database snapshot now that the lock is ours. The job opened its
+    # transaction before waiting for the lock, and a snapshot taken then does not
+    # show what the push ahead of us committed. Without this, the re-read below
+    # still saw "no Shopify product yet" after that push had created one and saved
+    # its id, so every queued push created another copy.
+    frappe.db.commit()
 
     try:
         _push_product_unlocked(item)
