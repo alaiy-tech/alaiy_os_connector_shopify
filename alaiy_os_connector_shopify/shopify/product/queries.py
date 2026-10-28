@@ -207,6 +207,29 @@ query SearchProducts($query: String!, $first: Int!) {
 }
 """
 
+# The same lightweight node, newest first and paged, for a picker that has to be
+# able to reach every match of a broad term. RELEVANCE ordering has no stable
+# meaning for a wildcard search and no way to continue past the first page.
+_PRODUCT_SEARCH_PAGE_QUERY = """
+query SearchProductsPage($query: String!, $first: Int!, $after: String) {
+  products(first: $first, after: $after, query: $query, sortKey: CREATED_AT, reverse: true) {
+    nodes {
+      legacyResourceId
+      title
+      handle
+      status
+      featuredImage {
+        url
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
+
 # Continuation fetch for the rare product with more than 250 metafields --
 # _PRODUCTS_QUERY's inline metafields(first: 250) already covers the
 # overwhelming majority; this only runs when that page's hasNextPage is true.
