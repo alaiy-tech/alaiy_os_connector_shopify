@@ -562,6 +562,18 @@ def _all_variants_of(item):
     return [frappe.get_doc("Item", v) for v in names]
 
 
+def _already_in_sync(entity, fp, product_id):
+    """True when nothing changed since our own last push of a product that is
+    still on Shopify.
+
+    A product with no Shopify id is never in sync. Deleting a product on Shopify
+    clears its id here but leaves the stored fingerprint of the last push, so with
+    only the fingerprint compared, every later push (Publish included) was skipped
+    as "unchanged" and the product could never be put back on Shopify.
+    """
+    return bool(product_id) and bool(entity) and entity.erpnext_fingerprint == fp
+
+
 def _push_product(item):
     """item is either a template (has_variants=1, pushes its real children)
     or a simple item (pushes itself as its own single variant)."""
@@ -615,13 +627,14 @@ def _push_product_unlocked(item):
     canonical = _product_canonical(item, variants, settings, listing)
     fp = fingerprint.fingerprint(canonical)
 
+    # Listing's copy first (dual-written on every push below), Item as fallback.
+    product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
+
     entity = entities.get_by_erpnext("product", "Item", item.name, connection=settings)
-    if entity and entity.erpnext_fingerprint == fp:
+    if _already_in_sync(entity, fp, product_id):
         return  # unchanged since our own last push -- avoid spamming the API
 
     client = ShopifyGraphQLClient(settings)
-    # Listing's copy first (dual-written on every push below), Item as fallback.
-    product_id = listing.sh_shopify_product_id or item.get("sh_shopify_product_id")
     product_input = _product_set_input(item, variants, settings, listing, client, is_new_product=not product_id)
 
     identifier = None
