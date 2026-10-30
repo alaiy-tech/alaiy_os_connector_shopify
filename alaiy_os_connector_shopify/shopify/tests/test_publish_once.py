@@ -81,5 +81,26 @@ class TestPushStartsFromFreshData(unittest.TestCase):
         self.assertEqual(self._push(lock_error=Locked()), [])
 
 
+class TestUnlinkedProductIsPushedAgain(unittest.TestCase):
+    """A product deleted on Shopify keeps the fingerprint of its last push; it must
+    still be pushable, or Publish does nothing for it."""
+
+    def test_unchanged_and_still_on_shopify_is_skipped(self):
+        entity = SimpleNamespace(erpnext_fingerprint="abc")
+        self.assertTrue(export._already_in_sync(entity, "abc", "123"))
+
+    def test_unchanged_but_deleted_on_shopify_is_pushed_again(self):
+        entity = SimpleNamespace(erpnext_fingerprint="abc")
+        self.assertFalse(export._already_in_sync(entity, "abc", None))
+        self.assertFalse(export._already_in_sync(entity, "abc", ""))
+
+    def test_a_changed_product_is_pushed(self):
+        entity = SimpleNamespace(erpnext_fingerprint="old")
+        self.assertFalse(export._already_in_sync(entity, "new", "123"))
+
+    def test_a_product_never_pushed_is_pushed(self):
+        self.assertFalse(export._already_in_sync(None, "abc", None))
+
+
 if __name__ == "__main__":
     unittest.main()
