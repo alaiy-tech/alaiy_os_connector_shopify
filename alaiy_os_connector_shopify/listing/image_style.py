@@ -922,7 +922,8 @@ def _gemini_keyed(client, image):
         alpha = alpha.resize(image.size, Image.LANCZOS)
 
     keep = _distance_to(image, _rgb(key)).point(lambda v: 255 if v < _KEY_OUT else 0)
-    return _keep_enclosed_product(image, ImageChops.lighter(alpha, keep))
+    alpha = _keep_enclosed_product(image, ImageChops.lighter(alpha, keep))
+    return _trim_backdrop_fringe(image, alpha)
 
 
 # Ground the product ENCLOSES is only taken as ground when the photo itself shows
@@ -957,26 +958,16 @@ def _keep_enclosed_product(image, alpha):
     import numpy as np
     from scipy import ndimage
 
-    ground = np.asarray(alpha) < 128
-    labels, count = ndimage.label(ground)
+    outer, labels, count, edge = _outer_ground(alpha)
     if count < 2:
         return alpha
-
-    edge = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
-    edge = edge[edge > 0]
-    outer = np.isin(labels, edge)
     if not outer.any():
         # No backdrop to compare with: the product fills the frame.
         return alpha
 
-    rgb = np.asarray(image.convert("RGB"), dtype=np.int16)
-    backdrop = np.median(rgb[outer], axis=0)
-    distance = np.abs(rgb - backdrop).sum(axis=2)
-    tolerance = max(_ENCLOSED_MIN_TOL, float(np.percentile(distance[outer], 95)) + _ENCLOSED_MARGIN)
-
     sizes = np.bincount(labels.ravel(), minlength=count + 1)
     backdrop_like = np.bincount(
-        labels.ravel(), weights=(distance <= tolerance).ravel(), minlength=count + 1
+        labels.ravel(), weights=_backdrop_like(image, outer).ravel(), minlength=count + 1
     )
     share = backdrop_like / np.maximum(sizes, 1)
     product = np.zeros(count + 1, dtype=bool)
@@ -989,6 +980,86 @@ def _keep_enclosed_product(image, alpha):
     out = np.asarray(alpha).copy()
     out[restore] = 255
     return Image.fromarray(out)
+
+
+def _outer_ground(alpha):
+    """The ground in `alpha` connected to the frame's edge, as a boolean array,
+    with the labels of all ground and the labels that touch the edge."""
+    import numpy as np
+    from scipy import ndimage
+
+    labels, count = ndimage.label(np.asarray(alpha) < 128)
+    edge = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+    edge = edge[edge > 0]
+    return np.isin(labels, edge), labels, count, edge
+
+
+def _backdrop_like(image, outer):
+    """Which pixels of the photo are the colour of its own backdrop, as a boolean
+    array. The backdrop is what the photo shows under `outer`; see
+    _ENCLOSED_MIN_TOL for how close counts."""
+    import numpy as np
+
+    rgb = np.asarray(image.convert("RGB"), dtype=np.int16)
+    backdrop = np.median(rgb[outer], axis=0)
+    distance = np.abs(rgb - backdrop).sum(axis=2)
+    tolerance = max(_ENCLOSED_MIN_TOL, float(np.percentile(distance[outer], 95)) + _ENCLOSED_MARGIN)
+    return distance <= tolerance
+
+
+# The render does not always stop at the product's edge. Some come back with a
+# rim of the original photo's backdrop still around the piece — the model keeps
+# a little of the white it was shot on as it moves the piece onto the key — and
+# white is nowhere near the key, so the key reads that rim as product. The cutout
+# is cropped from the original, so the rim ships as a band of white around the
+# piece: on a black watch shot on white it measured 8px deep at the median and up
+# to 42px on a 1814x1440 photo, and on the house grey it reads as a sticker
+# outline. A pale piece hides it, which is why it is only "sometimes".
+#
+# The photo is again the evidence: wherever the matte's edge lies on pixels the
+# photo shows as its own backdrop, and they connect to the ground, they are
+# ground. This is the `flood` matte's own rule, run from the key's edge inward
+# instead of from the frame's edge.
+
+# How far in from the key's edge the trim may reach, as a fraction of the
+# shorter side. Past the 42px measured above (2.9%), and short enough that a
+# piece the colour of its own backdrop cannot be eaten far into.
+_FRINGE_REACH = 0.04
+
+# If more than this share of the product would go, the piece itself is the
+# backdrop's colour (a white strap on white) rather than wearing a rim of it, and
+# the matte is left as the key made it.
+_FRINGE_MAX_SHARE = 0.25
+
+
+def _trim_backdrop_fringe(image, alpha):
+    """`alpha` with the rim of the photo's own backdrop the render left around the
+    product turned back into ground."""
+    import numpy as np
+    from scipy import ndimage
+
+    outer, labels, count, _edge = _outer_ground(alpha)
+    if not outer.any():
+        return alpha
+
+    # Seeded from every remaining ground region, enclosed ones included:
+    # `_keep_enclosed_product` has already put back any the photo shows as
+    # product, so what is left is backdrop and can wear the same rim.
+    ground = labels > 0
+    reach = max(1, round(_FRINGE_REACH * min(ground.shape)))
+    near = ndimage.distance_transform_edt(~ground) <= reach
+    candidate = _backdrop_like(image, outer) & near & ~ground
+
+    connected, _ = ndimage.label(candidate | ground)
+    touching = np.unique(connected[ground])
+    fringe = np.isin(connected, touching[touching > 0]) & candidate
+    if not fringe.any() or fringe.sum() > _FRINGE_MAX_SHARE * (~ground).sum():
+        return alpha
+
+    out = np.asarray(alpha).copy()
+    out[fringe] = 0
+    # The cut follows the photo's pixels and leaves the flood's staircase.
+    return Image.fromarray(out).filter(ImageFilter.GaussianBlur(_EDGE_FEATHER))
 
 
 def _pick_key(image):
