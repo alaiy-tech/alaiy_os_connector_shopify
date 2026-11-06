@@ -153,6 +153,73 @@ class EnclosedProductIsKept(unittest.TestCase):
 		self.assertEqual(alpha.getpixel((150, 140)), 0)
 
 
+WHITE = (254, 254, 254)
+BLACK = (30, 30, 32)
+
+
+def _dark_watch(size=300, dial=None):
+	"""A dark case shot on white, optionally with a white dial inside it, and
+	textured so it is not refused as featureless."""
+	image = Image.new("RGB", (size, size), WHITE)
+	draw = ImageDraw.Draw(image)
+	draw.rectangle([90, 40, 210, 260], fill=BLACK)
+	for y in range(44, 258, 10):
+		draw.line([(92, y), (208, y)], fill=(60, 60, 64))
+	if dial:
+		draw.ellipse([115, 115, 185, 185], fill=dial)
+	return image
+
+
+def _keeps_a_rim(photo, key, rim=12):
+	"""A render that brings a band of the photo's white backdrop along with the
+	piece: everything within `rim` pixels of the case stays as the photo shows it."""
+	render = Image.new("RGB", photo.size, key)
+	box = (90 - rim, 40 - rim, 210 + rim + 1, 260 + rim + 1)
+	render.paste(photo.crop(box), box[:2])
+	return render
+
+
+class BackdropRimIsTrimmed(unittest.TestCase):
+	"""A rim of the photo's own backdrop the render kept around the piece is
+	ground, not product."""
+
+	def test_the_white_rim_around_a_dark_piece_is_ground(self):
+		alpha = image_style._gemini_keyed(_Client(_keeps_a_rim), _dark_watch())
+		self.assertEqual(alpha.getpixel((84, 150)), 0)
+		self.assertEqual(alpha.getpixel((150, 34)), 0)
+		self.assertEqual(alpha.getpixel((5, 5)), 0)
+
+	def test_the_piece_itself_is_kept(self):
+		alpha = image_style._gemini_keyed(_Client(_keeps_a_rim), _dark_watch())
+		self.assertEqual(alpha.getpixel((100, 150)), 255)
+		self.assertEqual(alpha.getpixel((150, 50)), 255)
+
+	def test_a_white_dial_inside_the_case_is_kept(self):
+		alpha = image_style._gemini_keyed(_Client(_keeps_a_rim), _dark_watch(dial=WHITE))
+		self.assertEqual(alpha.getpixel((150, 150)), 255)
+
+	def test_a_piece_the_colour_of_its_backdrop_is_left_alone(self):
+		# A pale piece on white: trimming "backdrop" would eat the piece, so the
+		# matte stays as the key made it.
+		image = Image.new("RGB", (300, 300), WHITE)
+		ImageDraw.Draw(image).rectangle([90, 40, 210, 260], fill=(240, 240, 238))
+		alpha = image_style._gemini_keyed(_Client(_keeps_a_rim), image)
+		self.assertEqual(alpha.getpixel((150, 150)), 255)
+		self.assertEqual(alpha.getpixel((100, 150)), 255)
+
+	def test_through_the_finish_no_white_reaches_the_house_ground(self):
+		buf = io.BytesIO()
+		_dark_watch().save(buf, "PNG")
+		style = dict(image_style.DEFAULTS, background="#f4f4f4", matte="gemini_key", shadow={"opacity": 0})
+		result = image_style.apply_finish(buf.getvalue(), style, _Client(_keeps_a_rim))
+		self.assertIsNone(result["note"])
+		cutout = Image.open(io.BytesIO(result["cutout"])).convert("RGBA")
+		opaque_white = [
+			px for px in cutout.getdata() if px[3] > 128 and min(px[:3]) > 240
+		]
+		self.assertEqual(opaque_white, [])
+
+
 class RenderOffTheKeyIsRefused(unittest.TestCase):
 	def test_render_on_the_wrong_colour(self):
 		client = _Client(lambda photo, key: photo)
