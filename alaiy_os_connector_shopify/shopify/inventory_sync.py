@@ -15,9 +15,13 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
 
 from alaiy_os_connector_shopify import connections
 
+# includeLegacy: Shopify leaves out the locations that belong to a fulfillment
+# service (an app, or Shopify Collective) unless asked. Their stock still
+# arrives in inventory updates, so without them every such line is reported as
+# a location the site has no record of.
 _LOCATIONS_QUERY = """
 query GetLocations($after: String) {
-  locations(first: 250, after: $after) {
+  locations(first: 250, after: $after, includeLegacy: true) {
     nodes {
       id
       legacyResourceId
