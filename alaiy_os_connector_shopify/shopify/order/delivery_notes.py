@@ -88,6 +88,26 @@ def _record_handling_hours(so_name, dn):
         )
 
 
+def set_connection_from_sales_order(doc, method=None):
+    """Give a new Delivery Note the store its Sales Order belongs to.
+
+    Only the importer set sh_shopify_connection. A note created any other way
+    (a supplier fulfilling in a portal, a carrier connector, a warehouse scan)
+    left it blank, and the polls that read each store's notes filter on that
+    field, so such a note never had its Shopify delivery status or
+    cancellation picked up.
+    """
+    if doc.get("sh_shopify_connection"):
+        return
+    so_name = next((row.against_sales_order for row in doc.items or []
+                    if row.against_sales_order), None)
+    if not so_name:
+        return
+    connection = frappe.db.get_value("Sales Order", so_name, "sh_shopify_connection")
+    if connection:
+        doc.sh_shopify_connection = connection
+
+
 def _create_delivery_note_if_needed(so_name):
     """
     Full-order fallback for orders Shopify reports as fulfilled but with an

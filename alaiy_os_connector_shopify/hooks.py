@@ -250,6 +250,7 @@ doc_events = {
         "on_submit": "alaiy_os_connector_shopify.shopify.order_sync.on_sales_invoice_submit",
     },
     "Delivery Note": {
+        "before_insert": "alaiy_os_connector_shopify.shopify.order.delivery_notes.set_connection_from_sales_order",
         "on_submit": "alaiy_os_connector_shopify.shopify.order.fulfillment_push.on_delivery_note_submit",
         "on_update_after_submit": "alaiy_os_connector_shopify.shopify.order.fulfillment_push.on_delivery_note_update_after_submit",
         "on_cancel": "alaiy_os_connector_shopify.shopify.order.fulfillment_push.on_delivery_note_cancel",
