@@ -15,9 +15,13 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
 
 from alaiy_os_connector_shopify import connections
 
+# includeLegacy: Shopify leaves out the locations that belong to a fulfillment
+# service (an app, or Shopify Collective) unless asked. Their stock still
+# arrives in inventory updates, so without them every such line is reported as
+# a location the site has no record of.
 _LOCATIONS_QUERY = """
 query GetLocations($after: String) {
-  locations(first: 250, after: $after) {
+  locations(first: 250, after: $after, includeLegacy: true) {
     nodes {
       id
       legacyResourceId
@@ -682,6 +686,17 @@ def run_inventory_pull(trigger="manual", log_name=None, connection=None):
     }
 
 
+def _sum_by_warehouse(warehouse_quantities):
+    """{warehouse: total} for [(warehouse, qty), ...], one entry per warehouse.
+
+    A warehouse physically holds what every Shopify location mapped to it
+    holds, so its stock is their sum."""
+    totals = {}
+    for warehouse, qty in warehouse_quantities:
+        totals[warehouse] = totals.get(warehouse, 0) + flt(qty or 0)
+    return totals
+
+
 def apply_pulled_stock(corrections):
     """PULL leg (Shopify -> Alaiy OS). Apply {item_code, warehouse, qty} rows
     as audited Stock Reconciliations.
@@ -1012,6 +1027,7 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
             item_code = by_inventory_id.get(str(node.get("legacyResourceId") or ""))
             if not item_code:
                 continue
+            warehouse_quantities = []
             for level in ((node.get("inventoryLevels") or {}).get("nodes") or []):
                 location_id = ((level.get("location") or {}).get("legacyResourceId"))
                 quantities = level.get("quantities") or []
@@ -1025,7 +1041,15 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
                     # place.
                     unmapped.append((item_code, str(location_id)))
                     continue
-                shopify_qty = flt(quantities[0].get("quantity") or 0)
+                warehouse_quantities.append((warehouse, quantities[0].get("quantity")))
+            # Compared per WAREHOUSE, after adding up every location behind it.
+            # Comparing location by location and dropping the matching ones
+            # before apply_pulled_stock sums the rest made a warehouse fed by
+            # two locations (say 96 and 0) read as changed on every run: the
+            # 0 differs from a stock of 96 and wins, then the 96 differs from a
+            # stock of 0 and wins, so the stock flipped between the two each
+            # hour.
+            for warehouse, shopify_qty in _sum_by_warehouse(warehouse_quantities).items():
                 # Only send what actually differs. run_inventory_pull already
                 # works this way; without it every refresh built a row for
                 # every item and reported them all as updated, so a second
@@ -1260,6 +1284,7 @@ def _reconcile_inventory(dry_run, query, log, connection):
                 if not item_code:
                     unknown_variants += 1
                     continue
+                warehouse_quantities = []
                 for location_id, qty in _variant_location_levels(variant, connection):
                     # Deliberately NOT _resolve_warehouse_for_location: that
                     # falls back to sh_default_warehouse for an unmapped
@@ -1279,15 +1304,20 @@ def _reconcile_inventory(dry_run, query, log, connection):
                         unmapped_locations.add(str(location_id))
                         continue
                     checked += 1
+                    warehouse_quantities.append((warehouse, qty))
+                # Per warehouse, after adding up every location behind it --
+                # see pull_stock_for_items for why a per-location comparison
+                # flips the stock of a warehouse fed by more than one.
+                for warehouse, shopify_qty in _sum_by_warehouse(warehouse_quantities).items():
                     current = flt(frappe.db.get_value(
                         "Bin", {"item_code": item_code, "warehouse": warehouse},
                         "actual_qty") or 0)
-                    if current == flt(qty):
+                    if current == shopify_qty:
                         continue
                     corrections.append({
                         "item_code": item_code,
                         "warehouse": warehouse,
-                        "qty": flt(qty),
+                        "qty": shopify_qty,
                     })
 
         # Progress after each page, not only at the end. A sweep over ~3,000
