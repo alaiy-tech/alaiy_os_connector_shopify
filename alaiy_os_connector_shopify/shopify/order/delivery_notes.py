@@ -419,10 +419,28 @@ def _sync_tracking(fulfillment, connection=None):
         so_name = get_active_sales_order(order_id, connection)
         if not so_name:
             return
-        dn_name = frappe.db.get_value(
-            "Delivery Note Item", {"against_sales_order": so_name}, "parent")
-        if not dn_name:
+        # Only a note created without a fulfillment id qualifies. A note that
+        # already carries one belongs to a different shipment on the same
+        # order (a second supplier's, a later partial). Stamping this id over
+        # it detaches that note from its own fulfillment, and because
+        # _sync_fulfillments skips any id already present on a note, this
+        # shipment is then never given a Delivery Note of its own. More than
+        # one untagged note is ambiguous, so nothing is guessed.
+        parents = list({row["parent"] for row in frappe.get_all(
+            "Delivery Note Item", filters={"against_sales_order": so_name},
+            fields=["parent"])})
+        if not parents:
             return
+        untagged = [
+            dn["name"] for dn in frappe.get_all(
+                "Delivery Note",
+                filters={"name": ["in", parents], "docstatus": ["!=", 2]},
+                fields=["name", "sh_shopify_fulfillment_id"])
+            if not dn.get("sh_shopify_fulfillment_id")
+        ]
+        if len(untagged) != 1:
+            return
+        dn_name = untagged[0]
         frappe.db.set_value("Delivery Note", dn_name, "sh_shopify_fulfillment_id", fulfillment_id)
 
     # Cancellation is checked before touching tracking, and returns
