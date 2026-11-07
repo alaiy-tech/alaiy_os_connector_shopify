@@ -382,6 +382,27 @@ def _create_delivery_note_for_fulfillment(so, fulfillment_id, fulfillment_line_i
         )
 
 
+def _fulfillment_item_codes(fulfillment, so_name, connection=None):
+    """The Item codes a Shopify fulfillment ships, or an empty set when any of
+    its lines cannot be resolved (a partial answer would make a match a guess)."""
+    codes = set()
+    so = None
+    for li in fulfillment.get("line_items") or []:
+        title = li.get("title") or li.get("name")
+        code = _resolve_item_code({
+            "sku": li.get("sku"),
+            "variant_id": li.get("variant_id"),
+            "title": title,
+        }, connection)
+        if not code:
+            so = so or frappe.get_doc("Sales Order", so_name)
+            code = _item_on_order_by_title(so, title)
+        if not code:
+            return set()
+        codes.add(code)
+    return codes
+
+
 def _sync_tracking(fulfillment, connection=None):
     """
     fulfillments/create and fulfillments/update webhooks deliver the
@@ -445,22 +466,34 @@ def _sync_tracking(fulfillment, connection=None):
         # it detaches that note from its own fulfillment, and because
         # _sync_fulfillments skips any id already present on a note, this
         # shipment is then never given a Delivery Note of its own. More than
-        # one untagged note is ambiguous, so nothing is guessed.
-        parents = list({row["parent"] for row in frappe.get_all(
-            "Delivery Note Item", filters={"against_sales_order": so_name},
-            fields=["parent"])})
-        if not parents:
+        # one matching note is ambiguous, so nothing is guessed.
+        #
+        # "Matching" means the note carries every item this fulfillment ships.
+        # An untagged note is not necessarily this shipment's: on an order held
+        # by several suppliers, another supplier's note can be untagged too (not
+        # yet pushed, or its push failed), and attaching to it by position
+        # would repeat the overwrite one level down.
+        wanted = _fulfillment_item_codes(fulfillment, so_name, connection)
+        if not wanted:
             return
-        untagged = [
+        items_by_note = {}
+        for row in frappe.get_all(
+                "Delivery Note Item", filters={"against_sales_order": so_name},
+                fields=["parent", "item_code"]):
+            items_by_note.setdefault(row["parent"], set()).add(row["item_code"])
+        if not items_by_note:
+            return
+        matching = [
             dn["name"] for dn in frappe.get_all(
                 "Delivery Note",
-                filters={"name": ["in", parents], "docstatus": ["!=", 2]},
+                filters={"name": ["in", list(items_by_note)], "docstatus": ["!=", 2]},
                 fields=["name", "sh_shopify_fulfillment_id"])
             if not dn.get("sh_shopify_fulfillment_id")
+            and wanted <= items_by_note.get(dn["name"], set())
         ]
-        if len(untagged) != 1:
+        if len(matching) != 1:
             return
-        dn_name = untagged[0]
+        dn_name = matching[0]
         frappe.db.set_value("Delivery Note", dn_name, "sh_shopify_fulfillment_id", fulfillment_id)
 
     # Cancellation is checked before touching tracking, and returns
