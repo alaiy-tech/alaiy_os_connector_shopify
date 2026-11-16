@@ -15,6 +15,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import UnitTestCase
 
+from alaiy_os_connector_shopify.listing import handlers
 from alaiy_os_connector_shopify.shopify.product import canonical
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 
@@ -88,3 +89,17 @@ class TestSeedingVariantRows(UnitTestCase):
 
 	def test_a_real_variant_row_keeps_its_item_image(self):
 		self.assertEqual(self.rows(has_variants=1)[0].image, "/files/front3a9c1e.jpg")
+
+
+class TestVariantPhotosForRetouching(UnitTestCase):
+	def test_a_simple_product_has_no_variant_photo_to_retouch(self):
+		listing = frappe._dict(item="SKU-1", variants=[
+			frappe._dict(item_variant="SKU-1", variant_image=FIRST_AGAIN, is_enabled=1),
+		])
+		self.assertEqual(handlers.variant_image_map(listing), {})
+
+	def test_real_variants_are_still_retouched(self):
+		listing = frappe._dict(item="TPL", variants=[
+			frappe._dict(item_variant="TPL-RED", variant_image=RED, is_enabled=1),
+		])
+		self.assertEqual(handlers.variant_image_map(listing), {"TPL-RED": RED})

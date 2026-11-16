@@ -190,11 +190,19 @@ def get_listing(item_code):
 
 
 def variant_image_map(listing):
-    """{item_variant: variant_image url} for enabled variants that have a photo."""
+    """{item_variant: variant_image url} for enabled variants that have a photo.
+
+    A simple product's own row (item_variant is the listing's item) is left out.
+    Its photo is a copy of the gallery's first one, so treating it as a variant
+    photo rendered that photo twice and wrote the second render to a variant
+    image the push no longer sends.
+    """
+    own_item = listing.get("item")
     return {
         v.get("item_variant"): v.get("variant_image")
         for v in (listing.get("variants") or [])
         if v.get("item_variant") and v.get("variant_image") and v.get("is_enabled")
+        and v.get("item_variant") != own_item
     }
 
 
