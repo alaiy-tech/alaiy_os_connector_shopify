@@ -350,9 +350,17 @@ def _template_variant_items(tmpl_name: str, has_variants) -> list:
     product. Shopify itself always gives a product at least one variant --
     a simple product just never had a separate child Item for it, so this
     is what gives that variant a real Listing Variant row instead of a
-    special case scattered through every id lookup."""
+    special case scattered through every id lookup.
+
+    A simple product's row gets no image: its Item.image is the product's
+    first photo, already in the gallery, and copying it onto the variant row
+    made the push send that photo twice."""
     filters = {"variant_of": tmpl_name} if has_variants else {"name": tmpl_name}
-    return frappe.get_all("Item", filters=filters, fields=["name", "sh_shopify_variant_id", "image"])
+    rows = frappe.get_all("Item", filters=filters, fields=["name", "sh_shopify_variant_id", "image"])
+    if not has_variants:
+        for row in rows:
+            row.image = None
+    return rows
 
 
 def should_enable_new_listing(default_enabled, product_id, status) -> bool:
