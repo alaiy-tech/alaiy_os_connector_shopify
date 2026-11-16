@@ -150,9 +150,22 @@ def _product_set_input(item, variants: list, settings, listing, client=None, is_
     # its originalSource against this top-level files list -- a variant
     # image not also listed here fails with "File original source missing
     # from the product files input" even though the URL itself is valid.
-    variant_images = [
-        listing_resolver.effective_variant_image(listing, v.item_code) for v in variants
-    ]
+    if item.has_variants:
+        variant_images = [
+            listing_resolver.effective_variant_image(listing, v.item_code) for v in variants
+        ]
+    else:
+        # A simple product's only variant shows the product's own photos, so
+        # it has no photo of its own to send. Its Listing Variant row was
+        # seeded from Item.image, which is the first photo stored under
+        # another file name (/files/ plus a collision suffix, or a CDN copy
+        # of that). Sending it put the first photo on Shopify a second time,
+        # and the inbound sync then brought that copy back as one more
+        # gallery photo on every edited save. The row's value still feeds the
+        # fingerprint, so leaving it out here does not re-push any product.
+        variant_images = []
+        for v_payload in payload["variants"]:
+            v_payload.pop("file", None)
     all_images = list(dict.fromkeys(images + [u for u in variant_images if u]))
     if len(all_images) > 250:
         # Shopify's own hard cap on productSet's files array -- confirmed
