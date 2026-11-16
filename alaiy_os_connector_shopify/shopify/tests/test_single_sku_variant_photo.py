@@ -75,3 +75,16 @@ class TestPushPayload(UnitTestCase):
 		self.assertEqual([f["originalSource"] for f in payload["files"]], [FIRST, RED])
 		self.assertEqual(payload["variants"][0]["file"]["originalSource"], RED)
 		self.assertNotIn("file", payload["variants"][1])
+
+
+class TestSeedingVariantRows(UnitTestCase):
+	def rows(self, has_variants):
+		found = [frappe._dict(name="SKU-1", sh_shopify_variant_id="1", image="/files/front3a9c1e.jpg")]
+		with patch.object(frappe, "get_all", return_value=found):
+			return listing_resolver._template_variant_items("SKU-1", has_variants)
+
+	def test_a_simple_product_row_is_not_given_the_item_image(self):
+		self.assertIsNone(self.rows(has_variants=0)[0].image)
+
+	def test_a_real_variant_row_keeps_its_item_image(self):
+		self.assertEqual(self.rows(has_variants=1)[0].image, "/files/front3a9c1e.jpg")
