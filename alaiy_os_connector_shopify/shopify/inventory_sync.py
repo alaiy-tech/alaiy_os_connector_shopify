@@ -15,6 +15,17 @@ from alaiy_os_connector_shopify.shopify.sync_guard import (
 
 from alaiy_os_connector_shopify import connections
 
+try:
+    from alaiy_os.health.runs import run_status
+except ImportError:  # core without Connector Health: keep the old behaviour
+    def run_status(processed, failed, skipped=0, error=None):
+        return "success"
+
+
+def _final_status(processed, failed):
+    """A run where every item failed is "failed"; partial failures stay "success"."""
+    return run_status(processed, failed, 0)
+
 # includeLegacy: Shopify leaves out the locations that belong to a fulfillment
 # service (an app, or Shopify Collective) unless asked. Their stock still
 # arrives in inventory updates, so without them every such line is reported as
@@ -326,8 +337,11 @@ def run_inventory_push(trigger="manual", log_name=None, connection=None):
             f"{totals['updated']} pushed, {totals['unchanged']} already in sync, "
             f"{totals['failed']} failed across {len(pairs)} location(s)."
             + (" (stopped early by user)" if cancelled else ""))
-        _close_log(log, "cancelled" if cancelled else "success", processed=totals["processed"],
-                   created=totals["updated"], failed=totals["failed"])
+        status = "cancelled" if cancelled else _final_status(totals["processed"], totals["failed"])
+        _close_log(log, status, processed=totals["processed"],
+                   created=totals["updated"], failed=totals["failed"],
+                   error=f"Every item failed ({totals['failed']}); see the log."
+                   if status == "failed" else "")
     except Exception:
         _close_log(log, "failed", error=frappe.get_traceback())
         raise
