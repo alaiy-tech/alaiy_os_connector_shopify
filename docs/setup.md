@@ -132,9 +132,19 @@ Field-level detail is in each domain doc.
 
 ### Item indexes on a large catalogue
 
-Four Item fields are indexed (`sh_shopify_product_id`, `sh_shopify_variant_id`, `sh_shopify_inventory_item_id`, `sh_shopify_connection`). Building an index scans the whole Item table and needs a metadata lock, so on a catalogue of millions of Items it is the one slow step of an install and can hold up every query on Item while it waits.
+Four Item fields are indexed (`sh_shopify_product_id`, `sh_shopify_variant_id`, `sh_shopify_inventory_item_id`, `sh_shopify_connection`). Building an index scans the whole Item table and needs a metadata lock, so on a catalogue of millions of Items it is slow and can hold up every query on Item while it waits.
 
-A fresh install therefore adds the columns without the indexes. To build them at a quiet time, set the site config key `shopify_item_indexes` to `1` and run `bench --site <site> execute alaiy_os_connector_shopify.setup.install.setup_custom_fields`. Once a field has its index it keeps it on every later migrate, whether or not the key stays set. Build them before connecting a store: id lookups scan the table until then.
+An install therefore adds the columns without the indexes, and the connector builds them afterwards on its own (`setup/item_indexes.py`). Nobody has to run anything:
+
+- An hourly job, and one run queued after every install and migrate, look for a missing index and queue a build only when there is one. Once all four exist the job does nothing.
+- A build adds one index per run. Runs cannot overlap, and the lock that guards them is released by the database if the worker dies.
+- It does not start in maintenance mode, while a query older than 30 seconds is running on Item, while another statement is waiting on Item's table lock (a migrate, for example), or without free disk space when the database is on the same host.
+- It waits for the table lock for 10 seconds at most (site config `shopify_item_index_lock_wait`, 1 to 60). If the lock is not free it gives up and changes nothing, so Item queries are never queued behind it for longer.
+- A failure after real work (a lock lost at the end of a long build, a full disk) is logged once and the next attempt is delayed: 1 hour, then 2, 4 and so on up to a day.
+- An optional window keeps builds off-peak: site config `shopify_item_index_window`, for example `01:00-05:00` (server time).
+- A built index is flagged on its Custom Field, so later migrates keep it.
+
+Until the indexes exist, id lookups on Item scan the table, so connect a store after `alaiy_os_connector_shopify.setup.item_indexes.status()` shows nothing missing.
 
 ---
 

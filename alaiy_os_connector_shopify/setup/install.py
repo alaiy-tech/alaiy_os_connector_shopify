@@ -51,6 +51,7 @@ def _provision():
     ensure_base_data()
     sync_connector_registry()
     sync_listing_custom_fields()
+    _start_item_indexes()
 
 
 #: The Module Def the enriched-listing doctypes must belong to for this app to
@@ -134,6 +135,19 @@ def adopt_enriched_listing_doctypes():
         print(f"Adopted {len(moved)} enriched-listing doctype(s) onto {LISTING_MODULE}: {', '.join(moved)}")
 
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+
+
+def _start_item_indexes():
+    """Queue the background Item index build. It must never fail an install or a migrate."""
+    try:
+        from alaiy_os_connector_shopify.setup.item_indexes import enqueue_build
+
+        enqueue_build(after_commit=True)
+    except Exception:
+        frappe.log_error(
+            title="Shopify connector: could not queue the Item index build",
+            message=frappe.get_traceback(),
+        )
 
 
 def ensure_base_data():
@@ -249,11 +263,10 @@ def _ensure_list_view_column(doctype, fieldname, label):
 
 #: The Item fields that carry an index. Item is the big table (a catalogue is millions of rows), and
 #: building an index on it scans the whole table and needs a metadata lock, which is the one slow and
-#: blocking step of an install. A fresh install therefore adds these columns without the index; the
-#: index is switched on later, at a quiet time, by setting the site config key `shopify_item_indexes`
-#: to 1 and running setup_custom_fields again. Once a field carries the index it keeps it, because the
-#: flag below is carried over from the existing Custom Field (Frappe drops an index its field does
-#: not flag, so losing the flag would drop the index on the next schema update).
+#: blocking step of an install. A fresh install therefore adds these columns without the index, and
+#: setup/item_indexes.py builds them afterwards in the background, one at a time. A built index is
+#: flagged on its Custom Field and the flag is carried over below, because Frappe drops an index its
+#: field does not flag on the next schema update.
 ITEM_INDEXED_FIELDS = (
     "sh_shopify_product_id",
     "sh_shopify_variant_id",
@@ -266,9 +279,9 @@ ITEM_INDEXED_FIELDS = (
 DEPRECATED_ITEM_FIELDS = ("sh_country_of_origin", "sh_harmonized_system_code", "sh_shopify_tags", "sh_shopify_category")
 
 
-def item_index_flag(requested, existing) -> int:
-    """1 when the site asked for the Item indexes or the field already carries one, else 0."""
-    return 1 if (requested or existing) else 0
+def item_index_flag(existing) -> int:
+    """1 when the field already carries its index (the background build flags it), else 0."""
+    return 1 if existing else 0
 
 
 def deprecated_fields_to_replace(existing_types, wanted_types):
@@ -754,11 +767,9 @@ def setup_custom_fields():
     # update=True re-syncs properties (description, read_only, ...) on
     # already-existing fields, which is what the old hand-rolled upsert did
     # -- e.g. sh_shopify_category started read-only and later became editable.
-    requested_indexes = frappe.conf.get("shopify_item_indexes")
     for f in item_fields:
         if f["fieldname"] in ITEM_INDEXED_FIELDS:
-            f["search_index"] = item_index_flag(
-                requested_indexes, frappe.db.get_value("Custom Field", f"Item-{f['fieldname']}", "search_index"))
+            f["search_index"] = item_index_flag(frappe.db.get_value("Custom Field", f"Item-{f['fieldname']}", "search_index"))
     _remove_deprecated_item_fields(item_fields)
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
     create_custom_fields(custom_fields, update=True)
