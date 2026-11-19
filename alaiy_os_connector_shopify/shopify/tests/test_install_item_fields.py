@@ -47,6 +47,13 @@ class TestItemIndexFlag(unittest.TestCase):
         self.assertIn("could not queue the Item index build", SOURCE)
 
 
+class TestInstallSpeed(unittest.TestCase):
+    def test_custom_fields_are_created_without_revalidating_the_whole_item_doctype(self):
+        # Frappe re-validates the doctype for every field created, and that scans the Item table for
+        # duplicates on each unique field; the fixed definitions here do not need it.
+        self.assertIn("create_custom_fields(custom_fields, ignore_validate=True, update=True)", SOURCE)
+
+
 class TestDeprecatedFields(unittest.TestCase):
     wanted = {"sh_country_of_origin": "Link", "sh_harmonized_system_code": "Data",
               "sh_shopify_tags": "Table MultiSelect", "sh_shopify_category": "Link"}

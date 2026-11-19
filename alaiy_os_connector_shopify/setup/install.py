@@ -772,7 +772,11 @@ def setup_custom_fields():
             f["search_index"] = item_index_flag(frappe.db.get_value("Custom Field", f"Item-{f['fieldname']}", "search_index"))
     _remove_deprecated_item_fields(item_fields)
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
-    create_custom_fields(custom_fields, update=True)
+    # ignore_validate: without it Frappe re-validates the whole Item doctype for every field it creates,
+    # and that validation scans the entire Item table for duplicates on each unique field. On a catalogue
+    # of millions of Items that is dozens of full scans, so an install appeared stuck for a long time.
+    # These field definitions are fixed and known to be valid, so the per-field validation is skipped.
+    create_custom_fields(custom_fields, ignore_validate=True, update=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
