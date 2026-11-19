@@ -247,6 +247,43 @@ def _ensure_list_view_column(doctype, fieldname, label):
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
+#: The Item fields that carry an index. Item is the big table (a catalogue is millions of rows), and
+#: building an index on it scans the whole table and needs a metadata lock, which is the one slow and
+#: blocking step of an install. A fresh install therefore adds these columns without the index; the
+#: index is switched on later, at a quiet time, by setting the site config key `shopify_item_indexes`
+#: to 1 and running setup_custom_fields again. Once a field carries the index it keeps it, because the
+#: flag below is carried over from the existing Custom Field (Frappe drops an index its field does
+#: not flag, so losing the flag would drop the index on the next schema update).
+ITEM_INDEXED_FIELDS = (
+    "sh_shopify_product_id",
+    "sh_shopify_variant_id",
+    "sh_shopify_inventory_item_id",
+    "sh_shopify_connection",
+)
+
+#: Item fields that older versions created with another type. They are deleted so they can be recreated
+#: with the new type, which Frappe will not do in place -- but only when the type actually differs.
+DEPRECATED_ITEM_FIELDS = ("sh_country_of_origin", "sh_harmonized_system_code", "sh_shopify_tags", "sh_shopify_category")
+
+
+def item_index_flag(requested, existing) -> int:
+    """1 when the site asked for the Item indexes or the field already carries one, else 0."""
+    return 1 if (requested or existing) else 0
+
+
+def deprecated_fields_to_replace(existing_types, wanted_types):
+    """The deprecated Item fields whose existing type differs from the type wanted now.
+
+    `existing_types` {fieldname: fieldtype or None} for the Custom Fields that exist; `wanted_types`
+    {fieldname: fieldtype}. A field that does not exist yet, or already has the wanted type, is left alone,
+    so a fresh install and every later migrate delete nothing.
+    """
+    return [
+        name for name in DEPRECATED_ITEM_FIELDS
+        if existing_types.get(name) and existing_types[name] != wanted_types.get(name)
+    ]
+
+
 def setup_custom_fields():
     """Add Shopify custom fields to Alaiy OS doctypes. Idempotent -- safe to call on every migrate."""
     # variant_of is itself a Link to Item -- fetch_from lets a variant
@@ -717,22 +754,32 @@ def setup_custom_fields():
     # update=True re-syncs properties (description, read_only, ...) on
     # already-existing fields, which is what the old hand-rolled upsert did
     # -- e.g. sh_shopify_category started read-only and later became editable.
-    _remove_deprecated_item_fields()
+    requested_indexes = frappe.conf.get("shopify_item_indexes")
+    for f in item_fields:
+        if f["fieldname"] in ITEM_INDEXED_FIELDS:
+            f["search_index"] = item_index_flag(
+                requested_indexes, frappe.db.get_value("Custom Field", f"Item-{f['fieldname']}", "search_index"))
+    _remove_deprecated_item_fields(item_fields)
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
     create_custom_fields(custom_fields, update=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
-def _remove_deprecated_item_fields():
+def _remove_deprecated_item_fields(item_fields):
     """
-    Fields that changed fieldtype or were removed entirely -- delete the
-    Custom Field itself so create_custom_fields can recreate it with the
-    new fieldtype (Frappe blocks fieldtype changes on existing fields).
+    Fields that changed fieldtype -- delete the Custom Field itself so
+    create_custom_fields can recreate it with the new fieldtype (Frappe
+    blocks fieldtype changes on existing fields). Only a field whose type
+    differs is deleted, so a fresh install and every later migrate leave
+    them alone and do not trigger a schema update on Item.
     """
-    for fieldname in ("sh_country_of_origin", "sh_harmonized_system_code", "sh_shopify_tags", "sh_shopify_category"):
-        name = f"Item-{fieldname}"
-        if frappe.db.exists("Custom Field", name):
-            frappe.delete_doc("Custom Field", name, ignore_permissions=True)
+    wanted = {f["fieldname"]: f["fieldtype"] for f in item_fields}
+    existing = {
+        fieldname: frappe.db.get_value("Custom Field", f"Item-{fieldname}", "fieldtype")
+        for fieldname in DEPRECATED_ITEM_FIELDS
+    }
+    for fieldname in deprecated_fields_to_replace(existing, wanted):
+        frappe.delete_doc("Custom Field", f"Item-{fieldname}", ignore_permissions=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
