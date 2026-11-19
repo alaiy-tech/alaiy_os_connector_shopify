@@ -68,7 +68,7 @@ class Db:
 
 
 class Base(unittest.TestCase):
-    def load(self, db, conf=None, custom_fields=None):
+    def load(self, db, conf=None, custom_fields=None, scheduler_inactive=False):
         frappe = types.ModuleType("frappe")
         frappe.db = db
         frappe.conf = dict(conf or {})
@@ -85,7 +85,11 @@ class Base(unittest.TestCase):
         sys.modules.pop(MODULE, None)
         self.addCleanup(patcher.stop)
         self.addCleanup(sys.modules.pop, MODULE, None)
-        return frappe, importlib.import_module(MODULE)
+        mod = importlib.import_module(MODULE)
+        patch_scheduler = mock.patch.object(mod, "scheduler_inactive", return_value=scheduler_inactive)
+        patch_scheduler.start()
+        self.addCleanup(patch_scheduler.stop)
+        return frappe, mod
 
     def build(self, db, **kw):
         frappe, mod = self.load(db, **kw)
@@ -181,9 +185,9 @@ class TestBuild(Base):
         db.sql = mock.Mock(side_effect=AssertionError("no query expected"))
         self.assertEqual(self.build(db)[0], "skipped: not MariaDB")
 
-    def test_it_waits_out_a_recorded_failure(self):
+    def test_it_waits_out_a_recorded_failure_or_a_settling_period(self):
         db = Db(state='{"failures": 1, "next_try_at": 9999999999}')
-        self.assertEqual(self.build(db)[0], "backing off after a failure")
+        self.assertEqual(self.build(db)[0], "waiting before the next attempt")
         db.add_index.assert_not_called()
 
     def test_it_stays_inside_the_configured_window(self):
@@ -253,6 +257,46 @@ class TestBuild(Base):
         self.assertEqual(db.sessions, [3, 50])
 
 
+class TestSettle(Base):
+    def test_an_install_holds_the_first_build_back_so_it_cannot_start_during_the_restarts(self):
+        db = Db()
+        frappe, mod = self.load(db)
+        mod.settle()
+        frappe.enqueue.assert_not_called()  # the install never queues the build itself
+        self.assertEqual(mod.build_next_item_index(), "waiting before the next attempt")
+        db.add_index.assert_not_called()
+        self.assertGreater(mod.status()["next_try_at"], mod.time.time() + mod.SETTLE_SECONDS - 60)
+
+    def test_it_keeps_a_later_retry_time_that_is_already_set(self):
+        db = Db(state='{"failures": 2, "next_try_at": 9999999999}')
+        frappe, mod = self.load(db)
+        mod.settle()
+        self.assertEqual(mod.status()["next_try_at"], 9999999999)
+        self.assertEqual(mod.status()["failures"], 2)
+
+    def test_it_changes_nothing_when_no_index_is_missing_or_off_mariadb(self):
+        db = Db(indexed=set(FIELDS))
+        frappe, mod = self.load(db)
+        mod.settle()
+        self.assertEqual(db.saved, [])
+        db = Db()
+        db.db_type = "postgres"
+        frappe, mod = self.load(db)
+        mod.settle()
+        self.assertEqual(db.saved, [])
+
+    def test_it_says_so_when_the_scheduler_is_off_and_stays_quiet_when_it_is_on(self):
+        frappe, mod = self.load(Db(), scheduler_inactive=True)
+        with mock.patch("builtins.print") as shown:
+            mod.settle()
+        shown.assert_called_once()
+        self.assertIn("scheduler", shown.call_args.args[0])
+        frappe, mod = self.load(Db(), scheduler_inactive=False)
+        with mock.patch("builtins.print") as shown:
+            mod.settle()
+        shown.assert_not_called()
+
+
 class TestEnqueue(Base):
     def test_nothing_is_queued_when_no_index_is_missing(self):
         frappe, mod = self.load(Db(indexed=set(FIELDS)))
@@ -266,12 +310,6 @@ class TestEnqueue(Base):
         kwargs = frappe.enqueue.call_args.kwargs
         self.assertEqual((kwargs["queue"], kwargs["timeout"]), ("long", mod.JOB_TIMEOUT))
         self.assertNotIn("job_id", kwargs)  # a crashed run must not block the next one
-        self.assertFalse(kwargs["enqueue_after_commit"])
-
-    def test_an_install_or_migrate_queues_the_build_only_after_its_own_commit(self):
-        frappe, mod = self.load(Db())
-        mod.enqueue_build(after_commit=True)
-        self.assertTrue(frappe.enqueue.call_args.kwargs["enqueue_after_commit"])
 
     def test_nothing_is_queued_in_maintenance_mode_or_off_mariadb(self):
         frappe, mod = self.load(Db(), conf={"maintenance_mode": 1})
@@ -291,7 +329,7 @@ class TestEnqueue(Base):
 
     def test_status_lists_what_is_built_what_is_left_and_the_last_failure(self):
         frappe, mod = self.load(Db(indexed={"sh_shopify_product_id"}, state='{"failures": 2, "next_try_at": 5, "last": "x: full"}'))
-        self.assertEqual(mod.status(), {"built": ["sh_shopify_product_id"],
+        self.assertEqual(mod.status(), {"scheduler_active": True, "built": ["sh_shopify_product_id"],
             "missing": ["sh_shopify_variant_id", "sh_shopify_inventory_item_id", "sh_shopify_connection"],
             "failures": 2, "next_try_at": 5, "last_failure": "x: full"})
 

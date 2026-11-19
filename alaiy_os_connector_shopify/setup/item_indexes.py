@@ -6,8 +6,12 @@ hold up every query on Item while it waits. An install therefore adds the column
 this module adds them afterwards, on its own. Nobody has to run anything.
 
 How it stays out of the way
-  - An hourly job, and one run queued after every install and migrate, look for a missing index. The check
-    is one SHOW INDEX and queues a build only when an index is missing, so once all four exist it is free.
+  - An hourly job looks for a missing index. The check is one SHOW INDEX and queues a build only when an
+    index is missing, so once all four exist it is free. It needs the site's scheduler: where the scheduler
+    is off, nothing is built until it is on.
+  - An install or a migrate holds the first build back for SETTLE_SECONDS, so a build never starts while the
+    install, the migrate or the restarts that follow are still going. A build occupies a long-queue worker,
+    and a worker that is restarted waits for it to finish.
   - One index per run. Runs cannot overlap: a database lock (not a queue entry) guards them, and that lock
     is released by the database itself if the worker dies, so a crash never leaves it stuck.
   - It does not start while the site is in maintenance mode, while a query older than QUIET_AFTER_SECONDS is
@@ -47,6 +51,7 @@ JOB_TIMEOUT = 14400  # seconds; Frappe limits the statement to 1.5 times this
 DEFAULT_LOCK_WAIT = 10
 QUIET_AFTER_SECONDS = 30
 SLOW_ATTEMPT_SECONDS = 60  # a lock timeout after this long cost real work, so it counts as a failure
+SETTLE_SECONDS = 1800  # how long an install or a migrate holds the first build back
 BACKOFF_BASE_SECONDS = 3600
 BACKOFF_MAX_SECONDS = 86400
 MIN_FREE_BYTES = 2 * 1024**3
@@ -190,10 +195,35 @@ def flag_built_indexes(indexed):
         frappe.clear_cache(doctype="Item")
 
 
+def scheduler_inactive():
+    """Whether the scheduler will not run this site's hourly jobs (maintenance mode, paused or disabled)."""
+    from frappe.utils.scheduler import is_scheduler_inactive
+
+    return is_scheduler_inactive(verbose=False)
+
+
+def settle():
+    """Hold the first build back for SETTLE_SECONDS. Called by the install and the migrate.
+
+    It does nothing when no index is missing, keeps a later retry time that is already set, and says so
+    when the scheduler is off, because the hourly job is what builds the indexes.
+    """
+    if not is_mariadb() or next_missing(indexed_columns(), present_columns()) is None:
+        return
+    state = load_state()
+    state["next_try_at"] = max(float(state.get("next_try_at") or 0), time.time() + SETTLE_SECONDS)
+    save_state(state)
+    if scheduler_inactive():
+        print(
+            "Shopify connector: the Item indexes are built in the background by an hourly job, and the "
+            "scheduler is not running for this site. Turn the scheduler on for the indexes to be built.")
+
+
 def status():
-    """What is built, what is left and when the next attempt is allowed."""
+    """What is built, what is left, when the next attempt is allowed and whether the scheduler is running."""
     indexed, present, state = indexed_columns(), present_columns(), load_state()
     return {
+        "scheduler_active": not scheduler_inactive(),
         "built": [f for f in ITEM_INDEXED_FIELDS if f in indexed],
         "missing": [f for f in ITEM_INDEXED_FIELDS if f in present and f not in indexed],
         "failures": int(state.get("failures", 0)),
@@ -202,11 +232,10 @@ def status():
     }
 
 
-def enqueue_build(after_commit=False):
+def enqueue_build():
     """Queue a build while an index is missing. Cheap when nothing is: one SHOW INDEX and no job.
 
-    Runs hourly from the scheduler and once after every install and migrate. The install and migrate pass
-    after_commit=True so the job starts only once the install's own changes are committed.
+    Runs hourly from the scheduler.
     """
     if not is_mariadb():
         return
@@ -214,9 +243,7 @@ def enqueue_build(after_commit=False):
     flag_built_indexes(indexed)
     if next_missing(indexed, present_columns()) is None or frappe.conf.get("maintenance_mode"):
         return
-    frappe.enqueue(
-        "alaiy_os_connector_shopify.setup.item_indexes.build_next_item_index", queue="long", timeout=JOB_TIMEOUT,
-        enqueue_after_commit=after_commit)
+    frappe.enqueue("alaiy_os_connector_shopify.setup.item_indexes.build_next_item_index", queue="long", timeout=JOB_TIMEOUT)
 
 
 def _quietly(run):
@@ -250,7 +277,7 @@ def build_next_item_index():
 
         state = load_state()
         if float(state.get("next_try_at") or 0) > time.time():
-            return "backing off after a failure"
+            return "waiting before the next attempt"
         now = datetime.now()
         if not in_window(now.hour * 60 + now.minute, frappe.conf.get("shopify_item_index_window")):
             return "outside the window"

@@ -41,10 +41,11 @@ class TestItemIndexFlag(unittest.TestCase):
     def test_a_field_whose_index_was_built_keeps_it(self):
         self.assertEqual(NS["item_index_flag"](1), 1)
 
-    def test_the_install_queues_the_background_build_and_never_fails_on_it(self):
+    def test_the_install_holds_the_background_build_back_and_never_fails_on_it(self):
         self.assertIn("_start_item_indexes()", SOURCE)
-        self.assertIn("enqueue_build(after_commit=True)", SOURCE)
-        self.assertIn("could not queue the Item index build", SOURCE)
+        self.assertIn("settle()", SOURCE)
+        self.assertNotIn("enqueue_build(", SOURCE)  # the hourly job queues the build, never the install
+        self.assertIn("could not schedule the Item index build", SOURCE)
 
 
 class TestInstallSpeed(unittest.TestCase):
