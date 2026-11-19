@@ -138,14 +138,18 @@ def adopt_enriched_listing_doctypes():
 
 
 def _start_item_indexes():
-    """Queue the background Item index build. It must never fail an install or a migrate."""
-    try:
-        from alaiy_os_connector_shopify.setup.item_indexes import enqueue_build
+    """Hold the background Item index build back after an install or a migrate.
 
-        enqueue_build(after_commit=True)
+    The build itself is queued by an hourly job, never here, so it cannot start while an install, a
+    migrate or the restarts that follow are still going. This must never fail either of them.
+    """
+    try:
+        from alaiy_os_connector_shopify.setup.item_indexes import settle
+
+        settle()
     except Exception:
         frappe.log_error(
-            title="Shopify connector: could not queue the Item index build",
+            title="Shopify connector: could not schedule the Item index build",
             message=frappe.get_traceback(),
         )
 

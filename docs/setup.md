@@ -136,7 +136,8 @@ Four Item fields are indexed (`sh_shopify_product_id`, `sh_shopify_variant_id`, 
 
 An install therefore adds the columns without the indexes, and the connector builds them afterwards on its own (`setup/item_indexes.py`). Nobody has to run anything:
 
-- An hourly job, and one run queued after every install and migrate, look for a missing index and queue a build only when there is one. Once all four exist the job does nothing.
+- An hourly job looks for a missing index and queues a build only when there is one. Once all four exist the job does nothing. It needs the site's scheduler: where the scheduler is off, nothing is built until it is on.
+- An install or a migrate holds the first build back for 30 minutes, so a build never starts while the install, the migrate or the restarts that follow are still going. A build occupies a long-queue worker, and a worker that is restarted waits for it to finish.
 - A build adds one index per run. Runs cannot overlap, and the lock that guards them is released by the database if the worker dies.
 - It does not start in maintenance mode, while a query older than 30 seconds is running on Item, while another statement is waiting on Item's table lock (a migrate, for example), or without free disk space when the database is on the same host.
 - It waits for the table lock for 10 seconds at most (site config `shopify_item_index_lock_wait`, 1 to 60). If the lock is not free it gives up and changes nothing, so Item queries are never queued behind it for longer.
