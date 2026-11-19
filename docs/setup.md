@@ -130,6 +130,12 @@ Checking **Enable Shopify** (0→1) runs, via the settings controller's `validat
 
 Field-level detail is in each domain doc.
 
+### Item indexes on a large catalogue
+
+Four Item fields are indexed (`sh_shopify_product_id`, `sh_shopify_variant_id`, `sh_shopify_inventory_item_id`, `sh_shopify_connection`). Building an index scans the whole Item table and needs a metadata lock, so on a catalogue of millions of Items it is the one slow step of an install and can hold up every query on Item while it waits.
+
+A fresh install therefore adds the columns without the indexes. To build them at a quiet time, set the site config key `shopify_item_indexes` to `1` and run `bench --site <site> execute alaiy_os_connector_shopify.setup.install.setup_custom_fields`. Once a field has its index it keeps it on every later migrate, whether or not the key stays set. Build them before connecting a store: id lookups scan the table until then.
+
 ---
 
 ## 6. Webhooks
