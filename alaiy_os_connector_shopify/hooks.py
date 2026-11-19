@@ -152,6 +152,9 @@ scheduler_events = {
         # only has to catch what it missed.
         "alaiy_os_connector_shopify.shopify.order.delivery_status.sync_refund_status",
         "alaiy_os_connector_shopify.shopify.product_sync.push_changed_items_only",
+        # Adds a missing Item index in the background, one at a time, when the Item table is quiet. Does
+        # nothing once all four exist. See setup/item_indexes.py for why it is not done at install.
+        "alaiy_os_connector_shopify.setup.item_indexes.enqueue_build",
     ],
     "daily": [
         "alaiy_os_connector_shopify.shopify.sync_jobs.scheduled_sync_tags",

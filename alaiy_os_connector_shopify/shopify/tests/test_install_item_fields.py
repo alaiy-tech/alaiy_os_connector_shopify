@@ -1,9 +1,9 @@
 """A fresh install adds the Item columns without building indexes on the big Item table.
 
 Building an index on Item scans the whole catalogue and needs a metadata lock, which is what makes an
-install slow and able to block the site. The indexes are switched on later (site config
-`shopify_item_indexes`), and once a field carries one it keeps it. The deprecated fields are deleted
-only when their type really changed, so a fresh install and later migrates touch nothing.
+install slow and able to block the site. The background build (setup/item_indexes.py) adds them later, and
+once a field carries one it keeps it. The deprecated fields are deleted only when their type really
+changed, so a fresh install and later migrates touch nothing.
 
 No site: the decisions are plain functions. Stdlib unittest.
 """
@@ -35,25 +35,16 @@ NS = _load()
 
 class TestItemIndexFlag(unittest.TestCase):
     def test_a_fresh_install_builds_no_index(self):
-        self.assertEqual(NS["item_index_flag"](None, None), 0)
-        self.assertEqual(NS["item_index_flag"](0, 0), 0)
+        self.assertEqual(NS["item_index_flag"](None), 0)
+        self.assertEqual(NS["item_index_flag"](0), 0)
 
-    def test_the_site_can_ask_for_the_indexes(self):
-        self.assertEqual(NS["item_index_flag"](1, None), 1)
+    def test_a_field_whose_index_was_built_keeps_it(self):
+        self.assertEqual(NS["item_index_flag"](1), 1)
 
-    def test_a_field_that_already_has_the_index_keeps_it(self):
-        self.assertEqual(NS["item_index_flag"](None, 1), 1)
-
-    def test_the_four_indexed_item_fields_are_the_ones_the_spec_flags(self):
-        flagged = []
-        for node in ast.walk(ast.parse(SOURCE)):
-            if isinstance(node, ast.Dict):
-                keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
-                if "fieldname" in keys and "search_index" in keys:
-                    flagged.append(node.values[keys.index("fieldname")].value)
-        item = set(NS["ITEM_INDEXED_FIELDS"])
-        # every Item field the spec flags is one the install controls, and no Item field is flagged that is not listed
-        self.assertTrue(item <= set(flagged))
+    def test_the_install_queues_the_background_build_and_never_fails_on_it(self):
+        self.assertIn("_start_item_indexes()", SOURCE)
+        self.assertIn("enqueue_build(after_commit=True)", SOURCE)
+        self.assertIn("could not queue the Item index build", SOURCE)
 
 
 class TestDeprecatedFields(unittest.TestCase):
