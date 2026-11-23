@@ -39,15 +39,7 @@ from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _se
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 from alaiy_os_connector_shopify.shopify.product import status as status_map
 
-_ITEM_NAME_MAX_LENGTH = 140
-
-
-def _fit_item_name(name: str) -> str:
-    """Item.item_name is a plain Data field (140-char DB limit) -- a long
-    real product title (confirmed live) crashes the whole product's
-    import over a display name, same class of bug already fixed for
-    sh_seo_title and downloaded image filenames."""
-    return (name or "")[:_ITEM_NAME_MAX_LENGTH]
+from alaiy_os_connector_shopify.shopify.product.utils import _fit_item_name, _ITEM_NAME_MAX_LENGTH
 
 from alaiy_os_connector_shopify import connections
 from alaiy_os_connector_shopify.shopify.scoping import item_code_for, owned_by
