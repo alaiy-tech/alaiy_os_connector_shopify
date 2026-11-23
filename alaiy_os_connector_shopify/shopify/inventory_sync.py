@@ -115,6 +115,37 @@ def _fulfillment_services_by_location(client, log=None):
     return by_location, True
 
 
+def _retire_missing_locations(connection_name, seen_ids) -> int:
+    """Mark inactive every cached location of this store that Shopify did not
+    return in a complete listing. Returns how many were retired.
+
+    The listing only ever updated locations Shopify still returned, so one
+    that was deleted, deactivated, or whose fulfillment service was removed
+    stayed active here for good, and items kept pointing at it.
+
+    An empty listing retires nothing: that is how a failed or unauthorised
+    read looks, and it must not switch off every location. Only the active
+    flag changes -- the supplier link and warehouse map stay, so a location
+    that comes back is picked up again by the next sync.
+    """
+    if not seen_ids:
+        return 0
+    retired = 0
+    for row in frappe.get_all(
+        "Shopify Location",
+        filters=owned_by("Shopify Location", connection_name, {"is_active": 1}),
+        fields=["name", "sh_location_id"],
+    ):
+        if str(row.sh_location_id) in seen_ids:
+            continue
+        doc = frappe.get_doc("Shopify Location", row.name)
+        doc.is_active = 0
+        doc.flags.ignore_permissions = True
+        doc.save()
+        retired += 1
+    return retired
+
+
 @frappe.whitelist()
 def sync_shopify_locations(trigger="manual", log_name=None, connection=None):
     """
@@ -140,6 +171,7 @@ def sync_shopify_locations(trigger="manual", log_name=None, connection=None):
         has_next_page = True
         after_cursor = None
         total = 0
+        seen = set()
 
         while has_next_page:
             data = client.execute(_LOCATIONS_QUERY, {"after": after_cursor})
@@ -185,12 +217,16 @@ def sync_shopify_locations(trigger="manual", log_name=None, connection=None):
                                               connection=connection_name, **values))
                 doc.flags.ignore_permissions = True
                 doc.save()
+                seen.add(legacy)
                 total += 1
 
             page_info = loc_data.get("pageInfo") or {}
             has_next_page = page_info.get("hasNextPage", False)
             after_cursor = page_info.get("endCursor")
 
+        retired = _retire_missing_locations(connection_name, seen)
+        if retired:
+            _append_log(log, f"{retired} location(s) no longer on Shopify marked inactive")
         frappe.db.commit()
         _close_log(log, "success", processed=total, created=total)
     except Exception:
