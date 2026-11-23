@@ -846,6 +846,12 @@ def _resolve_warehouse_for_location(location_id, connection=None):
     # None on every multi-store bench, so an unmapped location stopped
     # falling back at all and its inbound stock was silently dropped.
     settings = connections.resolve(connection) if connection else connections.enabled_connection()
+    # A store that maps its locations has said where each one's stock lives. An
+    # unmapped location is a gap to report, not stock to put in the default
+    # warehouse: that is how a supplier's quantity ended up at HQ. Only a store
+    # with no map at all keeps the single-warehouse fallback.
+    if settings and (settings.get("sh_location_map") or []):
+        return None
     return settings.sh_default_warehouse if settings else None
 
 

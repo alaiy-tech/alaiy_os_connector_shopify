@@ -292,8 +292,11 @@ def _resolve_opening_stock_rows(qty: float, settings, location_levels=None) -> l
         rows = {}
         disabled = []
         negative = []
+        unmapped = []
         for location_id, level_qty in location_levels:
             warehouse = _resolve_warehouse_for_location(location_id, settings)
+            if not warehouse and level_qty:
+                unmapped.append(location_id)
             if not warehouse or not level_qty:
                 continue
             # Shopify reports a negative available quantity for an oversold
@@ -335,6 +338,21 @@ def _resolve_opening_stock_rows(qty: float, settings, location_levels=None) -> l
             )
         if rows:
             return list(rows.items())
+        # A store that maps its locations has said where each one's stock
+        # lives. Stock at a location it never mapped is not the default
+        # warehouse's: opening it there put a supplier's stock at HQ, where
+        # routing then treated it as HQ's own. Leave it out; the stock pull
+        # sets it once the location is mapped. A store with no map at all keeps
+        # the single-warehouse behaviour below.
+        if unmapped and (settings.get("sh_location_map") or []):
+            frappe.log_error(
+                title="Shopify import: skipped opening stock for an unmapped location",
+                message=f"Shopify holds stock at location(s) {sorted(set(map(str, unmapped)))} "
+                "that have no warehouse in the location map, so no opening stock was "
+                "recorded rather than putting it in the default warehouse. Map the "
+                "location to a warehouse; the next stock pull sets the quantity.",
+            )
+            return []
 
     warehouse = settings.sh_default_warehouse
     if not warehouse:
