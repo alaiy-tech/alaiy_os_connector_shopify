@@ -59,7 +59,7 @@ def _default_location(settings, stocked):
     return holders[0] if len(holders) == 1 else None
 
 
-def _resolve_item_shopify_location(location_levels, settings=None, item_code=None) -> str:
+def _resolve_item_shopify_location(location_levels, settings=None, item_code=None, quiet=False) -> str:
     """
     Real Shopify Location docname to write onto Item.shopify_location, or
     None if it can't be resolved.
@@ -141,12 +141,15 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
         if default_location:
             return default_location
 
-        frappe.log_error(
-            title="Shopify import: item stocked at multiple locations, can't resolve shopify_location",
-            message=f"item_code={item_code}, stocked at={sorted(stocked)} "
-            f"(listed at={sorted(candidates)}). Two or more real locations hold this "
-            "item, so ownership cannot be resolved automatically. Needs a human decision.",
-        )
+        # quiet: a refresh over already-imported products asks this on every
+        # sync, and the same unresolved item would log the same error each time.
+        if not quiet:
+            frappe.log_error(
+                title="Shopify import: item stocked at multiple locations, can't resolve shopify_location",
+                message=f"item_code={item_code}, stocked at={sorted(stocked)} "
+                f"(listed at={sorted(candidates)}). Two or more real locations hold this "
+                "item, so ownership cannot be resolved automatically. Needs a human decision.",
+            )
         return None
 
     if not stocked and len(candidates) >= 2:
@@ -167,7 +170,7 @@ def _resolve_item_shopify_location(location_levels, settings=None, item_code=Non
     return None
 
 
-def resolve_product_shopify_location(variants, settings=None, product_id=None):
+def resolve_product_shopify_location(variants, settings=None, product_id=None, quiet=False):
     """The one Shopify Location that owns a whole PRODUCT, or None.
 
     Ownership is a fact about the product, not about today's stock in a
@@ -191,7 +194,7 @@ def resolve_product_shopify_location(variants, settings=None, product_id=None):
             pooled[location_id] = pooled.get(location_id, 0) + (qty or 0)
     if not pooled:
         return None
-    return _resolve_item_shopify_location(list(pooled.items()), settings, product_id)
+    return _resolve_item_shopify_location(list(pooled.items()), settings, product_id, quiet=quiet)
 
 
 def _write_shopify_location_from_supplier(item_code: str):

@@ -50,7 +50,7 @@ def _fit_item_name(name: str) -> str:
     return (name or "")[:_ITEM_NAME_MAX_LENGTH]
 
 from alaiy_os_connector_shopify import connections
-from alaiy_os_connector_shopify.shopify.scoping import item_code_for
+from alaiy_os_connector_shopify.shopify.scoping import item_code_for, owned_by
 
 
 def run_full_product_import(trigger="manual", log_name=None, connection=None,
@@ -549,6 +549,53 @@ def _settled_listing_images(node: dict, entity, connection=None):
     return None
 
 
+def _refresh_item_locations(entity, node: dict, settings) -> int:
+    """Re-point an already-imported product's Items at the Shopify location
+    that holds their stock now. Returns how many Items changed.
+
+    Resolves exactly as the import does (_resolve_item_shopify_location, with
+    the product-level fallback for a variant holding no stock), so a refresh
+    and a first import cannot disagree. It only ever moves an Item onto a
+    resolved location: an item that resolves to nothing (ambiguous, or no
+    inventory data) keeps the value it has rather than being blanked.
+
+    Saved through the document, not a raw update, so the same hooks run as on
+    any other import write. Unresolved cases are resolved quietly here, since
+    this runs for every unchanged product on every sync.
+    """
+    if not frappe.get_meta("Item").get_field("shopify_location"):
+        return 0
+
+    variants = node.get("variants", {}).get("nodes", []) or []
+    product_location = resolve_product_shopify_location(
+        variants, settings, entity.external_id, quiet=True)
+
+    changed = 0
+    for variant in variants:
+        variant_id = str(variant.get("legacyResourceId") or "")
+        if not variant_id:
+            continue
+        item_code = frappe.db.get_value(
+            "Item",
+            owned_by("Item", settings, {"sh_shopify_variant_id": variant_id}),
+            "name")
+        if not item_code:
+            continue
+        location = _resolve_item_shopify_location(
+            _variant_location_levels(variant, settings), settings, item_code,
+            quiet=True) or product_location
+        if not location or location == frappe.db.get_value("Item", item_code, "shopify_location"):
+            continue
+        item = frappe.get_doc("Item", item_code)
+        item.shopify_location = location
+        item.flags.from_shopify_sync = True
+        item.flags.ignore_permissions = True
+        item.save()
+        _sync_item_supplier_from_location(item_code, location)
+        changed += 1
+    return changed
+
+
 def _update_existing_product(entity, node: dict, connection=None) -> tuple:
     """
     Product already imported (Synced Entity + Item both exist). Compares a
@@ -569,10 +616,14 @@ def _update_existing_product(entity, node: dict, connection=None) -> tuple:
     variant with stock or order history is not ours to delete on a sync.
     """
     new_fp = _shopify_node_fingerprint(node)
+    settings = connections.resolve(connection) if connection else connections.require_enabled()
     if entity.external_fingerprint == new_fp:
+        # The fingerprint leaves inventory out on purpose, so stock moving to a
+        # different location never makes a product look changed. Ownership has
+        # to be refreshed here or Item.shopify_location stays on the old one.
+        _refresh_item_locations(entity, node, settings)
         return False, "already imported, unchanged"
 
-    settings = connections.resolve(connection) if connection else connections.require_enabled()
     template_name = entity.erpnext_name
     variants = node.get("variants", {}).get("nodes", [])
     images = product_image_urls(node)
