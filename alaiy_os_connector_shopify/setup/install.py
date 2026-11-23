@@ -51,6 +51,7 @@ def _provision():
     ensure_base_data()
     sync_connector_registry()
     sync_listing_custom_fields()
+    _start_item_indexes()
 
 
 #: The Module Def the enriched-listing doctypes must belong to for this app to
@@ -134,6 +135,23 @@ def adopt_enriched_listing_doctypes():
         print(f"Adopted {len(moved)} enriched-listing doctype(s) onto {LISTING_MODULE}: {', '.join(moved)}")
 
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+
+
+def _start_item_indexes():
+    """Hold the background Item index build back after an install or a migrate.
+
+    The build itself is queued by an hourly job, never here, so it cannot start while an install, a
+    migrate or the restarts that follow are still going. This must never fail either of them.
+    """
+    try:
+        from alaiy_os_connector_shopify.setup.item_indexes import settle
+
+        settle()
+    except Exception:
+        frappe.log_error(
+            title="Shopify connector: could not schedule the Item index build",
+            message=frappe.get_traceback(),
+        )
 
 
 def ensure_base_data():
@@ -245,6 +263,42 @@ def _ensure_list_view_column(doctype, fieldname, label):
     settings.fields = json.dumps(fields)
     settings.save(ignore_permissions=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
+
+
+#: The Item fields that carry an index. Item is the big table (a catalogue is millions of rows), and
+#: building an index on it scans the whole table and needs a metadata lock, which is the one slow and
+#: blocking step of an install. A fresh install therefore adds these columns without the index, and
+#: setup/item_indexes.py builds them afterwards in the background, one at a time. A built index is
+#: flagged on its Custom Field and the flag is carried over below, because Frappe drops an index its
+#: field does not flag on the next schema update.
+ITEM_INDEXED_FIELDS = (
+    "sh_shopify_product_id",
+    "sh_shopify_variant_id",
+    "sh_shopify_inventory_item_id",
+    "sh_shopify_connection",
+)
+
+#: Item fields that older versions created with another type. They are deleted so they can be recreated
+#: with the new type, which Frappe will not do in place -- but only when the type actually differs.
+DEPRECATED_ITEM_FIELDS = ("sh_country_of_origin", "sh_harmonized_system_code", "sh_shopify_tags", "sh_shopify_category")
+
+
+def item_index_flag(existing) -> int:
+    """1 when the field already carries its index (the background build flags it), else 0."""
+    return 1 if existing else 0
+
+
+def deprecated_fields_to_replace(existing_types, wanted_types):
+    """The deprecated Item fields whose existing type differs from the type wanted now.
+
+    `existing_types` {fieldname: fieldtype or None} for the Custom Fields that exist; `wanted_types`
+    {fieldname: fieldtype}. A field that does not exist yet, or already has the wanted type, is left alone,
+    so a fresh install and every later migrate delete nothing.
+    """
+    return [
+        name for name in DEPRECATED_ITEM_FIELDS
+        if existing_types.get(name) and existing_types[name] != wanted_types.get(name)
+    ]
 
 
 def setup_custom_fields():
@@ -717,22 +771,34 @@ def setup_custom_fields():
     # update=True re-syncs properties (description, read_only, ...) on
     # already-existing fields, which is what the old hand-rolled upsert did
     # -- e.g. sh_shopify_category started read-only and later became editable.
-    _remove_deprecated_item_fields()
+    for f in item_fields:
+        if f["fieldname"] in ITEM_INDEXED_FIELDS:
+            f["search_index"] = item_index_flag(frappe.db.get_value("Custom Field", f"Item-{f['fieldname']}", "search_index"))
+    _remove_deprecated_item_fields(item_fields)
     from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
-    create_custom_fields(custom_fields, update=True)
+    # ignore_validate: without it Frappe re-validates the whole Item doctype for every field it creates,
+    # and that validation scans the entire Item table for duplicates on each unique field. On a catalogue
+    # of millions of Items that is dozens of full scans, so an install appeared stuck for a long time.
+    # These field definitions are fixed and known to be valid, so the per-field validation is skipped.
+    create_custom_fields(custom_fields, ignore_validate=True, update=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 
-def _remove_deprecated_item_fields():
+def _remove_deprecated_item_fields(item_fields):
     """
-    Fields that changed fieldtype or were removed entirely -- delete the
-    Custom Field itself so create_custom_fields can recreate it with the
-    new fieldtype (Frappe blocks fieldtype changes on existing fields).
+    Fields that changed fieldtype -- delete the Custom Field itself so
+    create_custom_fields can recreate it with the new fieldtype (Frappe
+    blocks fieldtype changes on existing fields). Only a field whose type
+    differs is deleted, so a fresh install and every later migrate leave
+    them alone and do not trigger a schema update on Item.
     """
-    for fieldname in ("sh_country_of_origin", "sh_harmonized_system_code", "sh_shopify_tags", "sh_shopify_category"):
-        name = f"Item-{fieldname}"
-        if frappe.db.exists("Custom Field", name):
-            frappe.delete_doc("Custom Field", name, ignore_permissions=True)
+    wanted = {f["fieldname"]: f["fieldtype"] for f in item_fields}
+    existing = {
+        fieldname: frappe.db.get_value("Custom Field", f"Item-{fieldname}", "fieldtype")
+        for fieldname in DEPRECATED_ITEM_FIELDS
+    }
+    for fieldname in deprecated_fields_to_replace(existing, wanted):
+        frappe.delete_doc("Custom Field", f"Item-{fieldname}", ignore_permissions=True)
     frappe.db.commit()  # nosemgrep: frapsec-manual-commit -- see module docstring
 
 

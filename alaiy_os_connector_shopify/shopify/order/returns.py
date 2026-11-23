@@ -334,6 +334,25 @@ def _source_sales_invoice(so_name, qty_by_item):
     return None
 
 
+def _unlink_cancelled_sales_orders(doc):
+    """Drop the Sales Order link from credit-note rows whose Sales Order is
+    cancelled.
+
+    A refund can arrive for an order that Shopify also cancelled, so the
+    Sales Order the invoice was raised from is cancelled by the time the credit
+    note is built. ERPNext refuses a document that links a cancelled one
+    ("Cannot link cancelled document"), which left the refund with no credit
+    note. The credit note is tied to the invoice it returns (return_against),
+    not to the order, so the order link is informational and is cleared only
+    where it points at a cancelled order.
+    """
+    for row in doc.items:
+        if row.get("sales_order") and frappe.db.get_value(
+                "Sales Order", row.sales_order, "docstatus") == 2:
+            row.sales_order = None
+            row.so_detail = None
+
+
 def _make_credit_note(so_name, qty_by_item, refund_id, connection=None):
     si_name = _source_sales_invoice(so_name, qty_by_item)
     if not si_name:
@@ -357,6 +376,7 @@ def _make_credit_note(so_name, qty_by_item, refund_id, connection=None):
         si = make_return_doc("Sales Invoice", si_name)
         if not _trim_return_items(si, qty_by_item):
             return None
+        _unlink_cancelled_sales_orders(si)
         si.update_stock = 0  # stock already returned via the Sales Return above
         _fill_item_accounts(si, settings)
         si.sh_shopify_refund_id = refund_id

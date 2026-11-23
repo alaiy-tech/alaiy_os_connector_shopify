@@ -16,7 +16,7 @@ from alaiy_os_connector_shopify.shopify.product import inbound_images
 from alaiy_os_connector_shopify.shopify.product.listing import get_listing
 from alaiy_os_connector_shopify.shopify.product.canonical import _product_canonical
 from alaiy_os_connector_shopify.shopify.product.export import _variants_of
-from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive
+from alaiy_os_connector_shopify.shopify.product.utils import _to_utc_naive, _fit_item_name
 
 from alaiy_os_connector_shopify import connections
 
@@ -442,12 +442,15 @@ def _update_item_from_shopify(item, product: dict, _retry_count=0, connection=No
     # default that every other connector inherits from. Only fall back to the
     # Item when there's no Listing (un-abstracted product).
     if product.get("title"):
+        # Fitted to the field's 140 characters: an unfitted long title made
+        # the whole product update fail, so none of its other changes applied.
+        title = _fit_item_name(product["title"])
         if listing:
-            if listing.listing_title != product["title"]:
-                listing.listing_title = product["title"]
+            if listing.listing_title != title:
+                listing.listing_title = title
                 listing_dirty = True
         else:
-            item.item_name = product["title"]
+            item.item_name = title
     if product.get("body_html"):
         if listing:
             if listing.listing_description != product["body_html"]:

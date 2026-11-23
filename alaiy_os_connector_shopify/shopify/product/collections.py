@@ -628,11 +628,14 @@ def _collection_membership_call(client, mutation, collection_gid, product_gid, v
         data = client.execute(mutation, {"id": collection_gid, "productIds": [product_gid]})
         key = "collectionAddProducts" if verb == "add" else "collectionRemoveProducts"
         errors = (data.get(key) or {}).get("userErrors") or []
-        if errors and verb == "remove" and all(
-            "does not exist" in (e.get("message") or "") for e in errors
-        ):
-            # The collection was deleted on Shopify, so the product is already
-            # out of it. Nothing to retry and nothing to report.
+        if errors and all("does not exist" in (e.get("message") or "") for e in errors):
+            # The collection was deleted on Shopify. Removing from it has
+            # nothing left to do. Adding to it can never succeed, so it is not
+            # an error to report on every push: say it once at info level.
+            if verb == "add":
+                frappe.logger("shopify").info(
+                    f"collection {collection_gid} no longer exists on Shopify; "
+                    f"not adding {item_name}")
             return
         if errors:
             frappe.log_error(

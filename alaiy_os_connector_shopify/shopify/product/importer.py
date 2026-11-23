@@ -39,15 +39,7 @@ from alaiy_os_connector_shopify.shopify.product.tags import _normalize_tags, _se
 from alaiy_os_connector_shopify.shopify.product import listing as listing_resolver
 from alaiy_os_connector_shopify.shopify.product import status as status_map
 
-_ITEM_NAME_MAX_LENGTH = 140
-
-
-def _fit_item_name(name: str) -> str:
-    """Item.item_name is a plain Data field (140-char DB limit) -- a long
-    real product title (confirmed live) crashes the whole product's
-    import over a display name, same class of bug already fixed for
-    sh_seo_title and downloaded image filenames."""
-    return (name or "")[:_ITEM_NAME_MAX_LENGTH]
+from alaiy_os_connector_shopify.shopify.product.utils import _fit_item_name, _ITEM_NAME_MAX_LENGTH
 
 from alaiy_os_connector_shopify import connections
 from alaiy_os_connector_shopify.shopify.scoping import item_code_for, owned_by
@@ -133,6 +125,7 @@ def run_full_product_import(trigger="manual", log_name=None, connection=None,
             for node in page_nodes:
                 processed += 1
                 if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
+                    _refresh_locations_of_imported(node, connection)
                     skipped += 1
                     reason = f"status {node.get('status')} not selected for import"
                     skip_reason_counts[reason] += 1
@@ -436,6 +429,7 @@ def run_missing_product_import(trigger="manual", log_name=None, statuses=None, c
                     continue  # already linked -- no fingerprint check, no write, no risk
                 processed += 1
                 if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
+                    _refresh_locations_of_imported(node, connection)
                     skipped += 1
                     skip_reason_counts[f"status {node.get('status')} not selected for import"] += 1
                     continue
@@ -547,6 +541,32 @@ def _settled_listing_images(node: dict, entity, connection=None):
     if entity and entity.external_id:
         inbound_images.schedule_recheck(entity.external_id, entity.name, connection)
     return None
+
+
+def _refresh_locations_of_imported(node: dict, connection=None) -> None:
+    """Location refresh for a product the status setting keeps out of the import.
+
+    An archived product is not re-imported, but its Items still carry a
+    location, and one left on a location that no longer exists keeps that
+    location from ever being retired. So an already-imported product whose
+    status is skipped still has its ownership refreshed -- location only, no
+    content update. A product that was never imported is left alone.
+
+    Never raises: the skip it runs beside must stay a skip.
+    """
+    product_id = str(node.get("legacyResourceId") or "")
+    if not product_id:
+        return
+    try:
+        entity = entities.get_by_external_id("product", product_id, connection)
+        if entity and entity.erpnext_name and frappe.db.exists("Item", entity.erpnext_name):
+            settings = connections.resolve(connection) if connection else connections.require_enabled()
+            _refresh_item_locations(entity, node, settings)
+    except Exception:
+        frappe.log_error(
+            title=f"Shopify import: location refresh failed for product {product_id}",
+            message=frappe.get_traceback(),
+        )
 
 
 def _refresh_item_locations(entity, node: dict, settings) -> int:
@@ -732,6 +752,7 @@ def _import_product(node: dict, connection=None, allowed_statuses=None) -> tuple
     # fell back to the saved checkboxes and overruled the run: a pull asked for Draft
     # products was skipped here, one product at a time, because Draft is off in settings.
     if not status_map.import_allows(node.get("status"), allowed_statuses, connection):
+        _refresh_locations_of_imported(node, connection)
         return False, f"skipped ({(node.get('status') or 'unknown').lower()} not enabled for import)"
 
     _warn_if_truncated(node)
