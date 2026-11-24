@@ -549,17 +549,30 @@ def render_generated(item_code, work):
         # listing publishes, and the transparent one is what lets the background be
         # changed later without paying to render the photo again.
         cutout = payload.get("cutout")
-        fresh[url] = {
-            "url": images.save_public_image(
+        try:
+            enhanced_url = images.save_public_image(
                 "listing-enhanced",
                 payload["content"],
                 payload.get("media_type") or "image/png",
-            ),
-            "cutout_url": (
+            )
+            cutout_url = (
                 images.save_public_image("listing-cutout", cutout, "image/png")
                 if cutout
                 else None
-            ),
+            )
+        except Exception as exc:
+            # This photo's failure, like a failed render: raised out of here it
+            # would fail the whole job and leave every photo of the product
+            # waiting on a result that never comes.
+            frappe.log_error(
+                title="Shopify listing: image enhancement failed",
+                message=f"{item_code} / {url}\n{exc}",
+            )
+            fresh[url] = {"url": None, "note": f"Enhancement failed: {exc}"[:200]}
+            continue
+        fresh[url] = {
+            "url": enhanced_url,
+            "cutout_url": cutout_url,
             # Normally None. Set when the photo came back but the house finish could
             # not be applied to it — the photo is still good, so this is a note on a
             # successful row, not a failure.
