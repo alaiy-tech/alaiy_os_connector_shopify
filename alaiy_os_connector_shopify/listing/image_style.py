@@ -468,11 +468,17 @@ def _finish(content, spec, client):
     if _featureless(image, alpha):
         return _skipped(content, "no product could be made out in the photo")
 
+    cut = _cut_edges(alpha) if spec.get("bleed_cut_edges") else frozenset()
+
+    # The kept cutout is cropped from the photo, so without this it carries the
+    # photo's full resolution even though the finished image never exceeds
+    # max_size. A 5000px supplier shot made a 16-18MB cutout, past the site's
+    # upload limit, and the failed save lost every photo in the job.
+    image, alpha = _within(image, alpha, int(spec.get("max_size") or DEFAULTS["max_size"]))
+
     box = alpha.getbbox()
     if not box:
         return _skipped(content, "no product could be separated from the background")
-
-    cut = _cut_edges(alpha) if spec.get("bleed_cut_edges") else frozenset()
 
     cutout = image.convert("RGBA")
     cutout.putalpha(alpha)
@@ -484,6 +490,16 @@ def _finish(content, spec, client):
         "cutout": _encode(cutout, _framing(image.size, cut)) if spec.get("keep_cutout") else None,
         "note": None,
     }
+
+
+def _within(image, alpha, max_size):
+    """`image` and its matte scaled down together so the longer side is at most
+    `max_size`; unchanged when it already is."""
+    scale = max_size / max(image.size)
+    if scale >= 1:
+        return image, alpha
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    return image.resize(size, Image.LANCZOS), alpha.resize(size, Image.LANCZOS)
 
 
 def recompose(cutout, spec):
