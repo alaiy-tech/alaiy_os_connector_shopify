@@ -16,15 +16,25 @@ import types
 import unittest
 
 
-def _load(bins, levels):
+def _load(bins, levels, mapped=(), complete=None):
     """pull_stock_for_items with frappe, the Shopify client and the location
     lookup stubbed. `bins` is {warehouse: current qty}; `levels` is
-    [(location_id, warehouse, qty), ...] for the one item under test."""
+    [(location_id, warehouse, qty), ...] for the one item under test.
+    `mapped` lists the warehouses behind an active Shopify location; `complete`
+    is Shopify's hasNextPage answer (None leaves pageInfo out)."""
     frappe = types.ModuleType("frappe")
 
     def get_all(doctype, *a, **k):
         if doctype == "Item":
             return [types.SimpleNamespace(name="ITEM", sh_shopify_inventory_item_id="1")]
+        if doctype == "Shopify Location":
+            return ["LOC"] if mapped else []
+        if doctype == "Shopify Location Map":
+            return list(mapped)
+        if doctype == "Bin":
+            wanted = a[0]["warehouse"][1] if a else k["filters"]["warehouse"][1]
+            return [types.SimpleNamespace(warehouse=w, actual_qty=q)
+                    for w, q in bins.items() if w in wanted and q > 0]
         return []
 
     def get_value(doctype, filters=None, fieldname=None, *a, **k):
@@ -77,14 +87,14 @@ def _load(bins, levels):
             pass
 
         def execute(self, query, variables):
-            return {"nodes": [{
-                "legacyResourceId": "1",
-                "inventoryLevels": {"nodes": [
-                    {"location": {"legacyResourceId": location},
-                     "quantities": [{"quantity": qty}]}
-                    for location, _warehouse, qty in levels
-                ]},
-            }]}
+            nodes = {"nodes": [
+                {"location": {"legacyResourceId": location},
+                 "quantities": [{"quantity": qty}]}
+                for location, _warehouse, qty in levels
+            ]}
+            if complete is not None:
+                nodes["pageInfo"] = {"hasNextPage": not complete}
+            return {"nodes": [{"legacyResourceId": "1", "inventoryLevels": nodes}]}
 
     client_module.ShopifyGraphQLClient = _Client
     sys.modules["alaiy_os_connector_shopify.shopify.graphql_client"] = client_module
@@ -95,7 +105,8 @@ def _load(bins, levels):
     warehouse_by_location = {location: warehouse for location, warehouse, _qty in levels}
     inventory_sync._resolve_warehouse_for_location = (
         lambda location_id, connection=None: warehouse_by_location.get(location_id))
-    inventory_sync.connections.resolve_optional = lambda connection=None: object()
+    inventory_sync.connections.resolve_optional = lambda connection=None: types.SimpleNamespace(name="STORE")
+    inventory_sync.owned_by = lambda doctype, connection, filters=None: filters or {}
     return inventory_sync
 
 
@@ -135,6 +146,33 @@ class TestPullDoesNotFlip(unittest.TestCase):
         self.assertEqual(
             result["corrections"],
             [{"item_code": "ITEM", "warehouse": "HQ", "qty": 96.0, "old_qty": 50.0}])
+
+
+class TestUnreportedWarehouse(unittest.TestCase):
+    """A warehouse Shopify holds nothing for is zeroed, never left with old stock."""
+
+    _SUPPLIER = [("L2", "SUP", 11)]
+
+    def _pull(self, bins, mapped, complete):
+        sync = _load(bins, self._SUPPLIER, mapped=mapped, complete=complete)
+        return sync.pull_stock_for_items(["ITEM"], dry_run=True)["corrections"]
+
+    def test_stock_in_a_mapped_warehouse_shopify_does_not_report_is_zeroed(self):
+        corrections = self._pull({"SUP": 11.0, "HQ": 6.0}, ["SUP", "HQ"], complete=True)
+        self.assertEqual(
+            corrections, [{"item_code": "ITEM", "warehouse": "HQ", "qty": 0, "old_qty": 6.0}])
+
+    def test_a_truncated_level_list_is_never_read_as_empty(self):
+        self.assertEqual(self._pull({"SUP": 11.0, "HQ": 6.0}, ["SUP", "HQ"], complete=False), [])
+
+    def test_a_response_that_does_not_say_is_never_read_as_empty(self):
+        self.assertEqual(self._pull({"SUP": 11.0, "HQ": 6.0}, ["SUP", "HQ"], complete=None), [])
+
+    def test_a_warehouse_with_no_shopify_location_is_left_alone(self):
+        self.assertEqual(self._pull({"SUP": 11.0, "HQ": 6.0}, ["SUP"], complete=True), [])
+
+    def test_a_warehouse_already_at_zero_makes_no_correction(self):
+        self.assertEqual(self._pull({"SUP": 11.0, "HQ": 0.0}, ["SUP", "HQ"], complete=True), [])
 
 
 if __name__ == "__main__":

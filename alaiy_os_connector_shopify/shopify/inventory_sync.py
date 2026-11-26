@@ -984,6 +984,7 @@ query ItemsInventory($ids: [ID!]!) {
           location { legacyResourceId }
           quantities(names: ["available"]) { quantity }
         }
+        pageInfo { hasNextPage }
       }
     }
   }
@@ -994,6 +995,52 @@ query ItemsInventory($ids: [ID!]!) {
 # per-variant query above costs one round trip each, which is why the only
 # existing pull was either a full catalogue sweep or a manual one-off script.
 _INVENTORY_BATCH = 50
+
+
+def _mapped_warehouses(connection):
+    """Warehouses behind an active Shopify location of this store.
+
+    Only these have a Shopify stock level to be compared with, so only these
+    can be told "Shopify holds nothing here"."""
+    locations = frappe.get_all(
+        "Shopify Location",
+        filters=owned_by("Shopify Location", connection.name, {"is_active": 1}),
+        pluck="name",
+    )
+    if not locations:
+        return []
+    return list(set(frappe.get_all(
+        "Shopify Location Map", filters={"shopify_location": ["in", locations]},
+        pluck="warehouse",
+    )))
+
+
+def _unreported_warehouse_corrections(item_code, reported, mapped_warehouses):
+    """Corrections to zero for warehouses that hold this item but that Shopify
+    reports no stock for.
+
+    The pull writes the warehouses Shopify reports a level for. A warehouse the
+    item is not stocked at on Shopify has no level, so it was never visited and
+    kept whatever stock it once had -- stock from an import or an old receipt,
+    long after Shopify stopped holding any there. That phantom stock then wins
+    order routing (HQ stock is shipped by HQ), sending the order away from the
+    supplier who actually holds the goods.
+
+    Only call this when Shopify returned the item's complete level list; a
+    truncated list would read a warehouse past the cut as empty.
+    """
+    candidates = [w for w in mapped_warehouses if w not in set(reported)]
+    if not candidates:
+        return []
+    rows = frappe.get_all(
+        "Bin",
+        filters={"item_code": item_code, "warehouse": ["in", candidates], "actual_qty": [">", 0]},
+        fields=["warehouse", "actual_qty"],
+    )
+    return [
+        {"item_code": item_code, "warehouse": r.warehouse, "qty": 0, "old_qty": flt(r.actual_qty)}
+        for r in rows
+    ]
 
 
 def pull_stock_for_items(item_codes, dry_run=False, connection=None):
@@ -1064,6 +1111,7 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
     corrections = []
     unmapped = []
     unchanged = []
+    mapped_warehouses = _mapped_warehouses(connection)
     ids = list(by_inventory_id)
     for start in range(0, len(ids), _INVENTORY_BATCH):
         chunk = ids[start:start + _INVENTORY_BATCH]
@@ -1084,10 +1132,19 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
             if not item_code:
                 continue
             warehouse_quantities = []
-            for level in ((node.get("inventoryLevels") or {}).get("nodes") or []):
+            reported = set()
+            levels = node.get("inventoryLevels") or {}
+            for level in (levels.get("nodes") or []):
                 location_id = ((level.get("location") or {}).get("legacyResourceId"))
                 quantities = level.get("quantities") or []
-                if not location_id or not quantities:
+                if not location_id:
+                    continue
+                if not quantities:
+                    # No figure to apply, but Shopify did report this location,
+                    # so its warehouse is not "unreported".
+                    skipped_wh = _resolve_warehouse_for_location(str(location_id), connection)
+                    if skipped_wh:
+                        reported.add(skipped_wh)
                     continue
                 warehouse = _resolve_warehouse_for_location(str(location_id), connection)
                 if not warehouse:
@@ -1097,7 +1154,12 @@ def pull_stock_for_items(item_codes, dry_run=False, connection=None):
                     # place.
                     unmapped.append((item_code, str(location_id)))
                     continue
+                reported.add(warehouse)
                 warehouse_quantities.append((warehouse, quantities[0].get("quantity")))
+            # Zero what Shopify holds nothing of, but only on a complete list.
+            if (levels.get("pageInfo") or {}).get("hasNextPage") is False:
+                corrections.extend(
+                    _unreported_warehouse_corrections(item_code, reported, mapped_warehouses))
             # Compared per WAREHOUSE, after adding up every location behind it.
             # Comparing location by location and dropping the matching ones
             # before apply_pulled_stock sums the rest made a warehouse fed by
@@ -1300,6 +1362,7 @@ def _reconcile_inventory(dry_run, query, log, connection):
 
     client = ShopifyGraphQLClient(connection)
     corrections = []
+    mapped_warehouses = _mapped_warehouses(connection)
     unmapped_locations = set()
     unknown_variants = 0
     checked = 0
@@ -1341,6 +1404,8 @@ def _reconcile_inventory(dry_run, query, log, connection):
                     unknown_variants += 1
                     continue
                 warehouse_quantities = []
+                # _variant_location_levels re-fetches a variant's levels when
+                # the bulk page hit its cap, so this list is complete.
                 for location_id, qty in _variant_location_levels(variant, connection):
                     # Deliberately NOT _resolve_warehouse_for_location: that
                     # falls back to sh_default_warehouse for an unmapped
@@ -1361,6 +1426,8 @@ def _reconcile_inventory(dry_run, query, log, connection):
                         continue
                     checked += 1
                     warehouse_quantities.append((warehouse, qty))
+                corrections.extend(_unreported_warehouse_corrections(
+                    item_code, {w for w, _q in warehouse_quantities}, mapped_warehouses))
                 # Per warehouse, after adding up every location behind it --
                 # see pull_stock_for_items for why a per-location comparison
                 # flips the stock of a warehouse fed by more than one.
